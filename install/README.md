@@ -44,7 +44,7 @@ The steps, each printed as `[n/9]`:
 1. **check**: gcloud logged in; the caller can do what an owner does (`testIamPermissions`); billing on;
    the project inside an organization; the role exists; the ref resolves and has `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
-   secretmanager, storage, iap, drive; plus chat, gmail, calendar-json, docs, sheets, slides, people and
+   secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it); plus chat, gmail, calendar-json, docs, sheets, slides, people and
    admin for a Workspace role. Only the ones that are off. Then the **model check**: the contracts'
    cortex model (`vertex.models.cortex`, at `vertex.location`; Gemini 4 is served from the global
    endpoint only) is asked for one word through Vertex AI's `generateContent`, as you. A failure is

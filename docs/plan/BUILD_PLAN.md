@@ -227,7 +227,8 @@ repairs an install.
 install/install.sh
   1  check      caller can act as owner, billing is on, project is in an organization, the ref resolves
   2  apis       compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry,
-                cloudbuild, secretmanager, storage, iap, drive (+ Workspace APIs for flagged roles);
+                cloudbuild, secretmanager, storage, iap, drive, cloudresourcemanager
+                (+ Workspace APIs for flagged roles);
                 then checks the cortex model answers
   3  accounts   paraclete-dashboard@, paraclete-agent@ (+ the role's gcp_roles), paraclete-dwd@ if flagged
   4  firestore  native database (delete-protected), indexes and the TTL policy

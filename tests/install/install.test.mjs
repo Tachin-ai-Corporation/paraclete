@@ -47,7 +47,7 @@ const dashboardCommands = (commands) => commands.filter((command) =>
   DASHBOARD_COMMANDS.some((words) => words.every((word, i) => command[i] === word)));
 
 const BASE_APIS = ['compute', 'run', 'firestore', 'iam', 'iamcredentials', 'aiplatform', 'artifactregistry',
-  'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive'].map((api) => `${api}.googleapis.com`);
+  'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive', 'cloudresourcemanager'].map((api) => `${api}.googleapis.com`);
 const WORKSPACE_APIS = ['chat', 'gmail', 'calendar-json', 'docs', 'sheets', 'slides', 'people', 'admin']
   .map((api) => `${api}.googleapis.com`);
 

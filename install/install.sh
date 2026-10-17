@@ -49,8 +49,9 @@ IMAGE_PROJECT=debian-cloud
 VM_SCOPES=cloud-platform,https://www.googleapis.com/auth/drive
 
 # Every instance's APIs, and the Workspace ones a role flagged `workspace` adds (short names; each is
-# <name>.googleapis.com).
-BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive)
+# <name>.googleapis.com). cloudresourcemanager is there for gcloud itself: `iap web` commands look the
+# project up through it, and fail on a project that never turned it on.
+BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive cloudresourcemanager)
 WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
 # The Service Usage API takes a limited number of services per call.
 APIS_PER_CALL=10
