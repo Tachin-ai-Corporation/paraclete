@@ -8,4 +8,9 @@ Workspace roles, tokens for the agent's own Google account through domain-wide d
 
 This package imports nothing else from `agent/`.
 
-**Status:** empty. Arrives in build plan phase 2.
+## Files
+
+| File | Does |
+|---|---|
+| `metadata-token.mjs` | Tokens for the VM's service account, from the metadata server |
+| `dwd-token.mjs` | Tokens for the agent's Workspace account, through domain-wide delegation |

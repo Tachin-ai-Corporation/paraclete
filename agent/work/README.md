@@ -10,4 +10,19 @@ and responsibilities, verification verdicts, finalization and deliverables, the 
 Most of this package is pure functions over plain data. Keep it that way: it is the part of the agent
 that must be deterministic.
 
-**Status:** empty. Arrives in build plan phase 2.
+## Files
+
+| Group | Files |
+|---|---|
+| Envelope state | `work-transitions.mjs` (legal status changes), `work-schema.mjs` (record shapes), `work-ids.mjs`, `validate-schema.mjs` |
+| Planning | `plan-utils.mjs` (plans into checkpoint lists), `plan-lint.mjs`, `checkpoint-spine.mjs` (the verified skeleton of a mission) |
+| Verification | `verdict.mjs` (reads the verifier's verdict), `agent-output.mjs` (spots failures in motor output), `result-packet.mjs` (evidence between organs) |
+| Finishing | `finalization.mjs`, `deliverable.mjs`, `mission-record.mjs` |
+| Mission state | `blackboard.mjs`, `resource-ledger.mjs`, `artifacts.mjs` (mission working trees and publishing), `memory-scope.mjs` |
+| Approvals | `approvals.mjs` (the approval gate's lifecycle) |
+| Responsibilities | `scheduler.mjs`, `responsibility-store.mjs`, `responsibility-schema.mjs` |
+| Library | `process-registry.mjs` (process playbooks), `projects.mjs`, `project-context.mjs`, `deploy-target.mjs` |
+| Housekeeping | `archival.mjs` (archives finished work, cancels stale work, never a timed wait before its time), `effort.mjs` |
+
+The checkpoint executor, which runs a mission's checkpoints, arrives with the brain service in
+build plan phase 4.

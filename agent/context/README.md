@@ -7,4 +7,15 @@ memory windows, conversation context, and tool records: large tool results store
 digested into the prompt.
 **Doesn't:** the model call itself (`gateway/`) or where data is stored (`storage/`).
 
-**Status:** empty. Arrives in build plan phase 2.
+## Files
+
+| File | Does |
+|---|---|
+| `prompt-blocks.mjs` | Assembles prompts from blocks, most stable first, so providers cache the prefix |
+| `compaction.mjs` | Keeps a mission's context bounded: checkpoint digests, mission digests, prior-work context |
+| `tool-record.mjs` | The tool log every organ turn ends with, and large results stored by reference |
+| `conversation-context.mjs` | The recent conversation a request came from |
+| `thread-ledger.mjs` | The agent's record of each conversation thread and its turns |
+| `work-recall.mjs` | Recalls relevant past work for a new request |
+| `context-maintenance.mjs` | The lesson step after a mission that worked in a project or followed a process |
+| `history.mjs` | Appends status changes to an envelope's timeline |

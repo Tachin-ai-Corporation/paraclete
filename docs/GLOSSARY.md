@@ -38,17 +38,33 @@ this.
 | Term | Meaning |
 |---|---|
 | request | Something a person asked the agent for |
+| envelope | The Firestore document, in the `work` collection, for one request, mission, checkpoint or task. Its `status` moves only along the legal transitions in `agent/work/work-transitions.mjs` |
+| intake | An inbound message waiting for the brain to classify it as a new request, an answer to a waiting mission, or chat |
 | mission | The unit of work created from a request. Missions never nest |
 | checkpoint | One verified milestone within a mission |
 | task | One step of a checkpoint, done by one organ |
 | acceptance criteria | What a checkpoint must achieve; the verifier judges against them |
+| checkpoint spine | The mission's list of checkpoints and their verified status, kept by code. The mission cannot finish while the spine shows an unverified checkpoint |
+| milestone verdict | The verifier's judgment of one checkpoint |
 | verdict | The verifier's judgment: met, met with a caveat, or not met |
+| probe | A follow-up check the verifier asks for when the evidence in hand can't settle a claim |
+| stakes | How much harm a mistake would do: `routine`, `consequential` or `irreversible`. Higher stakes earn more verification and an approval gate |
+| effect scope | What a mission is allowed to change. A memory-scoped mission may change only the agent's memory |
+| result packet | The structured hand-off from one task to the next: outputs, evidence and the tool records behind them |
+| resource ledger | The record of everything a mission created or changed outside its own files, so it can be reported and cleaned up |
+| blackboard | The mission's shared notes, visible to every organ working on it |
+| step ledger | The record of which steps of a checkpoint already ran, so a resumed mission never repeats one |
 | approval gate | A checkpoint step that waits for a person to approve before the work continues |
 | responsibility | Scheduled or triggered work the agent owns, such as nightly memory consolidation |
 | process | A playbook the agent follows for a kind of work |
 | project | A body of work with its own artifact repository and context |
 | artifact | A file the agent produced, stored in its git artifact store |
+| artifact manifest | The record of which artifacts a mission or project holds, with their content hashes |
 | deliverable | What a mission hands back to the person who asked |
+| mission tree | The mission's working directory on the VM, a git checkout of its project's artifact repository |
+| merge policy | How a mission's branch reaches its project's main branch: `auto` merges when the mission passes, `gated` waits for a person's approval |
+| outgoing file | A file the agent hands back, stored under `files/out/<mission>/` in the bucket and shown as a download on the mission |
+| incoming file | A file a person shared with the agent, stored under `files/in/<upload>/` in the bucket |
 
 ## Knowledge
 
@@ -59,6 +75,20 @@ this.
 | Deep Truths | The few principles the agent has confirmed across many sessions |
 | skill | Codified procedure: instructions plus the commands that do one kind of work |
 | tool record | The log of a tool call, written by code, that the model cannot fabricate |
+| tool log | The block of tool records the gateway appends to a turn's output, between `[TOOL EXECUTION LOG]` markers |
+| epistemic bin | How a claim is known: `verified` (re-derived from evidence), `inferred` (reasoned from evidence) or `assumed` (not checked). Every claim the agent reports carries one |
+| brief | The cortex's analysis of a mission before it decides: what is being asked, what is known, and what is missing |
+| bundle | A git bundle file in the bucket. A repository's history is a chain of bundles; `gc` consolidates them |
+| ref | The pointer from a branch of an artifact repository to its latest commit and the bundles that hold it, stored in Firestore |
+
+## Conversation
+
+| Term | Meaning |
+|---|---|
+| channel | Where a conversation happens: the dashboard (every instance) or Google Chat (Workspace roles) |
+| address | The fixed destination of a reply, recorded when a message arrives. The mouth delivers to exactly that address |
+| thread | One user's conversation with the agent in the dashboard |
+| utility model | The fast model the services call directly for small jobs: classifying intake, writing acknowledgments, digesting results |
 
 ## Running on the VM
 

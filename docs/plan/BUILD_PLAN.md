@@ -284,10 +284,10 @@ this layout, not a copy:
 Each phase ends with `npm test` green in CI. Phases 6, 7 and 8 can run in parallel once phase 5 is
 done.
 
-1. **Foundation.** Layout, a README in every directory, developer guide, glossary, this plan, hygiene
+1. **Foundation** (done). Layout, a README in every directory, developer guide, glossary, this plan, hygiene
    and structure tests, CI.
    *Exit:* CI green; the hygiene test passes with a private denylist in place.
-2. **Core libraries.** `agent/auth`, `storage`, `providers`, `context` and `work`, with their tests.
+2. **Core libraries** (done). `agent/auth`, `storage`, `providers`, `context` and `work`, with their tests.
    Fix the timed-wait defect in section 12 on the way in.
    *Exit:* the libraries' tests pass and the dependency-direction test enforces
    [agent/README.md](../../agent/README.md).
@@ -329,13 +329,19 @@ wizard.
 
 ## 12. Known defects to fix while porting
 
-| Defect | Effect |
-|---|---|
-| The stale-work sweep cancels waits after 8 hours | Timed waits may legitimately run 24 hours |
-| A model fallback reruns the whole turn | Tools that already ran in the failed turn run again |
-| The shell tool drops a failed command's output | The reason a command refused is lost |
-| A checkpoint can pass on compacted evidence, or with an inconclusive adversarial check | The verifier passes claims it could not fully check |
-| A project listing can show a placeholder dash instead of a project id | The agent has to guess which project is meant |
+| Defect | Effect | Status |
+|---|---|---|
+| The stale-work sweep cancels waits after 8 hours | Timed waits may legitimately run 24 hours | Fixed in phase 2 (`agent/work/archival.mjs`) |
+| A model fallback reruns the whole turn | Tools that already ran in the failed turn run again | Phase 3 |
+| The shell tool drops a failed command's output | The reason a command refused is lost | Phase 3 |
+| A checkpoint can pass on compacted evidence, or with an inconclusive adversarial check | The verifier passes claims it could not fully check | Phase 4, with the checkpoint executor |
+| A project listing can show a placeholder dash instead of a project id | The agent has to guess which project is meant | Registry fixed in phase 2; the listing command in phase 4 |
+
+Phase 2 also fixed defects found while porting, each with a test: shell and option injection in the
+git store, a project manifest that was never saved, a scheduler guard that stopped working after a
+responsibility's history grew, approvals that stopped resuming after the hundredth, recall that went
+blind after 300 envelopes, a mission stranded when its resume after approval failed, and a stored
+`id` field that could override a document's real id.
 
 ---
 

@@ -5,6 +5,7 @@ Product documentation. Find the row that matches your question.
 | Question | Doc |
 |---|---|
 | What are we building, and in what order? | [plan/BUILD_PLAN.md](plan/BUILD_PLAN.md) |
+| What did an earlier phase leave for a later one? | [plan/OPEN_ITEMS.md](plan/OPEN_ITEMS.md) |
 | What does a product word mean? | [GLOSSARY.md](GLOSSARY.md) |
 | How do I work on this repo? | [../DEVELOPING.md](../DEVELOPING.md) |
 

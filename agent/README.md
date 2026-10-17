@@ -32,8 +32,9 @@ A package may import only the packages listed after it:
 | `auth/` | nothing in `agent/` |
 
 Nothing imports `services/` or `cli/`. The brain reaches the gateway over its local HTTP port, never
-by import. A test enforces this table once code arrives.
+by import. `tests/repo/boundaries.test.mjs` enforces this table.
 
 ## Status
 
-Empty. Packages arrive in build plan phases 2 to 4.
+`auth/`, `storage/`, `providers/`, `context/` and `work/` are ported (build plan phase 2).
+`gateway/` arrives in phase 3; `services/` and `cli/` in phase 4.
