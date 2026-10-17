@@ -15,18 +15,21 @@
 // passed only after a criterion was reworded (so allow one), and another reworded four times
 // without converging (so cap it).
 
-/** A checkpoint is complete when its milestone was verified, or the executor proceeded past it. */
+/**
+ * A checkpoint is complete when its milestone passed verification, or when the executor skipped it
+ * because none of its tasks were left to run.
+ */
 const isComplete = (s) => Boolean(s) && s.status === 'complete';
 
 /**
- * Complete and verified. A checkpoint can be recorded complete with `milestone_unconfirmed` set:
- * the executor proceeded past a milestone it could not confirm so the spine advances (see
- * markCheckpoint). That is not verified work, and nothing may treat it as verified work.
+ * Complete, and so verified. A milestone that fails verification halts the mission: nothing proceeds
+ * past it, so the executor never records a checkpoint complete over a milestone it could not
+ * confirm.
  *
  * @param {object} entry - one spine entry
  * @returns {boolean}
  */
-export const isVerified = (entry) => isComplete(entry) && !entry.milestone_unconfirmed;
+export const isVerified = (entry) => isComplete(entry);
 
 /**
  * Build the spine from a freshly structured plan.
@@ -70,28 +73,21 @@ export function firstIncompleteIndex(spine) {
  * resumed mission), it must still mark the checkpoint complete here, every time. Otherwise
  * firstIncompleteIndex keeps returning the finished checkpoint, and a later re-plan restarts the
  * mission from it, re-running finished work in a loop. A skip is honest: a failed task or
- * milestone clears the step ledger so its tasks re-run, and only succeeded tasks are skipped. A
- * skip carries no verdict of its own, so it omits `unconfirmed`.
+ * milestone clears the step ledger so its tasks re-run, and only succeeded tasks are skipped.
  *
  * @param {Array} spine
  * @param {number} index - 0-based
  * @param {'complete'|'failed'} status
  * @param {Object} [opts]
  * @param {string} [opts.now]
- * @param {boolean} [opts.unconfirmed] - complete only because the executor proceeded past an
- *   unconfirmed milestone. Given: recorded (true or false). Omitted: an existing mark is kept, so
- *   a path that re-marks a checkpoint complete without a verdict cannot launder it.
  * @returns {Array} new spine (input not mutated)
  */
 export function markCheckpoint(spine, index, status, opts = {}) {
   if (!Array.isArray(spine) || index < 0 || index >= spine.length) return spine || [];
   const now = opts.now || '';
-  return spine.map((s, i) => {
-    if (i !== index) return s;
-    const next = { ...s, status, [status === 'complete' ? 'completed_at' : 'failed_at']: now };
-    if (status === 'complete' && typeof opts.unconfirmed === 'boolean') next.milestone_unconfirmed = opts.unconfirmed;
-    return next;
-  });
+  return spine.map((s, i) => (i === index
+    ? { ...s, status, [status === 'complete' ? 'completed_at' : 'failed_at']: now }
+    : s));
 }
 
 /**
@@ -204,8 +200,7 @@ export function finalizeBlockedBySpine(spine) {
  * start empty and a resumed mission's first entry is the person's answer, so: checkpoint results
  * present (`checkpoint_step`) and no `human` entry after the last one. A spine that passed before
  * the mission paused for input does not count, because the answer may ask for more, so that
- * mission stays plannable. Nor does a checkpoint the executor only proceeded past: its milestone
- * was never verified, so re-planning it re-shapes nothing verified.
+ * mission stays plannable.
  *
  * @param {Array} spine
  * @param {Array} priorResults - this decide loop's results, oldest first

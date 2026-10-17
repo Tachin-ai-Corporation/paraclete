@@ -1,0 +1,16 @@
+{
+  "id": "p-deploy-verify",
+  "name": "Deployment Verification",
+  "description": "Checking that a deployment works: health, a smoke test of its main paths, and a regression check. Read-only: it verifies and reports, never fixes or changes the system.",
+  "narrative": "Verification confirms a deployment is healthy; it never fixes what it finds. Check three things in order: that the thing is actually running and reachable at the address that was asked about (health), that its core functions work (a smoke test of the main paths), and that nothing that used to work broke (regression). Prove each from the live system, not from a deploy tool's success message: fetch the real URL and read what comes back. Report a clear pass or fail with the evidence for each. If something is wrong, that is a finding for the report, not a repair: verification stays read-only.",
+  "intent_keywords": [
+    "verify the deployment",
+    "post-deploy",
+    "smoke test",
+    "regression check",
+    "confirm the deploy",
+    "deployment healthy"
+  ],
+  "status": "active",
+  "version": 1
+}

@@ -1,0 +1,8 @@
+{
+  "id": "work-management",
+  "name": "Work Management",
+  "version": 1,
+  "when_to_use": "Managing responsibilities and projects, and reading past work: missions, their step ledgers, full outputs and task records. Read it before creating or changing a responsibility or a project.",
+  "organs": ["motor"],
+  "commands": ["responsibility-manage", "project-manage", "work-log-read", "work-output-read", "task-log-read"]
+}

@@ -1,5 +1,5 @@
 // agent/work/artifacts.mjs: mission working trees and artifact publishing. Each mission works in
-// its own git working tree, <installRoot>/shared/<missionId>, on the branch mission/<missionId> of
+// its own git working tree, <missionsRoot>/<missionId> under the data root, on the branch mission/<missionId> of
 // its project's repository in the git artifact store. Checkpoints commit and push that branch;
 // publish() merges it into the default branch and records a manifest of what changed. It keeps the
 // agent's scratch out of every commit. It does not decide when a mission publishes or which project
@@ -95,7 +95,7 @@ export function resolveCommitAssets(project) {
   return cls === 'web' || cls === 'website' || cls === 'site';
 }
 
-// Entries of the motor's persistent workspace (<installRoot>/workspace, the motor's tool working
+// Entries of the motor's persistent workspace (the data root's workspace/, the motor's tool working
 // directory) that survive between missions: identity and working memory, live runtime state,
 // skills the agent wrote, and the link to the mission trees. Everything else there is one mission's
 // scratch. Left in place, a later mission that deploys "the current directory" ships the previous
@@ -123,14 +123,14 @@ export function motorWorkspaceSweepPlan(entries) {
  * Clears one mission's scratch out of the motor's persistent workspace. Best effort and idempotent:
  * a clean workspace sweeps to a no-op, and a failure is logged, never thrown.
  *
- * @param {string} installRoot - e.g. /opt/paraclete
+ * @param {string} workspaceDir - the motor's workspace, e.g. /var/lib/paraclete/workspace
  * @param {Function} [log] - (level, message)
  * @returns {Promise<{removed: string[]}>}
  */
-export async function sweepMotorWorkspace(installRoot, log = () => {}) {
-  if (!installRoot) throw new Error('sweepMotorWorkspace: installRoot is required');
+export async function sweepMotorWorkspace(workspaceDir, log = () => {}) {
+  if (!workspaceDir) throw new Error('sweepMotorWorkspace: workspaceDir is required');
   try {
-    const dir = join(installRoot, 'workspace');
+    const dir = workspaceDir;
     let dirents;
     try {
       dirents = readdirSync(dir, { withFileTypes: true });
@@ -169,7 +169,8 @@ function git(args, cwd, timeout = 10_000) {
  * @param {object}   [deps.fileStore]   a file store from createFileStore(); without it, nothing is exported for download
  * @param {Function} [deps.logger]      (level, message)
  * @param {object}   deps.config
- * @param {string}   deps.config.installRoot  e.g. /opt/paraclete
+ * @param {string}   deps.config.missionsRoot  where mission trees live: dataPaths(instance).missions
+ * @param {string}   deps.config.workspaceDir  the motor's workspace: dataPaths(instance).workspace
  * @param {{name: string, email: string}} deps.config.author  identity on the agent's commits
  * @returns {{initWorkspace: Function, cleanupWorkspace: Function, commitAndSync: Function,
  *   publish: Function, resolveMergePolicy: Function}}
@@ -179,18 +180,19 @@ export function createArtifactManager(deps) {
   if (!gitStore) throw new Error('createArtifactManager: gitStore is required');
   if (!db) throw new Error('createArtifactManager: db is required');
   if (typeof getProjects !== 'function') throw new Error('createArtifactManager: getProjects is required');
-  if (!config?.installRoot) throw new Error('createArtifactManager: config.installRoot is required');
+  if (!config?.missionsRoot) throw new Error('createArtifactManager: config.missionsRoot is required');
+  if (!config.workspaceDir) throw new Error('createArtifactManager: config.workspaceDir is required');
   if (!config.author?.name || !config.author?.email) {
     throw new Error('createArtifactManager: config.author { name, email } is required');
   }
-  const { installRoot, author } = config;
+  const { missionsRoot, workspaceDir, author } = config;
   const mainBranch = gitStore.defaultBranch;
   const log = deps.logger || ((level, msg) => console.log(`[artifacts] ${level}: ${msg}`));
 
   /** A mission's working tree. Refuses an id that is not one plain path segment. */
   function missionDir(envelopeId) {
     if (!MISSION_ID_RE.test(String(envelopeId || ''))) throw new Error(`Invalid mission id: "${envelopeId}"`);
-    return join(installRoot, 'shared', envelopeId);
+    return join(missionsRoot, envelopeId);
   }
 
   /**
@@ -234,7 +236,7 @@ export function createArtifactManager(deps) {
    * @param {{projectId?: string, envelope?: object}} [opts]
    */
   async function initWorkspace(envelopeId, opts = {}) {
-    await sweepMotorWorkspace(installRoot, log);
+    await sweepMotorWorkspace(workspaceDir, log);
     let sharedDir;
     try {
       sharedDir = missionDir(envelopeId);

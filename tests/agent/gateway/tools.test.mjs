@@ -257,7 +257,7 @@ describe('toolsets', () => {
       { verdict: 'PASS', reasoning: 'met', checks: [], caveat: 'one gap' });
     assert.deepEqual(await tools.report_fail.execute({ reasoning: 'r', checks: [], recommendation: 'fix' }),
       { verdict: 'FAIL', reasoning: 'r', checks: [], recommendation: 'fix' });
-    assert.equal((await tools.request_probe.execute({ probes: [{}, {}], reasoning: 'r' })).count, 2);
+    assert.equal(tools.request_probe, undefined, 'no probe tool: nothing would service it');
   });
 });
 

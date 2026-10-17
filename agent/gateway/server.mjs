@@ -162,18 +162,20 @@ export function createGatewayServer({
     const toolSet = tools.select(organ.toolset);
     logger('INFO', `#${rid} organ=${organId} model=${organ.model} msgs=${messages.length}${sessionReq?.id ? ` session=${sessionReq.id}:${sessionReq.op}` : ''}`);
 
-    // Several system messages stay separate blocks, most stable first, so the stable prefix can carry
-    // its own cache breakpoint. With none, the organ's own prompt is the system prompt.
+    // The organ's own prompt always leads: only the gateway reads organ prompts, and as the most stable
+    // block it carries the first cache breakpoint. The caller's system messages follow as separate
+    // blocks, most stable first (the brain sends working memory and registries this way).
     const systemBlocks = messages.filter((m) => m?.role === 'system').map((m) => textOf(m.content)).filter(Boolean);
     let chatMessages = messages.filter((m) => m?.role !== 'system').map(chatMessage);
-    const blocks = systemBlocks.length > 0 ? systemBlocks : [organ.systemPrompt].filter(Boolean);
+    const blocks = [organ.systemPrompt, ...systemBlocks].filter(Boolean);
 
     // Sessions are commanded by the brain. The gateway stores only messages the brain sent, never
     // model output. An excluded organ never joins a session.
     const sessionOn = Boolean(sessionReq?.id) && session.enabled;
     const excluded = session.excludedOrgans.includes(organId);
     if (sessionOn && excluded) logger('WARN', `#${rid} session ignored for ${organId}: it never joins a session`);
-    const stableHash = hashSystem(blocks[0] || '');
+    // A session's identity is the caller's stable block; the organ prompt changes only with a release.
+    const stableHash = hashSystem(systemBlocks[0] || '');
     let live = null;
     let delta = null;
     let sessionCacheBoundary = 0;

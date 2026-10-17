@@ -1,0 +1,23 @@
+# agent/services/mouth/paraclete-mouth.service: the mouth, the agent's only way out: replies,
+# deliveries, status notes and attachments to the dashboard, and to Google Chat on workspace roles.
+# Logs go to journald. Installed and enabled by the installer.
+[Unit]
+Description=Paraclete mouth: outbound delivery to the dashboard and Google Chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paraclete
+Group=paraclete
+ExecStart=/usr/bin/node /opt/paraclete/agent/services/mouth/main.mjs
+Restart=always
+RestartSec=3
+ProtectSystem=strict
+ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ReadWritePaths=/var/lib/paraclete
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,7 @@
 // names objects and moves bytes. Which files a mission hands back is decided by its callers
 // (artifacts.mjs and the files skill), and the dashboard signs its own upload URLs.
 
+import { STORAGE_HOST } from './hosts.mjs';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 import { getAccessToken as getVmAccessToken } from '../auth/metadata-token.mjs';
@@ -122,6 +123,7 @@ function uniqueName(name, used) {
  * @param {Function} [options.getAccessToken] token source; defaults to the VM's metadata server
  * @param {Function} [options.fetch]          fetch implementation (injectable for tests)
  * @param {Function} [options.logger]         (level, message)
+ * @param {string}   [options.storageHost]    Cloud Storage API origin; defaults to production
  * @returns {{uploadOutgoing: Function}}
  */
 export function createFileStore({
@@ -131,8 +133,10 @@ export function createFileStore({
   getAccessToken = getVmAccessToken,
   fetch = globalThis.fetch,
   logger = () => {},
+  storageHost = STORAGE_HOST,
 } = {}) {
   if (!bucket) throw new Error('createFileStore: bucket is required');
+  const gcsHost = storageHost.replace(/\/+$/, '');
   const log = logger;
 
   /**
@@ -166,7 +170,7 @@ export function createFileStore({
         const name = uniqueName(sanitizeFileName(abs), used);
         const objectName = outgoingObjectName(prefix, missionId, name);
         const contentType = contentTypeFor(name);
-        const url = `https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+        const url = `${gcsHost}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
         const resp = await fetch(url, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },

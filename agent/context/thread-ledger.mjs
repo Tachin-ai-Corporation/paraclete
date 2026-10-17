@@ -219,7 +219,9 @@ export async function sweepThreadTurns({ db, config = {}, log = () => {}, maxDel
       if (deleted >= maxDeletes) break;
       const watermark = t.summary_through_ts || '';
       if (!watermark) continue;
-      const bound = watermark < cutoff ? watermark : cutoff;
+      // Compared as instants: Firestore returns '...:00Z' for a whole second, which sorts after
+      // '...:00.123Z' as a string.
+      const bound = Date.parse(watermark) < Date.parse(cutoff) ? watermark : cutoff;
       const turns = await db.query(threadPath(t.id), SUBCOLLECTIONS.threadTurns, [
         { field: 'ts', op: 'LESS_THAN_OR_EQUAL', value: { timestampValue: bound } },
       ], { orderBy: 'ts', limit: Math.min(SWEEP_TURNS_PER_THREAD, maxDeletes - deleted), strict: true });

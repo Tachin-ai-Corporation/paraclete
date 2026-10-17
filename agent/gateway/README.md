@@ -69,8 +69,9 @@ An OpenAI-style chat request. `model` names the organ: `brain/<organ>` or just `
 
 - `messages`: `system`, `user` and `assistant` roles. Content is a string or an array of text parts
   `{ "type": "text", "text", "tier": "boot" | "mission" | "volatile" }`; tiers place Claude's cache
-  breakpoints and never reach the provider. Each system message is a separate block, most stable
-  first. With no system message the organ's own prompt is used. Any other role is a `400`.
+  breakpoints and never reach the provider. The organ's own prompt (`prompts/<organ>.md` plus the
+  role's addition) always leads the system prompt; each system message the caller sends follows as a
+  separate block, most stable first. Only the gateway reads organ prompts. Any other role is a `400`.
 - Text passes to the model untouched, `[BRAIN-ORCHESTRATED]` included: the marker tells the mouth a
   turn is the brain's own (`agent/providers/notifications.mjs` sends it with acknowledgments). The
   gateway neither strips nor reads it.

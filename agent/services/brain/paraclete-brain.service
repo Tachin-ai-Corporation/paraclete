@@ -1,0 +1,29 @@
+# agent/services/brain/paraclete-brain.service: the brain, the agent's mission loop: it classifies what
+# comes in, plans and runs missions through the gateway, and runs the scheduler and the archival sweep.
+# It writes only under the data root (mission trees, memory, its health file); installed code, prompts
+# and the instance record stay read-only to it. Installed and enabled by the installer.
+[Unit]
+Description=Paraclete brain: the mission loop
+After=network-online.target paraclete-gateway.service
+Wants=network-online.target paraclete-gateway.service
+
+[Service]
+Type=simple
+User=paraclete
+Group=paraclete
+ExecStart=/usr/bin/node /opt/paraclete/agent/services/brain/main.mjs
+WorkingDirectory=/var/lib/paraclete
+Restart=always
+RestartSec=10
+ProtectSystem=strict
+ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ReadWritePaths=/var/lib/paraclete
+PrivateTmp=yes
+NoNewPrivileges=yes
+# The brain mounts nothing and needs no capability; none can be regained through a setuid binary.
+CapabilityBoundingSet=
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

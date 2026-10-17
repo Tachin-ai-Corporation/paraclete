@@ -164,6 +164,21 @@ describe('POST /v1/chat/completions', () => {
     assert.deepEqual(google.requests[0].config.tools[0].functionDeclarations.map((d) => d.name), ['runCommand', 'readFile', 'writeFile', 'listDir']);
   });
 
+  it("leads with the organ's own prompt and adds the caller's system messages after it", async () => {
+    const google = fakeGoogle([geminiText('done')]);
+    await withGateway(parts({ google }), async (url) => {
+      await chat(url, {
+        model: 'brain/motor',
+        messages: [
+          { role: 'system', content: 'working memory' },
+          { role: 'user', content: 'do it' },
+        ],
+      });
+    });
+    assert.equal(google.requests[0].config.systemInstruction, 'You are the motor organ.\n\nworking memory',
+      'a caller never replaces the organ prompt; only the gateway reads prompts/');
+  });
+
   it('accepts the acknowledgment request the notifier sends, marker and all', async () => {
     const google = fakeGoogle([geminiText('Picking back up on the sales report now.')]);
     await withGateway(parts({ google }), async (url) => {

@@ -1,0 +1,8 @@
+{
+  "id": "telemetry",
+  "name": "Telemetry and Status",
+  "version": 1,
+  "when_to_use": "Reading the brain's telemetry of organ turns (durations, failures) and the instance's status and services, to diagnose slow or failing work.",
+  "organs": ["motor"],
+  "commands": ["brain-telemetry-read", "agent-status"]
+}

@@ -1,0 +1,22 @@
+# agent/services/ears/paraclete-ears.service: the ears, the way messages come in: dashboard chat
+# always, Google Chat on workspace roles. Logs go to journald. Installed and enabled by the installer.
+[Unit]
+Description=Paraclete ears: inbound messages from the dashboard and Google Chat
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paraclete
+Group=paraclete
+ExecStart=/usr/bin/node /opt/paraclete/agent/services/ears/main.mjs
+Restart=always
+RestartSec=3
+ProtectSystem=strict
+ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ReadWritePaths=/var/lib/paraclete
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

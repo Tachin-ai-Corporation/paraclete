@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "responsibilities": [
+    {
+      "id": "r-memory-consolidation",
+      "name": "Nightly Memory Consolidation",
+      "schedule": "0 8 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "locked": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 720,
+      "effect_scope": "memory",
+      "processRef": "p-memory-consolidate",
+      "instruction": "Run the nightly memory consolidation: prune working memory of finished and stale entries, reconcile Core Memory by retiring outdated facts and promoting durable new ones, and review the Deep Truths. Follow the memory-consolidate skill.",
+      "success_criteria": "MEMORY.md holds only active context and is under 2,000 characters: rewritten when anything in it changed, or left as it was and said so. Core Memory is reconciled: stale entries retired, contradicted ones superseded, duplicates collapsed to one, and genuinely new facts promoted. The Deep Truths were reviewed and changed only on strong evidence across sessions. Nothing outside the three memory layers was written: no process, project, skill or responsibility. consolidation_report.md gives the entries triaged, the retirements, the promotions, the Deep Truth changes with their evidence, and the final MEMORY.md character count.",
+      "context": {
+        "purpose": "Working memory (MEMORY.md) is the agent's scratchpad, loaded into every cortex prompt. It grows during the day and must be pruned nightly to stay under 2,000 characters. Core Memory in Firestore is the long-term archive of facts that last across days and weeks; it must be pruned too: stale entries retired, contradicted facts superseded, and only genuinely stable new facts promoted. The Deep Truths are the few principles loaded into every cortex prompt; they change rarely, and only on strong evidence across many sessions.",
+        "process": [
+          "STEP 1 - READ WORKING MEMORY: read /var/lib/paraclete/memory/MEMORY.md to see what accumulated during the day.",
+          "STEP 2 - GATHER SESSIONS: run `session-summary --hours 24 --limit 20` for the missions finished in the last 24 hours, with their compaction digests.",
+          "STEP 3 - GATHER RECENT CORE MEMORY: run `core-memory-read --since 30d --limit 50` for what the agent has been learning over the past month.",
+          "STEP 4 - GATHER THE WHOLE ARCHIVE: run `core-memory-read --category <category> --limit 50` for each category (architecture, operations, iam, decisions, patterns, errors, resources), then `core-memory-read --limit 100` with no category to catch entries filed anywhere else. Note entries that may be outdated, contradicted by recent work, or duplicated. An empty read is almost always a filter that matched nothing; never conclude memory is empty until an unfiltered read says so.",
+          "STEP 5 - READ THE DEFINITIONS, READ-ONLY: run `process-ops list` and `project-manage list` (and `get` for anything relevant) to see the playbooks and projects the agent works with. They are never yours to edit: memory writes only working memory, Core Memory and Deep Truths. Use them only to find Core Memory entries that duplicate them, and retire the memory copy in step 8. Never copy a definition's content into Core Memory: recall already reads it from the definition, and a copy goes stale.",
+          "STEP 6 - TRIAGE WORKING MEMORY: sort every entry in MEMORY.md into ACTIVE (still relevant, keep), COMPLETED (finished or resolved, prune), STALE (no longer accurate, prune) or PROMOTE (a stable fact proven across sessions, worth Core Memory).",
+          "STEP 7 - RECONCILE CORE MEMORY: compare recent work (steps 1 and 2) with the archive (steps 3 and 4) and find entries that are CONTRADICTED by recent evidence, OUTDATED (versions, endpoints or settings that changed), REDUNDANT (several entries saying the same thing) or STALE (no longer relevant).",
+          "STEP 8 - RETIRE STALE ENTRIES: for each entry found in step 7, run `core-memory-retire --id <entry-id> --reason \"<specific reason>\"`, or for one that needs updating rather than retiring, `core-memory-write --fact \"<updated fact>\" --category <category> --supersedes <old-id>`. Retire only on evidence that a fact is wrong, stale or duplicated, never to rename it: a fact whose value is still right keeps its name, because other work recalls it by that name. At most 5 retirements or supersessions per run.",
+          "STEP 9 - PROMOTE NEW FACTS: for each PROMOTE entry from step 6, run `core-memory-write --fact \"<fact>\" --category <category> --tags \"t1,t2\"`, with a higher --importance for a lesson that recurred or is load-bearing. First check the same fact is not already active (steps 3 and 4 show what exists): skip it if it is, and supersede the old entry to change a fact rather than writing a second copy. Never promote what a project or playbook already declares (step 5). Promote only facts that appeared in several sessions, were confirmed by a person, or describe a stable pattern. A working-memory line 'lesson (project <id>)' or 'lesson (playbook <id>)' promotes as a lesson tagged with that id. At most 5 promotions per run. Separately, promote the durable identifiers missions captured into the resources category, one entry per identifier in the form '<kind>: \"<name>\" = <id>', with each alias as its own entry and --supersedes when an id changed (the memory-consolidate skill gives the form); these do not count against the limit.",
+          "STEP 10 - REWRITE WORKING MEMORY: write MEMORY.md with the writeMemoryFile tool, keeping only ACTIVE entries, as a dense note with the sections '## Current Focus', '## Active Context' and '## Open Items', under 2,000 characters. If nothing in it needs to change, leave it as it is and say so in the report: a pass that changes nothing is a valid outcome.",
+          "STEP 11 - REVIEW THE DEEP TRUTHS: run `update-deep-truths --list`. Add a truth (`update-deep-truths --add \"<truth>\"`) only when the evidence spans 3 or more separate sessions, the fact has been stable in Core Memory for 7 or more days, you can cite at least 2 Core Memory ids, and it is one sentence that applies generally. Remove one (`update-deep-truths --remove \"<exact text>\"`) when newer evidence contradicts it or the tools changed. Never add a bare claim that something cannot be done. At most 2 changes per run and 10 truths in all; if unsure, wait for more evidence.",
+          "STEP 12 - REPORT: write consolidation_report.md with the writeMemoryFile tool: entries triaged, retirements, promotions, Deep Truth changes with their justification and the Core Memory ids cited, and the final MEMORY.md character count. Repeat it in your answer."
+        ],
+        "reference_files": [
+          "/var/lib/paraclete/memory/MEMORY.md",
+          "/var/lib/paraclete/memory/DEEP_TRUTHS.md"
+        ],
+        "prior_learnings": "Memory is exactly three layers (working memory, Core Memory, Deep Truths), and they are the only places this cycle writes. Processes, projects and skills are read for reconciliation and never written; a lesson about one is recorded as memory, tagged with it. Be conservative with promotions and retirements alike: promote only facts confirmed across sessions, and retire only facts with clear evidence they are wrong or stale. Debugging notes, one-off error messages and transient task status are pruned from MEMORY.md, not promoted. A nearly empty MEMORY.md is a valid, healthy outcome. Always give a specific reason when retiring, and never retire in bulk without one."
+      }
+    },
+    {
+      "id": "r-git-gc",
+      "name": "Weekly Git Artifact Cleanup",
+      "schedule": "0 4 * * 0",
+      "timezone": "UTC",
+      "enabled": true,
+      "locked": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 10080,
+      "instruction": "Consolidate the bundle chains of the git artifact store. List the projects with `project-manage list`, then for each project run `git-store gc <projectId> main`. Report the repositories processed and the bundles consolidated in each. Follow the git-artifacts skill.",
+      "success_criteria": "git-store gc ran on the main branch of every project's repository. The report lists each repository with its bundle count before and after, names any project that has no repository yet, and names any consolidation that failed with its error.",
+      "context": {
+        "purpose": "Every push to a project's repository adds a bundle to the instance's bucket, so a busy repository's chain of bundles grows long, and every clone and fetch must download all of them. Garbage collection replaces a branch's chain with one full bundle, which keeps clones fast and the bucket small. It moves the branch's ref by compare-and-swap first and deletes the old bundles only after that succeeds, so it is safe while missions run.",
+        "process": [
+          "STEP 1 - LIST THE PROJECTS: run `project-manage list`. Each project id is the id of its repository.",
+          "STEP 2 - RECORD THE STARTING POINT: for each project, run `git-store read-ref <projectId> main` and note how many bundle_keys it has. A null sha means the project has no repository yet; note it and skip it.",
+          "STEP 3 - CONSOLIDATE: for each project with a repository, run `git-store gc <projectId> main`. It prints the branch's sha and bundle_keys afterwards; one bundle means the chain was consolidated. A repository with one bundle already comes back unchanged.",
+          "STEP 4 - REPORT: list each repository with its bundle count before and after, the projects without a repository, and any failure with its exact error."
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "id": "memory-consolidate",
+  "name": "Memory Consolidation",
+  "version": 1,
+  "when_to_use": "Nightly consolidation of working memory, Core Memory and Deep Truths, run by temporal-memory when the consolidation responsibility fires. Do not start it for other work.",
+  "organs": ["temporal-memory"],
+  "commands": ["core-memory-read", "core-memory-write", "core-memory-retire", "update-deep-truths", "session-summary"]
+}

@@ -59,6 +59,12 @@ test('agent modules import only what the dependency table allows', () => {
       }
       const target = posix.normalize(posix.join(dirname(path), spec));
       const [top, targetPkg] = target.split('/');
+      // Only the gateway service builds the gateway; everything else calls it over HTTP.
+      if (top === 'agent' && targetPkg === 'gateway' && pkg === 'services') {
+        if (path.startsWith('agent/services/gateway/')) continue;
+        violations.push(`${path}: imports ${target} (only agent/services/gateway/ imports the gateway)`);
+        continue;
+      }
       if (top === 'agent' && allowed.has(targetPkg)) continue;
       if (top === 'config' && CONFIG_READERS.has(pkg)) continue;
       violations.push(`${path}: imports ${target}`);

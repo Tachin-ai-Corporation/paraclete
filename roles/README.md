@@ -32,5 +32,4 @@ roles/<id>/
 
 ## Status
 
-`generic/` describes the base role. Its package files arrive in build plan phase 4; the other roles
-arrive in phase 8.
+`generic/` is complete. The other roles arrive in build plan phase 8.

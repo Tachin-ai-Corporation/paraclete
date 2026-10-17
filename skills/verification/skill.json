@@ -1,0 +1,8 @@
+{
+  "id": "verification",
+  "name": "Checkpoint Verification",
+  "version": 1,
+  "when_to_use": "Judging a checkpoint's work against its acceptance criteria and rendering the graded verdict. Read it before every verdict.",
+  "organs": ["cerebellum"],
+  "commands": []
+}

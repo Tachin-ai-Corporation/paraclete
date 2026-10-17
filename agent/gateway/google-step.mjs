@@ -28,7 +28,7 @@ export const SKIP_THOUGHT_SIGNATURE = 'skip_thought_signature_validator';
 
 // Gemini's functionDeclarations accept a subset of JSON Schema. An unsupported keyword doesn't fail
 // the call, but the model's output is then validated against constraints the API doesn't understand
-// and comes back as finishReason=MALFORMED_FUNCTION_CALL: request_probe's minItems/maxItems did that
+// and comes back as finishReason=MALFORMED_FUNCTION_CALL: minItems/maxItems on an array argument did that
 // deterministically on modest prompts.
 const UNSUPPORTED_SCHEMA_KEYS = new Set([
   'minItems', 'maxItems', 'minLength', 'maxLength',

@@ -54,9 +54,12 @@ function renderContextPacket(ctx) {
       }
       if (details.length > 0) lines.push(`  ${details.join(' | ')}`);
       if (entry.summary) lines.push(`  ${entry.summary}`);
-    } else {
-      lines.push(`${key}: ${Array.isArray(entry) ? entry.join(', ') : String(entry)}`);
+    } else if (Array.isArray(entry)) {
+      if (entry.every((v) => v === null || typeof v !== 'object')) lines.push(`${key}: ${entry.join(', ')}`);
+    } else if (typeof entry !== 'object') {
+      lines.push(`${key}: ${String(entry)}`);
     }
+    // Any other object is the mission's working state (resources, git bookkeeping), not context.
   }
   return lines.join('\n');
 }

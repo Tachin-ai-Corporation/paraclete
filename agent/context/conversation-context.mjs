@@ -7,6 +7,7 @@
 // The speakers are a dashboard user, named by the message's sender_name (or their email), and the
 // agent, whose messages carry sender 'agent' (see providers/channel.mjs).
 
+import { FIRESTORE_HOST } from '../storage/hosts.mjs';
 import { getAccessToken as getVmAccessToken } from '../auth/metadata-token.mjs';
 import { AGENT_SENDER } from '../providers/channel.mjs';
 import { COLLECTIONS } from '../storage/collections.mjs';
@@ -64,6 +65,7 @@ export async function assembleConversation({
   config = {},
   getAccessToken = getVmAccessToken,
   fetch: fetchImpl = globalThis.fetch,
+  firestoreHost = FIRESTORE_HOST,
   log = () => {},
 }) {
   const cfg = { ...DEFAULTS, ...config };
@@ -73,7 +75,7 @@ export async function assembleConversation({
   try {
     const token = await getAccessToken();
     if (!token) return null;
-    const documents = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
+    const documents = `${firestoreHost.replace(/\/+$/, '')}/v1/projects/${projectId}/databases/(default)/documents`;
     const res = await fetchImpl(`${documents}:runQuery`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

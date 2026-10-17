@@ -1,0 +1,258 @@
+{
+  "_comment": "Every value used in more than one place. Read by config/contracts.mjs, which validates it at service start. Keys starting with _ are documentation. Instance values (project, role, bucket, paths) are not here: they are written at install to /etc/paraclete/instance.json (config/instance.mjs). Settings a dashboard admin changes (effort, Claude on or off) live in Firestore config/settings.",
+  "_bounds": "A bound exists to stop an unbounded blowup, not to save money: every budget is sized for the work to succeed, then bounded, and every cap announces itself so an organ can re-derive instead of assuming it saw everything. Two ceilings are storage limits, enforced by config/contracts.mjs: brain.context_token_budget <= 125000, because accumulated context persists on the envelope (a Firestore document, 1 MiB) at about 4 characters per token; and compaction.working_budget_tokens <= brain.context_token_budget. Nothing here may become unbounded.",
+  "version": 1,
+
+  "vertex": {
+    "location": "global",
+    "anthropic_location": "us-east5",
+    "_models_comment": "Organ model tiers. cortex decides each step; strong serves prefrontal, motor and cerebellum; fast serves the temporal organs; fallback is where a failed turn continues. claude is the model the cortex and strong tier move to when an admin turns Claude on (after accepting Anthropic's terms in Model Garden); Gemini stays the fallback.",
+    "models": {
+      "cortex": "vertex-google/gemini-4-argon",
+      "strong": "vertex-google/gemini-4-argon",
+      "fast": "vertex-google/gemini-3.8-flash",
+      "fallback": "vertex-google/gemini-3.8-flash",
+      "claude": "vertex-anthropic/claude-opus-4-6",
+      "claude_fallback": "vertex-google/gemini-4-argon"
+    },
+    "context_windows": {
+      "gemini-4-argon": 1048576,
+      "gemini-3.8-flash": 1048576,
+      "claude-opus-4-6": 200000
+    },
+    "anthropic_prompt_caching": true,
+    "anthropic_cache_ttl_stable": "1h",
+    "anthropic_cache_ttl_mission": "1h",
+    "anthropic_cache_message_breakpoints": true,
+    "anthropic_session_affinity": true,
+    "gemini_explicit_cache": false,
+    "gemini_explicit_cache_ttl_seconds": 3600
+  },
+
+  "gateway": {
+    "port": 18789,
+    "bind": "127.0.0.1",
+    "timeout_seconds": 180,
+    "max_body_bytes": 16777216,
+    "_loop_guard_comment": "Stuck-loop bounds. duplicate_* count identical arguments (a pointless repeat and legitimate polling look the same). identical_result_* count byte-identical results for the same arguments, a proven no-op, so they are tighter. semantic_* bound varying-argument loops, where a single warning was ignorable.",
+    "duplicate_nudge_threshold": 3,
+    "duplicate_terminate_threshold": 4,
+    "identical_result_nudge_threshold": 2,
+    "identical_result_terminate_threshold": 3,
+    "semantic_nudge_threshold": 8,
+    "semantic_terminate_threshold": 16,
+    "retry_max": 3,
+    "retry_base_delay_ms": 2000
+  },
+
+  "organs": {
+    "_comment": "Tool-call budget for one organ turn in the gateway. Distinct from brain.max_iterations, the mission's decide-loop cap. A full coding task (read, edit, serve and check, diff, commit) needs more than 12 steps.",
+    "max_steps": 25
+  },
+
+  "tools": {
+    "_comment": "A tool result is context: bound it, announce the bound, and never let a binary file reach a model.",
+    "output_chars": 80000,
+    "output_head_chars": 56000,
+    "output_tail_chars": 20000,
+    "timeout_ms": 120000,
+    "max_buffer_bytes": 4194304,
+    "binary_guard": true,
+    "record": {
+      "_comment": "What the tool log keeps of each result for everyone after the organ that ran it. Up to verbatim_chars is kept word for word; a larger result is stored in full in tool_results (expiring after store_ttl_days) and replaced in the log by a digest plus its reference. Never cut silently.",
+      "verbatim_chars": 4000,
+      "digest_target_chars": 3000,
+      "digest_max_chars": 4000,
+      "digest_timeout_ms": 15000,
+      "store_full": true,
+      "store_ttl_days": 30,
+      "arg_chars": 200,
+      "terminal_arg_chars": 4000
+    }
+  },
+
+  "brain": {
+    "_comment": "The brain service's mission loop.",
+    "poll_interval_ms": 3000,
+    "max_iterations": 50,
+    "gateway_timeout_ms": 300000,
+    "claim_stale_ms": 600000,
+    "context_token_budget": 125000,
+    "result_preview_chars": 3000,
+    "context_slice_chars": 2000,
+    "respond_reads": ["recent_work"],
+    "_verify_comment": "The verifier's first look uses compact result packets (every tool result, not the organ's prose); full motor output is kept for the one re-verification that a missing-evidence failure or a known-truncated view triggers. verify_prompt_max_chars bounds the whole prompt, which keeps Gemini clear of malformed tool calls on very large prompts.",
+    "ctx_verify_input": 60000,
+    "ctx_verify_prior": 16000,
+    "verify_prompt_max_chars": 12000,
+    "verify_full_evidence_max_chars": 80000,
+    "synth_verify_min_chars": 400,
+    "attack_duty_stakes_min": "consequential",
+    "min_deliverable_chars": 1,
+    "_spine_comment": "A failed checkpoint re-plans that checkpoint, not the mission. Outcomes and verdicts stay pinned; the acceptance criteria may be refined at most max_criteria_revisions times.",
+    "max_criteria_revisions": 1,
+    "wait_min_minutes": 1,
+    "wait_max_minutes": 1440,
+    "wait_default_minutes": 5,
+    "_transition_guard_comment": "Every envelope status change goes through agent/work/work-transitions.mjs. enforce refuses an illegal change; observe only logs it.",
+    "transition_guard": "enforce"
+  },
+
+  "archival": {
+    "_comment": "The periodic sweep (agent/work/archival.mjs). A timed wait is never cancelled before its resume time; waiting_timeout_hours applies only to waits without one, and must exceed brain.wait_max_minutes.",
+    "interval_ms": 3600000,
+    "stale_cleanup_hours": 24,
+    "archive_age_days": 7,
+    "needs_input_timeout_hours": 72,
+    "waiting_timeout_hours": 48,
+    "active_timeout_hours": 12
+  },
+
+  "ears": {
+    "firestore_poll_ms": 3000,
+    "gchat_poll_ms": 5000,
+    "dedup_window_ms": 300000,
+    "cooldown_ms": 2000,
+    "gchat_context_messages": 0,
+    "max_pages_per_poll": 5,
+    "new_space_seed": "now",
+    "mention_match": "annotation",
+    "preprocess": {
+      "enabled": true,
+      "model": "gemini-3.8-flash",
+      "max_tokens": 2000,
+      "temperature": 0
+    }
+  },
+
+  "mouth": {
+    "poll_ms": 5000,
+    "llm_enabled": true,
+    "model": "gemini-3.8-flash",
+    "max_tokens": 2000,
+    "temperature": 0.1,
+    "status_updates": {
+      "enabled": true,
+      "schedule_ms": [10000, 300000, 600000, 1800000, 7200000]
+    }
+  },
+
+  "chat": {
+    "reply_in_thread": true
+  },
+
+  "delivery": {
+    "_comment": "Mouth retry discipline: exponential backoff between failed attempts, then delivery_status 'failed' after max_attempts.",
+    "max_attempts": 8,
+    "retry_backoff_base_seconds": 5,
+    "retry_backoff_max_seconds": 600
+  },
+
+  "conversation": {
+    "max_turns": 12,
+    "budget_chars": 20000,
+    "per_turn_chars": 2000,
+    "voicing_tail_chars": 1500,
+    "turn_store_chars": 24000,
+    "compact_after_turns": 30,
+    "summary_max_chars": 1200,
+    "turn_retention_days": 14
+  },
+
+  "compaction": {
+    "checkpoint_digest_chars": 12000,
+    "trigger_pct": 0.7,
+    "working_budget_tokens": 100000,
+    "min_compactable_tokens": 8000,
+    "keep_recent_iterations": 5,
+    "max_compactions_per_mission": 3,
+    "digest_max_chars": 16000,
+    "learnings_max_entries": 5
+  },
+
+  "session": {
+    "enabled": true,
+    "idle_ttl_minutes": 30,
+    "max_sessions": 16,
+    "miss_circuit_breaker": 3,
+    "excluded_organs": ["cerebellum"]
+  },
+
+  "organ_context": {
+    "packet_summary_chars": 4000,
+    "list_summary_top_k": 8,
+    "_tool_answer_comment": "For a tool-using organ's result, prose outside the tool log shorter than this means the tool results are the answer, so the summary digests them instead of eliding the log.",
+    "tool_answer_min_prose_chars": 240,
+    "hydrate_max_chars": 48000,
+    "hydrate_max_refs_per_mission": 16,
+    "blackboard_max_chars": 40000
+  },
+
+  "projects": {
+    "context_max_tokens": 2000,
+    "promotion_auto": false,
+    "archive_completed_after_days": 30
+  },
+
+  "utility": {
+    "_comment": "The fast model the services call directly for small jobs.",
+    "model": "gemini-3.8-flash",
+    "location": "global",
+    "max_tokens": { "summarize": 1024, "title": 60, "schema": 8192, "notification": 2048 },
+    "temperature": { "summarize": 0.3, "title": 0.3, "schema": 0.1, "notification": 0.2 },
+    "context_budgets": { "agent_step": 24000, "cortex_step": 12000, "dispatch_success": 12000, "dispatch_failure": 12000 },
+    "timeout_ms": 30000,
+    "enforce_schema_timeout_ms": 15000,
+    "enforce_schema_max_attempts": 2,
+    "disable_thinking": true
+  },
+
+  "memory": {
+    "working_memory_target_chars": 2000,
+    "working_memory_hard_cap_chars": 8000,
+    "resource_ledger": {
+      "_comment": "An outside identifier (a Drive folder, a Chat space) does not change: resolve it once, remember it on the envelope, never search again. Promotion into Core Memory is the temporal-memory organ's job during consolidation.",
+      "max_entries": 200,
+      "recall_limit": 40
+    }
+  },
+
+  "git": {
+    "_comment": "The git artifact store: repositories as bundles in the instance's bucket, under prefix.",
+    "prefix": "git/",
+    "default_branch": "main",
+    "max_push_retries": 5
+  },
+
+  "files": {
+    "_comment": "Files going out to people and coming in from them, in the instance's bucket under prefix (out/ and in/).",
+    "prefix": "files/",
+    "max_mb": 20,
+    "inbox_retention_days": 30
+  },
+
+  "responsibility_store": {
+    "_comment": "The agent's own responsibilities, merged over the role packages' installed defaults every refresh_ms. min_interval_minutes is the floor between two runs of a schedule the agent writes; max_own caps the responsibilities it owns outright.",
+    "refresh_ms": 60000,
+    "min_interval_minutes": 15,
+    "max_own": 25
+  },
+
+  "control": {
+    "_comment": "The control service (agent/services/control): how often it polls for dashboard commands, how long it waits for a restarted gateway to be ready, and the longest an upgrade may run.",
+    "poll_ms": 5000,
+    "gateway_ready_timeout_ms": 30000,
+    "upgrade_max_seconds": 1800
+  },
+
+  "effort": {
+    "_comment": "The dashboard's effort setting, stored in Firestore config/settings. One of low, medium, high, max.",
+    "default": "medium"
+  },
+
+  "versioning": {
+    "_comment": "The commit and release version format. The dashboard parses versions with canonical_regex.",
+    "commit_format": "v{YYYY}.{MM}.{DD}.{index}.{subindex}: description",
+    "canonical_regex": "^(v\\d{4}\\.\\d{2}\\.\\d{2}\\.\\d+\\.\\d+)"
+  }
+}

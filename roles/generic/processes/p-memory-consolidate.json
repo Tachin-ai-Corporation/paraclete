@@ -1,0 +1,15 @@
+{
+  "id": "p-memory-consolidate",
+  "name": "Memory Consolidation",
+  "description": "The nightly memory consolidation: gather recent sessions and the long-term store, triage honestly, prune and promote sparingly, rewrite working memory, and review the Deep Truths.",
+  "narrative": "This is memory's own housekeeping, and it is only about memory: ignore whatever other work is in flight, and write nothing but memory: working memory, Core Memory and the Deep Truths. Gather the raw material first: recent sessions and the current long-term store, both the recent entries and the whole archive, and read the playbooks and projects the agent works with so you can tell a memory from a restatement of a definition. Definitions are read, never edited, and never copied into memory. Sort the material into what stays, what deserves promotion into durable memory, and what has gone stale, gone wrong or been duplicated and should be retired. Then carry out those retirements and promotions conservatively: a few high-value writes, never a flood, never a second copy of a fact that already stands, never a rename of one that is still right. Rewrite working memory so it holds only what is still active. Finally, consider whether any long-standing, well-evidenced fact has earned a place among the Deep Truths. Gather, triage honestly, prune and promote sparingly, keep working memory true.",
+  "intent_keywords": [
+    "memory",
+    "consolidation",
+    "consolidate",
+    "prune",
+    "nightly"
+  ],
+  "status": "active",
+  "version": 1
+}

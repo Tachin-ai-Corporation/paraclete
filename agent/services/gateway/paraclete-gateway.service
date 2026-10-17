@@ -1,0 +1,28 @@
+# agent/services/gateway/paraclete-gateway.service: runs the model gateway on loopback. The agent's
+# shell commands run inside this unit (the motor organ's runCommand), so its sandbox is theirs too:
+# they may write only under the data root. The installer (install/) creates the paraclete user, the
+# directories and the token file, then enables this unit.
+
+[Unit]
+Description=paraclete gateway: runs organ turns against Vertex AI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=paraclete
+Group=paraclete
+ExecStart=/usr/bin/node /opt/paraclete/agent/services/gateway/main.mjs
+WorkingDirectory=/var/lib/paraclete
+Restart=always
+RestartSec=5
+ProtectSystem=strict
+ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ReadWritePaths=/var/lib/paraclete
+PrivateTmp=yes
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

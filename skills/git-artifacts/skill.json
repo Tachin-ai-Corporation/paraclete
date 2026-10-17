@@ -1,0 +1,8 @@
+{
+  "id": "git-artifacts",
+  "name": "Git Artifacts",
+  "version": 1,
+  "when_to_use": "Working in a mission's git working tree and the project artifact repositories: status, diffs, history, commits, syncing, cloning another project's repository, and repository upkeep.",
+  "organs": ["motor"],
+  "commands": ["work-status", "work-diff", "work-log", "work-commit", "work-sync", "work-clone", "git-store"]
+}

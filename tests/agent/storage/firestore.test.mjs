@@ -7,6 +7,7 @@ import {
   firestoreDecode,
   StoreUnavailable,
   StoreConflict,
+  quoteFieldPath,
 } from '../../../agent/storage/firestore.mjs';
 
 const DOCS = 'https://firestore.googleapis.com/v1/projects/your-gcp-project/databases/(default)/documents';
@@ -62,11 +63,33 @@ test('undefined is stored as null', () => {
   assert.deepEqual(firestoreEncode({ gone: undefined }), { gone: { nullValue: null } });
 });
 
-test('nested arrays decode with their real values, not as strings', () => {
-  // The decoder used to flatten an array inside an array to stringValue || integerValue || '', so
-  // [[1, 2]] came back as [['1', '2']] and maps or zeros inside it became ''.
-  const input = { grid: [[1, 0, 2], [{ cell: 'x' }, false, 'y']] };
-  assert.deepEqual(firestoreDecode(firestoreEncode(input)), input);
+test('an array inside an array is refused before the write, as Firestore would refuse it', () => {
+  assert.throws(() => firestoreEncode({ grid: [[1, 2]] }), /cannot store an array directly inside an array \(at grid\[0\]\)/);
+  assert.throws(() => firestoreEncode({ a: { b: [1, [2]] } }), /at a\.b\[1\]/);
+  const rows = { grid: [{ cells: [1, 0, 2] }, { cells: [{ cell: 'x' }, false, 'y'] }] };
+  assert.deepEqual(firestoreDecode(firestoreEncode(rows)), rows, 'arrays wrapped in objects round-trip');
+});
+
+test('nested arrays a store already holds still decode with their real values', () => {
+  const fields = { grid: { arrayValue: { values: [{ arrayValue: { values: [{ integerValue: '1' }, { mapValue: { fields: { c: { booleanValue: false } } } }] } }] } } };
+  assert.deepEqual(firestoreDecode(fields), { grid: [[1, { c: false }]] });
+});
+
+test('NaN and the infinities survive a round trip', () => {
+  const encoded = firestoreEncode({ a: NaN, b: Infinity, c: -Infinity, d: 1.5 });
+  assert.deepEqual(encoded, { a: { doubleValue: 'NaN' }, b: { doubleValue: 'Infinity' }, c: { doubleValue: '-Infinity' }, d: { doubleValue: 1.5 } });
+  const decoded = firestoreDecode(encoded);
+  assert.ok(Number.isNaN(decoded.a));
+  assert.equal(decoded.b, Infinity);
+  assert.equal(decoded.c, -Infinity);
+});
+
+test('update-mask field paths quote what is not a plain identifier', () => {
+  assert.equal(quoteFieldPath('status'), 'status');
+  assert.equal(quoteFieldPath('context.artifacts'), 'context.artifacts');
+  assert.equal(quoteFieldPath('meta.my-field'), 'meta.`my-field`');
+  assert.equal(quoteFieldPath('a.we`ird'), 'a.`we\\`ird`', 'a backtick inside is escaped');
+  assert.equal(quoteFieldPath('a.back\\slash'), 'a.`back\\\\slash`', 'a backslash inside is escaped');
 });
 
 test('createClient requires a project', () => {

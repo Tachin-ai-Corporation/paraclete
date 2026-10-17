@@ -266,35 +266,22 @@ describe('passedThisRun', () => {
     assert.equal(passedThisRun(null, [work('1.1')]), false);
     assert.equal(passedThisRun([], [work('1.1')]), false);
   });
-
-  it('a checkpoint only proceeded past (milestone unconfirmed) is not verified work: false', () => {
-    const s = done();
-    s[0].milestone_unconfirmed = true;
-    assert.equal(passedThisRun(s, [work('1.1'), work('2.1'), work('3.1')]), false);
-  });
 });
 
-describe('markCheckpoint: complete is not the same as verified', () => {
+// A failed milestone halts the mission, so nothing proceeds past one: a checkpoint recorded complete
+// passed its milestone (or was skipped with no tasks left to run). Complete is verified.
+describe('isVerified: complete is verified, because a failed milestone halts', () => {
   const fresh = () => buildSpine(PLAN, { now: 'T0' });
 
-  it('records a milestone the executor proceeded past without confirming', () => {
-    const s = markCheckpoint(fresh(), 0, 'complete', { now: 'T1', unconfirmed: true });
-    assert.equal(s[0].status, 'complete');
-    assert.equal(s[0].milestone_unconfirmed, true);
-    assert.equal(isVerified(s[0]), false);
-  });
-
-  it('a later verified pass clears the mark', () => {
-    let s = markCheckpoint(fresh(), 0, 'complete', { now: 'T1', unconfirmed: true });
-    s = markCheckpoint(s, 0, 'complete', { now: 'T2', unconfirmed: false });
-    assert.equal(s[0].milestone_unconfirmed, false);
+  it('a checkpoint marked complete is verified', () => {
+    const s = markCheckpoint(fresh(), 0, 'complete', { now: 'T1' });
     assert.equal(isVerified(s[0]), true);
   });
 
-  it('a re-mark with no verdict (the skip of a checkpoint whose tasks completed) keeps the mark', () => {
-    let s = markCheckpoint(fresh(), 0, 'complete', { now: 'T1', unconfirmed: true });
-    s = markCheckpoint(s, 0, 'complete', { now: 'T2' });
-    assert.equal(s[0].milestone_unconfirmed, true, 'a skip cannot launder an unconfirmed milestone');
+  it('markCheckpoint records no milestone_unconfirmed mark, whatever it is passed', () => {
+    const s = markCheckpoint(fresh(), 0, 'complete', { now: 'T1', unconfirmed: true });
+    assert.equal(s[0].status, 'complete');
+    assert.equal('milestone_unconfirmed' in s[0], false, 'there is no proceed-past state to record');
   });
 
   it('isVerified is false for anything not complete, and for nothing at all', () => {

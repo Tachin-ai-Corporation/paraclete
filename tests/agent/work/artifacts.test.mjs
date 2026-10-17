@@ -161,17 +161,17 @@ describe('motorWorkspaceSweepPlan', () => {
   });
 });
 
-test('sweepMotorWorkspace removes scratch from <installRoot>/workspace and keeps the rest', async () => {
-  const installRoot = env.newDir('sweep');
-  const workspace = join(installRoot, 'workspace');
+test('sweepMotorWorkspace removes scratch from the motor workspace and keeps the rest', async () => {
+  const dataRoot = env.newDir('sweep');
+  const workspace = join(dataRoot, 'workspace');
   mkdirSync(join(workspace, 'old-site'), { recursive: true });
   writeFileSync(join(workspace, 'MEMORY.md'), 'memory');
   writeFileSync(join(workspace, 'stray.txt'), 'scratch');
-  const { removed } = await sweepMotorWorkspace(installRoot);
+  const { removed } = await sweepMotorWorkspace(workspace);
   assert.deepEqual(removed.sort(), ['old-site', 'stray.txt']);
   assert.ok(existsSync(join(workspace, 'MEMORY.md')));
-  assert.deepEqual(await sweepMotorWorkspace(env.newDir('no-workspace')), { removed: [] });
-  await assert.rejects(sweepMotorWorkspace(), /installRoot is required/);
+  assert.deepEqual(await sweepMotorWorkspace(join(env.newDir('no-workspace'), 'workspace')), { removed: [] });
+  await assert.rejects(sweepMotorWorkspace(), /workspaceDir is required/);
 });
 
 /** An artifact manager over an in-memory git store, a recording db and a recording file store. */
@@ -187,7 +187,7 @@ function harness({ projects = {}, fileStore = true } = {}) {
       return paths.map((p) => ({ name: p.split(/[\\/]/).pop(), size: 1, gcsPath: `files/out/${missionId}/x`, contentType: 'text/plain' }));
     },
   };
-  const installRoot = env.newDir('install');
+  const dataRoot = env.newDir('data');
   const logs = [];
   const manager = createArtifactManager({
     gitStore,
@@ -195,19 +195,21 @@ function harness({ projects = {}, fileStore = true } = {}) {
     getProjects: () => projects,
     fileStore: fileStore ? files : undefined,
     logger: (level, msg) => logs.push(`${level} ${msg}`),
-    config: { installRoot, author: TEST_AUTHOR },
+    config: { missionsRoot: join(dataRoot, 'missions'), workspaceDir: join(dataRoot, 'workspace'), author: TEST_AUTHOR },
   });
-  return { manager, gitStore, store, patches, uploads, installRoot, logs };
+  return { manager, gitStore, store, patches, uploads, dataRoot, logs };
 }
 
 describe('createArtifactManager', () => {
-  test('requires a git store, a db, a project source, an install root and an author', () => {
-    const base = { gitStore: {}, db: {}, getProjects: () => ({}), config: { installRoot: '/opt/paraclete', author: TEST_AUTHOR } };
+  test('requires a git store, a db, a project source, the data directories and an author', () => {
+    const dirs = { missionsRoot: '/var/lib/paraclete/missions', workspaceDir: '/var/lib/paraclete/workspace' };
+    const base = { gitStore: {}, db: {}, getProjects: () => ({}), config: { ...dirs, author: TEST_AUTHOR } };
     assert.throws(() => createArtifactManager({ ...base, gitStore: undefined }), /gitStore is required/);
     assert.throws(() => createArtifactManager({ ...base, db: undefined }), /db is required/);
     assert.throws(() => createArtifactManager({ ...base, getProjects: undefined }), /getProjects is required/);
-    assert.throws(() => createArtifactManager({ ...base, config: { author: TEST_AUTHOR } }), /installRoot is required/);
-    assert.throws(() => createArtifactManager({ ...base, config: { installRoot: '/x', author: { name: 'n' } } }), /author/);
+    assert.throws(() => createArtifactManager({ ...base, config: { author: TEST_AUTHOR } }), /missionsRoot is required/);
+    assert.throws(() => createArtifactManager({ ...base, config: { missionsRoot: '/x', author: TEST_AUTHOR } }), /workspaceDir is required/);
+    assert.throws(() => createArtifactManager({ ...base, config: { ...dirs, author: { name: 'n' } } }), /author/);
   });
 
   test('resolveMergePolicy: the project setting wins, code projects are gated, the rest auto', () => {
@@ -220,9 +222,9 @@ describe('createArtifactManager', () => {
 
   test('a mission works on its own branch, commits per checkpoint, and publishes into main', async () => {
     const projects = { 'Quarterly Report': { name: 'Quarterly report' } };
-    const { manager, gitStore, patches, uploads, installRoot } = harness({ projects });
+    const { manager, gitStore, patches, uploads, dataRoot } = harness({ projects });
     const missionId = 'w-1700000000000-abcd1234';
-    const tree = join(installRoot, 'shared', missionId);
+    const tree = join(dataRoot, 'missions', missionId);
 
     await manager.initWorkspace(missionId, { projectId: 'Quarterly Report' });
     assert.equal(git(['symbolic-ref', '--short', 'HEAD'], tree), `mission/${missionId}`);
@@ -262,9 +264,9 @@ describe('createArtifactManager', () => {
     // The project update used to send the encoded fields bare, which is not a Firestore value: the
     // write was refused and the response never checked, so the project never got its manifest.
     const projects = { proj: {} };
-    const { manager, patches, installRoot } = harness({ projects });
+    const { manager, patches, dataRoot } = harness({ projects });
     await manager.initWorkspace('w-2', { projectId: 'proj' });
-    writeFileSync(join(installRoot, 'shared', 'w-2', 'out.md'), 'out');
+    writeFileSync(join(dataRoot, 'missions', 'w-2', 'out.md'), 'out');
     const manifest = await manager.publish({ id: 'w-2', type: 'M', project_id: 'proj', title: 'Out' });
     const { context } = patches[0].fields;
     assert.ok(context.mapValue, 'context is a map value');
@@ -273,9 +275,9 @@ describe('createArtifactManager', () => {
 
   test('a gated project parks the merge instead of landing it', async () => {
     const projects = { code: { class: 'code' } };
-    const { manager, gitStore, installRoot } = harness({ projects });
+    const { manager, gitStore, dataRoot } = harness({ projects });
     await manager.initWorkspace('w-3', { projectId: 'code' });
-    writeFileSync(join(installRoot, 'shared', 'w-3', 'main.js'), 'export {};\n');
+    writeFileSync(join(dataRoot, 'missions', 'w-3', 'main.js'), 'export {};\n');
     const envelope = { id: 'w-3', type: 'M', project_id: 'code', title: 'Code change' };
     assert.equal(await manager.publish(envelope), null);
     assert.equal(envelope.context.pending_merge.sourceBranch, 'mission/w-3');
@@ -285,9 +287,9 @@ describe('createArtifactManager', () => {
   });
 
   test('a commit the motor made itself is pushed even when there is nothing new to stage', async () => {
-    const { manager, gitStore, installRoot } = harness({ projects: { p: {} } });
+    const { manager, gitStore, dataRoot } = harness({ projects: { p: {} } });
     await manager.initWorkspace('w-4', { projectId: 'p' });
-    const tree = join(installRoot, 'shared', 'w-4');
+    const tree = join(dataRoot, 'missions', 'w-4');
     const sha = commitFile(tree, 'own.md', 'motor commit', 'motor committed this');
     const result = await manager.commitAndSync('w-4', 'p', 'unused');
     assert.deepEqual(result, { committed: false, synced: true, sha });
@@ -295,8 +297,8 @@ describe('createArtifactManager', () => {
   });
 
   test('a tree with no commits reports unborn and pushes nothing', async () => {
-    const { manager, installRoot } = harness();
-    const tree = join(installRoot, 'shared', 'w-5');
+    const { manager, dataRoot } = harness();
+    const tree = join(dataRoot, 'missions', 'w-5');
     mkdirSync(tree, { recursive: true });
     git(['init'], tree);
     assert.deepEqual(await manager.commitAndSync('w-5', 'p', 'nothing'), { committed: false, synced: true, sha: null, unborn: true });
@@ -305,15 +307,15 @@ describe('createArtifactManager', () => {
   test('a mission tree that is not its own repository is never committed into an enclosing one', async () => {
     // Asking git from a plain directory finds the repository it sits in, so `git add -A` used to
     // stage the mission into whatever checkout held the install root.
-    const { manager, installRoot } = harness();
-    initWorkingTree(installRoot);
-    const before = git(['rev-parse', 'HEAD'], installRoot);
-    const tree = join(installRoot, 'shared', 'w-6');
+    const { manager, dataRoot } = harness();
+    initWorkingTree(dataRoot);
+    const before = git(['rev-parse', 'HEAD'], dataRoot);
+    const tree = join(dataRoot, 'missions', 'w-6');
     mkdirSync(tree, { recursive: true });
     writeFileSync(join(tree, 'stray.md'), 'mission output');
     assert.deepEqual(await manager.commitAndSync('w-6', 'p', 'should not happen'), { committed: false, synced: false, sha: null });
-    assert.equal(git(['rev-parse', 'HEAD'], installRoot), before);
-    assert.equal(git(['status', '--porcelain'], installRoot), '?? shared/');
+    assert.equal(git(['rev-parse', 'HEAD'], dataRoot), before);
+    assert.equal(git(['status', '--porcelain'], dataRoot), '?? missions/');
   });
 
   test('a failed git setup marks the envelope degraded, and publish then skips git', async () => {
@@ -326,13 +328,13 @@ describe('createArtifactManager', () => {
   });
 
   test('cleanupWorkspace removes a mission tree and refuses an id that leaves the shared directory', async () => {
-    const { manager, installRoot } = harness();
-    const tree = join(installRoot, 'shared', 'w-8');
+    const { manager, dataRoot } = harness();
+    const tree = join(dataRoot, 'missions', 'w-8');
     mkdirSync(tree, { recursive: true });
     await manager.cleanupWorkspace('w-8');
     assert.equal(existsSync(tree), false);
 
-    const outside = join(installRoot, 'keep-me');
+    const outside = join(dataRoot, 'keep-me');
     mkdirSync(outside, { recursive: true });
     await manager.cleanupWorkspace('../keep-me');
     assert.ok(existsSync(outside), 'a path outside shared/ is never removed');

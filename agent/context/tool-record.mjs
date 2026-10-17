@@ -25,7 +25,7 @@ export const TOOL_RESULTS_COLLECTION = COLLECTIONS.toolResults;
 
 // Terminal tools carry their payload through the log (the verdict parser in work/ reads their JSON
 // arguments), so their arguments get the generous cap and are never marked as cut.
-export const TERMINAL_TOOLS = new Set(['report_pass', 'report_fail', 'request_probe']);
+export const TERMINAL_TOOLS = new Set(['report_pass', 'report_fail']);
 
 /** The record policy. Defaults; callers pass the contracts value through recordPolicy(). */
 export const DEFAULT_RECORD_POLICY = Object.freeze({

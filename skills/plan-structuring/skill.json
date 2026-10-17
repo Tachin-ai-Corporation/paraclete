@@ -1,0 +1,8 @@
+{
+  "id": "plan-structuring",
+  "name": "Checkpoint Plan Structuring",
+  "version": 1,
+  "when_to_use": "Turning a goal and its Brief into checkpoints and tasks. The brain hands this skill to the prefrontal whenever it asks for a plan, or for new tasks for one checkpoint.",
+  "organs": ["prefrontal"],
+  "commands": []
+}

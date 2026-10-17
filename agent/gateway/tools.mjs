@@ -35,7 +35,7 @@ export const DEFAULT_MEMORY_LIMITS = Object.freeze({
 export const OPEN_TOOLSET = Object.freeze(['runCommand', 'readFile', 'writeFile', 'listDir']);
 
 /** The verifier reads evidence and reports a verdict; it changes nothing. */
-export const CEREBELLUM_TOOLSET = Object.freeze(['readFile', 'report_pass', 'report_fail', 'request_probe']);
+export const CEREBELLUM_TOOLSET = Object.freeze(['readFile', 'report_pass', 'report_fail']);
 
 /**
  * The memory boundary. Memory is a closed set: working memory, Core Memory and the Deep Truths. When
@@ -434,7 +434,6 @@ export function createToolRegistry({
     listDir,
     report_pass: reportPass,
     report_fail: reportFail,
-    request_probe: requestProbe,
   };
   if (memory) Object.assign(tools, memoryTools({ memory, binDir, limits, cap, childEnv, execFailure, logger, now }));
 
@@ -623,36 +622,6 @@ const reportFail = Object.freeze({
     required: ['reasoning', 'checks', 'recommendation'],
   },
   execute: async ({ reasoning, checks, recommendation }) => ({ verdict: 'FAIL', reasoning, checks, recommendation }),
-});
-
-const requestProbe = Object.freeze({
-  name: 'request_probe',
-  description: 'Request independent re-derivation of specific claims before rendering a verdict. Use ONLY for load-bearing claims that cannot be verified from the provided evidence: claims whose truth requires re-running, recomputing by a different route, or checking live state. The brain runs each probe in a fresh session with no access to the original transcript, then returns the results to you for a final verdict. One probe round maximum.',
-  schema: {
-    type: 'object',
-    properties: {
-      probes: {
-        type: 'array',
-        minItems: 1,
-        maxItems: 3,
-        items: {
-          type: 'object',
-          properties: {
-            claim: { type: 'string', description: 'The exact claim to re-derive' },
-            instruction: { type: 'string', description: 'How to re-derive it from ground truth by a DIFFERENT route than the original. Exact commands and paths. Do NOT reference the original task or its output.' },
-          },
-          required: ['claim', 'instruction'],
-        },
-      },
-      reasoning: { type: 'string', description: 'Why these claims cannot be verified from the provided evidence' },
-    },
-    required: ['probes', 'reasoning'],
-  },
-  execute: async ({ probes }) => ({
-    status: 'probes_requested',
-    count: Array.isArray(probes) ? probes.length : 0,
-    note: 'The turn ends; the brain will run these probes independently and ask you again with the results.',
-  }),
 });
 
 function defaultLogger(level, msg) {

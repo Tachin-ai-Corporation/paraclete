@@ -1,0 +1,16 @@
+{
+  "id": "p-release",
+  "name": "Release",
+  "description": "Shipping a release deliberately: pre-flight checks, an approval gate, tagging, deploying, verifying, and saying what shipped.",
+  "narrative": "A release is deliberate and gated. Run the pre-flight first: the full test suite and whatever readiness checks the target needs. Then stop for a person's approval, because a release is hard to take back. Only after approval, tag the version, deploy by the project's standard method, and verify that the deployed thing actually works, from the live system, before calling it done. Finish by saying what shipped: the version, the main changes, and anything the people who use it need to know. The approval gate between pre-flight and deploy is the load-bearing part: never skip it.",
+  "intent_keywords": [
+    "release",
+    "ship",
+    "cut a release",
+    "tag the version",
+    "announce the release",
+    "rollout"
+  ],
+  "status": "active",
+  "version": 1
+}

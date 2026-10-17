@@ -3,7 +3,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  extractVerdict, extractFailRecommendation, extractFailSummary, extractPassCaveat, extractProbes,
+  extractVerdict, extractFailRecommendation, extractFailSummary, extractPassCaveat,
   isMissingEvidenceFail, stakesAtLeast,
 } from '../../../agent/work/verdict.mjs';
 
@@ -33,8 +33,8 @@ describe('extractVerdict', () => {
     assert.equal(extractVerdict(log([call('report_fail', FAIL_ARGS)])), 'FAIL');
   });
 
-  it('request_probe is a PROBE', () => {
-    assert.equal(extractVerdict(log([call('request_probe', { probes: [] })])), 'PROBE');
+  it('a probe request is no verdict: nothing services probes', () => {
+    assert.equal(extractVerdict(log([call('request_probe', { probes: [] })])), null);
   });
 
   it('no verdict tool is null: prose is never read as a verdict', () => {
@@ -121,25 +121,6 @@ describe('extractPassCaveat', () => {
   it('a caveated pass is still structurally a PASS', () => {
     const out = passLog({ reasoning: 'met with a note', checks: [], caveat: 'minor deferral' });
     assert.equal(extractVerdict(out), 'PASS');
-  });
-});
-
-describe('extractProbes', () => {
-  it('reads well-formed probes and drops malformed ones', () => {
-    const out = log([call('request_probe', {
-      probes: [
-        { claim: 'the page is live', instruction: 'curl the staging URL' },
-        { claim: 'no instruction' },
-        null,
-      ],
-    }, 'queued')]);
-    assert.deepEqual(extractProbes(out), [{ claim: 'the page is live', instruction: 'curl the staging URL' }]);
-  });
-
-  it('returns [] for anything else', () => {
-    assert.deepEqual(extractProbes(''), []);
-    assert.deepEqual(extractProbes(log([call('request_probe', { probes: 'nope' })])), []);
-    assert.deepEqual(extractProbes(log(['[TOOL] request_probe({broken) → x'])), []);
   });
 });
 

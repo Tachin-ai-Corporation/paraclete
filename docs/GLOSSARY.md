@@ -44,6 +44,9 @@ this.
 | request | Something a person asked the agent for |
 | envelope | The Firestore document, in the `work` collection, for one request, mission, checkpoint or task. Its `status` moves only along the legal transitions in `agent/work/work-transitions.mjs` |
 | intake | An inbound message waiting for the brain to classify it as a new request, an answer to a waiting mission, or chat |
+| classification | What the brain decides an intake is: `new_mission`, `attach` (more instruction for running work), `continue` (an answer to a mission that asked), `cancel`, or `respond` (a conversational turn answered at once) |
+| follow-up mission | A new mission that carries a finished one as context, made when a person continues work that already completed |
+| acknowledgment | The short reply the brain sends at once when it takes on a request |
 | mission | The unit of work created from a request. Missions never nest |
 | checkpoint | One verified milestone within a mission |
 | task | One step of a checkpoint, done by one organ |
@@ -51,6 +54,10 @@ this.
 | checkpoint spine | The mission's list of checkpoints and their verified status, kept by code. The mission cannot finish while the spine shows an unverified checkpoint |
 | milestone verdict | The verifier's judgment of one checkpoint |
 | verdict | The verifier's judgment: met, met with a caveat, or not met |
+| adversarial pass | After a passing verdict on consequential work, the verifier attacks its own conclusion (an expert's objection, a flip test, a boundary case). An attack that lands overturns the pass; one that can't be judged leaves at most a caveat |
+| attack duty | The part of the verifier's prompt that sets the adversarial pass |
+| evidence floor | The rule that a checkpoint claiming a durable change must show the tool record of that change |
+| known resources | The block of identifiers the mission already resolved (from its resource ledger), given to organs so they never search for them again |
 | probe | A follow-up check the verifier asks for when the evidence in hand can't settle a claim |
 | stakes | How much harm a mistake would do: `routine`, `consequential` or `irreversible`. Higher stakes earn more verification and an approval gate |
 | effect scope | What a mission is allowed to change. A memory-scoped mission may change only the agent's memory |
@@ -62,6 +69,7 @@ this.
 | responsibility | Scheduled or triggered work the agent owns, such as nightly memory consolidation |
 | process | A playbook the agent follows for a kind of work |
 | project | A body of work with its own artifact repository and context |
+| canon | A project's authoritative entries: facts and rules that hold for every mission in it. Only the people named as its canon authority may change them |
 | artifact | A file the agent produced, stored in its git artifact store |
 | artifact manifest | The record of which artifacts a mission or project holds, with their content hashes |
 | deliverable | What a mission hands back to the person who asked |
@@ -76,9 +84,11 @@ this.
 |---|---|
 | working memory | `MEMORY.md`: short, current context the agent carries into every turn |
 | Core Memory | Durable facts the agent has learned, stored in Firestore |
+| consolidation report | `consolidation_report.md`, the memory organ's account of what a consolidation pass changed and why |
 | Deep Truths | The few principles the agent has confirmed across many sessions |
 | skill | Codified procedure: instructions plus the commands that do one kind of work |
 | tool record | The log of a tool call, written by code, that the model cannot fabricate |
+| step note | A short record of what one task did, written to the mission tree so a resumed mission can see it |
 | tool log | The block of tool records the gateway appends to a turn's output, between `[TOOL EXECUTION LOG]` markers |
 | epistemic bin | How a claim is known: `verified` (re-derived from evidence), `inferred` (reasoned from evidence) or `assumed` (not checked). Every claim the agent reports carries one |
 | brief | The cortex's analysis of a mission before it decides: what is being asked, what is known, and what is missing |
@@ -90,6 +100,9 @@ this.
 | Term | Meaning |
 |---|---|
 | channel | Where a conversation happens: the dashboard (every instance) or Google Chat (Workspace roles) |
+| voicing | The mouth's rewrite of the brain's output into a reply for the person, using the recent conversation |
+| status note | A short progress message the mouth sends while a mission runs, on a fixed schedule |
+| thread ledger | The agent's own record of each conversation thread's turns and running summary |
 | address | The fixed destination of a reply, recorded when a message arrives. The mouth delivers to exactly that address |
 | thread | One user's conversation with the agent in the dashboard |
 | utility model | The fast model the services call directly for small jobs: classifying intake, writing acknowledgments, digesting results |
@@ -102,5 +115,6 @@ this.
 | ears | The service that takes in messages and files |
 | mouth | The service that sends everything out. The only way out |
 | control | The service that carries out the dashboard's commands on the VM |
+| heartbeat | A service's `services/<service>/health.json` under the data root, rewritten after each poll; control reports one older than a minute as stale |
 | contracts | `config/contracts.json`, the single source for shared values |
 | manifest | `install/manifest.txt`, the list of files installed onto the VM |

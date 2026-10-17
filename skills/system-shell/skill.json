@@ -1,0 +1,8 @@
+{
+  "id": "system-shell",
+  "name": "System Shell",
+  "version": 1,
+  "when_to_use": "General command-line work: inspecting files, processing text, JSON and logs, chaining Unix tools, checking processes and services, and editing files safely. The default for open-ended system tasks no other skill covers.",
+  "organs": ["motor"],
+  "commands": []
+}

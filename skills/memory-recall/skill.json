@@ -1,0 +1,8 @@
+{
+  "id": "memory-recall",
+  "name": "Memory Recall",
+  "version": 1,
+  "when_to_use": "Recalling ranked context from working memory, Core Memory and past work. Read it for what recall pre-loads, how to build the packet, and how to read Core Memory directly.",
+  "organs": ["temporal-memory"],
+  "commands": ["core-memory-read"]
+}

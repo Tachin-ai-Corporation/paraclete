@@ -1,0 +1,8 @@
+{
+  "id": "processes",
+  "name": "Process Playbooks",
+  "version": 1,
+  "when_to_use": "Listing, reading, writing and retiring process playbooks: capturing a way of working that went well, telling someone what playbooks exist, and folding in their feedback.",
+  "organs": ["motor"],
+  "commands": ["process-ops"]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "p-review",
+  "name": "Review",
+  "description": "Reviewing a change (code, a document, a configuration) for correctness and consistency, and giving a clear verdict. Read-only: it produces feedback, never edits.",
+  "narrative": "A review examines a change and judges it; it never edits it. Read the whole change first and understand what it is trying to do. Then weigh it on two axes: is it correct (does it do what it claims, are the edge cases handled), and is it consistent (with the names, patterns and conventions the rest already follows). Close with a clear verdict, approve, approve with small fixes, or request changes, and make every objection specific enough to act on. Reviewing is read-only: you produce feedback, not changes.",
+  "intent_keywords": [
+    "review",
+    "code review",
+    "diff",
+    "pull request",
+    "review the changes",
+    "verdict"
+  ],
+  "status": "active",
+  "version": 1
+}

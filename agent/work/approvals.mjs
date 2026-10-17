@@ -6,6 +6,7 @@
 // executor does) and does not parse replies (the brain does).
 
 import { COLLECTIONS } from '../storage/collections.mjs';
+import { applyTransition } from './work-transitions.mjs';
 
 /** The poller acts on every Nth call, so it can ride a fast intake loop (about 15s at a 3s loop). */
 const DEFAULT_CHECK_EVERY = 5; // default; callers pass the contracts value
@@ -127,16 +128,23 @@ export function createApprovalChecker(deps) {
     return Boolean(written);
   }
 
-  /** Fails a paused mission at its gate. Top-level missions are delivered so the person hears why. */
-  async function failAtGate(envelope, { output, error, detail }) {
-    envelope.status = 'failed';
-    envelope.output = output;
-    envelope.error = error;
-    envelope.completed_at = now();
-    envelope.updated_at = now();
+  /**
+   * Ends a paused mission at its gate through legal transitions only: a rejection ends it `rejected`;
+   * an approved mission that cannot continue goes back to `active`, then `failed`. Top-level missions
+   * are delivered so the person hears why.
+   */
+  async function failAtGate(envelope, { rejected = false, output, error, detail }) {
+    const at = now();
+    let current = envelope;
+    for (const to of rejected ? ['rejected'] : ['active', 'failed']) {
+      const step = applyTransition(current, { to, at, error });
+      if (!step.ok) throw new Error(`Approval gate: cannot move ${envelope.id} to ${to}: ${step.reason}`);
+      current = step.envelope;
+    }
+    Object.assign(envelope, current, { output, error });
     if (!envelope.parent_id) envelope.delivery_status = 'pending';
     await firestoreWrite(COLLECTIONS.work, envelope.id, envelope);
-    await writeHistory(envelope.id, 'awaiting_approval', 'failed', 'brain', detail);
+    await writeHistory(envelope.id, 'awaiting_approval', envelope.status, 'brain', detail);
   }
 
   /**
@@ -173,6 +181,7 @@ export function createApprovalChecker(deps) {
         // rejected mission missing that state stayed in awaiting_approval with its approval spent.
         if (approval.status === 'rejected') {
           await failAtGate(envelope, {
+            rejected: true,
             output: `Rejected at the approval gate (approval ${approvalId})${by}.`,
             error: approval.reason || `Approval rejected${by}`,
             detail: `Approval rejected${by}`,

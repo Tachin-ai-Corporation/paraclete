@@ -17,5 +17,6 @@ digested into the prompt.
 | `conversation-context.mjs` | The recent conversation a request came from |
 | `thread-ledger.mjs` | The agent's record of each conversation thread and its turns |
 | `work-recall.mjs` | Recalls relevant past work for a new request |
+| `core-memory-rank.mjs` | Ranks Core Memory entries by value and matched search terms, for recall and `core-memory-read` |
 | `context-maintenance.mjs` | The lesson step after a mission that worked in a project or followed a process |
 | `history.mjs` | Appends status changes to an envelope's timeline |

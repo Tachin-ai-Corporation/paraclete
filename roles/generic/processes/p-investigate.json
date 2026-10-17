@@ -1,0 +1,23 @@
+{
+  "id": "p-investigate",
+  "name": "Investigation",
+  "description": "Diagnosing an issue, understanding how something behaves, or answering a question from evidence: gather it, weigh it, report findings and the root cause. Read-only: it examines, never changes, deploys or fixes.",
+  "narrative": "An investigation examines; it never fixes. Frame the precise question and its scope first, then gather the real evidence (logs, code paths, configuration, live state, documents) without touching anything. Weigh it against your hypotheses, keeping what you verified apart from what you still suspect. Close with the findings, the root cause if you have it, and a recommendation. Keep to the read-only line: diagnosing is not deploying, and a fix is its own piece of work.",
+  "intent_keywords": [
+    "not working",
+    "broken",
+    "failing",
+    "diagnose",
+    "debug",
+    "why",
+    "error",
+    "investigate",
+    "isn't",
+    "not served",
+    "not accessible",
+    "404",
+    "timeout"
+  ],
+  "status": "active",
+  "version": 1
+}

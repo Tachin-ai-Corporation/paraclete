@@ -22,7 +22,7 @@ A package may import only the packages listed after it:
 
 | Package | May import |
 |---|---|
-| `services/` | `work`, `context`, `storage`, `providers`, `auth` |
+| `services/` | `work`, `context`, `storage`, `providers`, `auth`, and `gateway` from `services/gateway/` only |
 | `cli/` | `work`, `context`, `storage`, `providers`, `auth` |
 | `work/` | `context`, `storage`, `providers`, `auth` |
 | `context/` | `storage`, `providers`, `auth` |
@@ -31,8 +31,8 @@ A package may import only the packages listed after it:
 | `gateway/` | `context`, `providers`, `auth` |
 | `auth/` | nothing in `agent/` |
 
-Nothing imports `services/` or `cli/`. The brain reaches the gateway over its local HTTP port, never
-by import. `tests/repo/boundaries.test.mjs` enforces this table.
+Nothing imports `services/` or `cli/`. Only the gateway service imports `gateway/`, to build and run it;
+the brain and everything else reach the gateway over its local HTTP port, never by import. `tests/repo/boundaries.test.mjs` enforces this table.
 
 ## npm packages
 
@@ -43,5 +43,5 @@ in its own commit, after checking a real tool turn against each model.
 
 ## Status
 
-`auth/`, `storage/`, `providers/`, `context/` and `work/` are ported (build plan phase 2), and
-`gateway/` (phase 3). `services/` and `cli/` arrive in phase 4.
+Every package is in place: the libraries (build plan phase 2), `gateway/` (phase 3), and `services/` and
+`cli/` (phase 4).

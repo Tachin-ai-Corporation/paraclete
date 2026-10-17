@@ -12,7 +12,10 @@ Tests mirror the source tree. The tests for `agent/work/approvals.mjs` live in
 | Path | Tests |
 |---|---|
 | `run.mjs` | The runner: finds every `*.test.mjs` under `tests/` and runs them |
-| `repo/` | Whole-repo rules: layout, hygiene, and later dependency direction and the manifest |
+| `repo/` | Whole-repo rules: layout, hygiene, dependency direction and the manifest |
+| `content/` | Agent-facing content: every skill and role package's shape, responsibilities and processes, organ prompts, and that none of it mentions concepts the product doesn't have |
+| `integration/` | Several services wired together against the fakes, through the paths a person's request takes |
+| `fakes/` | In-memory fakes of the Firestore and Cloud Storage REST APIs for integration tests, driven through the real clients. See its README for what they model |
 
 ## Writing a test
 

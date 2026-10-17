@@ -14,6 +14,7 @@
 // Git runs as a child process with an argument list, never through a shell: a ref read from
 // Firestore or a path from a caller is never parsed as shell syntax.
 
+import { FIRESTORE_HOST, STORAGE_HOST } from './hosts.mjs';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -111,14 +112,23 @@ export function allocateVersion(gitDir, targetRef, date) {
  * @param {object}   [deps]
  * @param {Function} [deps.getAccessToken] token source; defaults to the VM's metadata server
  * @param {Function} [deps.fetch]          fetch implementation (injectable for tests)
+ * @param {string}   [deps.firestoreHost]  Firestore API origin; defaults to production
+ * @param {string}   [deps.storageHost]    Cloud Storage API origin; defaults to production
  */
-export function createRemoteStore({ getAccessToken = getVmAccessToken, fetch = globalThis.fetch } = {}) {
-  const firestoreBase = (projectId) => `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
-  const objectUrl = (bucket, name) => `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encodeURIComponent(name)}`;
+export function createRemoteStore({
+  getAccessToken = getVmAccessToken,
+  fetch = globalThis.fetch,
+  firestoreHost = FIRESTORE_HOST,
+  storageHost = STORAGE_HOST,
+} = {}) {
+  const fsHost = firestoreHost.replace(/\/+$/, '');
+  const gcsHost = storageHost.replace(/\/+$/, '');
+  const firestoreBase = (projectId) => `${fsHost}/v1/projects/${projectId}/databases/(default)/documents`;
+  const objectUrl = (bucket, name) => `${gcsHost}/storage/v1/b/${bucket}/o/${encodeURIComponent(name)}`;
   const auth = async () => ({ Authorization: `Bearer ${await getAccessToken()}` });
 
   async function gcsPut(bucket, objectName, data) {
-    const url = `https://storage.googleapis.com/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+    const url = `${gcsHost}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
     const resp = await fetch(url, {
       method: 'POST',
       headers: { ...(await auth()), 'Content-Type': 'application/octet-stream' },

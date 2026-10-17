@@ -1,0 +1,20 @@
+{
+  "id": "generic",
+  "title": "Generic",
+  "summary": "A general-purpose agent for its organization. It researches, analyzes, writes, builds and converts files, runs scheduled work, and keeps its own memory.",
+  "version": 1,
+  "workspace": false,
+  "skills": [],
+  "_gcp_roles_comment": "The agent's base set, granted on the project to paraclete-agent@ by the installer for every instance, since every instance gets the generic role. Vertex AI, Firestore, logs and metrics. Two grants are deliberately not here because they are not project roles: the instance bucket (roles/storage.objectAdmin on that bucket only, made where the installer creates the bucket) and secrets (roles/secretmanager.secretAccessor on each secret a dashboard admin grants). Drive comes from the VM's access scopes, not IAM. No project-wide admin role.",
+  "gcp_roles": [
+    "roles/aiplatform.user",
+    "roles/datastore.user",
+    "roles/logging.logWriter",
+    "roles/monitoring.metricWriter"
+  ],
+  "setup": {
+    "apt": ["git", "jq", "ripgrep", "tree", "zip", "unzip", "rsync", "python3-pip"],
+    "pip": [],
+    "npm": []
+  }
+}

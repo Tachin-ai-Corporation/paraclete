@@ -1,0 +1,17 @@
+{
+  "id": "p-audit",
+  "name": "Audit",
+  "description": "A structured audit of a codebase, a document set or a configuration: fix the criteria and the scope, read against them, rank findings by severity, and report. Read-only: it measures and recommends, never fixes.",
+  "narrative": "An audit measures against a standard; it does not fix. Settle the criteria and the scope first: what good means here, and exactly what you are examining. Then read through it systematically against those criteria without changing anything. Rank what you find by severity, critical and high first, because a flat list hides the findings that matter. Turn the critical and high ones into concrete recommendations someone can act on, and close with a report: the scope, the criteria, an honest overall read of its health, and the ranked findings with their evidence. The audit stays read-only; the only thing it creates is the report.",
+  "intent_keywords": [
+    "audit",
+    "scan",
+    "violations",
+    "findings",
+    "assess",
+    "compliance",
+    "health of the code"
+  ],
+  "status": "active",
+  "version": 1
+}

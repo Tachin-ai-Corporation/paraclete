@@ -3,87 +3,85 @@
 What one phase of the [build plan](BUILD_PLAN.md) hands to a later one. Each item names the phase
 that resolves it. Delete an item in the commit that resolves it.
 
-## For phase 4 (services and configuration)
+## Still open from phase 4 (services and configuration)
 
-- **The gateway service.** `agent/services/` gets the gateway's entry point: read
-  `config/contracts.json`, map it onto the settings in [agent/gateway/README.md](../../agent/gateway/README.md),
-  read the gateway token file, build the clients, organs, tools and sessions, and `listen()` on
-  loopback. Pass `process.env` as the base environment for child commands, and choose the variable
-  (if any) that hands the VM's token to them.
-- **Session misses.** A cortex session `continue` can miss with reason `absent`, `organ`,
-  `system_hash` or `seq`; the brain reopens on any of them.
-- **Skill packages.** `skill.json` names the organs a skill serves in an `organs` field; the gateway's
-  skill catalog reads it.
 - **Status needs the token.** The gateway's `GET /status` requires the bearer token, so `dev/status`
   must send it.
 - **Write fences.** `writeFile` checks writable roots lexically and `runCommand` is a full shell, so
   the real fence is file ownership and permissions on the VM (phase 4 and 5).
 
-- **Git store command line.** `agent/storage/git-store.mjs` is a library. The agent's `ensure`,
-  `clone`, `fetch`, `push`, `merge`, `gc`, `manifest`, `read-ref` and `list-refs` commands are rebuilt
-  in `agent/cli/`. They print JSON on stdout, log to stderr with a `[git-store]` prefix, exit 1 on
-  error, and pass the bucket, prefix, default branch, retry count, project and commit author from
-  `config/contracts.json`. `push` calls `pushWithRetry`.
-- **A data root apart from the install root.** Mission trees (`shared/<mission>`) and the motor
-  workspace live under the install root today, but installed code is read-only to the agent. Give
-  them a data root such as `/var/lib/paraclete`.
 - **Workspace file names.** The artifact sweep keeps, and the artifact excludes skip, a list of
   workspace file names (organ prompt files, memory files, progress files). Reconcile the list with
   the workspace layout phase 4 defines.
-- **Dashboard thread on every address.** Conversation context needs the thread id, so the ears must
-  stamp `thread` on every dashboard address. `addressFromMeta` in the brain duplicates
-  `parseAddress` in `agent/providers/channel.mjs`; keep one.
-- **Respond reads.** The brain's list of reads it can answer from must not include reads of other
-  agents.
 - **Strict reads.** `createClient` in `agent/storage/firestore.mjs` defaults to logging read
   failures and returning empty results; `readDoc` and `commit` always fail closed. Once every caller
   is ported, decide whether strict should be the default.
 - **One Firestore client.** The git store's default store makes its own Firestore REST calls. Fold
   them into `createClient` when the services wire both.
-- **Checkpoint executor rules.** When `checkpoint-executor.mjs` arrives in `agent/work/`:
-  - A skip whose tasks already completed always marks the checkpoint complete
-    (`markCheckpoint(spine, i, 'complete', { now })`), with no switch.
-  - A milestone that fails verification halts the mission. Nothing proceeds past a failed milestone,
-    and finalization blocks on `finalizeBlockedBySpine` with no probe deferral. Once that holds,
-    remove the `unconfirmed` option from `markCheckpoint` and simplify `isVerified` and
-    `passedThisRun`.
-  - Settle whether the verifier's probe loop is serviced; synthesis uses `extractProbes`.
-- **Resuming a timed wait.** `LEGAL_TRANSITIONS` does not allow `waiting → queued`. The brain resumes
-  an expired wait to `active`, or the table gains that transition, decided once and tested.
-- **Declared record fields.** The schemas in `agent/work/work-schema.mjs` are closed but not yet
-  enforced. Before anything validates against them:
-  - declare every envelope field the brain, scheduler and archival write (stakes, needs_review,
-    context, context_forward, memory_context, recalled_processes, memory_written, archived_reason,
-    delivery_address, job_to_be_done and the rest);
-  - declare `canon` and `auto_complete` on projects;
-  - rewrite `APPROVAL_SCHEMA` in the camelCase shape approvals are actually written in
-    (`envelopeId`, `requestedBy`, `resolvedBy`, `_processed`, ...).
-  No port writes `owner`, `team`, `ownerAgent` or `participants`.
-- **Approval wiring.** The checkpoint executor passes `requestedBy` (the person who asked) when it
-  raises a gate; `source_thread` comes from `envelope.source_meta.address.thread`. Anything that
-  resolves an approval patches only the fields `approvalResolution()` returns: rewriting the whole
-  document drops `_processed`, and the poller never sees the approval.
-- **Project ids in the command line.** The project listing command takes each id from the document
-  path. Reading it from a stored field once printed a placeholder dash instead of the id.
-- **Singleton guard and approvals.** The scheduler's one-run-at-a-time guard counts active, queued,
-  pending and waiting missions, not `awaiting_approval`. Decide whether a mission waiting for
-  approval should block the next scheduled run.
-- **One stakes scale.** `stakesAtLeast` uses routine / consequential / irreversible; the approval
-  schema uses routine / consequential / destructive_or_public. Pick one.
-- **Effort for every instance.** The brain's effort setting must not be gated on any role.
+- **An approval gate as a checkpoint's last task.** On resume the checkpoint is skipped and marked
+  complete without judging the work done before the gate, which then reaches the next checkpoint as
+  established evidence. Decide whether that checkpoint should be verified on resume.
+- **Documented commands.** `project-manage canon-set`, `canon-remove` and `canon-authority` exist but no
+  skill documents them. Decide whether the agent should use them.
+- **Smaller duplicates left after phase 4.** The control service reads `responsibilities.json` its own
+  way (`rolePackages()`, accepting a bare array) and rebuilds the skill-directory order in
+  `introspection.mjs`; `instancePaths()` in `agent/cli/cli-runtime.mjs` repeats the paths
+  `service-runtime.mjs` builds (a shared builder could live in `config/instance.mjs`); the Core Memory
+  fetch limit of 300 is a constant in two places. Fold each into its single home when touched next.
+- **A long-running mission versus the active timeout.** Archival cancels a mission active for more
+  than `archival.active_timeout_hours`. A mission waiting for the runner that long (the brain runs one
+  at a time) could be cancelled. Unlikely; revisit if missions queue for hours.
+- **Retiring a playbook.** Retiring an agent-written override brings the installed playbook back, and an
+  installed playbook cannot be retired. Decide whether that is the intent.
+- **Structured gateway log lines.** `brain-telemetry-read` parses the gateway's log text; give those
+  lines structured fields so a wording change can't break it.
 
 ## For phase 5 (install)
+
+- **What the services and commands need from the installer.**
+  - The `paraclete` user, with a writable home under the data root (`gcloud` and `npm` write to it under
+    `ProtectSystem=strict`) and the `systemd-journal` group (telemetry reads the journal).
+  - Data directories: `memory`, `missions`, `workspace`, `files`, `skills`, `services`.
+  - `/etc/paraclete/instance.json`, and `/etc/paraclete/gateway-token` readable by `paraclete` and root.
+  - `npm ci` in `agent/`, then the units enabled.
+  - A launcher per command in `/opt/paraclete/bin/`: `exec /usr/bin/node <file> "$@"`, not a symlink
+    (a symlink breaks each command's run-directly check). One for every `agent/cli/<name>.mjs` except
+    `cli-runtime.mjs`, and every command a skill governs.
+  - `install/upgrade.sh --ref <ref>`: exits 0 on success, is idempotent, restarts the services (control
+    included), and fetches the target ref's own upgrader. Plus `<install root>/release.json`
+    (`{version, ref, commit, installed_at}`), written at install and every upgrade.
+  - The agent's service account is named `paraclete-agent` (`agentIdentity` in `config/instance.mjs`
+    derives the agent's identity from it).
+- **Command signing key.** See phase 6: generate it at install, store it in Secret Manager readable only
+  by the dashboard's service account, and write it to a root-only file on the VM for the control
+  service.
 
 - **Firestore indexes and TTL.**
   - Composite index on `messages`: `thread_id` ascending, `timestamp` descending, for conversation
     context.
   - Composite indexes on `work`: `status` with `created_at` descending (work recall) and ascending
-    (archival).
+    (archival), and `type` with `created_at` descending (session summary and the work log commands).
+  - Composite index on `intake`: `status` with `created_at` ascending (the brain's intake poll).
   - TTL policy on `tool_results.expire_at`.
   - The scheduler's guard, the approvals poll and project completion combine equality and `IN`
     filters and rely on index merging. Confirm each on a dev instance.
+- **Behavior only real Firestore can confirm.** The fakes in `tests/fakes/` mark these unverified; check
+  them on the first dev instance:
+  - the answer to an `updateTime` precondition on a deleted document (FAILED_PRECONDITION, which
+    `commit()` maps to StoreConflict, or NOT_FOUND, which it would report as StoreUnavailable);
+  - that timestamps read back normalized (`...:00Z` for a whole second) are only ever compared as
+    instants, never as strings.
 
 ## For phase 6 (dashboard)
+
+- **Commands must be signed.** The agent's own service account can write to the `commands` collection,
+  so today the agent could restart services, switch Claude or start an upgrade on its own instance.
+  Control must accept only commands signed with a key the agent cannot read: an HMAC over the command,
+  keyed by a secret only the dashboard's service account (Secret Manager) and root (a 0600 file on the
+  VM) hold. The dashboard signs; control verifies and refuses anything else.
+- **The command protocol** is in [agent/services/control/README.md](../../agent/services/control/README.md).
+  Until `commit()` supports field masks, write `created_at` as an ISO string: the claim rewrites the whole
+  document.
 
 - **Thread documents.** The agent's thread ledger writes field-masked updates (`channel`,
   `last_turn_at`, `summary`, `summary_through_ts`) onto the dashboard's own `threads/{id}` document.
@@ -94,9 +92,18 @@ that resolves it. Delete an item in the commit that resolves it.
   `timestamp` (a Firestore timestamp), `processed`, `sender` (`agent`, or the user's email),
   `sender_name`, `thread_id` and `attachments` (`[{ name, size, gcsPath }]`). The `threads` document
   schema (for example, ordering by latest activity) is the dashboard's to define.
+- **Unaddressed messages.** Work with no address reaches the dashboard as a message without a
+  `thread_id`. Decide where such messages show.
+- **Secret names.** `secret-read` reads a secret by its plain name; settle the naming convention the
+  dashboard's secret store uses.
 - **Download list.** `agent/storage/file-store.mjs` writes objects under `files/out/<mission>/` but no
   Firestore records. The dashboard needs either a bucket listing or records in `files`. A re-export
   overwrites objects of the same name, so the latest version wins.
+
+## For phase 9 (models and upgrades)
+
+- **Platform version on envelopes.** `platform_version` is declared on envelopes but nothing stamps it.
+  Stamp it from `<install root>/release.json` once releases exist.
 
 ## For phase 7 (files and Drive)
 

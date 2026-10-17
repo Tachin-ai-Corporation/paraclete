@@ -3,7 +3,10 @@
 // means: collection names come from collections.mjs, and what to store is decided by the callers in
 // work/ and context/. The git artifact store keeps its own compare-and-swap calls in git-store.mjs.
 
+import { FIRESTORE_HOST } from './hosts.mjs';
 import { getAccessToken as getVmAccessToken } from '../auth/metadata-token.mjs';
+
+export { FIRESTORE_HOST };
 
 /**
  * How long any single Firestore call may take. Without a limit a hung connection blocks the
@@ -21,46 +24,53 @@ const MAX_ACCUMULATED_CONTEXT_CHARS = 400_000;
 const ACCUMULATED_CONTEXT_HEAD_CHARS = 50_000;
 
 /**
- * Encodes a plain object into Firestore REST field format. Handles strings, numbers, booleans,
- * null and undefined (both stored as null), arrays, Dates and nested objects.
+ * Encodes a plain object into Firestore REST field format. Handles strings, numbers (NaN and the
+ * infinities included), booleans, null and undefined (both stored as null), arrays, Dates and nested
+ * objects. Firestore cannot store an array directly inside an array, so that throws here, before the
+ * write, instead of the whole document being refused by the API.
  *
  * @param {object} obj
  * @returns {object} Firestore `fields`
  */
 export function firestoreEncode(obj) {
+  return encodeFields(obj, '');
+}
+
+function encodeFields(obj, prefix) {
   const fields = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined) {
-      fields[key] = { nullValue: null };
-    } else if (typeof value === 'string') {
-      fields[key] = { stringValue: value };
-    } else if (typeof value === 'number') {
-      fields[key] = Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value };
-    } else if (typeof value === 'boolean') {
-      fields[key] = { booleanValue: value };
-    } else if (Array.isArray(value)) {
-      fields[key] = { arrayValue: { values: value.map(encodeValue) } };
-    } else if (value instanceof Date) {
-      fields[key] = { timestampValue: value.toISOString() };
-    } else if (typeof value === 'object') {
-      fields[key] = { mapValue: { fields: firestoreEncode(value) } };
-    }
+    const encoded = encodeValue(value, prefix ? `${prefix}.${key}` : key, false);
+    if (encoded !== undefined) fields[key] = encoded;
   }
   return fields;
 }
 
-/** Encodes one array element. Anything without a Firestore type is stored as its string form. */
-function encodeValue(item) {
-  if (item === null || item === undefined) return { nullValue: null };
-  if (typeof item === 'string') return { stringValue: item };
-  if (typeof item === 'number') {
-    return Number.isInteger(item) ? { integerValue: String(item) } : { doubleValue: item };
+function encodeNumber(n) {
+  if (Number.isNaN(n)) return { doubleValue: 'NaN' };
+  if (n === Infinity) return { doubleValue: 'Infinity' };
+  if (n === -Infinity) return { doubleValue: '-Infinity' };
+  return Number.isInteger(n) ? { integerValue: String(n) } : { doubleValue: n };
+}
+
+/**
+ * Encodes one value. A function or symbol field is left out; inside an array, anything without a
+ * Firestore type is stored as its string form.
+ */
+function encodeValue(value, path, inArray) {
+  if (value === null || value === undefined) return { nullValue: null };
+  if (typeof value === 'string') return { stringValue: value };
+  if (typeof value === 'number') return encodeNumber(value);
+  if (typeof value === 'bigint') return { integerValue: String(value) };
+  if (typeof value === 'boolean') return { booleanValue: value };
+  if (Array.isArray(value)) {
+    if (inArray) {
+      throw new Error(`firestoreEncode: Firestore cannot store an array directly inside an array (at ${path}); wrap the inner array in an object`);
+    }
+    return { arrayValue: { values: value.map((item, i) => encodeValue(item, `${path}[${i}]`, true)) } };
   }
-  if (typeof item === 'boolean') return { booleanValue: item };
-  if (Array.isArray(item)) return { arrayValue: { values: item.map(encodeValue) } };
-  if (item instanceof Date) return { timestampValue: item.toISOString() };
-  if (typeof item === 'object') return { mapValue: { fields: firestoreEncode(item) } };
-  return { stringValue: String(item) };
+  if (value instanceof Date) return { timestampValue: value.toISOString() };
+  if (typeof value === 'object') return { mapValue: { fields: encodeFields(value, path) } };
+  return inArray ? { stringValue: String(value) } : undefined;
 }
 
 /**
@@ -87,7 +97,7 @@ function decodeValue(value) {
   if (!value || typeof value !== 'object') return undefined;
   if ('stringValue' in value) return value.stringValue;
   if ('integerValue' in value) return parseInt(value.integerValue, 10);
-  if ('doubleValue' in value) return value.doubleValue;
+  if ('doubleValue' in value) return Number(value.doubleValue);
   if ('booleanValue' in value) return value.booleanValue;
   if ('nullValue' in value) return null;
   if ('timestampValue' in value) return value.timestampValue;
@@ -99,6 +109,16 @@ function decodeValue(value) {
   }
   if ('mapValue' in value) return firestoreDecode(value.mapValue.fields || {});
   return undefined;
+}
+
+/**
+ * A dotted field path in Firestore's syntax: each segment that is not a plain identifier is quoted
+ * with backticks (a backtick or backslash inside it escaped). Dots always separate nested fields.
+ */
+export function quoteFieldPath(path) {
+  return String(path).split('.').map((segment) => (/^[A-Za-z_][A-Za-z_0-9]*$/.test(segment)
+    ? segment
+    : '`' + segment.replace(/[\\`]/g, (c) => '\\' + c) + '`')).join('.');
 }
 
 /**
@@ -147,13 +167,15 @@ export class StoreConflict extends Error {
  * @param {number}   [config.timeoutMs]      per-call timeout
  * @param {Function} [config.getAccessToken] token source; defaults to the VM's metadata server
  * @param {Function} [config.fetch]          fetch implementation (injectable for tests)
+ * @param {string}   [config.firestoreHost]  API origin; defaults to production. Integration tests point
+ *                                            it at the local fake in tests/fakes/
  * @returns {{read: Function, write: Function, query: Function, patch: Function, del: Function,
  *   readDoc: Function, commit: Function}}
  */
 export function createClient(config) {
   if (!config?.projectId) throw new Error('createClient: projectId is required');
   const docRoot = `projects/${config.projectId}/databases/(default)/documents`;
-  const BASE = `https://firestore.googleapis.com/v1/${docRoot}`;
+  const BASE = `${(config.firestoreHost || FIRESTORE_HOST).replace(/\/+$/, '')}/v1/${docRoot}`;
   const log = config.logger || ((...args) => console.log('[firestore]', ...args));
   const timeoutMs = config.timeoutMs || DEFAULT_TIMEOUT_MS;
   const getAccessToken = config.getAccessToken || getVmAccessToken;
@@ -299,7 +321,7 @@ export function createClient(config) {
    */
   async function patch(path, fieldPaths, fields, opts = {}) {
     const token = await getAccessToken();
-    const mask = fieldPaths.map((f) => `updateMask.fieldPaths=${f}`).join('&');
+    const mask = fieldPaths.map((f) => `updateMask.fieldPaths=${encodeURIComponent(quoteFieldPath(f))}`).join('&');
     const resp = await fetch(`${BASE}/${path}?${mask}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

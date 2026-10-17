@@ -20,7 +20,7 @@ that must be deterministic.
 | Finishing | `finalization.mjs`, `deliverable.mjs`, `mission-record.mjs` |
 | Mission state | `blackboard.mjs`, `resource-ledger.mjs`, `artifacts.mjs` (mission working trees and publishing), `memory-scope.mjs` |
 | Approvals | `approvals.mjs` (the approval gate's lifecycle) |
-| Responsibilities | `scheduler.mjs`, `responsibility-store.mjs`, `responsibility-schema.mjs` |
+| Responsibilities | `scheduler.mjs`, `responsibility-store.mjs`, `responsibility-schema.mjs`, `role-packages.mjs` (reads the installed role packages' responsibilities and playbooks, generic first) |
 | Library | `process-registry.mjs` (process playbooks), `projects.mjs`, `project-context.mjs`, `deploy-target.mjs` |
 | Housekeeping | `archival.mjs` (archives finished work, cancels stale work, never a timed wait before its time), `effort.mjs` |
 

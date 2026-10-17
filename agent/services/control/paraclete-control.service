@@ -1,0 +1,33 @@
+# agent/services/control/paraclete-control.service: runs the control service, the dashboard's bridge
+# to the VM. The one paraclete unit that runs as root: it restarts services and starts upgrades. Its
+# privilege is fenced in code (a fixed set of commands, allowlisted units, refs checked against a strict
+# pattern; see README.md) and here: it can read the installed code, the data and the instance record,
+# and write nothing on disk. An upgrade runs in its own transient unit, outside this sandbox. The
+# installer (install/) enables this unit.
+
+[Unit]
+Description=paraclete control: carries out the dashboard's commands on the VM
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/node /opt/paraclete/agent/services/control/main.mjs
+Restart=always
+RestartSec=5
+ProtectSystem=strict
+ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

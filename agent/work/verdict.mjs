@@ -1,6 +1,6 @@
 // agent/work/verdict.mjs: reads the cerebellum's verdict (the organ that verifies each checkpoint)
-// from its tool log. The verdict is the name of the terminal tool it called (report_pass,
-// report_fail or request_probe), which is structurally unambiguous; response prose is never parsed
+// from its tool log. The verdict is the name of the terminal tool it called (report_pass or
+// report_fail), which is structurally unambiguous; response prose is never parsed
 // for control flow. Running the verifier, and deciding what a verdict does to the mission, belong to
 // the checkpoint executor and the brain's synthesize step, which call these.
 
@@ -8,7 +8,7 @@
  * Extract a verification verdict from a cerebellum response's tool log.
  *
  * @param {string} output - The full agent response including tool execution log
- * @returns {'PASS'|'FAIL'|'PROBE'|null} - PASS, FAIL, PROBE, or null if no verdict tool was called
+ * @returns {'PASS'|'FAIL'|null} - PASS, FAIL, or null if no verdict tool was called
  */
 export function extractVerdict(output) {
   if (!output) return null;
@@ -16,7 +16,6 @@ export function extractVerdict(output) {
   const toolLog = text.match(/\[TOOL EXECUTION LOG\]([\s\S]*?)\[END TOOL LOG\]/)?.[1] || '';
   if (toolLog.includes('[TOOL] report_pass(')) return 'PASS';
   if (toolLog.includes('[TOOL] report_fail(')) return 'FAIL';
-  if (toolLog.includes('[TOOL] request_probe(')) return 'PROBE';
   return null; // no verdict tool called: escalate
 }
 
@@ -141,31 +140,6 @@ export function extractPassCaveat(output) {
     // Regex fallback for a truncated pass payload: recover the caveat string if it is intact.
     const cav = rawArgs.match(/"caveat"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/);
     return cav ? cav[1].replace(/\\"/g, '"').replace(/\\n/g, '\n').trim() : '';
-  }
-}
-
-/**
- * Parse the probes array from a request_probe tool-log entry.
- * Returns [] on any parse failure.
- *
- * @param {string} output - The full agent response including tool execution log
- * @returns {Array<{claim: string, instruction: string}>}
- */
-export function extractProbes(output) {
-  if (!output) return [];
-  const text = typeof output === 'string' ? output : JSON.stringify(output);
-  try {
-    const toolLog = text.match(/\[TOOL EXECUTION LOG\]([\s\S]*?)\[END TOOL LOG\]/)?.[1] || '';
-    const probeMatch = toolLog.match(/\[TOOL\] request_probe\((.*?)\) → /)
-      || toolLog.match(/\[TOOL\] request_probe\((.*)\)\s*$/m);
-    if (!probeMatch) return [];
-    const args = JSON.parse(probeMatch[1]);
-    if (!Array.isArray(args.probes)) return [];
-    return args.probes
-      .filter((p) => p && typeof p.claim === 'string' && typeof p.instruction === 'string')
-      .map((p) => ({ claim: String(p.claim), instruction: String(p.instruction) }));
-  } catch {
-    return [];
   }
 }
 

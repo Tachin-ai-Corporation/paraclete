@@ -294,10 +294,10 @@ done.
 3. **Gateway** (done). `agent/gateway` with Gemini 4 call ids, a fallback that never reruns tools that
    already ran, and a shell tool that keeps a failed command's output.
    *Exit:* gateway tests pass, including a recorded Gemini 4 tool turn.
-4. **Services and configuration.** Brain, ears, mouth and control; `config/contracts.json`; organ
+4. **Services and configuration** (done). Brain, ears, mouth and control; `config/contracts.json`; organ
    prompts in `prompts/`; the base skills; the `generic` role package.
-   *Exit:* the services start against a local Firestore emulator and run a mission with a stubbed
-   gateway.
+   *Exit:* ears, brain and mouth run a mission end to end against the in-memory Firestore fake in
+   `tests/fakes/` with a scripted gateway (`tests/integration/`).
 5. **Install and dev loop.** `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
    `uninstall.sh`, and the `dev/` scripts.
    *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no

@@ -1,0 +1,8 @@
+{
+  "id": "git-repos",
+  "name": "Git Repositories",
+  "version": 1,
+  "when_to_use": "Working in an outside git repository (one hosted elsewhere, not the agent's artifact store): cloning, branches, commits, checks before committing, and resolving conflicts.",
+  "organs": ["motor"],
+  "commands": []
+}

@@ -153,24 +153,24 @@ describe('checkPending', () => {
     assert.equal(w.resumed.length, 1, 'a processed approval is never resumed again');
   });
 
-  it('a rejection fails the mission, records who rejected it, and tells the person', async () => {
+  it('a rejection ends the mission as rejected, records who rejected it, and tells the person', async () => {
     const w = world({ 'apr-1': resolved('rejected', { reason: 'Wrong week.' }) });
     await w.poll();
     assert.deepEqual(w.resumed, []);
     const failed = w.writes.find((x) => x.id === 'w-m1').doc;
-    assert.equal(failed.status, 'failed');
+    assert.equal(failed.status, 'rejected', 'awaiting_approval moves to rejected, the legal ending for a rejection');
     assert.equal(failed.error, 'Wrong week.');
     assert.match(failed.output, /Rejected at the approval gate \(approval apr-1\) by user@example\.com/);
     assert.equal(failed.delivery_status, 'pending', 'a top-level mission is delivered');
     assert.equal(failed.completed_at, T0);
-    assert.deepEqual(w.history[0], ['w-m1', 'awaiting_approval', 'failed', 'brain', `Approval rejected by ${USER}`]);
+    assert.deepEqual(w.history[0], ['w-m1', 'awaiting_approval', 'rejected', 'brain', `Approval rejected by ${USER}`]);
   });
 
-  it('a rejected mission fired by a responsibility is failed without a delivery of its own', async () => {
+  it('a rejected mission fired by a responsibility ends without a delivery of its own', async () => {
     const w = world({ 'apr-1': resolved('rejected') }, pausedMission({ parent_id: 'w-r1' }));
     await w.poll();
     const failed = w.writes.find((x) => x.id === 'w-m1').doc;
-    assert.equal(failed.status, 'failed');
+    assert.equal(failed.status, 'rejected');
     assert.equal(failed.error, `Approval rejected by ${USER}`);
     assert.equal('delivery_status' in failed, false);
   });
@@ -178,7 +178,7 @@ describe('checkPending', () => {
   it('a rejection never waits on resume state (it once left such a mission paused forever)', async () => {
     const w = world({ 'apr-1': resolved('rejected') }, pausedMission({ _cp_spine: [], source_meta: {} }));
     await w.poll();
-    assert.equal(w.writes.find((x) => x.id === 'w-m1')?.doc.status, 'failed');
+    assert.equal(w.writes.find((x) => x.id === 'w-m1')?.doc.status, 'rejected');
   });
 
   it('an approval with no paused plan fails loudly instead of stranding the mission', async () => {
@@ -186,7 +186,8 @@ describe('checkPending', () => {
     await w.poll();
     assert.deepEqual(w.resumed, []);
     const failed = w.writes.find((x) => x.id === 'w-m1').doc;
-    assert.equal(failed.status, 'failed');
+    assert.equal(failed.status, 'failed', 'an approved mission that cannot continue goes back to active, then fails');
+    assert.ok(failed.started_at, 'the move through active is a real transition');
     assert.match(failed.error, /no paused plan/);
     assert.equal(w.db.docs.get(`${COLLECTIONS.approvals}/apr-1`)._processed, true);
   });

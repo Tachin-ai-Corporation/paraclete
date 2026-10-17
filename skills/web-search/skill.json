@@ -1,0 +1,8 @@
+{
+  "id": "web-search",
+  "name": "Web Search and Fetch",
+  "version": 1,
+  "when_to_use": "Searching the web for current information with cited sources, and reading the text of a specific web page.",
+  "organs": ["temporal-research"],
+  "commands": ["web-search", "web-fetch"]
+}

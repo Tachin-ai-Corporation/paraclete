@@ -1,0 +1,8 @@
+{
+  "id": "careful-operations",
+  "name": "Careful Operations",
+  "version": 1,
+  "when_to_use": "Before an unfamiliar or irreversible operation (deleting data, editing live state, changing cloud resources) when you don't yet know where the thing lives or the safe procedure. Investigate first; never guess or refuse.",
+  "organs": ["motor"],
+  "commands": []
+}

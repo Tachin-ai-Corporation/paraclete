@@ -1,0 +1,8 @@
+{
+  "id": "scripting",
+  "name": "Scripting",
+  "version": 1,
+  "when_to_use": "Writing and running bash or Python scripts when one command is not enough: loops, conditions, data transforms, several dependent steps, or reusable automation.",
+  "organs": ["motor"],
+  "commands": []
+}
