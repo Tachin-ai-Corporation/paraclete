@@ -1,0 +1,39 @@
+# agent/
+
+Code that runs on the agent's VM, one package per concern. Installed to `/opt/paraclete/agent/` at
+the same relative paths.
+
+## Packages
+
+| Package | Job |
+|---|---|
+| `services/` | The long-running services and their systemd units: brain, ears, mouth and control |
+| `gateway/` | Model gateway: runs one organ turn against Vertex AI, with tools, caching and fallbacks |
+| `work/` | Missions, checkpoints, approvals, scheduling and verification verdicts |
+| `context/` | What goes into a model call: memory windows, compaction, prompt blocks, tool records |
+| `storage/` | Firestore, the git artifact store and the file store |
+| `providers/` | Outside services: Vertex text calls, channels, notifications, JSON repair |
+| `auth/` | Tokens: the VM's metadata server and domain-wide delegation |
+| `cli/` | Commands the agent runs through its shell tool |
+
+## Dependency direction
+
+A package may import only the packages listed after it:
+
+| Package | May import |
+|---|---|
+| `services/` | `work`, `context`, `storage`, `providers`, `auth` |
+| `cli/` | `work`, `context`, `storage`, `providers`, `auth` |
+| `work/` | `context`, `storage`, `providers`, `auth` |
+| `context/` | `storage`, `providers`, `auth` |
+| `storage/` | `auth` |
+| `providers/` | `auth` |
+| `gateway/` | `context`, `providers`, `auth` |
+| `auth/` | nothing in `agent/` |
+
+Nothing imports `services/` or `cli/`. The brain reaches the gateway over its local HTTP port, never
+by import. A test enforces this table once code arrives.
+
+## Status
+
+Empty. Packages arrive in build plan phases 2 to 4.

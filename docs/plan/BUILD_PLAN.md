@@ -1,0 +1,367 @@
+# Paraclete Build Plan
+
+**Status:** in progress · **Started:** 2026-10-17
+
+This is what paraclete is, the decisions behind it, and the order of the work. It is the overall
+mission for anyone developing this repo. When a decision changes, change this plan in the same commit.
+
+---
+
+## 1. What paraclete is
+
+| | Rule |
+|---|---|
+| P1 | One Google Cloud project holds exactly one paraclete. |
+| P2 | The repo is public. A project owner installs it with one command from Cloud Shell. |
+| P3 | Every paraclete has its own dashboard behind Google sign-in. The person who installed it is the first user, and dashboard admins add more. |
+| P4 | Each paraclete has one role, chosen at install. `generic` is the default and the base every other role builds on. |
+| P5 | A Google Workspace account for the agent is optional. Only roles flagged `workspace` get one. |
+| P6 | Every paraclete works with files and Google Drive. It takes files in, works on them, and hands back standard file types as dashboard downloads. |
+| P7 | It runs on Gemini by default. Claude is an upgrade the owner turns on after accepting Anthropic's terms. |
+| P8 | Upgrades come from this repo's releases. One button moves the dashboard and the agent to the same release. |
+
+The agent is a deterministic machine that consults models: code moves the data and enforces the
+rules, and models think in structured JSON. Work runs Request → Mission → Checkpoint → Task. An
+independent verifier judges every checkpoint, and every outbound message leaves through one service.
+
+---
+
+## 2. Decisions
+
+| Area | Decision |
+|---|---|
+| Topology | One VM for the agent, one dashboard on Cloud Run, Firestore, one Cloud Storage bucket. The VM runs host-native systemd services, no containers. |
+| Roles | One per instance, chosen at install. `generic` is the default and the base of every role. |
+| Workspace | A flag on roles. A flagged role gets a Google account through domain-wide delegation (DWD), Google Chat as a channel, and the Workspace skills. |
+| Drive | Every agent, `generic` included. It acts as its service account by default, and as its own Google account on Workspace roles. |
+| Files | Every agent takes files in from the dashboard, links, Cloud Storage, git and Drive, and returns standard files as dashboard downloads. |
+| Dashboard sign-in | Identity-Aware Proxy (IAP) directly on Cloud Run with Google's managed sign-in. No OAuth client to create. |
+| Models | `gemini-4-argon` for the cortex and the strong tier, `gemini-3.8-flash` everywhere else. Claude is opt-in. |
+| Upgrades | The dashboard detects releases of this repo. An admin installs one with a button. |
+| Runtime | Node 24 on the VM and the dashboard. |
+| Email | Not in this plan. |
+
+---
+
+## 3. Architecture
+
+```mermaid
+flowchart LR
+  user([Workspace users]) -->|Google sign-in| iap[IAP]
+  iap --> dash[Dashboard<br/>Cloud Run]
+  dash <--> fs[(Firestore)]
+  dash <--> gcs[(Bucket<br/>files + git artifacts)]
+  subgraph vm [Agent VM]
+    ears[Ears] --> brain[Brain]
+    brain --> gw[Gateway]
+    brain --> mouth[Mouth]
+    ctl[Control]
+  end
+  fs <--> ears
+  fs <--> brain
+  mouth --> fs
+  dash -. commands .-> fs -.-> ctl
+  gw --> vertex[Vertex AI<br/>Gemini / Claude]
+  brain <--> gcs
+  brain <--> drive[Google Drive]
+  mouth -. workspace roles .-> chat[Google Chat]
+  ctl -. upgrades .-> gh[Releases]
+```
+
+### Services on the VM
+
+| Service | Job |
+|---|---|
+| Gateway | Runs organ turns against Vertex AI: the tool loop, caching, sessions and fallbacks |
+| Brain | The mission loop: intake, planning, checkpoints, verification, finalization and the scheduler |
+| Ears | Inbound messages and file drops. Serves several channels at once: the dashboard always, Google Chat on Workspace roles |
+| Mouth | The only way out: replies, deliveries and attachments |
+| Control | The dashboard's bridge to the VM: status, skills, config, responsibilities, model switch, upgrades and restarts |
+
+### Identities
+
+| Identity | Used by | Gets |
+|---|---|---|
+| `paraclete-dashboard@` | Cloud Run | Firestore, the bucket, Secret Manager, Cloud Build and Cloud Run (self-upgrade), IAP policy on its own service (user management), signing its own upload URLs |
+| `paraclete-agent@` | The VM | Vertex AI, Firestore, the bucket, logging and metrics, secrets the dashboard grants it, Drive through the VM's scopes, plus whatever the role declares |
+| `paraclete-dwd@` | Workspace roles only | Nothing in GCP. Its client ID receives the DWD grant in the Admin console |
+| The agent's Google account | Workspace roles only | Chat, Drive, Docs, Sheets, Slides, Calendar and Gmail read, through `paraclete-dwd@` |
+
+The VM never runs as the default compute service account, and nothing relies on that account's
+automatic Editor grant.
+
+### Data
+
+Firestore collections sit at the root, because one project holds one agent: `agent` (one document),
+`users`, `threads`, `messages`, `intake`, `work`, `approvals`, `processes`, `projects`,
+`responsibilities`, `core_memory`, `tool_results`, `files`, `commands` and `config`.
+
+Configuration is one `config/contracts.json`, with no compile step. One `install/manifest.txt` lists
+every file installed onto the VM.
+
+---
+
+## 4. Roles
+
+A role is a focus plus a few heavier tools on top of the generic agent. Each paraclete has exactly
+one, chosen at install. The package format is in [roles/README.md](../../roles/README.md); the
+generic role is described in [roles/generic/README.md](../../roles/generic/README.md).
+
+### Catalog
+
+The Workspace flags are proposals, to confirm when each role is built.
+
+| Role | Workspace | Adds to generic |
+|---|---|---|
+| Generic | no | Nothing; this is the base |
+| Executive Assistant | yes | Calendar, Gmail read, Docs, Sheets, Slides, calendar procedures; a daily briefing responsibility |
+| Project Manager | yes | Docs, Sheets, meeting procedures |
+| Finance Analyst | yes | Sheets, Gmail read, billing analysis; billing viewer access |
+| Legal Advisor | yes | Docs review and redlining, legal review method |
+| Designer | yes | Slides and Docs, design-system procedures, accessibility checks |
+| DevOps Engineer | no | gcloud, gsutil, docker, firebase; Cloud Run, Cloud Build and Artifact Registry roles |
+| Software Engineer | no | Coding, code review, pull requests on the organization's repositories |
+| QA Engineer | no | Test running and reporting |
+| Data Engineer | no | BigQuery operations; BigQuery roles |
+| Security Engineer | no | IAM audit; security reviewer role |
+| Web Master | no | Site audit, custom domains, coding, firebase, gcloud |
+
+Role prompts hold domain rules only: devops "a deploy passes only on a live 2xx", legal "assist and
+escalate, never give legal advice", engineering "done means tested". The base prompt plus one role
+file is the whole composition.
+
+---
+
+## 5. Files and Drive
+
+Every paraclete gets a `files` skill and a `drive` skill. Together they take a file from wherever it
+was shared, let the agent work on it locally, and hand back a standard file.
+
+| | |
+|---|---|
+| **In** | Files dropped into dashboard chat; any http(s) link; objects in the project's Cloud Storage; git repos (public, or private with a token in Secrets); Drive files and folders shared with the agent |
+| **Work** | Read anything to text or Markdown (PDF, Word, Excel, PowerPoint, CSV, HTML); images go to the model as pixels; edit, convert, merge, split |
+| **Out** | Markdown, PDF, Word (.docx), Excel (.xlsx), CSV, PowerPoint (.pptx), HTML, PNG, SVG, JSON, ZIP. Shown as downloads on the mission in the dashboard, and optionally saved to Drive |
+
+### Commands
+
+| Command | Does |
+|---|---|
+| `file-get <source>` | Fetches from an upload id, URL, `gs://` path, git URL or Drive link into the mission's inbox, recording name, type, size, checksum and source |
+| `file-read <path>` | Extracts text or Markdown, with page, sheet and slide selection |
+| `file-convert <path> <format>` | Converts between the supported types |
+| `file-make <format> --from <md\|html\|csv\|json>` | Builds an output file from source the agent wrote |
+| `file-share <path> [--drive <folder>]` | Places the file in the mission outbox for download, and optionally uploads it to Drive |
+| `drive-find`, `drive-get`, `drive-export`, `drive-put`, `drive-update` | Search, read, export Google Docs, Sheets and Slides to Office formats or PDF, create, and replace content |
+
+The VM bootstrap installs the toolchain: pandoc, LibreOffice headless, headless Chromium, and the
+Python libraries for PDF, Word, Excel and PowerPoint. Dashboard uploads go from the browser straight
+to the bucket through a signed URL, so Cloud Run's 32 MB request limit doesn't apply. Inbox files
+expire through a bucket lifecycle rule.
+
+### Two Drive identities
+
+| | Every agent (service account) | Workspace roles (agent's own account) |
+|---|---|---|
+| How people share | With `paraclete-agent@<project>.iam.gserviceaccount.com`, shown with a copy button in the dashboard | With the agent's Workspace address |
+| Read and export | Yes | Yes |
+| Edit files shared as editor | Yes | Yes |
+| Create new files | Only inside a shared drive the service account belongs to. Service accounts have no Drive storage of their own. | Yes, in its own My Drive |
+
+The `drive` skill picks the identity itself: the agent's account when one is configured, the service
+account otherwise. Settings has an optional output shared drive and a Test Drive button. Some
+organizations block sharing with addresses outside their domain, which can include service accounts.
+The install and the Test Drive button detect this and explain the options: a shared drive the service
+account belongs to, an admin policy change, or a Workspace role.
+
+---
+
+## 6. Models
+
+| Where | Default | With Claude turned on |
+|---|---|---|
+| Cortex (decides each step) | `gemini-4-argon` | Claude Opus |
+| Strong tier: prefrontal (plans), motor (executes), cerebellum (verifies) | `gemini-4-argon` | Claude Opus |
+| Temporal organs (memory, research) | `gemini-3.8-flash` | `gemini-3.8-flash` |
+| Service calls (ears, mouth, digests) | `gemini-3.8-flash` | `gemini-3.8-flash` |
+| Fallback | `gemini-3.8-flash` | `gemini-4-argon` |
+
+`gemini-4-argon` answers only on Vertex AI's global endpoint. It returns tool calls with thought
+signatures and a call `id`; the gateway must send both back.
+
+The strong tier is on for every role. The effort setting stays as the dial.
+
+**Turning on Claude.** Settings → Models links to Model Garden to accept Anthropic's terms. A Test
+button probes the newest Claude Opus the project can reach; a switch then moves the cortex and the
+strong tier to it. Gemini stays the fallback.
+
+---
+
+## 7. Access and users
+
+- **Sign-in.** IAP sits directly on the Cloud Run service. Its Google-managed sign-in admits only
+  accounts in the project's organization, which is the Workspace boundary. Nobody creates an OAuth
+  client.
+- **Prerequisite.** The project must belong to the Workspace's Cloud organization.
+- **First user.** The installer grants itself `roles/iap.httpsResourceAccessor` on the service and
+  becomes the first dashboard admin.
+- **Two dashboard roles.** Admins manage users, settings, secrets, models and upgrades. Members chat,
+  follow and approve missions, and download files. The IAP binding decides who reaches the dashboard;
+  the `users` record decides what they can do.
+- **Adding and removing users.** An admin enters an email; the dashboard adds or removes the IAP
+  binding and the user record together.
+- **Trust.** The dashboard verifies the signed IAP header (`x-goog-iap-jwt-assertion`) on every
+  request, never just the email header.
+- **Conversations.** Each user has their own thread with the agent. Messages carry the sender, missions
+  record who asked, and approvals show who asked and who approved.
+
+---
+
+## 8. Install
+
+An "Open in Cloud Shell" button on the README runs `install/install.sh` at a release tag. It asks two
+questions, the role (default `generic`) and the agent's name, then runs unattended. Re-running it
+repairs an install.
+
+```
+install/install.sh
+  1  check      caller is project owner, billing is on, project is in an organization
+  2  apis       compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry,
+                cloudbuild, secretmanager, storage, iap, drive (+ Workspace APIs for flagged roles)
+  3  accounts   paraclete-dashboard@, paraclete-agent@ (+ the role's gcp_roles), paraclete-dwd@ if flagged
+  4  firestore  native database, indexes and TTL policies through the REST API
+  5  bucket     <project>-paraclete: uniform access, public access prevention, lifecycle rules
+  6  dashboard  Cloud Build at the tag → Artifact Registry → Cloud Run with IAP; grant the installer
+  7  agent VM   e2-standard-2, 50 GB, paraclete-agent@, cloud-platform + drive scopes,
+                no inbound ports; the startup script runs install/bootstrap.sh at the tag
+  8  wait       until the agent reports ready, then print the dashboard URL
+```
+
+For development, `--ref <branch>` installs a branch and `--repo <owner>/paraclete` installs from a
+fork.
+
+**What stays manual.** Nothing, for a role without Workspace. Turning on Claude needs the owner to
+accept Anthropic's terms in Model Garden. A Workspace role needs the dashboard's setup wizard: create
+the agent's user, paste one client ID and the scope list into the Admin console (copy buttons and a
+direct link), then click Test. Google has no API for the DWD grant.
+
+**Uninstall.** `install/uninstall.sh` removes everything the installer created. It keeps the bucket
+unless you pass `--purge`.
+
+---
+
+## 9. Upgrades
+
+1. **Releases.** Maintainers tag a release with the commit version format (`vYYYY.MM.DD.N.N`) once CI
+   is green, with release notes.
+2. **Detection.** The dashboard checks this repo's releases (cached hourly) and shows "Update
+   available" with the notes.
+3. **Install.** An admin clicks Install. Cloud Build builds the dashboard at the tag and deploys a new
+   revision. The control service downloads that tag's upgrader, never the copy already installed,
+   then installs, runs the validation gate and restarts the services.
+4. **Migrations.** A release can carry an idempotent data migration, which the upgrader runs before
+   restarting.
+5. **One version.** The dashboard and the agent report the same version. Rolling back means
+   installing the previous tag.
+
+---
+
+## 10. How the code gets here
+
+Code is ported from a predecessor project, one package at a time. A port is a deliberate rewrite into
+this layout, not a copy:
+
+- the package arrives with its tests, under the mirrored path in `tests/`;
+- it uses this repo's names and vocabulary, and its header comments explain it to a reader with no
+  context;
+- nothing comes across that serves coordinating several agents or one organization's setup;
+- every port passes the hygiene tests, including each developer's private denylist.
+
+---
+
+## 11. Build sequence
+
+Each phase ends with `npm test` green in CI. Phases 6, 7 and 8 can run in parallel once phase 5 is
+done.
+
+1. **Foundation.** Layout, a README in every directory, developer guide, glossary, this plan, hygiene
+   and structure tests, CI.
+   *Exit:* CI green; the hygiene test passes with a private denylist in place.
+2. **Core libraries.** `agent/auth`, `storage`, `providers`, `context` and `work`, with their tests.
+   Fix the timed-wait defect in section 12 on the way in.
+   *Exit:* the libraries' tests pass and the dependency-direction test enforces
+   [agent/README.md](../../agent/README.md).
+3. **Gateway.** `agent/gateway` with Gemini 4 call ids, a fallback that never reruns tools that
+   already ran, and a shell tool that keeps a failed command's output.
+   *Exit:* gateway tests pass, including a recorded Gemini 4 tool turn.
+4. **Services and configuration.** Brain, ears, mouth and control; `config/contracts.json`; organ
+   prompts in `prompts/`; the base skills; the `generic` role package.
+   *Exit:* the services start against a local Firestore emulator and run a mission with a stubbed
+   gateway.
+5. **Install and dev loop.** `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
+   `uninstall.sh`, and the `dev/` scripts.
+   *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no
+   fallbacks, and the cortex runs on Gemini without errors.
+6. **Dashboard.** IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
+   approvals, work views, memory, settings, and the setup checklist.
+   *Exit:* add and remove a user; chat with the agent; approve a gated mission.
+7. **Files and Drive.** The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
+   `drive` skill with both identities.
+   *Exit:* drop a PDF into chat and get a .docx back; read a Doc shared with the service account; write
+   into a shared drive; the sharing-policy check reports correctly in a restricted organization.
+8. **Roles.** The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
+   Chat channel.
+   *Exit:* `generic`, one Workspace role and one other role each install and pass a smoke mission.
+9. **Models and upgrades.** The Claude switch, the release workflow, release detection, the upgrade
+   button, and migrations.
+   *Exit:* turn Claude on and off; upgrade a dev instance from one release to the next from the
+   dashboard.
+10. **Product docs.** `docs/canon/`, `docs/concepts/`, the guides, `docs/INSTALL.md`, and the README's
+    install button.
+    *Exit:* every doc matches the code, and the doc-path tests pass.
+
+**Acceptance.** In a clean project inside a Workspace organization: one command, a dashboard link in
+about 15 minutes, the owner signs in, adds a colleague, drops a spreadsheet into chat, and gets a
+formatted report back as a download. Then the same flow for a Workspace role, through the setup
+wizard.
+
+---
+
+## 12. Known defects to fix while porting
+
+| Defect | Effect |
+|---|---|
+| The stale-work sweep cancels waits after 8 hours | Timed waits may legitimately run 24 hours |
+| A model fallback reruns the whole turn | Tools that already ran in the failed turn run again |
+| The shell tool drops a failed command's output | The reason a command refused is lost |
+| A checkpoint can pass on compacted evidence, or with an inconclusive adversarial check | The verifier passes claims it could not fully check |
+| A project listing can show a placeholder dash instead of a project id | The agent has to guess which project is meant |
+
+---
+
+## 13. Risks and checks
+
+- **Organization required.** IAP's managed sign-in works only for projects inside an organization. The
+  installer checks this first.
+- **Drive sharing policy.** Restricted external sharing may block sharing with the service account.
+  Phase 7 tests this in a locked-down organization.
+- **Cortex on Gemini.** The cortex's session replay and caching were first built around Claude. Phase 5
+  proves them on Gemini before anything else is built on top.
+- **Gemini 4 is new.** It was released on 2026-10-13 and is served only from the global endpoint. The
+  installer checks the project can call it.
+- **VM size.** LibreOffice and Chromium need more memory than e2-medium has. Start at e2-standard-2
+  (8 GB) with 50 GB of disk.
+- **Release-check rate limit.** GitHub allows 60 unauthenticated requests per hour per IP address. The
+  dashboard caches the result.
+- **Organization policies.** No `allUsers` invoker (IAP removes the need) and no reliance on default
+  service-account grants. The installer names any policy that blocks it.
+
+---
+
+## 14. Not in this plan
+
+- Email in or out
+- Changing an instance's role after install, or more than one role
+- Claude as the default model
+- Projects outside an organization
+- Moving agents in from other systems

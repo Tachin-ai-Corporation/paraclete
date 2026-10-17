@@ -1,0 +1,41 @@
+# What this repo never tracks. See DEVELOPING.md section 5 for the reasons.
+
+# Your private workspace: notes, scratch scripts, dev instance coordinates, downloaded data,
+# and the private denylist the hygiene test reads
+.local/
+
+# Coding-tool configuration and memory, whichever tool you use
+.claude/
+.cursor/
+.codex/
+.gemini/
+.aider*
+.vscode/
+.idea/
+
+# Secrets and credentials. Keys should never exist; this is a backstop.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*-key.json
+*credentials*.json
+
+# Build output and caches
+node_modules/
+dashboard/.next/
+dist/
+coverage/
+__pycache__/
+*.pyc
+
+# Archives and dumps: bundles of repo content, Firestore exports, logs
+*.tar.gz
+*.tgz
+*.zip
+*.log
+
+# Operating system files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,12 @@
+# Every text file is stored and checked out with LF line endings, on every platform.
+# Shell scripts run on Linux VMs; a CRLF in one breaks it.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
