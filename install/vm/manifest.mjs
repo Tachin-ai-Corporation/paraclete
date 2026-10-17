@@ -107,7 +107,9 @@ export function stageRelease({ sourceRoot, stageRoot, role }) {
   const paths = expandManifest(parseManifest(readFileSync(join(sourceRoot, MANIFEST_PATH), 'utf8')), role);
   const problems = [];
   for (const path of paths) {
-    const source = join(sourceRoot, path);
+    // Checked without the trailing slash: on Linux a file named with one does not exist at all, which
+    // would hide that the path is a file, not a directory.
+    const source = join(sourceRoot, path.replace(/\/+$/, ''));
     if (!existsSync(source)) {
       problems.push(`${path} is listed but the release does not have it`);
       continue;
@@ -120,8 +122,8 @@ export function stageRelease({ sourceRoot, stageRoot, role }) {
   if (problems.length) throw new Error(`cannot stage the release:\n- ${problems.join('\n- ')}`);
 
   for (const path of paths) {
-    const source = join(sourceRoot, path);
-    const dest = join(stageRoot, path);
+    const source = join(sourceRoot, path.replace(/\/+$/, ''));
+    const dest = join(stageRoot, path.replace(/\/+$/, ''));
     mkdirSync(dirname(dest), { recursive: true });
     cpSync(source, dest, {
       recursive: true,
