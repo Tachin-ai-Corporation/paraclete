@@ -34,7 +34,14 @@ A package may import only the packages listed after it:
 Nothing imports `services/` or `cli/`. The brain reaches the gateway over its local HTTP port, never
 by import. `tests/repo/boundaries.test.mjs` enforces this table.
 
+## npm packages
+
+Only `gateway/` imports npm packages: the Google GenAI and Anthropic Vertex SDKs, pinned to exact
+versions in `package.json` with a lockfile. Everything else uses Node built-ins. `npm run setup` at
+the repo root installs them; on the VM the bootstrap runs `npm ci` here. Raise a version deliberately,
+in its own commit, after checking a real tool turn against each model.
+
 ## Status
 
-`auth/`, `storage/`, `providers/`, `context/` and `work/` are ported (build plan phase 2).
-`gateway/` arrives in phase 3; `services/` and `cli/` in phase 4.
+`auth/`, `storage/`, `providers/`, `context/` and `work/` are ported (build plan phase 2), and
+`gateway/` (phase 3). `services/` and `cli/` arrive in phase 4.

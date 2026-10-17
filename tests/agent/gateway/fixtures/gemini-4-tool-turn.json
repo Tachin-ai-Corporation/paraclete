@@ -1,0 +1,200 @@
+{
+  "model": "gemini-4-argon",
+  "exchanges": [
+    {
+      "request": {
+        "model": "gemini-4-argon",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "What is the value stored under the key \"alpha\"? Look it up, then answer in one sentence."
+              }
+            ]
+          }
+        ],
+        "config": {
+          "systemInstruction": "You answer questions about stored values. Read every value with the lookup tool; never guess one.",
+          "tools": [
+            {
+              "functionDeclarations": [
+                {
+                  "name": "lookup",
+                  "description": "Look up the value stored under a key.",
+                  "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "key": {
+                        "type": "STRING",
+                        "description": "The key to look up"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "temperature": 0.3,
+          "maxOutputTokens": 2048,
+          "topP": 0.95
+        }
+      },
+      "response": {
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [
+                {
+                  "functionCall": {
+                    "name": "lookup",
+                    "args": {
+                      "key": "alpha"
+                    },
+                    "id": "call_216146"
+                  },
+                  "thoughtSignature": "AY89a1/Tt4FMDiFY4i7/PNHA2Qf/HL9E1IQGq7PW83NDK+utiaTjHdEabZIFpZF4uBholvBd7TawPchJEP1h9ucSfICVOWg8qgdEqEr4qqe8PU0tcg=="
+                }
+              ]
+            },
+            "finishReason": "STOP"
+          }
+        ],
+        "createTime": "2026-10-17T17:47:18.097831Z",
+        "modelVersion": "gemini-4-argon",
+        "responseId": "prTTaqf8BdeBjbIPupu44Ao",
+        "usageMetadata": {
+          "promptTokenCount": 134,
+          "candidatesTokenCount": 20,
+          "totalTokenCount": 154,
+          "trafficType": "ON_DEMAND",
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 134
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 20
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "model": "gemini-4-argon",
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "What is the value stored under the key \"alpha\"? Look it up, then answer in one sentence."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "functionCall": {
+                  "name": "lookup",
+                  "args": {
+                    "key": "alpha"
+                  },
+                  "id": "call_216146"
+                },
+                "thoughtSignature": "AY89a1/Tt4FMDiFY4i7/PNHA2Qf/HL9E1IQGq7PW83NDK+utiaTjHdEabZIFpZF4uBholvBd7TawPchJEP1h9ucSfICVOWg8qgdEqEr4qqe8PU0tcg=="
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "parts": [
+              {
+                "functionResponse": {
+                  "name": "lookup",
+                  "response": {
+                    "result": "value-42"
+                  },
+                  "id": "call_216146"
+                }
+              }
+            ]
+          }
+        ],
+        "config": {
+          "systemInstruction": "You answer questions about stored values. Read every value with the lookup tool; never guess one.",
+          "tools": [
+            {
+              "functionDeclarations": [
+                {
+                  "name": "lookup",
+                  "description": "Look up the value stored under a key.",
+                  "parameters": {
+                    "type": "OBJECT",
+                    "properties": {
+                      "key": {
+                        "type": "STRING",
+                        "description": "The key to look up"
+                      }
+                    },
+                    "required": [
+                      "key"
+                    ]
+                  }
+                }
+              ]
+            }
+          ],
+          "temperature": 0.3,
+          "maxOutputTokens": 2048,
+          "topP": 0.95
+        }
+      },
+      "response": {
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [
+                {
+                  "text": "The value stored under the key \"alpha\" is \"value-42\".",
+                  "thoughtSignature": "AY89a18qqyPfykBn/aUNPOawCs2RcPpOHWkOI6pW6yHvfjCGzEXLO8CjhmQyB7KAIf8Vwcm/GGfxn+MWRqsMgQXadSqdewU7q2FAr7FOjK4n8uDefA=="
+                }
+              ]
+            },
+            "finishReason": "STOP"
+          }
+        ],
+        "createTime": "2026-10-17T17:47:22.926298Z",
+        "modelVersion": "gemini-4-argon",
+        "responseId": "qrTTatrEOK-Hw8cPxo6kwQo",
+        "usageMetadata": {
+          "promptTokenCount": 173,
+          "candidatesTokenCount": 20,
+          "totalTokenCount": 193,
+          "trafficType": "ON_DEMAND",
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 173
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 20
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ instance.
 | File | Use |
 |---|---|
 | `instance.env.example` | Copy to `.local/instance.env` and fill in your dev instance |
+| `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
 
 ## Coming with the install work (build plan phase 5)
 

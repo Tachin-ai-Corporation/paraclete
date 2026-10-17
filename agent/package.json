@@ -1,0 +1,14 @@
+{
+  "name": "paraclete-agent",
+  "private": true,
+  "description": "Code that runs on the agent's VM. Only agent/gateway/ imports these packages.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@anthropic-ai/vertex-sdk": "0.20.2",
+    "@google/genai": "2.27.0"
+  }
+}

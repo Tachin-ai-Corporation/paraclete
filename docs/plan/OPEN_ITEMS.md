@@ -3,13 +3,21 @@
 What one phase of the [build plan](BUILD_PLAN.md) hands to a later one. Each item names the phase
 that resolves it. Delete an item in the commit that resolves it.
 
-## For phase 3 (gateway)
-
-- **Acknowledgment calls.** `agent/providers/notifications.mjs` `generateAck` posts an OpenAI-style
-  chat request to the gateway, marked `[BRAIN-ORCHESTRATED]`. The gateway must keep that endpoint
-  and marker, or the call must change with it.
-
 ## For phase 4 (services and configuration)
+
+- **The gateway service.** `agent/services/` gets the gateway's entry point: read
+  `config/contracts.json`, map it onto the settings in [agent/gateway/README.md](../../agent/gateway/README.md),
+  read the gateway token file, build the clients, organs, tools and sessions, and `listen()` on
+  loopback. Pass `process.env` as the base environment for child commands, and choose the variable
+  (if any) that hands the VM's token to them.
+- **Session misses.** A cortex session `continue` can miss with reason `absent`, `organ`,
+  `system_hash` or `seq`; the brain reopens on any of them.
+- **Skill packages.** `skill.json` names the organs a skill serves in an `organs` field; the gateway's
+  skill catalog reads it.
+- **Status needs the token.** The gateway's `GET /status` requires the bearer token, so `dev/status`
+  must send it.
+- **Write fences.** `writeFile` checks writable roots lexically and `runCommand` is a full shell, so
+  the real fence is file ownership and permissions on the VM (phase 4 and 5).
 
 - **Git store command line.** `agent/storage/git-store.mjs` is a library. The agent's `ensure`,
   `clone`, `fetch`, `push`, `merge`, `gc`, `manifest`, `read-ref` and `list-refs` commands are rebuilt

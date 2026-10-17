@@ -291,7 +291,7 @@ done.
    Fix the timed-wait defect in section 12 on the way in.
    *Exit:* the libraries' tests pass and the dependency-direction test enforces
    [agent/README.md](../../agent/README.md).
-3. **Gateway.** `agent/gateway` with Gemini 4 call ids, a fallback that never reruns tools that
+3. **Gateway** (done). `agent/gateway` with Gemini 4 call ids, a fallback that never reruns tools that
    already ran, and a shell tool that keeps a failed command's output.
    *Exit:* gateway tests pass, including a recorded Gemini 4 tool turn.
 4. **Services and configuration.** Brain, ears, mouth and control; `config/contracts.json`; organ
@@ -332,8 +332,8 @@ wizard.
 | Defect | Effect | Status |
 |---|---|---|
 | The stale-work sweep cancels waits after 8 hours | Timed waits may legitimately run 24 hours | Fixed in phase 2 (`agent/work/archival.mjs`) |
-| A model fallback reruns the whole turn | Tools that already ran in the failed turn run again | Phase 3 |
-| The shell tool drops a failed command's output | The reason a command refused is lost | Phase 3 |
+| A model fallback reruns the whole turn | Tools that already ran in the failed turn run again | Fixed in phase 3: the fallback continues the transcript; checked live from Gemini 4 to Flash and to Claude |
+| The shell tool drops a failed command's output | The reason a command refused is lost | Fixed in phase 3 (`agent/gateway/tools.mjs`) |
 | A checkpoint can pass on compacted evidence, or with an inconclusive adversarial check | The verifier passes claims it could not fully check | Phase 4, with the checkpoint executor |
 | A project listing can show a placeholder dash instead of a project id | The agent has to guess which project is meant | Registry fixed in phase 2; the listing command in phase 4 |
 

@@ -30,6 +30,10 @@ this.
 | temporal-memory | The organ that maintains the agent's memory |
 | temporal-research | The organ that researches outside sources |
 | gateway | The service that runs an organ's turn against a model |
+| transcript | The gateway's provider-neutral record of a turn: messages, tool calls and their results. A fallback model continues it rather than starting over |
+| thought signature | An opaque token Gemini attaches to its function calls; it must travel back with the call in the next request |
+| session | The cortex's running conversation for one mission, kept by the gateway so each step sends only what is new |
+| fallback model | The model a turn continues on when its organ's model fails |
 | strong tier | The more capable model used for planning, executing and verifying |
 | effort | The dashboard setting that trades thoroughness against cost |
 

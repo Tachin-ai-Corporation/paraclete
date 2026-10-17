@@ -5,8 +5,127 @@ turned on), runs the tool loop, and returns the result with a tool log the model
 
 **Belongs here:** the turn loop, provider routing and fallbacks, prompt caching and sessions, the tool
 registry and each organ's toolset.
-**Doesn't:** deciding what work to do. That is the brain service and `work/`.
+**Doesn't:** deciding what work to do. That is the brain service and `work/`. Nor reading
+configuration or listening on a port: the gateway service in `services/` reads `config/contracts.json`
+and the token file, builds the pieces below, and calls `listen()` on loopback.
 
 The gateway runs as its own service on a local port. Other code calls it over HTTP, never by import.
 
-**Status:** empty. Arrives in build plan phase 3.
+## Files
+
+| File | Does |
+|---|---|
+| `server.mjs` | `createGatewayServer()`: the HTTP endpoints below, bearer-token auth, sessions, organ routing. Returns a server that is not listening |
+| `turn-loop.mjs` | `runTurn()` and `runTurnWithFallback()`: model call, tools, next call, until done; the loop guard, terminal tools, the tool log; a fallback that continues the transcript instead of rerunning tools |
+| `google-step.mjs` | One Gemini step: transcript to `contents`, thought signatures and call ids, explicit context caching |
+| `anthropic-step.mjs` | One Claude step: transcript to messages, prompt-caching breakpoints, streaming, temperature only |
+| `loop-guard.mjs` | Detects a stuck tool loop and decides when to warn and when to stop |
+| `model-clients.mjs` | Builds the Vertex AI SDK clients; parses `<provider>/<model id>` strings |
+| `organs.mjs` | Each organ's job, toolset, sampling, step budget, prompt, and the model tier it runs on |
+| `tools.mjs` | The tools (shell, files, memory, verdicts), their result bounds, and each organ's toolset |
+| `sessions.mjs` | The in-memory store of the cortex's conversation sessions |
+| `skill-catalog.mjs` | The skill index a tool-using organ sees, built from skill directories |
+| `health.mjs` | `/healthz` and `/ready` |
+
+Only this package imports npm packages, and only `model-clients.mjs` imports them; see
+[agent/README.md](../README.md).
+
+## HTTP contract
+
+The server listens on loopback only. Requests that run a model or touch a session carry
+`Authorization: Bearer <gateway token>`; a missing or wrong token gets `401`
+`{"error":{"message":"Unauthorized","type":"auth_error"}}`. The probes need no token.
+
+| Method and path | Auth | Answers |
+|---|---|---|
+| `POST /v1/chat/completions` | token | Runs one organ turn (below) |
+| `DELETE /v1/sessions/{id}` | token | Drops a session: `{"ok":true,"existed":true\|false}`. Idempotent |
+| `GET /status` | token | Uptime, request count, sessions (ids and counters, never content), providers, models |
+| `GET /v1/models` | none | Liveness before relying on the gateway: `{"object":"list","data":[{"id":"vertex-google","available":true,"location":"global",…}]}` |
+| `GET /healthz` | none | `200 ok` while the process serves |
+| `GET /ready` | none | `200` when every provider an organ or fallback is routed to has a client, else `503`; body `{"ready","providers","required"}` |
+
+### `POST /v1/chat/completions`
+
+An OpenAI-style chat request. `model` names the organ: `brain/<organ>` or just `<organ>`
+(`cortex`, `prefrontal`, `motor`, `cerebellum`, `temporal-memory`, `temporal-research`); none means
+`cortex`. The organ decides the model, the tools and the step budget; the caller cannot pick them.
+
+```json
+{
+  "model": "brain/motor",
+  "messages": [
+    { "role": "system", "content": "stable block" },
+    { "role": "system", "content": "working memory" },
+    { "role": "user", "content": "[BRAIN-ORCHESTRATED]\n…" }
+  ],
+  "max_tokens": 65536,
+  "temperature": 0.3,
+  "top_p": 0.9,
+  "exec": false,
+  "session": { "id": "m-123", "op": "open | continue | reset", "seq": 0 }
+}
+```
+
+- `messages`: `system`, `user` and `assistant` roles. Content is a string or an array of text parts
+  `{ "type": "text", "text", "tier": "boot" | "mission" | "volatile" }`; tiers place Claude's cache
+  breakpoints and never reach the provider. Each system message is a separate block, most stable
+  first. With no system message the organ's own prompt is used. Any other role is a `400`.
+- Text passes to the model untouched, `[BRAIN-ORCHESTRATED]` included: the marker tells the mouth a
+  turn is the brain's own (`agent/providers/notifications.mjs` sends it with acknowledgments). The
+  gateway neither strips nor reads it.
+- `max_tokens`, `temperature`, `top_p` override the organ's defaults. Claude gets `temperature` only.
+- `exec: true` gives `temporal-memory` its memory toolset for a consolidation run; without it that
+  organ has no tools.
+- `session` (the cortex, when sessions are on): `open` stores the messages as the session; `continue`
+  replays the stored messages plus these; `reset` replaces them. Organs excluded from sessions (the
+  cerebellum) ignore it.
+
+Response, `200`:
+
+```json
+{
+  "id": "chatcmpl-gateway-7",
+  "object": "chat.completion",
+  "created": 1792252800,
+  "model": "vertex-google/gemini-4-argon",
+  "choices": [{ "index": 0, "message": { "role": "assistant", "content": "…\n\n---\n[TOOL EXECUTION LOG]\n…\n[END TOOL LOG]" }, "finish_reason": "STOP" }],
+  "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "promptTokenCount": 0, "candidatesTokenCount": 0, "cachedContentTokenCount": 0, "cacheCreationTokenCount": 0, "last_step_input_tokens": 0, "steps": 1, "provider": "vertex-google" },
+  "session": { "id": "m-123", "present": true, "seq": 1 },
+  "tool_records": [{ "seq": 0, "tool": "readFile", "args": "…", "result": "…", "chars": 52000 }]
+}
+```
+
+- `model` is the model that answered: the fallback's when the organ's model failed.
+- `content` ends with the tool log when any tool ran (see `agent/context/tool-record.mjs`).
+- `session` appears when a session was opened, reset or continued; `tool_records` when a result was
+  too large for the log.
+- A `continue` that misses answers `200` with only
+  `{"session":{"id","present":false,"reason":"absent" | "organ" | "system_hash" | "seq"}}` and makes
+  no model call; the brain then reopens.
+- Errors: `400` for a malformed request or an unknown organ, `413` for a body over the limit, `500`
+  when both the organ's model and its fallback failed. Body
+  `{"error":{"message","type":"gateway_error","code"}}`.
+
+## Settings
+
+`createGatewayServer({ settings })` and `runTurn({ settings })` take one settings object; anything
+missing or invalid falls back to the default. The gateway service maps `config/contracts.json` onto
+it.
+
+| Key | Default | What it controls |
+|---|---|---|
+| `anthropic.promptCaching` | `false` | Claude prompt caching on the stable system block |
+| `anthropic.messageBreakpoints` | `false` | Cache breakpoints inside the first user message, by tier |
+| `anthropic.sessionAffinity` | `false` | Keeps one organ's calls on one Vertex backend so cache reads hit |
+| `anthropic.cacheTtlStable` / `cacheTtlMission` | `'1h'` / `'1h'` | Cache lifetimes for boot and mission tiers |
+| `gemini.explicitCache` / `explicitCacheTtlSeconds` | `false` / `3600` | Gemini explicit context caching of the system prompt and tools |
+| `toolRecord` | see `agent/context/tool-record.mjs` | When a tool result is stored by reference instead of inlined |
+| `loopGuard.*` | identical 2/3, duplicate 3/4, semantic 8/16, error 5/8, `synthesize: true` | When a stuck tool loop gets a warning, and when it is stopped |
+| `retry.maxRetries` / `retry.baseDelayMs` | `3` / `2000` | Retries of a transient model error before failing over |
+| `session.enabled` / `session.excludedOrgans` | `false` / `['cerebellum']` | Cortex conversation sessions |
+| `maxBodyBytes` | 16 MB | The largest request the server accepts |
+
+Passed to the constructors instead: the organ models (`createOrganRegistry({ models: { cortex,
+strong, fast, fallback } })`), the step budget, tool limits (`createToolRegistry({ limits })`) and
+session limits (`createSessionStore()`).

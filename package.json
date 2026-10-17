@@ -8,6 +8,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "setup": "npm ci --prefix agent",
     "test": "node tests/run.mjs"
   }
 }

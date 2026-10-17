@@ -193,7 +193,8 @@ test on, and the ladder below stops at step 2.
 
 ### The verification ladder
 
-1. **Local tests:** `npm test`.
+1. **Local tests:** `npm test`. Run `npm run setup` once first, and again when
+   `agent/package-lock.json` changes; it installs the gateway's SDKs.
 2. **CI:** push and wait for green.
 3. **Deploy:** `dev/deploy <branch>`.
 4. **Exercise the change:**
