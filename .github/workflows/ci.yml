@@ -1,4 +1,4 @@
-# Every push to main and every pull request runs the full test suite.
+# Every push to main and every pull request runs the full test suite and builds the dashboard.
 name: CI
 
 on:
@@ -17,3 +17,14 @@ jobs:
           node-version: '24'
       - run: npm run setup
       - run: npm test
+
+  dashboard:
+    name: Dashboard build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm ci --prefix dashboard
+      - run: npm run build:dashboard

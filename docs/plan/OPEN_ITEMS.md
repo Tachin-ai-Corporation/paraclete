@@ -55,8 +55,6 @@ Still to check on a dev instance:
 - **Upgrades.** Through control's transient unit (needs a signed command: phase 6), through
   `dev/deploy.mjs` over an SSH session (a dropped IAP connection kills `upgrade.sh`; switch to
   `systemd-run` if it happens), and a reboot after an upgrade keeping the upgraded release.
-- **Gemini 4 reachability.** The installer does not yet check the project can call `gemini-4-argon` (it is
-  global-only and new); add that check to step 1. A fresh project reached it with no quota request.
 - **Index builds after install.** The installer starts the index builds and moves on; for the first
   minute or two after the first boot the brain logs `The query requires an index ... currently
   building` every three seconds, with the full error. Either wait for the indexes in step 4 or have the
@@ -65,40 +63,65 @@ Still to check on a dev instance:
   and warns about two (`@google/genai`'s no-op, `protobufjs`'s version check). Harmless today; declare
   them in `agent/package.json` or silence the warning.
 
-## For phase 6 (dashboard)
+## Found while building the dashboard (phase 6)
 
-- **Commands must be signed.** The agent's own service account can write to the `commands` collection,
-  so today the agent could restart services, switch Claude or start an upgrade on its own instance. The
-  dashboard signs each command as its own service account through IAM Credentials `signJwt` (claims: the
-  command id, type and a digest of its params, a short expiry, audience `paraclete-control`); control
-  verifies the JWT against Google's published certificates for `paraclete-dashboard@` and refuses
-  anything unsigned, expired, or signed by any other account. The agent's account has no
-  `iam.serviceAccountTokenCreator` on the dashboard's, so it cannot sign; no shared secret exists to
-  leak or distribute. Developer tools that send commands sign the same way, as the developer (an owner
-  can be granted token-creator on the dashboard account) or reach the VM over SSH instead.
-- **The command protocol** is in [agent/services/control/README.md](../../agent/services/control/README.md).
-  Until `commit()` supports field masks, write `created_at` as an ISO string: the claim rewrites the whole
-  document.
+The dashboard works around each of these today; each names where the fix belongs.
 
-- **Thread documents.** The agent's thread ledger writes field-masked updates (`channel`,
-  `last_turn_at`, `summary`, `summary_through_ts`) onto the dashboard's own `threads/{id}` document.
-  The dashboard must never rewrite a whole thread document either.
-- **Resolving approvals.** Patch only the fields `approvalResolution()` in `agent/work/approvals.mjs`
-  returns.
-- **Message shape.** Dashboard messages live in the root `messages` collection with fields `text`,
-  `timestamp` (a Firestore timestamp), `processed`, `sender` (`agent`, or the user's email),
-  `sender_name`, `thread_id` and `attachments` (`[{ name, size, gcsPath }]`). The `threads` document
-  schema (for example, ordering by latest activity) is the dashboard's to define.
-- **Unaddressed messages.** Work with no address reaches the dashboard as a message without a
-  `thread_id`. Decide where such messages show.
-- **Secret names.** `secret-read` reads a secret by its plain name; settle the naming convention the
-  dashboard's secret store uses.
+- **Answering a mission.** A person answers a mission's question or blocker only through chat: the
+  brain's classifier attaches the message to the mission. The mission page links to the chat. A
+  deterministic path (a message `reply_to` the brain honors before classifying, as approval replies
+  are) would make answering exact.
+- **A structured verdict.** The checkpoint executor stores no verdict field; the dashboard reads it
+  back from the checkpoint's status and output, `needs_review`, the mission's `_milestone_caveats` and
+  the `Step n.verify` line of `_cp_digest`. Store `verification: { verdict, summary, caveats,
+  inconclusive, checks }` on the checkpoint envelope, and the mission page can show the verifier's
+  per-criterion checks.
+- **Stale approval gates.** A gate whose mission was cancelled or ended stays `pending` forever. The
+  dashboard shows it as no longer needed and refuses to decide it; the agent should close such gates.
+- **Copied constants.** The dashboard copies `AGENT_SENDER` (`agent/providers/channel.mjs`), the
+  `archived_reason` strings (`agent/work/archival.mjs`) and the organs' jobs and tiers
+  (`dashboard/components/agent/organs.js`, from `agent/gateway/organs.mjs`), because it may import
+  only `agent/auth`, `agent/storage` and `agent/work`. Tests pin the first; move each to an importable
+  home when touched.
+- **The whole playbook library.** The `processes` collection holds only playbooks the agent wrote or
+  changed; installed ones live in `roles/` on the VM. A read-only `processes` command in control that
+  merges the two (as `process-ops list` does) would show the whole library. Nothing writes
+  `processes/{id}/revisions` yet; the dashboard reads `{ revision|version, name, description,
+  narrative, status, who, when }`.
+- **Responsibility steps.** Control's `responsibilities` result carries only a step count and a
+  200-character instruction; return the steps to show them.
+- **Notices.** Messages the agent sends to no thread have no `thread_id` field, so the dashboard reads
+  the agent's newest 100 messages to find them (the `sender` + `timestamp` index). Writing
+  `thread_id: null` and supporting `IS_NULL` in `query()` would make it an exact query.
+- **Presence.** The chat's "working on it" reads every unfinished mission, whole, to find this
+  thread's. An index on the address's thread, or a field mask in `query()`, would narrow it.
+- **Who sees what.** Every dashboard user sees every mission and every approval, whoever asked:
+  members "follow and approve missions". Revisit if users need privacy from each other.
+- **Secret versions.** Replacing a secret's value adds a version and leaves the older ones enabled.
+  Decide whether to disable them.
+
+**To confirm on a dev instance** (unverified against the real APIs): `roles/iap.admin` granted on the
+Cloud Run IAP resource rather than the project; whether a service's IAP grants outlive deleting it
+(uninstall does not remove them); Secret Manager's `labels.paraclete=agent` list filter; an
+organization's domain restriction refusing an outside email at `setIamPolicy` (the dashboard passes
+Google's message on).
+
+## For phase 7 (files and Drive)
+
 - **Download list.** `agent/storage/file-store.mjs` writes objects under `files/out/<mission>/` but no
-  Firestore records. The dashboard needs either a bucket listing or records in `files`. A re-export
-  overwrites objects of the same name, so the latest version wins.
+  Firestore records. The chat shows a message's attachments with a download link
+  (`/api/files/download`, streamed through the dashboard); the mission page needs either a bucket
+  listing or records in `files`. A re-export overwrites objects of the same name, so the latest
+  version wins. Phase 7 replaces the streamed download with signed URLs, and adds uploads.
+- **Drive wording.** Project and deploy-target context tells the agent to use "the drive skill"
+  rather than naming commands. Confirm the wording once the skill exists.
 
 ## For phase 9 (models and upgrades)
 
+- **One way to build and deploy the dashboard.** `install/lib/dashboard.mjs` holds the build and deploy
+  arguments (Cloud Build in the region, as the dashboard's account; Cloud Run with 1 CPU, 1 GiB, at most
+  3 instances, IAP on). The upgrade button must do the same; move those settings into
+  `config/contracts.json`, which the dashboard may read.
 - **Platform version on envelopes.** `platform_version` is declared on envelopes but nothing stamps it.
   Stamp it from `<install root>/release.json` once releases exist.
 
@@ -110,8 +133,3 @@ Still to check on a dev instance:
   the bootstrap merges into `instance.json`), then restarts ears and mouth.
 - **Role setup packages.** `bootstrap.sh` refuses a role whose `setup` lists `pip` or `npm` packages;
   add support when a role first needs them.
-
-## For phase 7 (files and Drive)
-
-- **Drive wording.** Project and deploy-target context tells the agent to use "the drive skill"
-  rather than naming commands. Confirm the wording once the skill exists.

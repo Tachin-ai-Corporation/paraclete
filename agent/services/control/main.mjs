@@ -6,6 +6,8 @@
 
 import { pathToFileURL } from 'node:url';
 import { createServiceRuntime } from '../service-runtime.mjs';
+import { createCommandVerifier } from '../../auth/command-signature.mjs';
+import { dashboardAccountEmail } from '../../../config/instance.mjs';
 import { createSystemd } from './systemd.mjs';
 import { createCommandQueue } from './command-queue.mjs';
 import { createHandlers } from './commands.mjs';
@@ -41,6 +43,8 @@ export function controlSettings(contracts) {
  * @param {object}   runtime          from createServiceRuntime({ service: 'control' })
  * @param {object}   [deps]           injectable for tests
  * @param {object}   [deps.systemd]   from createSystemd(), or a fake of its shape
+ * @param {Function} [deps.verifyCommand] the signature check; by default, signatures by the dashboard's
+ *   service account only
  * @param {Function} [deps.readText]
  * @param {Function} [deps.exists]
  * @param {Function} [deps.now]       () => Date
@@ -52,6 +56,7 @@ export function controlSettings(contracts) {
 export function buildControl(runtime, deps = {}) {
   const {
     systemd = createSystemd(),
+    verifyCommand = createCommandVerifier({ signerEmail: dashboardAccountEmail(runtime.instance) }),
     readText,
     exists,
     now = () => new Date(),
@@ -61,7 +66,7 @@ export function buildControl(runtime, deps = {}) {
   } = deps;
   const settings = controlSettings(runtime.contracts);
   const handlers = createHandlers({ runtime, systemd, settings, now, sleep, ...(readText ? { readText } : {}), ...(exists ? { exists } : {}) });
-  const queue = createCommandQueue({ db: runtime.db, collections: runtime.collections, handlers, log: runtime.log, now });
+  const queue = createCommandQueue({ db: runtime.db, collections: runtime.collections, handlers, verifyCommand, log: runtime.log, now });
 
   let timer = null;
   let stopped = false;

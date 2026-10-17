@@ -185,9 +185,9 @@ Instances install from GitHub at an exact commit, so push your branch first.
 
 | Situation | Command |
 |---|---|
-| New dev instance | `install/install.sh --ref <branch>` in Cloud Shell or a terminal logged in to the dev project. For a fork, add `--repo <owner>/paraclete`; the fork must be public. |
-| Existing dev instance | `node dev/deploy.mjs <branch>` resolves the branch to a commit on GitHub, moves the VM to it through the same upgrader a release upgrade runs, and waits until the agent reports ready on it. Testing a branch therefore also tests the upgrade. Moving the dashboard too arrives with the dashboard (build plan phase 6). |
-| Check what it runs | `node dev/status.mjs` shows the commit the agent runs and whether its services are healthy. It must match the commit you pushed. The dashboard's commit joins it in phase 6. |
+| New dev instance | `install/install.sh --ref <branch>` in Cloud Shell or a terminal logged in to the dev project. For a fork, add `--repo <owner>/paraclete`; the fork must be public. It builds and deploys the dashboard too, and makes you its first admin. |
+| Existing dev instance | `node dev/deploy.mjs <branch>` resolves the branch to a commit on GitHub, moves the VM to it through the same upgrader a release upgrade runs, and waits until the agent reports ready on it. Then it builds the dashboard at that commit with Cloud Build (unless that image exists) and deploys it to Cloud Run, the way the installer does. Testing a branch therefore also tests the upgrade. `--vm-only` or `--dashboard-only` moves one half, when your change touches only that half. |
+| Check what it runs | `node dev/status.mjs` shows the commit the agent runs, whether its services are healthy, and the dashboard's URL and commit. Both commits must match the commit you pushed; status fails when they differ. |
 
 The `dev/` commands run on your machine (Git Bash on Windows, macOS or Linux) with Node 24 and `gcloud`
 logged in to the dev project. [dev/README.md](dev/README.md) lists their options.

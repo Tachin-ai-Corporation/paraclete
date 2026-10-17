@@ -14,3 +14,4 @@ This package imports nothing else from `agent/`.
 |---|---|
 | `metadata-token.mjs` | Tokens for the VM's service account, from the metadata server |
 | `dwd-token.mjs` | Tokens for the agent's Workspace account, through domain-wide delegation |
+| `command-signature.mjs` | Signing the dashboard's commands to the VM, and the check the control service runs on each |

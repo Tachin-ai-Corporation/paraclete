@@ -1,7 +1,9 @@
 // Tests for install/uninstall.sh, run with bash against tests/install/fake-cloud.mjs on a project that
-// install/install.sh set up (through the same fake). It names exactly what it will delete, deletes
-// that and keeps the database and the bucket; --purge deletes those too, but only after the project id
-// is typed; a dry run deletes nothing; and it never touches what the installer didn't create.
+// install/install.sh set up (through the same fake), dashboard included. It names exactly what it will
+// delete, deletes that (the dashboard's service, its image repository and every project grant of the
+// accounts, the dashboard's log writer among them) and keeps the database and the bucket; --purge
+// deletes those too, but only after the project id is typed; a dry run deletes nothing; and it never
+// touches what the installer didn't create.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSandbox, find, flag, freshProject, needsBash, steps, PROJECT } from './harness.mjs';
@@ -50,7 +52,10 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
       'VM paraclete in us-central1-a, with its disk',
       'firewall rule paraclete-allow-iap-ssh',
       'firewall rule paraclete-deny-ingress',
+      'Cloud Run service paraclete in us-central1 (the dashboard)',
+      "Artifact Registry repository paraclete in us-central1 (the dashboard's images)",
       'Firestore index messages|collection|thread_id:ascending,timestamp:descending',
+      'Firestore index messages|collection|sender:ascending,timestamp:descending',
       'Firestore index work|collection|status:ascending,created_at:descending',
       'Firestore index work|collection|status:ascending,created_at:ascending',
       'Firestore index work|collection|type:ascending,created_at:descending',
@@ -93,6 +98,23 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.ok(position(commands, 'gcloud', 'storage', 'buckets', 'remove-iam-policy-binding') < accountsDeleted);
   });
 
+  test("the plan deletes the dashboard's service and images, and every project grant of its account, logs included", async () => {
+    const { commands } = await createSandbox(installed).run('uninstall.sh', ['--dry-run']);
+    const [service, ...moreServices] = find(commands, 'gcloud', 'run', 'services', 'delete');
+    assert.equal(moreServices.length, 0);
+    assert.deepEqual([service[4], flag(service, 'region'), flag(service, 'project')], ['paraclete', 'us-central1', PROJECT]);
+    const [images, ...moreImages] = find(commands, 'gcloud', 'artifacts', 'repositories', 'delete');
+    assert.equal(moreImages.length, 0);
+    assert.deepEqual([images[4], flag(images, 'location'), flag(images, 'project')], ['paraclete', 'us-central1', PROJECT]);
+    const dashboardRoles = find(commands, 'gcloud', 'projects', 'remove-iam-policy-binding')
+      .filter((c) => flag(c, 'member') === `serviceAccount:${DASHBOARD}`).map((c) => flag(c, 'role'));
+    const granted = installed.projectPolicy.filter(([, member]) => member === `serviceAccount:${DASHBOARD}`).map(([role]) => role);
+    assert.ok(granted.includes('roles/logging.logWriter'), 'the installer granted it');
+    assert.deepEqual(dashboardRoles, granted);
+    const accountsDeleted = position(commands, 'gcloud', 'iam', 'service-accounts', 'delete');
+    assert.ok(position(commands, 'gcloud', 'run', 'services', 'delete') < accountsDeleted, 'the service runs as the account');
+  });
+
   test('without --yes, a no deletes nothing', async () => {
     const run = await createSandbox(installed).run('uninstall.sh', [], { input: 'n\n' });
     assert.equal(run.status, 1);
@@ -108,6 +130,10 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     const after = box.state();
     assert.deepEqual(after.instances, {});
     assert.deepEqual(after.firewallRules, {});
+    assert.deepEqual(after.runServices, {});
+    assert.deepEqual(after.imageRepositories, []);
+    assert.deepEqual(after.images, {});
+    assert.deepEqual(after.users, installed.users, "the dashboard's users stay with the database");
     assert.deepEqual(after.accounts, []);
     assert.deepEqual(after.projectPolicy, OWNER_ONLY);
     assert.deepEqual(after.indexes, []);
@@ -159,6 +185,8 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(after.buckets, {});
     assert.deepEqual(after.accounts, []);
     assert.deepEqual(after.instances, {});
+    assert.deepEqual(after.runServices, {});
+    assert.deepEqual(after.imageRepositories, []);
     assert.deepEqual(after.projectPolicy, OWNER_ONLY);
   });
 

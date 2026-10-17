@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # install/install.sh: turns a Google Cloud project into a running paraclete. Run by the project's owner
-# in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs, creates the service
-# accounts, Firestore, the bucket, the network and the agent's VM, then waits until the agent reports
-# ready. Every create is "create if missing" and every grant is additive, so re-running repairs, and
-# re-running with another --ref moves the VM to that commit. It never logs in to the VM: what happens
-# on the VM is install/bootstrap.sh's job, and the contract between the two is install/README.md.
+# in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs and checks the agent's
+# model answers, creates the service accounts, Firestore, the bucket, the dashboard (built by Cloud
+# Build, on Cloud Run behind IAP, with the installer as its first admin), the network and the agent's
+# VM, then waits until the agent reports ready. Every create is "create if missing" and every grant is
+# additive, so re-running repairs, and re-running with another --ref moves the dashboard and the VM to
+# that commit. It never logs in to the VM: what happens on the VM is install/bootstrap.sh's job, and
+# the contract between the two is install/README.md.
 # --dry-run prints every command that would change something and changes nothing.
 set -euo pipefail
 
@@ -28,6 +30,9 @@ export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 
 STEP_TOTAL=9
 
+# The dashboard's build and deploy commands, written once for this script and dev/deploy.mjs.
+DASHBOARD_JS="$INSTALL_DIR/lib/dashboard.mjs"
+
 # How long step 9 waits for the agent's first boot (the toolchain install takes most of it), and how
 # often it looks.
 WAIT_TIMEOUT_SECONDS=1200
@@ -50,15 +55,22 @@ WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
 # The Service Usage API takes a limited number of services per call.
 APIS_PER_CALL=10
 
+# Step 2 asks the agent's model for one word. A just-enabled API can take a minute to answer, so a
+# failure is tried again this many times, this far apart, before it stops the install.
+MODEL_CHECK_ATTEMPTS="${MODEL_CHECK_ATTEMPTS:-6}"
+MODEL_CHECK_DELAY_SECONDS="${MODEL_CHECK_DELAY_SECONDS:-12}"
+MODEL_CHECK_PROMPT='{"contents":[{"role":"user","parts":[{"text":"Reply with one word: ready"}]}]}'
+
 # The dashboard's account on the project (build plan sections 3 and 7, phase 6). Its other grants sit
-# on single resources: the bucket (step 5), itself (below), and IAP on its own Cloud Run service once
-# that exists (step 6).
+# on single resources: the bucket (step 5), itself (below), and in step 6 the image repository (its
+# builds push there) and IAP on its own Cloud Run service (it adds and removes the dashboard's users).
 DASHBOARD_PROJECT_ROLES=(
   roles/datastore.user           # Firestore: users, threads, messages, approvals, commands, settings
   roles/secretmanager.admin      # the secret store: creates secrets and grants the agent access to each
   roles/cloudbuild.builds.editor # self-upgrade: builds the dashboard image at a release
   roles/run.admin                # self-upgrade: deploys the new revision of its own service
   roles/aiplatform.user          # Settings, Models: the Test button probes the model
+  roles/logging.logWriter        # its builds run as itself and log to Cloud Logging only (dashboard/cloudbuild.yaml)
 )
 # Granted on the dashboard's own account, not the project: it deploys revisions and submits builds
 # that run as itself (actAs), and it signs its upload URLs and the commands it sends the VM as itself.
@@ -80,8 +92,15 @@ REQUIRED_PERMISSIONS=(
   compute.networks.create
   compute.firewalls.create
   compute.instances.create
+  artifactregistry.repositories.create
+  cloudbuild.builds.create
   run.services.create
 )
+
+# The dashboard's users, one Firestore document per email (dashboard/lib/server/users.mjs). Step 6
+# writes the first: the installer, as an admin.
+USERS_COLLECTION=users
+IMAGE_REPOSITORY_DESCRIPTION='Images of the paraclete dashboard, one per release'
 
 # Agent names and release names go into VM metadata as `key=value,...`, so neither may hold a comma.
 AGENT_NAME_PATTERN="^[[:alnum:]][[:alnum:] ._'-]{0,39}\$"
@@ -308,6 +327,13 @@ derive_names() {
   DASHBOARD_EMAIL="$(account_email "$DASHBOARD_ACCOUNT_ID" "$PROJECT")"
   DWD_EMAIL="$(account_email "$DWD_ACCOUNT_ID" "$PROJECT")"
   BUCKET="$(bucket_name "$PROJECT")"
+  # The installer, as IAP and the dashboard's users records name people: a lowercase email.
+  INSTALLER_EMAIL="$(tr '[:upper:]' '[:lower:]' <<<"$ACCOUNT")"
+  if [[ "$INSTALLER_EMAIL" == *.gserviceaccount.com ]]; then
+    INSTALLER_MEMBER="serviceAccount:$INSTALLER_EMAIL"
+  else
+    INSTALLER_MEMBER="user:$INSTALLER_EMAIL"
+  fi
 }
 
 summarize_and_confirm() {
@@ -319,6 +345,7 @@ summarize_and_confirm() {
   say "  repository  $REPO"
   say "  region      $REGION, VM in $ZONE"
   say "  bucket      gs://$BUCKET"
+  say "  dashboard   Cloud Run service $SERVICE_NAME, behind Google sign-in (first admin: $INSTALLER_EMAIL)"
   if [[ "$DRY_RUN" == 1 ]]; then
     say ""
     say "Dry run: nothing will change. Each command that would change something is printed after a +."
@@ -334,7 +361,12 @@ summarize_and_confirm() {
 # ---------------------------------------------------------------------------------------------------
 
 step_apis() {
-  step 2 apis "turn on the Google APIs the agent and the dashboard use"
+  step 2 apis "turn on the Google APIs the agent and the dashboard use, and check the agent's model answers"
+  enable_apis
+  check_model
+}
+
+enable_apis() {
   local wanted=("${BASE_APIS[@]}") enabled api missing=() i
   if [[ "$ROLE_WORKSPACE" == true ]]; then
     wanted+=("${WORKSPACE_APIS[@]}")
@@ -356,6 +388,89 @@ step_apis() {
   if [[ "$DRY_RUN" == 1 ]]; then
     note "(dry run: while these APIs are off, the steps below cannot look inside them, so they plan to create everything there)"
   fi
+}
+
+# Gemini 4 is new and served only from Vertex AI's global endpoint (build plan section 13), so before
+# building anything on it the install proves this project can call the agent's model: the contracts'
+# cortex model, asked for one word, as you. A failure is tried again for about a minute (a just-enabled
+# API takes a moment to answer), then stops the install with what to do about it.
+check_model() {
+  local spec model location url answer attempt=1
+  spec="$(contract vertex.models.cortex)"
+  location="$(contract vertex.location)"
+  model="${spec#*/}"
+  if [[ "${spec%%/*}" != vertex-google ]]; then
+    note "the agent's model is $spec, not a Gemini model on Vertex AI; not checked"
+    return 0
+  fi
+  if [[ "$DRY_RUN" == 1 ]]; then
+    note "(dry run: a real run checks here that $PROJECT can call $model, once the APIs are on)"
+    return 0
+  fi
+  url="$(vertex_endpoint "$location")/v1/projects/$PROJECT/locations/$location/publishers/google/models/$model:generateContent"
+  while :; do
+    answer="$(model_answer "$url")"
+    if [[ "$answer" == ok ]]; then
+      note "$model answers in $PROJECT (Vertex AI, $location)"
+      return 0
+    fi
+    ((attempt < MODEL_CHECK_ATTEMPTS)) || break
+    warn "$model did not answer ($answer); trying again in ${MODEL_CHECK_DELAY_SECONDS}s"
+    sleep "$MODEL_CHECK_DELAY_SECONDS"
+    attempt=$((attempt + 1))
+  done
+  die "$(model_failure "$model" "$location" "$answer")"
+}
+
+# vertex_endpoint <location>: Vertex AI's API host for a location. The global one has no prefix.
+vertex_endpoint() {
+  if [[ "$1" == global ]]; then
+    printf 'https://aiplatform.googleapis.com\n'
+  else
+    printf 'https://%s-aiplatform.googleapis.com\n' "$1"
+  fi
+}
+
+# model_answer <url>: "ok" when the model answered, else "<status>: <message>" from Google's error (or
+# UNREACHABLE when the request never got an answer).
+model_answer() {
+  local token response
+  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+    printf 'NO_TOKEN: gcloud could not give an access token\n'
+    return 0
+  }
+  response="$(curl -sS -X POST -H "Authorization: Bearer $token" -H "x-goog-user-project: $PROJECT" \
+    -H 'Content-Type: application/json' --data "$MODEL_CHECK_PROMPT" "$1" 2>&1)" || {
+    printf 'UNREACHABLE: %s\n' "$(tr '\n' ' ' <<<"$response")"
+    return 0
+  }
+  node -e '
+const fs = require("node:fs");
+let answer;
+try { answer = JSON.parse(fs.readFileSync(0, "utf8")); } catch { console.log("UNREADABLE: the answer was not JSON"); process.exit(0); }
+if (answer && Array.isArray(answer.candidates)) { console.log("ok"); process.exit(0); }
+const error = (answer && answer.error) || {};
+console.log(`${error.status || error.code || "UNKNOWN"}: ${String(error.message || "no message").replace(/\s+/g, " ")}`);
+' <<<"$response"
+}
+
+# model_failure <model> <location> <answer>: why the model check stopped the install, and what to do.
+model_failure() {
+  local model="$1" location="$2" answer="$3" why
+  case "$answer" in
+    RESOURCE_EXHAUSTED* | 429*)
+      why="$PROJECT has no quota for $model yet. Ask for it under IAM & Admin, Quotas (Vertex AI API, generate content requests per minute per base model, $location): https://console.cloud.google.com/iam-admin/quotas?project=$PROJECT" ;;
+    NOT_FOUND* | 404* | FAILED_PRECONDITION* | 400*)
+      why="$model is not available to $PROJECT at Vertex AI's $location endpoint. Enable it for the project in Model Garden (https://console.cloud.google.com/vertex-ai/model-garden?project=$PROJECT), or ask whoever runs your organization's policies whether they restrict which models it may use" ;;
+    PERMISSION_DENIED* | 403*)
+      if [[ "$answer" == *"has not been used"* || "$answer" == *disabled* ]]; then
+        why="the Vertex AI API is still turning on for $PROJECT. Wait a few minutes"
+      else
+        why="$ACCOUNT may not call $model in $PROJECT, or an organization policy blocks it"
+      fi ;;
+    *) why="Vertex AI could not be reached, or did not answer as expected" ;;
+  esac
+  printf 'the agent cannot use its model: %s. Then run install/install.sh again; what it did so far stays. (%s)\n' "$why" "$answer"
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -504,22 +619,196 @@ lifecycle_json() {
 
 step_dashboard() {
   step 6 dashboard "the web dashboard on Cloud Run, behind Google sign-in"
-  if [[ -f "$REPO_ROOT/dashboard/package.json" ]]; then
-    deploy_dashboard
-  else
-    note "dashboard: arrives in a later release"
+  if fetch_build_config; then
+    DASHBOARD_IMAGE="$(dashboard_js image project="$PROJECT" region="$REGION")"
+    IAP_AGENT="$(dashboard_js iap-agent projectNumber="$PROJECT_NUMBER")"
+    DASHBOARD_ENV=(project="$PROJECT" projectNumber="$PROJECT_NUMBER" region="$REGION" bucket="$BUCKET"
+      repo="$REPO" release="$RELEASE" commit="$COMMIT" agentName="$AGENT_NAME" role="$ROLE")
+    ensure_image_repository
+    ensure_image
+    ensure_service
+    ensure_sign_in
+    ensure_first_admin
   fi
   DASHBOARD_URL="$(gcloud run services describe "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" \
     --format='value(status.url)' 2>/dev/null || true)"
+  if [[ -n "$DASHBOARD_URL" ]]; then
+    note "the dashboard is at $DASHBOARD_URL"
+  fi
 }
 
-# Build plan phase 6 fills this in: Cloud Build builds dashboard/ at $COMMIT into the Artifact Registry
-# repository $IMAGE_REPOSITORY in $REGION; Cloud Run deploys it as $SERVICE_NAME, running as
-# $DASHBOARD_EMAIL, with IAP on and no unauthenticated access; the installer ($ACCOUNT) gets
-# roles/iap.httpsResourceAccessor on the service and becomes the first admin; the dashboard's account
-# gets roles/iap.admin on its own service, to add and remove users.
-deploy_dashboard() {
-  warn "this installer cannot deploy dashboard/ yet; the agent installs without it"
+# dashboard_js <command> [key=value]...: runs install/lib/dashboard.mjs, which holds the dashboard's
+# build and deploy commands for this script and dev/deploy.mjs alike.
+dashboard_js() {
+  node "$DASHBOARD_JS" "$@" || die "install/lib/dashboard.mjs $1 failed"
+}
+
+# gcloud_args <command> [key=value]...: the gcloud arguments dashboard.mjs builds, into GCLOUD_ARGS.
+gcloud_args() {
+  local listing arg
+  listing="$(dashboard_js "$@")"
+  GCLOUD_ARGS=()
+  while IFS= read -r arg; do
+    GCLOUD_ARGS+=("$arg")
+  done <<<"$listing"
+}
+
+# Downloads the release's own dashboard/cloudbuild.yaml. gcloud reads --config from this machine, not
+# from the source it builds, and a release is built with its own build steps, not this clone's. A
+# release from before the dashboard has none, and installs without a dashboard.
+fetch_build_config() {
+  local url status=0
+  BUILD_CONFIG_FILE="$WORK_DIR/cloudbuild.yaml"
+  url="$(dashboard_js build-config-url repo="$REPO" commit="$COMMIT")"
+  curl -sSfL --retry 3 -o "$BUILD_CONFIG_FILE" "$url" 2>/dev/null || status=$?
+  case "$status" in
+    0)
+      show_file cloudbuild.yaml "$BUILD_CONFIG_FILE"
+      return 0 ;;
+    22)
+      note "$RELEASE has no dashboard/cloudbuild.yaml: it predates the dashboard, so there is none to deploy"
+      return 1 ;;
+    *) die "could not download $url (curl exit $status)" ;;
+  esac
+}
+
+# The Artifact Registry repository the images go to. The dashboard's account may push to it, and to
+# nothing else in the registry: its builds run as itself.
+ensure_image_repository() {
+  local policy
+  if gcloud artifacts repositories describe "$IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" \
+    --format='value(name)' >/dev/null 2>&1; then
+    note "image repository $IMAGE_REPOSITORY exists in $REGION"
+  else
+    run gcloud artifacts repositories create "$IMAGE_REPOSITORY" --repository-format=docker --location="$REGION" \
+      --description="$IMAGE_REPOSITORY_DESCRIPTION" --project="$PROJECT" --quiet
+  fi
+  policy="$(read_repository_policy "$IMAGE_REPOSITORY" "$REGION" "$PROJECT")"
+  ensure_repository_role "$IMAGE_REPOSITORY" "$REGION" "$PROJECT" "$policy" "serviceAccount:$DASHBOARD_EMAIL" \
+    roles/artifactregistry.writer
+}
+
+# The image at the release's commit, built by Cloud Build as the dashboard's own account (the one its
+# upgrade button builds as). An image is tagged with its commit, so one that exists is not built again.
+ensure_image() {
+  local tags
+  gcloud_args tags-args project="$PROJECT" region="$REGION"
+  tags="$(gcloud "${GCLOUD_ARGS[@]}" 2>/dev/null || true)"
+  if grep -Fxq -- "$COMMIT" <<<"$tags"; then
+    note "the image $DASHBOARD_IMAGE:$COMMIT exists"
+    return 0
+  fi
+  gcloud_args build-args repo="$REPO" commit="$COMMIT" configFile="$BUILD_CONFIG_FILE" project="$PROJECT" region="$REGION"
+  run gcloud "${GCLOUD_ARGS[@]}"
+}
+
+# The Cloud Run service, deployed unless it already runs this commit exactly as it should: the same
+# environment, account, IAP, ingress and size, and not open to everyone.
+ensure_service() {
+  local service policy drift env_file="$WORK_DIR/dashboard-env.yaml"
+  gcloud_args describe-args project="$PROJECT" region="$REGION"
+  service="$(gcloud "${GCLOUD_ARGS[@]}" 2>/dev/null || true)"
+  policy="$(read_service_policy "$SERVICE_NAME" "$REGION" "$PROJECT")"
+  drift="$(dashboard_js drift "${DASHBOARD_ENV[@]}" <<<"$service")"
+  if has_binding "$policy" roles/run.invoker allUsers || has_binding "$policy" roles/run.invoker allAuthenticatedUsers; then
+    drift="${drift:+$drift, }public access"
+  fi
+  if [[ -z "$drift" ]]; then
+    note "$SERVICE_NAME already runs $COMMIT"
+    return 0
+  fi
+  if [[ "$drift" != missing ]]; then
+    note "$SERVICE_NAME exists; deploying because of: $drift"
+  fi
+  dashboard_js env-file "${DASHBOARD_ENV[@]}" >"$env_file"
+  show_file dashboard-env.yaml "$env_file"
+  ensure_iap_agent "$policy"
+  gcloud_args deploy-args project="$PROJECT" region="$REGION" commit="$COMMIT" envFile="$env_file"
+  run gcloud "${GCLOUD_ARGS[@]}"
+}
+
+# ensure_iap_agent <service policy>: IAP reaches the service as its own service agent, which a project
+# has only once it is asked for. Asked for once per run, and only while that agent is not already let
+# in (then it exists). It comes before a deploy: gcloud grants it the invoker role as it turns IAP on.
+ensure_iap_agent() {
+  if has_binding "$1" roles/run.invoker "serviceAccount:$IAP_AGENT" || ((${IAP_AGENT_ASKED:-0})); then
+    return 0
+  fi
+  run gcloud beta services identity create --service=iap.googleapis.com --project="$PROJECT" --quiet
+  IAP_AGENT_ASKED=1
+}
+
+# Who reaches the dashboard. IAP's service agent may invoke the service (IAP itself decides who signs
+# in); the installer may sign in, and becomes the first admin below; the dashboard's own account
+# administers IAP on its service, so the dashboard adds and removes its users itself.
+ensure_sign_in() {
+  local policy iap_policy
+  policy="$(read_service_policy "$SERVICE_NAME" "$REGION" "$PROJECT")"
+  ensure_iap_agent "$policy"
+  ensure_service_role "$SERVICE_NAME" "$REGION" "$PROJECT" "$policy" "serviceAccount:$IAP_AGENT" roles/run.invoker
+  iap_policy="$(read_iap_policy "$SERVICE_NAME" "$REGION" "$PROJECT")"
+  ensure_iap_role "$SERVICE_NAME" "$REGION" "$PROJECT" "$iap_policy" "$INSTALLER_MEMBER" roles/iap.httpsResourceAccessor
+  ensure_iap_role "$SERVICE_NAME" "$REGION" "$PROJECT" "$iap_policy" "serviceAccount:$DASHBOARD_EMAIL" roles/iap.admin
+}
+
+# The installer becomes the dashboard's first admin: users/<email> in Firestore, written through the
+# REST API as you. Create-only (the exists=false precondition), so a re-run never rewrites a record the
+# dashboard has changed since, nor demotes or restores anyone.
+ensure_first_admin() {
+  local url state body_file="$WORK_DIR/first-admin.json" header_file="$WORK_DIR/firestore-headers" token
+  url="https://firestore.googleapis.com/v1/projects/$PROJECT/databases/$FIRESTORE_DATABASE/documents/$USERS_COLLECTION/$INSTALLER_EMAIL"
+  state="$(firestore_doc_state "$url")"
+  case "$state" in
+    exists)
+      note "$INSTALLER_EMAIL is a dashboard user already; the record stays as it is"
+      return 0 ;;
+    missing) ;;
+    *)
+      [[ "$DRY_RUN" == 1 ]] \
+        || die "could not read $USERS_COLLECTION/$INSTALLER_EMAIL from Firestore (${state#unknown: }). Re-running install/install.sh is safe."
+      note "(dry run: Firestore cannot be read yet, so it plans to create the record)" ;;
+  esac
+  first_admin_json "$INSTALLER_EMAIL" >"$body_file"
+  show_file first-admin.json "$body_file"
+  # The token reaches curl through a file (mode 600, in the run's own temporary directory), so the
+  # command `run` prints, and a dry run shows, never holds it.
+  if [[ "$DRY_RUN" != 1 ]]; then
+    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
+  fi
+  run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
+    --data-binary "@$body_file" "$url?currentDocument.exists=false"
+}
+
+# firestore_doc_state <document url>: "exists", "missing", or "unknown: <why>", read as you.
+firestore_doc_state() {
+  local token response
+  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+    printf 'unknown: gcloud could not give an access token\n'
+    return 0
+  }
+  response="$(curl -sS -g -H "Authorization: Bearer $token" -H "x-goog-user-project: $PROJECT" "$1" 2>&1)" || {
+    printf 'unknown: %s\n' "$(tr '\n' ' ' <<<"$response")"
+    return 0
+  }
+  node -e '
+const fs = require("node:fs");
+let doc;
+try { doc = JSON.parse(fs.readFileSync(0, "utf8")); } catch { console.log("unknown: the answer was not JSON"); process.exit(0); }
+if (doc && doc.name && !doc.error) console.log("exists");
+else if (doc && doc.error && doc.error.status === "NOT_FOUND") console.log("missing");
+else console.log(`unknown: ${String((doc && doc.error && (doc.error.message || doc.error.status)) || "no answer").replace(/\s+/g, " ")}`);
+' <<<"$response"
+}
+
+# first_admin_json <email>: the record dashboard/lib/server/users.mjs reads, as a Firestore document.
+first_admin_json() {
+  node -e '
+const [email] = process.argv.slice(1);
+const record = { email, role: "admin", added_by: "install.sh", added_at: new Date().toISOString() };
+const fields = Object.fromEntries(Object.entries(record).map(([key, value]) => [key, { stringValue: value }]));
+console.log(JSON.stringify({ fields }));
+' "$1"
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -765,7 +1054,7 @@ finish() {
   fi
   say "Done. $AGENT_NAME runs on the VM $VM_NAME in $VM_ZONE."
   if [[ -n "$DASHBOARD_URL" ]]; then
-    say "Dashboard: $DASHBOARD_URL"
+    say "Dashboard: $DASHBOARD_URL (sign in as $INSTALLER_EMAIL; add other people from the dashboard)"
   fi
   say "Watch its logs:"
   say "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f"

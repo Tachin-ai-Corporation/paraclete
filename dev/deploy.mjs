@@ -1,20 +1,34 @@
 #!/usr/bin/env node
-// dev/deploy.mjs: moves your dev instance's VM to a pushed branch, a tag or a full commit, through
-// the upgrader a release upgrade runs. It resolves the ref to a 40-character commit on GitHub (the VM
-// installs from there, never from your clone), refuses a branch that is not pushed, runs
+// dev/deploy.mjs: moves your dev instance to a pushed branch, a tag or a full commit. It resolves the
+// ref to a 40-character commit on GitHub (the instance installs from there, never from your clone) and
+// refuses a branch that is not pushed. Then the VM: it runs
 // `sudo /opt/paraclete/install/upgrade.sh --ref <commit> --repo <owner>/<name>` on the VM over IAP
-// with its output streamed to you, then waits for the Firestore document agent/instance to report
-// ready on that commit. The dashboard half of a deploy arrives with build plan phase 6.
+// with its output streamed to you, and waits for the Firestore document agent/instance to report
+// ready on that commit. Then the dashboard, the way install/install.sh does it and from the same
+// definitions (install/lib/dashboard.mjs): Cloud Build builds that commit's image unless the image
+// exists, and Cloud Run deploys it, with the service's environment moved to that commit, unless the
+// service already runs it. --vm-only and --dashboard-only move one half. The dashboard service must
+// exist already: install/install.sh creates it.
 
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
-  DevError, VM_PATHS, READINESS_DOC, devContext, failureDetail, isMain, pollUntil, runCommand,
+  BUILD_CONFIG_PATH, NAMES, buildArgs, deployArgs, deployedCommit, deployedEnv, describeArgs, envFileText,
+  parseService, serviceDrift, tagsArgs,
+} from '../install/lib/dashboard.mjs';
+import {
+  DevError, REPO_ROOT, VM_PATHS, READINESS_DOC, devContext, failureDetail, isMain, pollUntil, runCommand,
 } from './dev-env.mjs';
 
-const USAGE = `Usage: node dev/deploy.mjs <branch|tag|commit> [--repo <owner>/<name>] [--timeout <seconds>]
-Moves your dev instance's VM to a pushed branch, a tag or a full 40-character commit, through the
-upgrader a release upgrade runs, then waits for agent/instance to report ready on that commit.
-  --repo     the public GitHub repository to install from (default: this clone's origin)
-  --timeout  seconds to wait for readiness once the upgrader has finished (default 600)`;
+const USAGE = `Usage: node dev/deploy.mjs <branch|tag|commit> [--repo <owner>/<name>] [--vm-only | --dashboard-only] [--timeout <seconds>]
+Moves your dev instance to a pushed branch, a tag or a full 40-character commit: the VM through the
+upgrader a release upgrade runs (then waits for agent/instance to report ready on that commit), then
+the dashboard, built at that commit by Cloud Build and deployed to Cloud Run as the installer does.
+  --repo            the public GitHub repository to install from (default: this clone's origin)
+  --vm-only         move the VM only
+  --dashboard-only  move the dashboard only
+  --timeout         seconds to wait for readiness once the upgrader has finished (default 600)`;
 
 const DEFAULT_TIMEOUT_SECONDS = 600;
 const POLL_MS = 5_000;
@@ -24,7 +38,7 @@ const REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 const REF = /^(?!-)(?!.*\.\.)(?!.*\/\/)[A-Za-z0-9._/-]+(?<![./])$/;
 
 function parseArgs(argv) {
-  const opts = { ref: null, repo: null, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, help: false };
+  const opts = { ref: null, repo: null, timeoutSeconds: DEFAULT_TIMEOUT_SECONDS, help: false, vm: true, dashboard: true };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => {
@@ -33,6 +47,8 @@ function parseArgs(argv) {
     };
     if (arg === '--help' || arg === '-h') opts.help = true;
     else if (arg === '--repo') opts.repo = value();
+    else if (arg === '--vm-only') opts.dashboard = false;
+    else if (arg === '--dashboard-only') opts.vm = false;
     else if (arg === '--timeout') {
       const raw = value();
       opts.timeoutSeconds = Number(raw);
@@ -42,6 +58,7 @@ function parseArgs(argv) {
     else opts.ref = arg;
   }
   if (!opts.help && !opts.ref) throw new DevError(`Name the branch, tag or commit to deploy.\n${USAGE}`, 2);
+  if (!opts.vm && !opts.dashboard) throw new DevError(`--vm-only and --dashboard-only exclude each other.\n${USAGE}`, 2);
   return opts;
 }
 
@@ -95,8 +112,8 @@ async function originRepo(ctx) {
 }
 
 /**
- * Resolves what you asked for to the commit the VM will install. A full commit id is taken as it
- * is; a branch or tag is looked up on GitHub, anonymously, as the VM will fetch it.
+ * Resolves what you asked for to the commit the instance will install. A full commit id is taken as
+ * it is; a branch or tag is looked up on GitHub, anonymously, as the VM and Cloud Build will fetch it.
  */
 async function resolveRef(ctx, ref, repo) {
   if (COMMIT.test(ref.toLowerCase())) return { commit: ref.toLowerCase(), kind: 'commit', name: ref.toLowerCase() };
@@ -114,7 +131,7 @@ async function resolveRef(ctx, ref, repo) {
   throw new DevError(`'${ref}' is not a branch or tag on ${repo}. Push it first: git push -u origin ${ref}`);
 }
 
-/** Warns when your local copy of the branch is not what GitHub has: the VM gets GitHub's. */
+/** Warns when your local copy of the branch is not what GitHub has: the instance gets GitHub's. */
 async function checkPushed(ctx, resolved) {
   const local = await ctx.git(['rev-parse', '--verify', '--quiet', `refs/heads/${resolved.name}`]);
   const localCommit = local.code === 0 ? local.stdout.trim() : '';
@@ -151,6 +168,96 @@ async function waitForReady(ctx, commit, timeoutMs) {
   return outcome.done ? outcome.value : { ok: false, doc: last, timedOut: true };
 }
 
+/** Moves the VM: the upgrader over IAP, then the wait for readiness. */
+async function deployVm(ctx, { instance, repo, commit, timeoutSeconds }) {
+  ctx.out(`Upgrading VM ${instance.VM} in ${instance.PROJECT_ID} to ${commit.slice(0, 12)}; the upgrader's output follows.`);
+  const upgrade = await ctx.ssh(`sudo ${VM_PATHS.upgrade} --ref ${commit} --repo ${repo}`, {
+    onStdout: (chunk) => ctx.stdout.write(chunk),
+    collect: false,
+  });
+  if (upgrade.code !== 0) {
+    throw new DevError(`the upgrade exited with code ${upgrade.code}. The VM may still run its previous commit; `
+      + 'read the output above. Re-running dev/deploy is safe.');
+  }
+
+  ctx.out(`Waiting up to ${timeoutSeconds} s for ${READINESS_DOC} to report ready on ${commit.slice(0, 12)}.`);
+  const ready = await waitForReady(ctx, commit, timeoutSeconds * 1000);
+  if (!ready.ok) {
+    const why = ready.timedOut ? `did not report ready on ${commit} within ${timeoutSeconds} s` : `reports failed: ${ready.doc?.error || 'no error given'}`;
+    throw new DevError(`${READINESS_DOC} ${why}. See node dev/status.mjs and node dev/logs.mjs all.`);
+  }
+  const release = ready.doc.release ? ` (release ${typeof ready.doc.release === 'object' ? JSON.stringify(ready.doc.release) : ready.doc.release})` : '';
+  ctx.out(`Done: the VM runs ${commit} from ${repo}${release}, ready at ${ready.doc.ready_at || 'an unrecorded time'}.`);
+}
+
+/**
+ * The commit's own dashboard/cloudbuild.yaml (gcloud reads --config from this machine). From your
+ * clone when it has the commit; otherwise the working tree's copy, with a warning.
+ */
+async function buildConfig(ctx, commit) {
+  const shown = await ctx.git(['show', `${commit}:${BUILD_CONFIG_PATH}`]);
+  if (shown.code === 0 && shown.stdout.trim()) return shown.stdout;
+  if (/does not exist in|exists on disk, but not in/.test(shown.stderr || '')) {
+    throw new DevError(`${commit} has no ${BUILD_CONFIG_PATH}: it predates the dashboard. Deploy it with --vm-only.`);
+  }
+  ctx.warn(`warning: this clone does not have ${commit.slice(0, 12)} (git fetch gets it); building with the working tree's ${BUILD_CONFIG_PATH}.`);
+  return readFileSync(join(REPO_ROOT, BUILD_CONFIG_PATH), 'utf8');
+}
+
+/** Moves the dashboard: the image at the commit unless it exists, then the service unless it runs it. */
+async function deployDashboard(ctx, { instance, repo, commit, release }) {
+  const where = { project: instance.PROJECT_ID, region: instance.REGION };
+  const short = commit.slice(0, 12);
+  const stream = { onStdout: (chunk) => ctx.stdout.write(chunk), onStderr: (chunk) => ctx.stderr.write(chunk), collect: false };
+
+  const described = await ctx.gcloud(describeArgs(where));
+  if (described.code !== 0) {
+    if (/cannot find service|not found/i.test(described.stderr || '')) {
+      throw new DevError(`${instance.PROJECT_ID} has no dashboard service ${NAMES.SERVICE_NAME} in ${instance.REGION}. `
+        + 'Install it once with install/install.sh --ref <branch> (DEVELOPING.md section 7); dev/deploy moves it from then on.');
+    }
+    throw new DevError(`could not read the dashboard service ${NAMES.SERVICE_NAME}${failureDetail(described)}`);
+  }
+  const service = parseService(described.stdout);
+  if (!service) throw new DevError(`gcloud described the dashboard service ${NAMES.SERVICE_NAME} in a form this script cannot read`);
+  const before = deployedCommit(service);
+
+  const dir = mkdtempSync(join(tmpdir(), 'paraclete-deploy-'));
+  try {
+    const tags = await ctx.gcloud(tagsArgs(where));
+    if (tags.code === 0 && tags.stdout.split(/\r?\n/).map((line) => line.trim()).includes(commit)) {
+      ctx.out(`The dashboard's image for ${short} exists; not building it again.`);
+    } else {
+      const configFile = join(dir, 'cloudbuild.yaml');
+      writeFileSync(configFile, await buildConfig(ctx, commit));
+      ctx.out(`Building the dashboard at ${short} with Cloud Build; its output follows.`);
+      const build = await ctx.gcloud(buildArgs({ ...where, repo, commit, configFile }), stream);
+      if (build.code !== 0) {
+        throw new DevError(`the dashboard's build exited with code ${build.code}; read its output above. `
+          + `The dashboard still runs ${before || 'what it ran'}.`);
+      }
+    }
+
+    const env = { ...deployedEnv(service), PARACLETE_REPO: repo, PARACLETE_RELEASE: release, PARACLETE_COMMIT: commit };
+    const drift = serviceDrift(service, { ...where, commit, env });
+    if (drift.length) {
+      const envFile = join(dir, 'dashboard-env.yaml');
+      writeFileSync(envFile, envFileText(env));
+      ctx.out(`Deploying the dashboard at ${short} (changing: ${drift.join(', ')}); Cloud Run's output follows.`);
+      const deploy = await ctx.gcloud(deployArgs({ ...where, commit, envFile }), stream);
+      if (deploy.code !== 0) {
+        throw new DevError(`the dashboard's deploy exited with code ${deploy.code}; read its output above. `
+          + `It still runs ${before || 'what it ran'}; re-running dev/deploy is safe.`);
+      }
+    } else {
+      ctx.out(`The dashboard already runs ${short}.`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  ctx.out(`Done: the dashboard runs ${commit} from ${repo}, at ${service.status?.url || 'its Cloud Run URL'}.`);
+}
+
 /**
  * @param {string[]} argv
  * @param {object}   [deps] see devContext() in dev-env.mjs
@@ -172,25 +279,10 @@ export async function main(argv, deps = {}) {
     ctx.out(`${opts.ref} on ${repo} is ${resolved.commit} (${resolved.kind}).`);
     if (resolved.kind === 'branch' && repo === origin) await checkPushed(ctx, resolved);
 
-    ctx.out(`Upgrading VM ${instance.VM} in ${instance.PROJECT_ID} to ${resolved.commit.slice(0, 12)}; the upgrader's output follows.`);
-    const upgrade = await ctx.ssh(`sudo ${VM_PATHS.upgrade} --ref ${resolved.commit} --repo ${repo}`, {
-      onStdout: (chunk) => ctx.stdout.write(chunk),
-      collect: false,
-    });
-    if (upgrade.code !== 0) {
-      throw new DevError(`the upgrade exited with code ${upgrade.code}. The VM may still run its previous commit; `
-        + 'read the output above. Re-running dev/deploy is safe.');
-    }
-
-    ctx.out(`Waiting up to ${opts.timeoutSeconds} s for ${READINESS_DOC} to report ready on ${resolved.commit.slice(0, 12)}.`);
-    const ready = await waitForReady(ctx, resolved.commit, opts.timeoutSeconds * 1000);
-    if (!ready.ok) {
-      const why = ready.timedOut ? `did not report ready on ${resolved.commit} within ${opts.timeoutSeconds} s` : `reports failed: ${ready.doc?.error || 'no error given'}`;
-      throw new DevError(`${READINESS_DOC} ${why}. See node dev/status.mjs and node dev/logs.mjs all.`);
-    }
-    const release = ready.doc.release ? ` (release ${typeof ready.doc.release === 'object' ? JSON.stringify(ready.doc.release) : ready.doc.release})` : '';
-    ctx.out(`Done: the VM runs ${resolved.commit} from ${repo}${release}, ready at ${ready.doc.ready_at || 'an unrecorded time'}.`);
-    ctx.out('Only the VM moved: deploying the dashboard arrives with build plan phase 6.');
+    if (opts.vm) await deployVm(ctx, { instance, repo, commit: resolved.commit, timeoutSeconds: opts.timeoutSeconds });
+    else ctx.out('The VM stays as it is (--dashboard-only).');
+    if (opts.dashboard) await deployDashboard(ctx, { instance, repo, commit: resolved.commit, release: resolved.name });
+    else ctx.out('The dashboard stays as it is (--vm-only); node dev/status.mjs shows whether the two still match.');
     return 0;
   });
 }

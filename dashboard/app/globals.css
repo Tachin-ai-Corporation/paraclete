@@ -1,0 +1,228 @@
+/* dashboard/app/globals.css: the dashboard's design tokens and the few shared primitives every view
+   uses (buttons, badges, cards, fields, tables, tabs, Markdown). A view's own layout lives in its CSS
+   module next to its component; colors, spacing and type come only from the tokens here. */
+
+:root {
+  /* Surfaces, darkest first */
+  --bg-app: #1b222b;
+  --bg-panel: #232b36;
+  --bg-raised: #2c3643;
+  --bg-hover: rgba(120, 136, 156, 0.16);
+  --bg-input: #1f2731;
+
+  /* Text */
+  --text-primary: #e6ebf0;
+  --text-secondary: #aeb8c4;
+  --text-muted: #7a8696;
+  --text-link: #8fd8e6;
+
+  /* Accent: the agent's color */
+  --accent: #1f9a9b;
+  --accent-strong: #26b5b6;
+  --accent-soft: rgba(31, 154, 155, 0.16);
+
+  /* Status */
+  --ok: #3baa78;
+  --info: #2f80a8;
+  --warn: #d6a83a;
+  --danger: #d84f45;
+  --neutral: #7a8696;
+
+  /* Lines */
+  --border: rgba(120, 136, 156, 0.28);
+  --border-strong: rgba(120, 136, 156, 0.45);
+  --focus: rgba(143, 216, 230, 0.6);
+
+  /* Spacing: a 4px grid */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-full: 9999px;
+
+  --shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --fast: 150ms;
+
+  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --sidebar-width: 232px;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  background: var(--bg-app);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1 { font-size: 22px; font-weight: 650; letter-spacing: -0.01em; }
+h2 { font-size: 17px; font-weight: 650; }
+h3 { font-size: 14px; font-weight: 650; }
+
+a { color: var(--text-link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, pre, kbd { font-family: var(--font-mono); font-size: 12.5px; }
+
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+::selection { background: var(--accent-soft); }
+
+/* ---- Buttons ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 34px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--text-muted); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.btn-danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+.btn-danger:hover:not(:disabled) { background: rgba(216, 79, 69, 0.14); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
+.btn-ghost:hover:not(:disabled) { color: var(--text-primary); }
+.btn-sm { height: 28px; padding: 0 var(--space-3); font-size: 13px; }
+
+/* ---- Badges ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 550;
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge-plain::before { display: none; }
+.badge-ok { color: var(--ok); background: rgba(59, 170, 120, 0.14); }
+.badge-info { color: var(--text-link); background: rgba(47, 128, 168, 0.18); }
+.badge-warn { color: var(--warn); background: rgba(214, 168, 58, 0.14); }
+.badge-danger { color: var(--danger); background: rgba(216, 79, 69, 0.14); }
+.badge-neutral { color: var(--neutral); }
+
+/* ---- Cards ---- */
+.card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+.card + .card { margin-top: var(--space-3); }
+
+/* ---- Fields ---- */
+.input,
+.select,
+.textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font: inherit;
+}
+.textarea { resize: vertical; min-height: 72px; }
+.input:focus,
+.select:focus,
+.textarea:focus { outline: none; border-color: var(--accent); }
+.label { display: block; margin-bottom: var(--space-1); color: var(--text-secondary); font-size: 13px; font-weight: 550; }
+
+/* ---- Tables ---- */
+.table { width: 100%; border-collapse: collapse; }
+.table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.table td { padding: var(--space-2) var(--space-3); border-bottom: 1px solid var(--border); vertical-align: top; }
+.table tr:last-child td { border-bottom: none; }
+
+/* ---- Tabs ---- */
+.tabs { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--border); margin-bottom: var(--space-4); overflow-x: auto; }
+.tab {
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tab:hover { color: var(--text-primary); }
+.tab[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); }
+
+/* ---- Page frame ---- */
+.page { padding: var(--space-5) var(--space-6); max-width: 1200px; }
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-4); }
+.page-header p { color: var(--text-secondary); margin-top: var(--space-1); }
+.muted { color: var(--text-muted); }
+.error-text { color: var(--danger); }
+.stack > * + * { margin-top: var(--space-3); }
+.row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+
+/* ---- Markdown (agent messages, memory files, playbooks) ---- */
+.markdown { line-height: 1.6; overflow-wrap: anywhere; }
+.markdown > * + * { margin-top: 0.7em; }
+.markdown ul, .markdown ol { padding-left: 1.4em; }
+.markdown li + li { margin-top: 0.25em; }
+.markdown code { background: var(--bg-raised); padding: 1px 5px; border-radius: 4px; }
+.markdown pre { background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-3); overflow-x: auto; }
+.markdown pre code { background: none; padding: 0; }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+.markdown th { background: var(--bg-raised); }
+.markdown blockquote { border-left: 3px solid var(--border-strong); padding-left: var(--space-3); color: var(--text-secondary); }
+.markdown h1, .markdown h2, .markdown h3 { margin-top: 1em; }
+
+@media (max-width: 760px) {
+  .page { padding: var(--space-4); }
+}

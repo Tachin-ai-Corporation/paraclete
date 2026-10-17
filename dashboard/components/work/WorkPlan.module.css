@@ -1,0 +1,61 @@
+/* dashboard/components/work/WorkPlan.module.css: a mission's checkpoints, verdicts and tasks. */
+
+.checkpoint > * + * { margin-top: var(--space-3); }
+
+.cpHead { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); }
+.cpTitle { min-width: 0; }
+.cpTitle h3 { margin-top: 2px; overflow-wrap: anywhere; }
+.cpNum { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+.open { font-size: 13px; }
+
+.criteria { color: var(--text-secondary); font-size: 13px; }
+.criteriaLabel { color: var(--text-muted); font-weight: 600; margin-right: var(--space-1); }
+
+.verdict {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--neutral);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  padding: var(--space-2) var(--space-3);
+}
+.tone_ok { border-left-color: var(--ok); }
+.tone_warn { border-left-color: var(--warn); }
+.tone_danger { border-left-color: var(--danger); }
+.verdictHead { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: 13px; }
+.verdictText { margin-top: var(--space-2); color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.caveats { margin-top: var(--space-2); padding-left: 1.2em; color: var(--text-secondary); font-size: 13px; }
+
+.tasks { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+
+.task + .task { border-top: 1px solid var(--border); }
+.taskHead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  list-style: none;
+}
+.taskHead::-webkit-details-marker { display: none; }
+.taskHead:hover { background: var(--bg-hover); }
+.task[open] > .taskHead { background: var(--bg-raised); }
+.taskNum { flex: none; width: 52px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
+.organ { flex: none; width: 84px; color: var(--text-secondary); font-size: 13px; }
+.taskTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.taskMeta { flex: none; display: flex; align-items: center; gap: var(--space-2); font-size: 12px; }
+.taskBody { padding: var(--space-3); border-top: 1px solid var(--border); }
+.taskBody > * + * { margin-top: var(--space-3); }
+.instruction { color: var(--text-secondary); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.taskFoot { display: flex; justify-content: space-between; gap: var(--space-3); font-size: 13px; }
+
+.planned { margin-top: var(--space-2); padding-left: 1.4em; font-size: 13px; }
+.planned li + li { margin-top: var(--space-1); }
+
+.earlier { border-top: 1px dashed var(--border); padding-top: var(--space-2); }
+.earlier > summary { cursor: pointer; color: var(--text-muted); font-size: 13px; }
+.earlier[open] > summary { margin-bottom: var(--space-3); }
+
+@media (max-width: 760px) {
+  .organ { display: none; }
+  .taskNum { width: auto; }
+}

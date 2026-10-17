@@ -1,0 +1,66 @@
+.shell { display: flex; min-height: 100vh; }
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  width: var(--sidebar-width);
+  flex: 0 0 var(--sidebar-width);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-3);
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+}
+
+.agent { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-1) var(--space-2); }
+.avatar {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 700;
+  font-size: 16px;
+}
+.agentText { min-width: 0; display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.agentName { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; }
+
+.nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.navLink {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-weight: 550;
+}
+.navLink:hover { background: var(--bg-hover); color: var(--text-primary); text-decoration: none; }
+.navLink[aria-current='page'] { background: var(--accent-soft); color: var(--text-primary); }
+.count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  background: var(--warn);
+  color: #1b222b;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.user { padding: var(--space-3) var(--space-2) 0; border-top: 1px solid var(--border); font-size: 13px; }
+.userEmail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.main { flex: 1; min-width: 0; }
+
+@media (max-width: 760px) {
+  .shell { flex-direction: column; }
+  .sidebar { position: static; height: auto; width: 100%; flex-basis: auto; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .nav { flex-direction: row; flex-wrap: wrap; }
+  .user { display: none; }
+}

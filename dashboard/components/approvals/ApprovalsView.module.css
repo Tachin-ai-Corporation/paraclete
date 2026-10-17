@@ -1,0 +1,15 @@
+/* dashboard/components/approvals/ApprovalsView.module.css: the approvals page. */
+
+.sections > * + * { margin-top: var(--space-6); }
+.heading { margin-bottom: var(--space-3); }
+
+.stale { margin-top: var(--space-2); padding-left: 1.2em; font-size: 13px; }
+.stale li + li { margin-top: var(--space-1); }
+
+.tableWrap { overflow-x: auto; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.gate { min-width: 240px; overflow-wrap: anywhere; }
+.gate .muted { font-size: 12px; }
+.by { color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.when { color: var(--text-secondary); font-size: 13px; white-space: nowrap; }
+.reason { color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; min-width: 160px; }
+.pendingAct { margin-top: 2px; color: var(--text-muted); font-size: 12px; }

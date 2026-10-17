@@ -1,0 +1,22 @@
+{
+  "name": "paraclete-dashboard",
+  "private": true,
+  "description": "The paraclete dashboard: chat with the agent, follow and approve its work, manage the instance.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
+  }
+}

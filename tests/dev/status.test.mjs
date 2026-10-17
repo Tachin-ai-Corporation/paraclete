@@ -1,7 +1,8 @@
 // Tests for dev/status.mjs: one SSH call with the exact gcloud arguments reads the release, the five
 // units, the heartbeats and the gateway's /status (the token never on a command line); Firestore gives
-// agent/instance and the newest missions; and the exit code says whether a service is down or hung, or
-// the installed commit and agent/instance disagree.
+// agent/instance and the newest missions; `gcloud run services describe` gives the dashboard's URL and
+// commit; and the exit code says whether a service is down or hung, or the installed commit,
+// agent/instance and the dashboard disagree.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
@@ -46,8 +47,21 @@ async function seed({ commit = COMMIT, status = 'ready' } = {}) {
   await db.write('work/t-9', { id: 't-9', type: 'T', status: 'complete', created_at: '2026-10-17T11:00:00.000Z', instruction: 'a task, not a mission' });
 }
 
-function run(argv, { output = probeOutput(), code = 0 } = {}) {
-  const exec = fakeExec((program, args) => (args[0] === 'compute' ? { code, stdout: output } : undefined));
+const DASHBOARD_URL = 'https://paraclete-123456789012.us-central1.run.app';
+const IMAGE = 'us-central1-docker.pkg.dev/your-gcp-project/paraclete/dashboard';
+const DESCRIBE = ['run', 'services', 'describe', 'paraclete', '--region=us-central1', '--project=your-gcp-project', '--format=json'];
+
+/** What `gcloud run services describe --format=json` answers for a dashboard running image. */
+const described = (image = `${IMAGE}:${COMMIT}`) => ({
+  stdout: JSON.stringify({ metadata: { name: 'paraclete' }, spec: { template: { spec: { containers: [{ image }] } } }, status: { url: DASHBOARD_URL } }),
+});
+
+function run(argv, { output = probeOutput(), code = 0, dashboard = described() } = {}) {
+  const exec = fakeExec((program, args) => {
+    if (args[0] === 'compute') return { code, stdout: output };
+    if (args.slice(0, 3).join(' ') === 'run services describe') return dashboard;
+    return undefined;
+  });
   const deps = devDeps({ firestore, exec });
   return main(argv, deps).then((exit) => ({ exit, exec, out: deps.stdout.text, err: deps.stderr.text }));
 }
@@ -75,11 +89,12 @@ test('a healthy instance: the release, every service, the gateway, agent/instanc
   assert.match(r.out, /brain {4}active {5}heartbeat 2 s ago/);
   assert.match(r.out, /gateway {2}active {5}no heartbeat file/);
   assert.match(r.out, /gateway {8}up 120 s, 4 requests, 1 sessions; cortex=vertex-google\/gemini-4-argon, fast=vertex-google\/gemini-3\.8-flash/);
-  assert.match(r.out, /dashboard {6}not checked: the dashboard arrives with build plan phase 6/);
+  assert.deepEqual(r.exec.calls.filter((c) => c.args[0] === 'run').map((c) => c.args), [DESCRIBE]);
+  assert.match(r.out, new RegExp(`dashboard {6}${DASHBOARD_URL.replace(/\./g, '\\.')} {2}commit a{40} \\(the VM's commit\\)`));
   const missions = [...r.out.matchAll(/^ {2}(w-\d) /gm)].map((m) => m[1]);
   assert.deepEqual(missions, ['w-7', 'w-6', 'w-5', 'w-4', 'w-3'], 'missions only, newest first');
   assert.match(r.out, /w-7 {2}active {13}2026-10-17T10:07:00\.000Z {2}Mission number 7 with a second line/);
-  assert.match(r.out, /All services up; the installed commit matches agent\/instance\./);
+  assert.match(r.out, /All services up; the VM, agent\/instance and the dashboard are on the same commit\./);
 });
 
 test('a down unit, a stale heartbeat, a commit mismatch or a missing release fail the status', async () => {
@@ -117,8 +132,31 @@ test('--json prints the report as one object', async () => {
   assert.equal(report.services.control.heartbeat, null);
   assert.equal(report.release.commit, COMMIT);
   assert.equal(report.missions.length, 5);
+  assert.deepEqual(report.dashboard, {
+    service: 'paraclete', region: 'us-central1', url: DASHBOARD_URL, image: `${IMAGE}:${COMMIT}`, commit: COMMIT, matches_vm: true,
+  });
   assert.deepEqual(report.problems, []);
   assert.equal((await run(['--verbose'])).exit, 2);
+});
+
+test('a dashboard on another commit, on an untagged image, or missing fails the status', async () => {
+  await seed();
+  const other = await run([], { dashboard: described(`${IMAGE}:${'c'.repeat(40)}`) });
+  assert.equal(other.exit, 1);
+  assert.match(other.out, /dashboard {6}\S+ {2}commit c{40} \(the VM has a{40}\)/);
+  assert.match(other.out, /- the dashboard runs c{40} but the VM has a{40} installed/);
+
+  const latest = await run([], { dashboard: described(`${IMAGE}:latest`) });
+  assert.equal(latest.exit, 1);
+  assert.match(latest.out, /- the dashboard runs \S+dashboard:latest, which is not tagged with a commit/);
+
+  const missing = await run([], { dashboard: { code: 1, stderr: 'ERROR: (gcloud.run.services.describe) Cannot find service [paraclete]\n' } });
+  assert.equal(missing.exit, 1);
+  assert.match(missing.out, /dashboard {6}not checked: there is no service paraclete in us-central1/);
+  assert.match(missing.out, /- the dashboard could not be checked: there is no service paraclete in us-central1/);
+
+  const denied = await run([], { dashboard: { code: 1, stderr: 'ERROR: PERMISSION_DENIED: no\n' } });
+  assert.match(denied.out, /- the dashboard could not be checked: gcloud run services describe failed: ERROR: PERMISSION_DENIED: no/);
 });
 
 test('the probe output parses with CRLF line ends and missing parts', () => {

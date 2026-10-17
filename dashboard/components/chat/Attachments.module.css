@@ -1,0 +1,43 @@
+/* File chips under a message: the file's type, name and size, and a download link when the chat can
+   serve it. */
+.list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 340px;
+  padding: 6px var(--space-3) 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 13px;
+  transition: border-color var(--fast) var(--ease), background var(--fast) var(--ease);
+}
+a.chip:hover { border-color: var(--accent); background: var(--bg-hover); text-decoration: none; }
+
+.kind {
+  flex: 0 0 auto;
+  min-width: 40px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+
+.name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.size { flex: 0 0 auto; color: var(--text-muted); font-size: 12px; }
+.action { flex: 0 0 auto; color: var(--text-link); font-size: 12px; font-weight: 550; }
+
+.unavailable { opacity: 0.6; cursor: default; }

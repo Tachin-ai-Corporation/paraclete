@@ -3,22 +3,25 @@
 // installed release (/opt/paraclete/release.json), `systemctl is-active` for the five service units,
 // each service's heartbeat file (/var/lib/paraclete/services/<service>/health.json) and the
 // gateway's /status (with the gateway token, read on the VM and never put on a command line); then
-// Firestore gives agent/instance and the five newest missions. Exits non-zero when a service is
-// down or hung, or when the installed commit and agent/instance disagree. It changes nothing. The
-// dashboard's commit arrives with build plan phase 6.
+// Firestore gives agent/instance and the five newest missions, and `gcloud run services describe`
+// the dashboard's URL and the commit its image was built from (install/lib/dashboard.mjs). Exits
+// non-zero when a service is down or hung, or when the installed commit, agent/instance and the
+// dashboard disagree. It changes nothing.
 
 import { loadContracts } from '../config/contracts.mjs';
 import { COLLECTIONS } from '../agent/storage/collections.mjs';
 import { SERVICES, serviceUnit } from '../agent/services/control/systemd.mjs';
 import { HEARTBEAT_STALE_SECONDS } from '../agent/services/control/introspection.mjs';
+import { NAMES, deployedCommit, deployedImage, describeArgs, parseService } from '../install/lib/dashboard.mjs';
 import {
-  DevError, VM_PATHS, READINESS_DOC, devContext, isMain, preview, runCommand,
+  DevError, VM_PATHS, READINESS_DOC, devContext, failureDetail, isMain, preview, runCommand,
 } from './dev-env.mjs';
 
 const USAGE = `Usage: node dev/status.mjs [--json]
 Shows the commit your dev instance's VM runs, each service's state and heartbeat, the gateway's
-models, agent/instance and the five newest missions. Exits 1 when a service is down or hung, or the
-installed commit and agent/instance disagree. --json prints the same as one JSON object.`;
+models, agent/instance, the five newest missions, and the dashboard's URL and commit. Exits 1 when a
+service is down or hung, or the installed commit, agent/instance and the dashboard disagree. --json
+prints the same as one JSON object.`;
 
 const MISSIONS_SHOWN = 5;
 
@@ -88,11 +91,31 @@ function heartbeat(health, nowMs) {
 }
 
 /**
- * Puts the probe and the Firestore reads together and lists what is wrong. Pure.
+ * The dashboard as `gcloud run services describe` reports it: its URL, its image and the commit that
+ * image was built from, or why it could not be read. Pure.
+ *
+ * @param {{code: number, stdout: string, stderr: string}} described
+ * @param {{REGION: string}} instance
+ * @returns {{service: string, region: string, url?: string|null, image?: string|null, commit?: string|null, error?: string}}
+ */
+export function readDashboard(described, instance) {
+  const base = { service: NAMES.SERVICE_NAME, region: instance.REGION };
+  if (described.code !== 0) {
+    return /cannot find service|not found/i.test(described.stderr || '')
+      ? { ...base, error: `there is no service ${NAMES.SERVICE_NAME} in ${instance.REGION}` }
+      : { ...base, error: `gcloud run services describe failed${failureDetail(described).replace(/\n/g, ' ')}` };
+  }
+  const service = parseService(described.stdout);
+  if (!service) return { ...base, error: 'gcloud described the service in a form this script cannot read' };
+  return { ...base, url: service.status?.url || null, image: deployedImage(service), commit: deployedCommit(service) };
+}
+
+/**
+ * Puts the probe, the Firestore reads and the dashboard together and lists what is wrong. Pure.
  *
  * @returns {object} the report; `problems` is empty when all is well
  */
-export function buildReport({ instance, probe, agentInstance, missions, localNow }) {
+export function buildReport({ instance, probe, agentInstance, missions, dashboard = { error: 'not read' }, localNow }) {
   const problems = [];
   const vmNow = Date.parse(probe?.now) || localNow;
   const services = Object.fromEntries(SERVICES.map((s) => {
@@ -109,6 +132,13 @@ export function buildReport({ instance, probe, agentInstance, missions, localNow
   if (release?.commit && agentInstance && release.commit !== agentInstance.commit) {
     problems.push(`the VM has ${release.commit} installed but ${READINESS_DOC} reports ${agentInstance.commit || 'no commit'}`);
   }
+  const shown = { ...dashboard, matches_vm: null };
+  if (dashboard.error) problems.push(`the dashboard could not be checked: ${dashboard.error}`);
+  else if (!dashboard.commit) problems.push(`the dashboard runs ${dashboard.image || 'no image'}, which is not tagged with a commit`);
+  else if (release?.commit) {
+    shown.matches_vm = dashboard.commit === release.commit;
+    if (!shown.matches_vm) problems.push(`the dashboard runs ${dashboard.commit} but the VM has ${release.commit} installed`);
+  }
   return {
     vm: { name: instance.VM, project: instance.PROJECT_ID, zone: instance.ZONE },
     release,
@@ -118,7 +148,7 @@ export function buildReport({ instance, probe, agentInstance, missions, localNow
     missions: missions.map((m) => ({
       id: m.id, status: m.status, created_at: m.created_at, instruction: preview(m.instruction, 200),
     })),
-    dashboard: 'not checked: the dashboard arrives with build plan phase 6',
+    dashboard: shown,
     problems,
   };
 }
@@ -150,11 +180,18 @@ export function formatReport(report) {
   if (!g) lines.push('  gateway        /status did not answer');
   else if (g.unreadable || g.error) lines.push(`  gateway        /status answered: ${preview(g.unreadable || JSON.stringify(g.error), 120)}`);
   else lines.push(`  gateway        up ${g.uptime_sec ?? '?'} s, ${g.requests ?? '?'} requests, ${Array.isArray(g.sessions) ? g.sessions.length : '?'} sessions; ${formatModels(g.models)}`);
-  lines.push(`  dashboard      ${report.dashboard}`);
+  const d = report.dashboard;
+  if (d.error) lines.push(`  dashboard      not checked: ${d.error}`);
+  else {
+    const match = d.matches_vm === null ? '' : d.matches_vm ? ' (the VM\'s commit)' : ` (the VM has ${report.release.commit})`;
+    lines.push(`  dashboard      ${d.url || 'no URL'}  commit ${d.commit || `none: ${d.image || 'no image'}`}${match}`);
+  }
   lines.push('', `Newest missions (${report.missions.length})`);
   if (!report.missions.length) lines.push('  none');
   for (const m of report.missions) lines.push(`  ${m.id}  ${String(m.status).padEnd(18)} ${m.created_at || '-'}  ${preview(m.instruction, 70)}`);
-  lines.push('', report.problems.length ? `PROBLEMS:\n${report.problems.map((p) => `  - ${p}`).join('\n')}` : 'All services up; the installed commit matches agent/instance.');
+  lines.push('', report.problems.length
+    ? `PROBLEMS:\n${report.problems.map((p) => `  - ${p}`).join('\n')}`
+    : 'All services up; the VM, agent/instance and the dashboard are on the same commit.');
   return lines.join('\n');
 }
 
@@ -176,14 +213,16 @@ export async function main(argv, deps = {}) {
     const { gateway } = loadContracts();
     const db = ctx.db();
 
-    const [ssh, agentInstance, missions] = await Promise.all([
+    const [ssh, agentInstance, missions, described] = await Promise.all([
       ctx.ssh(statusProbeCommand(`http://${gateway.bind}:${gateway.port}`)),
       db.read(READINESS_DOC, { strict: true }),
       db.query('', COLLECTIONS.work, [{ field: 'type', op: 'EQUAL', value: { stringValue: 'M' } }],
         { orderBy: 'created_at', orderDirection: 'DESCENDING', limit: MISSIONS_SHOWN, strict: true }),
+      ctx.gcloud(describeArgs({ project: instance.PROJECT_ID, region: instance.REGION })),
     ]);
     const probe = ssh.code === 0 ? parseStatusProbe(ssh.stdout) : null;
-    const report = buildReport({ instance, probe, agentInstance, missions, localNow: ctx.now() });
+    const dashboard = readDashboard(described, instance);
+    const report = buildReport({ instance, probe, agentInstance, missions, dashboard, localNow: ctx.now() });
     if (!probe) report.problems.unshift(`the VM could not be reached: gcloud compute ssh exited with code ${ssh.code} (its messages are above)`);
 
     ctx.out(json ? JSON.stringify(report, null, 2) : formatReport(report));

@@ -1,0 +1,71 @@
+/* The Library page's layout, shared by its tabs. Colors, spacing and type come from app/globals.css. */
+
+.intro { margin-bottom: var(--space-3); }
+.introRow { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.introRow > p { max-width: 760px; }
+
+.tableWrap { overflow-x: auto; }
+.mainCell { min-width: 220px; }
+.mainCell > * + * { margin-top: 2px; }
+.name { font-weight: 600; }
+.id { display: block; color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.preview {
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.actions { white-space: nowrap; text-align: right; }
+.actions > * + * { margin-left: var(--space-2); }
+.noticeRow td { background: var(--accent-soft); }
+
+.issues { list-style: none; margin-top: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); }
+
+/* A name that opens its detail, styled as a link */
+.open {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-link);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.open:hover { text-decoration: underline; }
+
+.detailHead > * + * { margin-top: var(--space-1); }
+.cardTitle { margin-bottom: var(--space-2); }
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+}
+.facts dt { color: var(--text-secondary); font-size: 13px; }
+.facts dd { min-width: 0; overflow-wrap: anywhere; }
+
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); }
+.chip {
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.check { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-secondary); font-size: 13px; cursor: pointer; }
+.pointer { min-width: 180px; overflow-wrap: anywhere; }
+
+.canon { list-style: none; margin: var(--space-3) 0; display: flex; flex-direction: column; gap: var(--space-3); }
+.canon li { padding-left: var(--space-3); border-left: 2px solid var(--accent); }
+.canon li > * + * { margin-top: 2px; }
+
+@media (max-width: 760px) {
+  .introRow { flex-direction: column; }
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .facts dd { margin-bottom: var(--space-2); }
+}

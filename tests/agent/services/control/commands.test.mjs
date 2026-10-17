@@ -21,7 +21,7 @@ function harness({ systemd = fakeSystemd(), gateway = fakeGatewayFetch(), exists
   const handlers = createHandlers({
     runtime, systemd, settings: SETTINGS, now: () => new Date(clock), sleep: async (ms) => { clock += ms; }, ...(exists ? { exists } : {}),
   });
-  const queue = createCommandQueue({ db, collections: runtime.collections, handlers, now: () => NOW });
+  const queue = createCommandQueue({ db, collections: runtime.collections, handlers, verifyCommand: async () => ({}), now: () => NOW });
   /** Sends one command through the queue and returns its document afterwards. */
   async function send(type, params, id = `c${db.paths('commands/').length + 1}`) {
     db.set(`commands/${id}`, { type, params, status: 'pending', requested_by: 'admin@example.com', created_at: NOW.toISOString() });

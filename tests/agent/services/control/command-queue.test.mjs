@@ -1,20 +1,26 @@
 // Tests for agent/services/control/command-queue.mjs: pending commands are claimed before they run,
 // oldest first, and each runs exactly once; outcomes, results and timestamps land on the command
 // document; a command interrupted by a restart is failed, never rerun; a detached command is watched
-// until it finishes; and a result Firestore refuses still ends the command. Fake Firestore.
+// until it finishes; a result Firestore refuses still ends the command; and a command whose signature
+// is refused is failed without running. Fake Firestore; the signature check is faked here and tested
+// for real in tests/agent/auth/command-signature.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import { StoreUnavailable } from '../../../../agent/storage/firestore.mjs';
 import { createCommandQueue, detached, thenRun, STATUS } from '../../../../agent/services/control/command-queue.mjs';
+import { CommandSignatureError } from '../../../../agent/auth/command-signature.mjs';
 import { fakeDb } from './fakes.mjs';
 
 const T0 = new Date('2026-10-17T12:00:00.000Z');
 const pending = (type, extra = {}) => ({ type, status: 'pending', created_at: '2026-10-17T11:00:00.000Z', requested_by: 'admin@example.com', ...extra });
 
-function queueWith(db, handlers, { lines = [] } = {}) {
+/** Accepts every command, as the real check does for one the dashboard signed. */
+const acceptSigned = async () => ({});
+
+function queueWith(db, handlers, { lines = [], verifyCommand = acceptSigned } = {}) {
   return createCommandQueue({
-    db, collections: COLLECTIONS, handlers, now: () => T0, log: (level, message) => lines.push({ level, message }),
+    db, collections: COLLECTIONS, handlers, verifyCommand, now: () => T0, log: (level, message) => lines.push({ level, message }),
   });
 }
 
@@ -236,4 +242,43 @@ test('every queue query is a strict single-field filter on the root commands col
     assert.equal(q.opts.strict, true);
     assert.equal(q.opts.noOrderBy, true);
   }
+});
+
+test('a queue cannot be built without a signature check', () => {
+  assert.throws(() => createCommandQueue({ db: fakeDb(), collections: COLLECTIONS, handlers: {} }), /verifyCommand is required/);
+});
+
+test('a command whose signature is refused is failed as refused, and never runs', async () => {
+  const db = fakeDb({ 'commands/c1': pending('echo') });
+  const lines = [];
+  let ran = false;
+  const verifyCommand = async (command, id) => {
+    assert.equal(id, 'c1');
+    assert.equal(command.type, 'echo');
+    throw new CommandSignatureError('the command is not signed');
+  };
+  const queue = queueWith(db, { echo: { run: async () => { ran = true; } } }, { lines, verifyCommand });
+  await queue.tick();
+  assert.equal(ran, false);
+  const doc = db.get('commands/c1');
+  assert.equal(doc.status, STATUS.failed);
+  assert.equal(doc.error, 'refused: the command is not signed');
+  assert.ok(lines.some((l) => l.level === 'WARN' && /command c1 echo refused: the command is not signed/.test(l.message)));
+});
+
+test('a command whose signature cannot be checked yet stays pending for the next tick', async () => {
+  const db = fakeDb({ 'commands/c1': pending('echo') });
+  const lines = [];
+  let reachable = false;
+  const verifyCommand = async () => {
+    if (!reachable) throw new Error('could not fetch the signing keys (503)');
+    return {};
+  };
+  const queue = queueWith(db, { echo: { run: async () => ({ ok: 1 }) } }, { lines, verifyCommand });
+  await queue.tick();
+  assert.equal(db.get('commands/c1').status, STATUS.pending);
+  assert.ok(lines.some((l) => l.level === 'WARN' && /could not be checked .*stays pending/.test(l.message)));
+  reachable = true;
+  await queue.tick();
+  assert.equal(db.get('commands/c1').status, STATUS.done);
 });

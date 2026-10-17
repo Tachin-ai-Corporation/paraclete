@@ -186,6 +186,22 @@ test('patch sends the field mask', async () => {
   assert.equal(server.calls[0].init.method, 'PATCH');
 });
 
+test('patch with a precondition sends it, and a failed one is a conflict even when not strict', async () => {
+  const server = fakeFirestore([
+    { status: 200, body: {} },
+    { status: 400, body: { error: { code: 400, status: 'FAILED_PRECONDITION', message: 'the stored version does not match' } } },
+    { status: 404, body: { error: { code: 404, status: 'NOT_FOUND' } } },
+    { status: 500, body: 'boom' },
+  ]);
+  const { db } = client(server);
+  await db.patch('approvals/a-1', ['status'], { status: { stringValue: 'approved' } }, { precondition: { updateTime: '2027-01-15T08:00:00.123456Z' } });
+  assert.equal(server.calls[0].url, `${DOCS}/approvals/a-1?updateMask.fieldPaths=status&currentDocument.updateTime=2027-01-15T08%3A00%3A00.123456Z`);
+  await assert.rejects(db.patch('approvals/a-1', ['status'], {}, { precondition: { updateTime: 't' } }), StoreConflict);
+  await assert.rejects(db.patch('approvals/a-2', ['status'], {}, { precondition: { exists: true } }), StoreConflict);
+  assert.match(server.calls[2].url, /currentDocument\.exists=true$/);
+  assert.equal(await db.patch('approvals/a-3', ['status'], {}, { precondition: { exists: true } }), null, 'an outage is not a conflict');
+});
+
 test('readDoc returns the update time, null for a 404, and throws on any other failure', async () => {
   const server = fakeFirestore([
     { status: 200, body: { fields: { a: { stringValue: 'b' } }, updateTime: 't-1' } },

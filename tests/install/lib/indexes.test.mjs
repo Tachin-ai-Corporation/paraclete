@@ -10,7 +10,7 @@ const lines = (result) => result.stdout.split('\n').filter(Boolean);
 
 test('the plan gives each index its signature and gcloud arguments', { skip: needsBash }, () => {
   const plan = lines(callLib(['names', 'indexes'], 'index_plan', [indexesFile]));
-  assert.equal(plan.length, 5);
+  assert.equal(plan.length, 6);
   assert.deepEqual(plan[0].split('\t'), [
     'messages|collection|thread_id:ascending,timestamp:descending',
     'messages',

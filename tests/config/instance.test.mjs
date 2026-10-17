@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadInstance, validateInstance, dataPaths, agentIdentity } from '../../config/instance.mjs';
+import { readFileSync } from 'node:fs';
+import { loadInstance, validateInstance, dataPaths, agentIdentity, dashboardAccountEmail } from '../../config/instance.mjs';
 
 const valid = () => ({
   project: 'your-gcp-project',
@@ -73,4 +74,11 @@ test('the agent signs as its Workspace account when it has one, else as its serv
   assert.deepEqual({ ...identity }, { name: 'Paraclete', email: 'paraclete-agent@your-gcp-project.iam.gserviceaccount.com' });
   assert.ok(Object.isFrozen(identity));
   assert.equal(agentIdentity({ ...valid(), workspace: { account: 'agent@example.com' } }).email, 'agent@example.com');
+});
+
+test('the dashboard account control trusts is the one the installer creates', () => {
+  assert.equal(dashboardAccountEmail(valid()), 'paraclete-dashboard@your-gcp-project.iam.gserviceaccount.com');
+  const names = readFileSync(new URL('../../install/lib/names.sh', import.meta.url), 'utf8');
+  assert.match(names, /^DASHBOARD_ACCOUNT_ID=paraclete-dashboard$/m);
+  assert.match(names, /^AGENT_ACCOUNT_ID=paraclete-agent$/m);
 });

@@ -10,9 +10,10 @@ import { repoRoot } from './harness.mjs';
 const file = JSON.parse(readFileSync(join(repoRoot, 'install', 'firestore.indexes.json'), 'utf8'));
 const signature = (index) => `${index.collectionGroup}(${index.fields.map((f) => `${f.fieldPath} ${f.order}`).join(', ')})`;
 
-test('lists the composite indexes the agent queries need', () => {
+test("lists the composite indexes the agent's and the dashboard's queries need", () => {
   assert.deepEqual(file.indexes.map(signature), [
     'messages(thread_id ASCENDING, timestamp DESCENDING)',
+    'messages(sender ASCENDING, timestamp DESCENDING)',
     'work(status ASCENDING, created_at DESCENDING)',
     'work(status ASCENDING, created_at ASCENDING)',
     'work(type ASCENDING, created_at DESCENDING)',

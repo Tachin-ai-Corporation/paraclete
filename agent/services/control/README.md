@@ -5,17 +5,18 @@ Firestore; control carries it out on the VM and writes the outcome back onto the
 reports status, skills, configuration and the agent's workspace; switches responsibilities and Claude;
 restarts services; and upgrades the instance.
 
-**Belongs here:** the command queue, the closed set of commands, and the calls to systemd they need.
+**Belongs here:** the command queue, the closed set of commands, the signature check, and the calls to
+systemd they need.
 **Doesn't:** running missions or responsibilities (the brain service fires a "run now" trigger), model
-turns (the gateway), what an upgrade installs (`install/upgrade.sh`), or who may send a command (the
-dashboard decides; see [Trust](#trust)).
+turns (the gateway), what an upgrade installs (`install/upgrade.sh`), or which dashboard users may ask
+for a command (the dashboard decides; see [Trust](#trust)).
 
 ## Files
 
 | File | Does |
 |---|---|
 | `main.mjs` | Entry point: builds the runtime, polls the queue every `pollMs`, stops cleanly on SIGTERM |
-| `command-queue.mjs` | Claims pending commands, runs each once, records outcomes; recovers and watches after a restart |
+| `command-queue.mjs` | Checks each pending command's signature, claims it, runs it once, records the outcome; recovers and watches after a restart |
 | `commands.mjs` | The command set: checks each command's params and calls the module that does the work |
 | `systemd.mjs` | The allowlisted units and every `systemctl`, `systemd-run` and `journalctl` call |
 | `upgrade.mjs` | Checks a ref, starts the upgrade script in its own unit, reads how it ended |
@@ -59,11 +60,21 @@ control service watches it to the end.
 
 ## Trust
 
-Control carries out any well-formed command in the `commands` collection. Who may write one is decided
-outside it: the dashboard sends the commands that change things only for dashboard admins, and
-Firestore access is limited by IAM to the dashboard's and the agent's service accounts.
-`requested_by` is recorded on everything a command writes, for the audit trail; control does not
-verify it.
+Control runs a command only when the dashboard signed it. The agent's own service account can write
+to the `commands` collection, so a document there proves nothing by itself; a signature does.
+
+- The dashboard signs each command as its own service account, `paraclete-dashboard@<project>`,
+  through IAM Credentials `signJwt`, and stores the JWT in the command's `signature` field. The claims
+  (`agent/auth/command-signature.mjs`) name the command id, its type, a digest of its params, who
+  asked, the audience `paraclete-control`, and an expiry ten minutes out.
+- Control checks the signature against the keys Google publishes for that account, before claiming
+  the command: a command copied, edited after signing, signed by any other account, or expired is
+  failed with `error: "refused: <why>"` and never runs. While Google's keys cannot be fetched, the
+  command stays pending and is checked again next tick.
+- The agent's account holds no Token Creator role on the dashboard's, so it cannot sign as it. No
+  shared secret exists to leak.
+- Who may ask is the dashboard's decision: it signs the commands that change things only for its
+  admins. `requested_by` is signed with the command and recorded on everything it writes.
 
 ## Command protocol
 
@@ -80,6 +91,7 @@ writes the outcome onto the same document.
 | `status` | `"pending"` | Control only picks up pending commands |
 | `requested_by` | string | The dashboard user's email; recorded on what the command writes |
 | `created_at` | string | ISO 8601 UTC, e.g. `2026-10-17T12:00:00.000Z`. Sets the order |
+| `signature` | string | The dashboard's signature over this command (see [Trust](#trust)). Unsigned commands are refused |
 
 The document id is the command id: a Firestore auto-id is right. Write timestamps as ISO strings,
 not Firestore timestamps: the claim rewrites the document and stores every timestamp as a string.
@@ -213,6 +225,7 @@ systemd no longer knows (the VM restarted mid-upgrade) fails with an unknown out
 | `claude_enabled` | `set_model` | Claude for the cortex and the strong tier. Only `true` turns it on. The gateway reads it at startup |
 | `claude_updated_at`, `claude_updated_by` | `set_model` | When and by whom it last changed |
 | `effort` | the dashboard | One of the contracts' effort levels; `effort.default` when absent |
+| `effort_updated_at`, `effort_updated_by` | the dashboard | When and by whom the effort last changed |
 
 ## What the installer provides
 

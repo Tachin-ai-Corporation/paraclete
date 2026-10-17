@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install/uninstall.sh: removes what install/install.sh created from a Google Cloud project: the VM, the
-# firewall rule (and the network, when the installer made it), the dashboard's Cloud Run service and
-# image repository, the Firestore indexes and TTL policies, the service accounts and their grants.
+# firewall rules (and the network, when the installer made it), the dashboard's Cloud Run service and
+# its image repository (it holds only the dashboard's images; the grants on the two go with them), the
+# Firestore indexes and TTL policies, the service accounts and their grants.
 # Keeps the Firestore database and the bucket, with all their data, unless --purge, which also takes
 # typing the project id. Enabled APIs stay on. Run by the project's owner in Cloud Shell. It finds what
 # exists first and names exactly that before deleting anything; re-running finishes an interrupted
@@ -319,6 +320,8 @@ step_bucket() {
   note "the bucket and its files stay"
 }
 
+# Every project role an account holds goes before the account does, whoever granted it: the
+# installer's (the dashboard's logging.logWriter, for its builds, among them) and any added since.
 step_accounts() {
   step 7 accounts "the service accounts and their project grants"
   if ((${#ACCOUNTS[@]} == 0)); then

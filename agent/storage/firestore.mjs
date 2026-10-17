@@ -146,7 +146,7 @@ export class StoreUnavailable extends Error {
  */
 export class StoreConflict extends Error {
   constructor(path, body) {
-    super(`Firestore commit ${path}: the document changed since it was read: ${String(body).slice(0, 160)}`);
+    super(`Firestore write ${path}: the document changed since it was read: ${String(body).slice(0, 160)}`);
     this.name = 'StoreConflict';
   }
 }
@@ -311,18 +311,23 @@ export function createClient(config) {
   }
 
   /**
-   * Updates only the named fields of a document.
+   * Updates only the named fields of a document. With a precondition, the update happens only if
+   * the document still matches it: `{ updateTime }` (unchanged since it was read with readDoc) or
+   * `{ exists: true|false }`. A failed precondition always throws StoreConflict, strict or not.
    *
    * @param {string} path - document path
    * @param {string[]} fieldPaths - the field mask
    * @param {object} fields - already-encoded Firestore fields to set
-   * @param {{strict?: boolean}} [opts]
+   * @param {{strict?: boolean, precondition?: {updateTime?: string, exists?: boolean}}} [opts]
    * @returns {Promise<object|null>} the updated document, or null on failure
    */
   async function patch(path, fieldPaths, fields, opts = {}) {
     const token = await getAccessToken();
-    const mask = fieldPaths.map((f) => `updateMask.fieldPaths=${encodeURIComponent(quoteFieldPath(f))}`).join('&');
-    const resp = await fetch(`${BASE}/${path}?${mask}`, {
+    const query = fieldPaths.map((f) => `updateMask.fieldPaths=${encodeURIComponent(quoteFieldPath(f))}`);
+    const pre = opts.precondition;
+    if (pre?.updateTime) query.push(`currentDocument.updateTime=${encodeURIComponent(pre.updateTime)}`);
+    else if (typeof pre?.exists === 'boolean') query.push(`currentDocument.exists=${pre.exists}`);
+    const resp = await fetch(`${BASE}/${path}?${query.join('&')}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ fields }),
@@ -330,6 +335,9 @@ export function createClient(config) {
     });
     if (!resp.ok) {
       const text = await resp.text();
+      if (pre && (resp.status === 409 || (resp.status === 404 && pre.exists === true) || /FAILED_PRECONDITION|ALREADY_EXISTS/.test(text))) {
+        throw new StoreConflict(path, text);
+      }
       log('ERROR', `Firestore patch failed: ${resp.status} ${text}`);
       if (opts.strict) throw new StoreUnavailable('patch', path, resp.status, text);
       return null;

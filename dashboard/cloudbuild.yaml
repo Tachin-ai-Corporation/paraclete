@@ -1,0 +1,17 @@
+# dashboard/cloudbuild.yaml: builds the dashboard's image at one commit and pushes it to the
+# instance's Artifact Registry repository. install/install.sh runs it from the repo at the release
+# being installed (`gcloud builds submit https://github.com/<repo> --git-source-revision=<commit>`),
+# as the dashboard's own service account; the dashboard's upgrade button will run it the same way.
+#
+# Substitutions:
+#   _IMAGE   <region>-docker.pkg.dev/<project>/<repository>/dashboard
+#   _COMMIT  the full commit being built; the image tag
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ['build', '-f', 'dashboard/Dockerfile', '-t', '${_IMAGE}:${_COMMIT}', '.']
+images:
+  - '${_IMAGE}:${_COMMIT}'
+options:
+  # Builds run as a user-chosen service account, which needs its logs in Cloud Logging only.
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1200s

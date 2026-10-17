@@ -21,6 +21,8 @@ function manualTimers() {
 }
 
 const settle = () => new Promise((r) => setImmediate(r));
+/** Accepts every command, as the real check does for one the dashboard signed. */
+const acceptSigned = async () => ({});
 
 test('timings default when the contracts have no control section, and a set value overrides', () => {
   assert.deepEqual(controlSettings({}), { ...DEFAULT_CONTROL_SETTINGS });
@@ -33,7 +35,7 @@ test('the service ticks at once, then every pollMs after the last tick ends', as
   const db = fakeDb({ 'commands/c1': { type: 'status', status: 'pending', created_at: '2026-10-17T11:00:00.000Z' } });
   const runtime = controlRuntime({ db });
   const timers = manualTimers();
-  const control = buildControl(runtime, { systemd: fakeSystemd(), ...timers });
+  const control = buildControl(runtime, { verifyCommand: acceptSigned, systemd: fakeSystemd(), ...timers });
   control.start();
   await settle();
   assert.equal(db.get('commands/c1').status, 'done');
@@ -53,7 +55,7 @@ test('a store outage is logged and the next tick tries again', async () => {
   db.failOnce('query', new StoreUnavailable('query', 'commands', 503, 'unavailable'));
   const runtime = controlRuntime({ db });
   const timers = manualTimers();
-  const control = buildControl(runtime, { systemd: fakeSystemd(), ...timers });
+  const control = buildControl(runtime, { verifyCommand: acceptSigned, systemd: fakeSystemd(), ...timers });
   control.start();
   await settle();
   assert.ok(runtime.lines.some((l) => l.level === 'ERROR' && /command poll failed: .*HTTP 503.*trying again/.test(l.message)));
@@ -68,7 +70,7 @@ test('stop waits for the command in progress and schedules nothing after it', as
   let release;
   const systemd = fakeSystemd();
   systemd.restart = () => new Promise((resolve) => { release = resolve; });
-  const control = buildControl(runtime, { systemd, ...timers });
+  const control = buildControl(runtime, { verifyCommand: acceptSigned, systemd, ...timers });
   control.start();
   await settle();
   assert.equal(db.get('commands/c1').status, 'running');
@@ -101,4 +103,16 @@ test('the unit runs as root, sandboxed so that it can write nothing on disk', ()
   }
   assert.doesNotMatch(unit, /^ReadWritePaths=/m);
   assert.doesNotMatch(unit, /^KillMode=/m, 'an upgrade survives control restarts by running in its own unit, not by KillMode');
+});
+
+test('by default only commands signed by the dashboard account run: an unsigned one is refused', async () => {
+  const db = fakeDb({ 'commands/c1': { type: 'status', status: 'pending', created_at: '2026-10-17T11:00:00.000Z', requested_by: 'admin@example.com' } });
+  const runtime = controlRuntime({ db });
+  const timers = manualTimers();
+  const control = buildControl(runtime, { systemd: fakeSystemd(), ...timers });
+  control.start();
+  await settle();
+  await control.stop();
+  assert.equal(db.get('commands/c1').status, 'failed');
+  assert.equal(db.get('commands/c1').error, 'refused: the command is not signed');
 });

@@ -1,0 +1,36 @@
+/* dashboard/components/work/ExpandableText.module.css: long agent texts, folded and unfolded. */
+
+.wrap > * + * { margin-top: var(--space-2); }
+
+.plain {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  max-height: 640px;
+  overflow: auto;
+}
+
+.folded {
+  max-height: 14em;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, var(--bg-panel) 70%, transparent);
+  mask-image: linear-gradient(to bottom, var(--bg-panel) 70%, transparent);
+}
+
+.controls { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; font-size: 13px; }
+
+.log summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.log summary:hover { color: var(--text-secondary); }
+.log[open] summary { margin-bottom: var(--space-2); }

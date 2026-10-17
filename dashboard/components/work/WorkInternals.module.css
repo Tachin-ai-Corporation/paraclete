@@ -1,0 +1,13 @@
+/* dashboard/components/work/WorkInternals.module.css: an envelope's facts and its folded internals. */
+
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); font-size: 13px; }
+.facts dt { color: var(--text-muted); }
+.facts dd { min-width: 0; overflow-wrap: anywhere; color: var(--text-secondary); }
+
+.internals > summary { cursor: pointer; font-weight: 600; }
+.internals[open] > summary { margin-bottom: var(--space-3); }
+.internals > * + * { margin-top: var(--space-3); }
+
+.ledger { overflow-x: auto; font-size: 13px; }
+.key { font-family: var(--font-mono); font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.when { white-space: nowrap; }

@@ -8,8 +8,13 @@
 // the service starts was interrupted: it is marked failed, never run again. The one exception is a
 // command that runs outside this process (an upgrade, in its own systemd unit): it carries a
 // `detached` record, and each tick asks its handler how it stands until it has finished.
+//
+// Only signed commands run (agent/auth/command-signature.mjs). A command whose signature is missing,
+// wrong or expired is claimed and failed as refused, without running. One whose signature cannot be
+// checked yet (Google's keys unreachable) stays pending for the next tick.
 
 import { firestoreEncode, StoreConflict } from '../../storage/firestore.mjs';
+import { CommandSignatureError } from '../../auth/command-signature.mjs';
 
 export const STATUS = Object.freeze({ pending: 'pending', running: 'running', done: 'done', failed: 'failed' });
 
@@ -18,6 +23,7 @@ const PENDING_PER_TICK = 10;
 
 const DETACHED = Symbol('detached');
 const THEN = Symbol('then');
+const REFUSED = Symbol('refused');
 
 /** A handler's answer for a command that keeps running outside this process; its record is already stored. */
 export function detached() {
@@ -44,10 +50,13 @@ export function thenRun(result, action) {
  * @param {Record<string, {run: Function, watch?: Function}>} o.handlers by command type. run(params,
  *   ctx) returns the result, detached() or thenRun(); it throws to fail the command, and an error's
  *   `result` is kept. watch(record, ctx) returns {finished: false} or {finished: true, ok, result, error}.
+ * @param {Function} o.verifyCommand async (command, id) => claims; rejects with CommandSignatureError
+ *   when the command may not run (createCommandVerifier() in agent/auth/command-signature.mjs)
  * @param {Function} [o.log]
  * @param {Function} [o.now]       () => Date
  */
-export function createCommandQueue({ db, collections, handlers, log = () => {}, now = () => new Date() }) {
+export function createCommandQueue({ db, collections, handlers, verifyCommand, log = () => {}, now = () => new Date() }) {
+  if (typeof verifyCommand !== 'function') throw new Error('createCommandQueue: verifyCommand is required; only signed commands run');
   const iso = () => now().toISOString();
   const pathOf = (id) => `${collections.commands}/${id}`;
   let firstPass = true;
@@ -59,8 +68,9 @@ export function createCommandQueue({ db, collections, handlers, log = () => {}, 
 
   /**
    * Claims a pending command: pending to running, only if the document is unchanged since it was read.
-   * Null when it is no longer pending or another writer got there first. The claim rewrites the whole
-   * document, so every timestamp in it is an ISO string afterwards.
+   * Null when it is no longer pending, another writer got there first, or its signature cannot be
+   * checked yet. A command whose signature is refused is claimed too, so it can be failed, never run.
+   * The claim rewrites the whole document, so every timestamp in it is an ISO string afterwards.
    *
    * @param {string} id
    * @returns {Promise<object|null>} the command as claimed
@@ -68,6 +78,16 @@ export function createCommandQueue({ db, collections, handlers, log = () => {}, 
   async function claim(id) {
     const current = await db.readDoc(pathOf(id));
     if (!current || current.data.status !== STATUS.pending) return null;
+    let refusal = null;
+    try {
+      await verifyCommand(current.data, id);
+    } catch (err) {
+      if (!(err instanceof CommandSignatureError)) {
+        log('WARN', `command ${id}: its signature could not be checked (${err.message}); it stays pending`);
+        return null;
+      }
+      refusal = err.message;
+    }
     const data = { ...current.data, status: STATUS.running, started_at: iso() };
     try {
       await db.commit([{ path: pathOf(id), data, precondition: { updateTime: current.updateTime } }]);
@@ -75,7 +95,7 @@ export function createCommandQueue({ db, collections, handlers, log = () => {}, 
       if (err instanceof StoreConflict) return null;
       throw err;
     }
-    return data;
+    return refusal ? { ...data, [REFUSED]: refusal } : data;
   }
 
   /**
@@ -100,6 +120,10 @@ export function createCommandQueue({ db, collections, handlers, log = () => {}, 
 
   /** Runs one claimed command through its handler and records the outcome. */
   async function execute(id, command) {
+    if (command[REFUSED]) {
+      log('WARN', `command ${id} ${command.type} refused: ${command[REFUSED]}`, { command: id, type: command.type, requested_by: command.requested_by ?? null });
+      return finish(id, { ok: false, error: `refused: ${command[REFUSED]}` });
+    }
     const handler = Object.hasOwn(handlers, command.type) ? handlers[command.type] : null;
     if (!handler) {
       return finish(id, { ok: false, error: `unknown command type '${command.type}' (expected one of ${Object.keys(handlers).join(', ')})` });

@@ -1,21 +1,36 @@
 // tests/install/fake-cloud.mjs: stands in for gcloud, git and curl when the tests run
-// install/install.sh and install/uninstall.sh, so no test reaches Google Cloud or GitHub. Shims named
-// gcloud, git and curl (written by harness.mjs) exec this file with the tool's name first. It answers
-// from a JSON state file (FAKE_CLOUD_STATE), applies every change a real command would make to that
-// state, and appends each call to FAKE_CLOUD_LOG as { tool, command, args, write }, where write says
-// whether the real command would change something. A command shape it doesn't know fails loudly
-// (exit 3), so a script change that adds one fails a test until the fake learns it.
+// install/install.sh and install/uninstall.sh, so no test reaches Google Cloud, GitHub or Vertex AI.
+// Shims named gcloud, git and curl (written by harness.mjs) exec this file with the tool's name first.
+// It answers from a JSON state file (FAKE_CLOUD_STATE), applies every change a real command would make
+// to that state, and appends each call to FAKE_CLOUD_LOG as { tool, command, args, write }, where write
+// says whether the real command would change something. A command shape it doesn't know fails loudly
+// (exit 3), so a script change that adds one fails a test until the fake learns it. The dashboard's
+// pieces behave as the real ones do where the installer depends on it: Cloud Run reports CPU in
+// millicores, `run deploy --iap` grants IAP's service agent the invoker role (and fails while that
+// agent does not exist), a build pushes only into an existing repository, and a Firestore write with
+// the exists=false precondition never overwrites.
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, readFileSync as readNativeFile, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync as readNativeFile, writeFileSync as writeNativeFile } from 'node:fs';
 
-/** Reads a file a script named. Under Git for Windows a path inside an argument like
- * key=/tmp/x reaches this program unconverted, so cygpath translates it. */
-function readFileSync(path, encoding) {
+/** A path a script named, as this program opens it. Under Git for Windows a path inside an argument
+ * like key=/tmp/x reaches this program unconverted, so cygpath translates it. */
+function nativePath(path) {
   if (process.platform === 'win32' && path.startsWith('/')) {
-    path = spawnSync('cygpath', ['-w', path], { encoding: 'utf8' }).stdout.trim();
+    return spawnSync('cygpath', ['-w', path], { encoding: 'utf8' }).stdout.trim();
   }
-  return readNativeFile(path, encoding);
+  return path;
 }
+
+function readFileSync(path, encoding) {
+  return readNativeFile(nativePath(path), encoding);
+}
+
+function writeFileSync(path, text) {
+  writeNativeFile(nativePath(path), text);
+}
+
+/** What raw.githubusercontent.com serves as dashboard/cloudbuild.yaml at any commit: this repo's own. */
+const CLOUDBUILD_YAML = readNativeFile(new URL('../../dashboard/cloudbuild.yaml', import.meta.url), 'utf8');
 
 const [tool, ...args] = process.argv.slice(2);
 const statePath = process.env.FAKE_CLOUD_STATE;
@@ -81,6 +96,59 @@ function readMetadata(flags) {
 }
 
 const bucketOf = (url) => url.replace(/^gs:\/\//, '').replace(/\/.*$/, '');
+
+/** The member IAP's service agent is in IAM policies. */
+const iapAgent = () => `serviceAccount:service-${state.projectNumber}@gcp-sa-iap.iam.gserviceaccount.com`;
+
+/** The env-vars file `gcloud run deploy --env-vars-file` reads, as install/lib/dashboard.mjs writes it. */
+function readEnvFile(path) {
+  return Object.fromEntries(readFileSync(path, 'utf8').split('\n').filter(Boolean).map((line) => {
+    const colon = line.indexOf(': ');
+    return [line.slice(0, colon), JSON.parse(line.slice(colon + 2))];
+  }));
+}
+
+/** [path, tag] of an image reference <path>:<tag>. */
+function splitImage(ref) {
+  const colon = ref.lastIndexOf(':');
+  return [ref.slice(0, colon), ref.slice(colon + 1)];
+}
+
+/** '<location>/<repository>' of an Artifact Registry image path. */
+function repositoryOf(imagePath) {
+  const m = /^([a-z0-9-]+)-docker\.pkg\.dev\/[^/]+\/([^/]+)\//.exec(imagePath);
+  return m ? `${m[1]}/${m[2]}` : '';
+}
+
+/** A service as `gcloud run services describe --format=json` prints it: Cloud Run's Knative form. */
+function knativeService(name, s) {
+  const annotations = { 'run.googleapis.com/ingress': s.ingress || 'all' };
+  if (s.iap) annotations['run.googleapis.com/iap-enabled'] = 'true';
+  return {
+    apiVersion: 'serving.knative.dev/v1',
+    kind: 'Service',
+    metadata: { name, annotations },
+    spec: {
+      template: {
+        metadata: { annotations: s.maxInstances ? { 'autoscaling.knative.dev/maxScale': String(s.maxInstances) } : {} },
+        spec: {
+          serviceAccountName: s.account,
+          containers: [{
+            image: s.image,
+            env: Object.entries(s.env || {}).map(([envName, value]) => ({ name: envName, value })),
+            resources: { limits: { cpu: s.cpu, memory: s.memory } },
+          }],
+        },
+      },
+    },
+    status: { url: s.url },
+  };
+}
+
+function service(name, region) {
+  const found = state.runServices[name];
+  return found && found.region === region ? found : null;
+}
 
 /** gcloud command paths, each { write, run(words after the path, flags) }. */
 const GCLOUD = {
@@ -268,21 +336,142 @@ const GCLOUD = {
   'run services describe': {
     write: false,
     run: ([name], f) => {
-      const service = state.runServices[name];
-      return service && service.region === f.region ? out(String(f.format).includes('url') ? service.url : name) : fail('NOT_FOUND');
+      const found = service(name, f.region) || fail('NOT_FOUND');
+      if (f.format === 'json') out(JSON.stringify(knativeService(name, found)));
+      return out(String(f.format).includes('url') ? found.url : name);
     },
   },
-  'run services delete': { write: true, run: ([name]) => { delete state.runServices[name]; save(); out(''); } },
+  'run services delete': {
+    write: true,
+    run: ([name], f) => {
+      delete state.runServices[name];
+      delete state.iapPolicies[`${f.region}/${name}`];
+      save();
+      out('');
+    },
+  },
+  'run deploy': {
+    write: true,
+    run: ([name], f) => {
+      if (f.iap && !state.iapAgent) fail(`${iapAgent().slice('serviceAccount:'.length)} does not exist`);
+      const [path, tag] = splitImage(f.image);
+      if (!(state.images[path] || []).includes(tag)) fail(`Image '${f.image}' not found`);
+      const before = state.runServices[name];
+      const policy = before?.policy || [];
+      if (f.iap) addBinding(policy, 'roles/run.invoker', iapAgent());
+      state.runServices[name] = {
+        region: f.region,
+        url: before?.url || `https://${name}-${state.projectNumber}.${f.region}.run.app`,
+        image: f.image,
+        env: f['env-vars-file'] ? readEnvFile(f['env-vars-file']) : (before?.env || {}),
+        account: f['service-account'],
+        iap: f.iap === true,
+        ingress: f.ingress || 'all',
+        // Cloud Run reports CPU in millicores, whatever the deploy said.
+        cpu: `${Number(f.cpu) * 1000}m`,
+        memory: f.memory,
+        maxInstances: f['max-instances'],
+        policy: f['no-allow-unauthenticated'] ? policy.filter(([, member]) => member !== 'allUsers') : policy,
+      };
+      save();
+      out('');
+    },
+  },
+  'run services get-iam-policy': {
+    write: false,
+    run: ([name], f) => out(policyText((service(name, f.region) || fail('NOT_FOUND')).policy)),
+  },
+  'run services add-iam-policy-binding': {
+    write: true,
+    run: ([name], f) => {
+      addBinding((service(name, f.region) || fail('NOT_FOUND')).policy ||= [], f.role, f.member);
+      save();
+      out('');
+    },
+  },
+  'iap web get-iam-policy': {
+    write: false,
+    run: (_, f) => {
+      if (f['resource-type'] !== 'cloud-run' || !service(f.service, f.region)) fail('NOT_FOUND');
+      out(policyText(state.iapPolicies[`${f.region}/${f.service}`]));
+    },
+  },
+  'iap web add-iam-policy-binding': {
+    write: true,
+    run: (_, f) => {
+      if (f['resource-type'] !== 'cloud-run' || !service(f.service, f.region)) fail('NOT_FOUND');
+      addBinding((state.iapPolicies[`${f.region}/${f.service}`] ||= []), f.role, f.member);
+      save();
+      out('');
+    },
+  },
+  'beta services identity create': {
+    write: true,
+    run: (_, f) => {
+      if (f.service !== 'iap.googleapis.com') fail(`only IAP's service agent is modelled, not ${f.service}`);
+      state.iapAgent = true;
+      save();
+      process.stderr.write(`Service identity created: ${iapAgent().slice('serviceAccount:'.length)}\n`);
+      out('');
+    },
+  },
   'artifacts repositories describe': {
     write: false,
     run: ([name], f) => (state.imageRepositories.includes(`${f.location}/${name}`) ? out(name) : fail('NOT_FOUND')),
   },
+  'artifacts repositories create': {
+    write: true,
+    run: ([name], f) => {
+      if (state.imageRepositories.includes(`${f.location}/${name}`)) fail('ALREADY_EXISTS');
+      if (f['repository-format'] !== 'docker') fail('only docker repositories are modelled');
+      state.imageRepositories.push(`${f.location}/${name}`);
+      save();
+      out('');
+    },
+  },
   'artifacts repositories delete': {
     write: true,
     run: ([name], f) => {
-      state.imageRepositories = state.imageRepositories.filter((r) => r !== `${f.location}/${name}`);
+      const key = `${f.location}/${name}`;
+      state.imageRepositories = state.imageRepositories.filter((r) => r !== key);
+      delete state.repositoryPolicies[key];
+      for (const path of Object.keys(state.images)) if (repositoryOf(path) === key) delete state.images[path];
       save();
       out('');
+    },
+  },
+  'artifacts repositories get-iam-policy': {
+    write: false,
+    run: ([name], f) => (state.imageRepositories.includes(`${f.location}/${name}`)
+      ? out(policyText(state.repositoryPolicies[`${f.location}/${name}`])) : fail('NOT_FOUND')),
+  },
+  'artifacts repositories add-iam-policy-binding': {
+    write: true,
+    run: ([name], f) => {
+      if (!state.imageRepositories.includes(`${f.location}/${name}`)) fail('NOT_FOUND');
+      addBinding((state.repositoryPolicies[`${f.location}/${name}`] ||= []), f.role, f.member);
+      save();
+      out('');
+    },
+  },
+  'artifacts docker tags list': {
+    write: false,
+    run: ([path]) => (state.imageRepositories.includes(repositoryOf(path)) ? out((state.images[path] || []).join('\n')) : fail('NOT_FOUND')),
+  },
+  'builds submit': {
+    write: true,
+    run: ([source], f) => {
+      const substitutions = Object.fromEntries(String(f.substitutions).split(',').map((pair) => pair.split('=')));
+      const config = readFileSync(f.config, 'utf8');
+      if (state.buildFails) fail('BUILD FAILURE: Build step 0 "gcr.io/cloud-builders/docker" failed');
+      if (!state.imageRepositories.includes(repositoryOf(substitutions._IMAGE))) fail(`name unknown: repository for ${substitutions._IMAGE} not found`);
+      (state.images[substitutions._IMAGE] ||= []).push(substitutions._COMMIT);
+      state.builds.push({
+        source, revision: f['git-source-revision'], config, substitutions,
+        serviceAccount: f['service-account'], region: f.region,
+      });
+      save();
+      out(`DONE\n${substitutions._IMAGE}:${substitutions._COMMIT}`);
     },
   },
   'compute networks describe': {
@@ -388,6 +577,55 @@ function git() {
   return fail(`unknown command: ${args.join(' ')}`, 3);
 }
 
+/** The value after a curl option, e.g. option('-o'). */
+const option = (name) => {
+  const i = args.indexOf(name);
+  return i === -1 ? undefined : args[i + 1];
+};
+
+/** Every value of a curl option given more than once (-H). */
+const options = (name) => args.flatMap((arg, i) => (arg === name ? [args[i + 1]] : []));
+
+/** What Vertex AI answers generateContent with, by the names state.modelAnswers uses. */
+const MODEL_ANSWERS = {
+  ok: { candidates: [{ content: { role: 'model', parts: [{ text: 'Ready' }] }, finishReason: 'STOP' }] },
+  quota: { error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'Quota exceeded for aiplatform.googleapis.com/generate_content_requests_per_minute_per_project_per_base_model with base model: gemini-4-argon.' } },
+  'not-found': { error: { code: 404, status: 'NOT_FOUND', message: 'Publisher Model `projects/your-gcp-project/locations/global/publishers/google/models/gemini-4-argon` was not found or your project does not have access to it.' } },
+  disabled: { error: { code: 403, status: 'PERMISSION_DENIED', message: 'Vertex AI API has not been used in project 123456789012 before or it is disabled.' } },
+};
+
+/** An HTTP error with its body, as curl --fail-with-body reports it. */
+function httpError(body) {
+  process.stdout.write(`${JSON.stringify(body)}\n`);
+  process.stderr.write('curl: (22) The requested URL returned an error\n');
+  process.exit(22);
+}
+
+/** users/<email> in Firestore: reading it, or creating it only where none exists. */
+function firestoreUser(url, email, query) {
+  const name = `projects/${state.project}/databases/(default)/documents/users/${email}`;
+  const encode = (record) => Object.fromEntries(Object.entries(record).map(([key, value]) => [key, { stringValue: value }]));
+  const noDatabase = { error: { code: 404, status: 'NOT_FOUND', message: `The database (default) does not exist for project ${state.project}` } };
+  if (option('-X') !== 'PATCH') {
+    log('firestore get user', false);
+    if (!state.database) return out(JSON.stringify(noDatabase));
+    const record = state.users[email];
+    return out(JSON.stringify(record ? { name, fields: encode(record) } : { error: { code: 404, status: 'NOT_FOUND', message: `Document "${name}" not found.` } }));
+  }
+  log('firestore create user', true);
+  if (query !== '?currentDocument.exists=false') fail(`only create-only writes are modelled: ${url}`, 3);
+  const headers = options('-H').flatMap((h) => (h.startsWith('@') ? readFileSync(h.slice(1), 'utf8').split('\n') : [h]));
+  if (!headers.includes('Authorization: Bearer fake-token') || !headers.includes(`x-goog-user-project: ${state.project}`)) {
+    return httpError({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Request had invalid authentication credentials.' } });
+  }
+  if (!state.database) return httpError(noDatabase);
+  if (state.users[email]) return httpError({ error: { code: 409, status: 'ALREADY_EXISTS', message: `Document already exists: ${name}` } });
+  const body = JSON.parse(readFileSync(option('--data-binary').slice(1), 'utf8'));
+  state.users[email] = Object.fromEntries(Object.entries(body.fields).map(([key, value]) => [key, value.stringValue]));
+  save();
+  return out(JSON.stringify({ name, fields: body.fields }));
+}
+
 function curl() {
   const url = args.find((a) => /^https?:\/\//.test(a)) || '';
   if (url.endsWith(':testIamPermissions')) {
@@ -397,8 +635,24 @@ function curl() {
   }
   if (url.startsWith('https://raw.githubusercontent.com/')) {
     log('raw', false);
-    return state.rawFiles.includes(url.slice('https://raw.githubusercontent.com/'.length)) ? out('') : fail('404', 22);
+    const path = url.slice('https://raw.githubusercontent.com/'.length);
+    if (!state.rawFiles.includes(path)) return fail('The requested URL returned error: 404', 22);
+    const target = option('-o');
+    // Git Bash hands a native program `/dev/null` as `nul`, which Node would create as a file.
+    if (target && !/^(\/dev\/null|nul)$/i.test(target)) writeFileSync(target, path.endsWith('/dashboard/cloudbuild.yaml') ? CLOUDBUILD_YAML : '');
+    return out('');
   }
+  if (url.startsWith('https://aiplatform.googleapis.com/') && url.endsWith(':generateContent')) {
+    log('vertex generateContent', false);
+    const answers = state.modelAnswers || ['ok'];
+    const answer = answers[Math.min(state.modelCalls || 0, answers.length - 1)];
+    state.modelCalls = (state.modelCalls || 0) + 1;
+    save();
+    if (answer === 'unreachable') return fail('Could not resolve host: aiplatform.googleapis.com', 6);
+    return out(JSON.stringify(MODEL_ANSWERS[answer]));
+  }
+  const userDoc = /^https:\/\/firestore\.googleapis\.com\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/users\/([^/?]+)(\?.*)?$/.exec(url);
+  if (userDoc) return firestoreUser(url, decodeURIComponent(userDoc[1]), userDoc[2]);
   if (url.includes('firestore.googleapis.com') && url.endsWith('/documents/agent/instance')) {
     log('firestore get agent/instance', false);
     const doc = state.agentInstance;

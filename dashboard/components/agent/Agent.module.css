@@ -1,0 +1,124 @@
+/* The Agent page's layout, shared by its tabs. Colors, spacing and type come from app/globals.css. */
+
+.sectionHead { margin-bottom: var(--space-3); }
+.sectionHead p { margin-top: var(--space-1); }
+
+.cardTitle { margin-bottom: var(--space-2); }
+.cardHead { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-3); }
+.cardHead .cardTitle { margin-bottom: 0; }
+
+/* A definition list read as two columns: label, value. */
+.facts {
+  display: grid;
+  grid-template-columns: minmax(110px, 180px) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  align-items: baseline;
+}
+.facts dt { color: var(--text-secondary); font-size: 13px; }
+.facts dd { min-width: 0; overflow-wrap: anywhere; }
+
+/* A view the VM answers */
+.vmView > * + * { margin-top: var(--space-3); }
+.vmBar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+
+/* Persona */
+.promptPart + .promptPart {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px dashed var(--border-strong);
+}
+.partLabel { margin-bottom: var(--space-2); font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+
+/* Effort */
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-input);
+}
+.segment {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  min-width: 84px;
+  padding: 6px var(--space-3);
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-weight: 600;
+  text-transform: capitalize;
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.segment:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
+.segment[aria-checked="true"] { background: var(--accent-soft); color: var(--text-primary); box-shadow: inset 0 0 0 1px var(--accent); }
+.segment:disabled { cursor: default; }
+.segment:disabled:not([aria-checked="true"]) { opacity: 0.6; }
+.segmentScale { font-family: var(--font-mono); font-size: 11.5px; font-weight: 500; color: var(--text-muted); text-transform: none; }
+.hint { margin: var(--space-3) 0 var(--space-2); }
+
+/* Models */
+.tableWrap { overflow-x: auto; }
+.tableWrap td :global(.badge) { margin-left: var(--space-2); }
+.gateway { margin-top: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2); }
+
+/* Filters above a list */
+.filters { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+.filters :global(.select) { width: auto; }
+.search { flex: 1 1 240px; max-width: 420px; }
+
+/* Core Memory */
+.memoryList { list-style: none; display: flex; flex-direction: column; gap: var(--space-2); }
+.memoryEntry {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.memoryEntry > * + * { margin-top: var(--space-2); }
+.fact { white-space: pre-wrap; overflow-wrap: anywhere; }
+.entryMeta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); color: var(--text-muted); font-size: 12.5px; }
+.entryId { color: var(--text-muted); }
+
+.chips { display: flex; flex-wrap: wrap; gap: var(--space-1); }
+.chip {
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: var(--bg-raised);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* Skills */
+.skillList { display: flex; flex-direction: column; gap: var(--space-2); }
+.skill {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+}
+.skill > * + * { margin-top: var(--space-3); }
+.skillHead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+
+/* Raw JSON */
+.raw {
+  max-height: 520px;
+  overflow: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  white-space: pre;
+}
+
+@media (max-width: 760px) {
+  .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .facts dd { margin-bottom: var(--space-2); }
+  .segment { min-width: 64px; }
+}

@@ -6,8 +6,8 @@ instance.
 | File | Use |
 |---|---|
 | `instance.env.example` | Copy to `.local/instance.env` and fill in your dev instance |
-| `deploy.mjs` | Moves your dev instance's VM to a pushed branch, tag or commit through the release upgrader |
-| `status.mjs` | Shows the commit the VM runs, service health, the gateway's models and recent missions |
+| `deploy.mjs` | Moves your dev instance to a pushed branch, tag or commit: the VM through the release upgrader, the dashboard through Cloud Build and Cloud Run |
+| `status.mjs` | Shows the commit the VM runs, service health, the gateway's models, recent missions, and the dashboard's URL and commit |
 | `logs.mjs` | Prints a service's journal from the VM, one readable line per log entry |
 | `query.mjs` | Reads Firestore. Read-only |
 | `trigger.mjs` | Runs a responsibility now, as the dashboard's "run now" does |
@@ -18,15 +18,16 @@ instance.
 ## The dev loop commands
 
 Run them from the repo root with Node 24, in Git Bash on Windows, or on macOS or Linux. They need
-`gcloud` logged in (`gcloud auth login`) as an account that can reach the VM over IAP with sudo and
-read and write the dev project's Firestore; the project's owner can. Each reads your instance from
+`gcloud` logged in (`gcloud auth login`) as an account that can reach the VM over IAP with sudo, read
+and write the dev project's Firestore, and (for `deploy`) submit builds and deploy to Cloud Run as the
+dashboard's service account; the project's owner can. Each reads your instance from
 `.local/instance.env` and refuses to run without it. How and when to use them:
 [DEVELOPING.md](../DEVELOPING.md) section 7.
 
 | Command | Does |
 |---|---|
-| `node dev/deploy.mjs <branch\|tag\|commit> [--repo <owner>/<name>] [--timeout <seconds>]` | Resolves the ref to a commit on GitHub (a branch must be pushed), runs `sudo /opt/paraclete/install/upgrade.sh --ref <commit> --repo <owner>/<name>` on the VM with its output streamed, and waits for `agent/instance` to report ready on that commit. `--repo` defaults to this clone's origin, and must be public. The dashboard half arrives in build plan phase 6 |
-| `node dev/status.mjs [--json]` | The installed release, each service's unit state and heartbeat age, the gateway's models, `agent/instance` and the five newest missions. Exits 1 when a service is down or hung, or the installed commit and `agent/instance` disagree |
+| `node dev/deploy.mjs <branch\|tag\|commit> [--repo <owner>/<name>] [--vm-only \| --dashboard-only] [--timeout <seconds>]` | Resolves the ref to a commit on GitHub (a branch must be pushed), runs `sudo /opt/paraclete/install/upgrade.sh --ref <commit> --repo <owner>/<name>` on the VM with its output streamed, and waits for `agent/instance` to report ready on that commit. Then the dashboard, with the same commands `install/install.sh` uses (`install/lib/dashboard.mjs`): Cloud Build builds the commit's image with that commit's own `dashboard/cloudbuild.yaml` (from `git show`; the working tree's copy, with a warning, when your clone lacks the commit) unless the image exists, and Cloud Run deploys it with the service's environment moved to the commit, unless it already runs it. Both stream their output. `--vm-only` and `--dashboard-only` move one half. `--repo` defaults to this clone's origin, and must be public. The dashboard service must exist: `install/install.sh` creates it |
+| `node dev/status.mjs [--json]` | The installed release, each service's unit state and heartbeat age, the gateway's models, `agent/instance`, the five newest missions, and the dashboard's URL and the commit its image was built from. Exits 1 when a service is down or hung, the installed commit and `agent/instance` disagree, or the dashboard is missing or on another commit than the VM |
 | `node dev/logs.mjs <service\|all> [--lines N] [--follow]` | `journalctl` for `paraclete-<service>.service` (or every unit), 100 lines unless `--lines`; `--follow` until Ctrl+C |
 | `node dev/query.mjs <collection> [--where <field><op><value> ...] [--order <field> [desc]] [--limit N]` | Prints matching documents as JSON. `<collection>` may be a subcollection path such as `work/<id>/history`; `--doc <id>` reads one document. `--help` lists the operators and value types |
 | `node dev/trigger.mjs <responsibility-id> [--timeout <seconds>]` | Writes the trigger document the control service writes for "run now", then waits for the brain to mark it fired, skipped or error. One still unclaimed when the wait runs out is withdrawn, so it cannot fire later |
@@ -34,7 +35,8 @@ read and write the dev project's Firestore; the project's owner can. Each reads 
 
 Every command takes `--help`. Exit codes: 0 done, 1 failed or found a problem, 2 a usage mistake.
 
-**What they change.** `deploy` moves the VM, through the same upgrader a release upgrade runs. `say`
+**What they change.** `deploy` moves the VM, through the same upgrader a release upgrade runs, and the
+dashboard: a build pushes one image to its repository and a deploy makes a new Cloud Run revision. `say`
 writes one message and `trigger` one trigger document, each exactly as the dashboard would (and
 `trigger` deletes its own if the brain never claimed it). Nothing else writes. `query` cannot: its
 client only reads.

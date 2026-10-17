@@ -13,6 +13,7 @@ import { createDashboardInbox } from '../../agent/services/ears/dashboard-inbox.
 import { createInboundHandler } from '../../agent/services/ears/inbound.mjs';
 import { createInboundGate } from '../../agent/services/ears/inbound-gate.mjs';
 import { intakeIdFor } from '../../agent/services/ears/intake.mjs';
+import { loadContracts } from '../../config/contracts.mjs';
 import { dashboardMessage, defaultThread, main } from '../../dev/say.mjs';
 import { DEV_EMAIL, START, assertNoShell, devDeps, fakeExec } from './fakes.mjs';
 
@@ -114,7 +115,9 @@ test('a message the ears drop without taking it in is reported with the reason',
     },
   });
   assert.equal(await main(['hello again'], deps), 1);
-  assert.match(deps.stderr.text, /the ears marked the message processed without taking it in\. They drop the same text from the same person in the same thread within 300 s, and a message within 2 s/);
+  const { ears } = loadContracts();
+  assert.match(deps.stderr.text, new RegExp('the ears marked the message processed without taking it in\\. They drop the same text from the same '
+    + `person in the same thread within ${Math.round(ears.dedup_window_ms / 1000)} s, and a message within ${Math.round(ears.cooldown_ms / 1000)} s`));
 });
 
 test('a wait that runs out says where things stand; --thread and a missing git name are honored', async () => {

@@ -89,15 +89,17 @@ and listing with `orderBy` or `showMissing`.
 **Deliberately not modelled:** composite indexes (a query that needs one works here and fails in
 production with `FAILED_PRECONDITION`), security rules, quotas and the 10 MiB request limit.
 
-**Where it may differ from the real API** (unverified, so don't build on these):
+**Where it differs from the real API:**
 
 - Values come back exactly as they were sent. The real API returns canonical proto JSON: an
   `integerValue` is always a string, and a `timestampValue` is UTC `Z` with 0, 3, 6 or 9 fractional
-  digits, so `2026-01-01T00:00:00.000Z` comes back as `2026-01-01T00:00:00Z`.
+  digits, so `2026-01-01T00:00:00.000Z` comes back as `2026-01-01T00:00:00Z` (confirmed on a live
+  project). Compare timestamps as instants, never as strings.
 - Server times always have six fractional digits; the real API drops trailing zero groups.
-- An `updateTime` precondition on a missing document fails with `FAILED_PRECONDITION`; the real API
-  may answer `NOT_FOUND`.
-- A field present in the document but not named by the update mask is refused with 400.
+- A field present in the document but not named by the update mask is refused with 400 (unverified).
+
+**Confirmed the same as the real API:** an `updateTime` precondition on a deleted document fails with
+400 `FAILED_PRECONDITION`, which `commit()` reports as `StoreConflict`.
 
 ## Cloud Storage fake
 

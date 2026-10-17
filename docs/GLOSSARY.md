@@ -17,6 +17,8 @@ this.
 | dashboard | The web app where people use and manage an instance |
 | dashboard admin | A dashboard user who manages users, settings, secrets, models and upgrades |
 | dashboard member | A dashboard user who chats with the agent, follows and approves its work, and downloads its files |
+| dashboard user | Someone with both the IAP grant on the dashboard's service and a record in `users`. Either alone grants nothing |
+| IAP | Identity-Aware Proxy: Google's sign-in in front of the dashboard. It admits only people granted access and signs a header saying who they are |
 
 ## The agent's brain
 
@@ -115,6 +117,8 @@ this.
 | ears | The service that takes in messages and files |
 | mouth | The service that sends everything out. The only way out |
 | control | The service that carries out the dashboard's commands on the VM |
+| command | A request from the dashboard to the VM, written to the `commands` collection: a view (`status`, `skills`...) or a change (`restart_service`, `upgrade`...) |
+| signed command | A command carrying the dashboard service account's signature over its id, type, params and requester. Control runs nothing else |
 | heartbeat | A service's `services/<service>/health.json` under the data root, rewritten after each poll; control reports one older than a minute as stale |
 | contracts | `config/contracts.json`, the single source for shared values |
 | manifest | `install/manifest.txt`, the list of files installed onto the VM |

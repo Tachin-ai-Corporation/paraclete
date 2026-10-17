@@ -1,12 +1,19 @@
 // Tests for dev/deploy.mjs: a ref resolves to a 40-character commit on GitHub (a branch, an annotated
 // tag through its peeled commit, or a full commit as given), an unpushed branch is refused and a
 // diverged local branch warned about, the upgrader runs over IAP with the exact gcloud arguments and
-// its output streamed, and the deploy waits for agent/instance to report ready on that commit.
+// its output streamed, and the deploy waits for agent/instance to report ready on that commit. Then
+// the dashboard: the commit's image is built with that commit's own build config unless it exists,
+// and deployed with the service's environment moved to the commit unless the service runs it, with
+// the same gcloud arguments install/install.sh uses; --vm-only and --dashboard-only move one half.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { main, githubRepoFromUrl, pickRemoteRef } from '../../dev/deploy.mjs';
+import { buildArgs, deployArgs } from '../../install/lib/dashboard.mjs';
+import { REPO_ROOT } from '../../dev/dev-env.mjs';
 import { DEV_TOKEN, assertNoShell, devDeps, expectedSsh, fakeExec } from './fakes.mjs';
 
 const MAIN = 'a'.repeat(40);
@@ -29,18 +36,92 @@ const ready = (commit, over = {}) => db.write('agent/instance', {
   status: 'ready', release: 'main', commit, ready_at: '2026-10-17T12:01:00.000Z', ...over,
 });
 
-/** The instance and GitHub as a script for the fake runner. */
-function instance({ remote = `${MAIN}\trefs/heads/main\n`, local = MAIN, upgrade = { stdout: 'upgrade: fetching\nupgrade: done\n' }, onUpgrade } = {}) {
-  return fakeExec(async (program, args) => {
+const PROJECT = 'your-gcp-project';
+const IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/paraclete/dashboard`;
+const DASHBOARD = `paraclete-dashboard@${PROJECT}.iam.gserviceaccount.com`;
+const DASHBOARD_URL = 'https://paraclete-123456789012.us-central1.run.app';
+const CONFIG = "# the commit's own build config\nsteps: []\n";
+
+/** The dashboard's environment as the installer set it, at a commit. */
+const installedEnv = (commit, over = {}) => ({
+  PARACLETE_PROJECT: PROJECT, PARACLETE_PROJECT_NUMBER: '123456789012', PARACLETE_REGION: 'us-central1',
+  PARACLETE_SERVICE: 'paraclete', PARACLETE_BUCKET: `${PROJECT}-paraclete`, PARACLETE_REPO: 'your-org/paraclete',
+  PARACLETE_RELEASE: 'v2026.10.16.1.1', PARACLETE_COMMIT: commit, PARACLETE_AGENT_NAME: "Ada O'Brien", PARACLETE_ROLE: 'generic', ...over,
+});
+
+/** The dashboard service as `gcloud run services describe --format=json` shows it, running a commit. */
+function dashboardService(commit = OLD, env = installedEnv(commit)) {
+  return {
+    metadata: { name: 'paraclete', annotations: { 'run.googleapis.com/iap-enabled': 'true', 'run.googleapis.com/ingress': 'all' } },
+    spec: {
+      template: {
+        metadata: { annotations: { 'autoscaling.knative.dev/maxScale': '3' } },
+        spec: {
+          serviceAccountName: DASHBOARD,
+          containers: [{
+            image: `${IMAGE}:${commit}`,
+            env: Object.entries(env).map(([name, value]) => ({ name, value })),
+            resources: { limits: { cpu: '1000m', memory: '1Gi' } },
+          }],
+        },
+      },
+    },
+    status: { url: DASHBOARD_URL },
+  };
+}
+
+/** The value of --name=value in an argument list. */
+const flagOf = (args, name) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+
+/** The env-vars file a deploy read, as an object. */
+const envOf = (text) => Object.fromEntries(text.trimEnd().split('\n').map((line) => {
+  const colon = line.indexOf(': ');
+  return [line.slice(0, colon), JSON.parse(line.slice(colon + 2))];
+}));
+
+/**
+ * The instance, its dashboard and GitHub as a script for the fake runner. `seen` collects the build
+ * config and the environment each build and deploy read, while their files still exist.
+ */
+function instance({
+  remote = `${MAIN}\trefs/heads/main\n`, local = MAIN, upgrade = { stdout: 'upgrade: fetching\nupgrade: done\n' }, onUpgrade,
+  service = dashboardService(), tags = [OLD], show = { stdout: CONFIG }, build = { stdout: 'BUILD step 0: docker build\nDONE\n' },
+  deploy = { stderr: 'Deploying container to Cloud Run service [paraclete]... Done.\n' },
+} = {}) {
+  const seen = { configs: [], envs: [], files: [] };
+  const exec = fakeExec(async (program, args) => {
     if (program === 'git' && args.includes('ls-remote')) return { stdout: remote };
     if (program === 'git' && args[0] === 'rev-parse') return local ? { stdout: `${local}\n` } : { code: 1 };
+    if (program === 'git' && args[0] === 'show') return show;
     if (program === 'gcloud' && args[0] === 'compute') {
       await onUpgrade?.(args);
       return upgrade;
     }
+    const words = args.slice(0, 3).join(' ');
+    if (words === 'run services describe') {
+      return service ? { stdout: JSON.stringify(service) } : { code: 1, stderr: 'ERROR: (gcloud.run.services.describe) Cannot find service [paraclete]\n' };
+    }
+    if (words === 'artifacts docker tags') return { stdout: tags.map((tag) => `${tag}\n`).join('') };
+    if (words.startsWith('builds submit')) {
+      seen.files.push(flagOf(args, 'config'));
+      seen.configs.push(readFileSync(flagOf(args, 'config'), 'utf8'));
+      return build;
+    }
+    if (words === 'run deploy paraclete') {
+      seen.files.push(flagOf(args, 'env-vars-file'));
+      seen.envs.push(envOf(readFileSync(flagOf(args, 'env-vars-file'), 'utf8')));
+      return deploy;
+    }
     return undefined;
   });
+  exec.seen = seen;
+  return exec;
 }
+
+/** The dashboard's gcloud calls of a run, by their first words. */
+const dashboardCalls = (exec) => exec.callsTo('gcloud')
+  .filter((c) => ['run', 'artifacts', 'builds'].includes(c.args[0]))
+  .map((c) => c.args.slice(0, c.args[0] === 'builds' ? 2 : 3).join(' '));
 
 const upgradeCommand = (commit, repo = 'your-org/paraclete') => `sudo /opt/paraclete/install/upgrade.sh --ref ${commit} --repo ${repo}`;
 
@@ -55,6 +136,7 @@ test('a branch resolves on GitHub, the upgrader runs over IAP, and the deploy en
     ['remote', 'get-url', 'origin'],
     ['-c', 'credential.helper=', 'ls-remote', ORIGIN_URL, 'refs/heads/main', 'refs/tags/main', 'refs/tags/main^{}'],
     ['rev-parse', '--verify', '--quiet', 'refs/heads/main'],
+    ['show', `${MAIN}:dashboard/cloudbuild.yaml`],
   ]);
   assert.equal(exec.callsTo('git')[1].opts.env.GIT_TERMINAL_PROMPT, '0', 'GitHub is read anonymously, as the VM reads it');
   const ssh = exec.callsTo('gcloud').filter((c) => c.args[0] === 'compute');
@@ -64,10 +146,102 @@ test('a branch resolves on GitHub, the upgrader runs over IAP, and the deploy en
   assert.match(deps.stdout.text, /main on your-org\/paraclete is a{40} \(branch\)\./);
   assert.match(deps.stdout.text, /upgrade: fetching\nupgrade: done\n/, "the upgrader's output is streamed through");
   assert.match(deps.stdout.text, /Done: the VM runs a{40} from your-org\/paraclete \(release main\), ready at 2026-10-17T12:01:00\.000Z\./);
-  assert.match(deps.stdout.text, /Only the VM moved: deploying the dashboard arrives with build plan phase 6\./);
+  assert.match(deps.stdout.text, /Done: the dashboard runs a{40} from your-org\/paraclete, at https:\/\/paraclete-123456789012\.us-central1\.run\.app\./);
   const reads = firestore.requests.slice(seeded).filter((r) => r.method === 'GET');
   assert.ok(reads.length > 0 && reads.every((r) => r.token === DEV_TOKEN), 'agent/instance is read as the developer');
-  assert.equal(deps.stderr.text, '');
+  assert.equal(deps.stderr.text, 'Deploying container to Cloud Run service [paraclete]... Done.\n', "only Cloud Run's own progress");
+});
+
+test('after the VM is ready, the dashboard is built at the commit with its own config and deployed as the installer does', async () => {
+  await ready(OLD);
+  const exec = instance({ onUpgrade: () => ready(MAIN) });
+  const deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main'], deps), 0, deps.stderr.text);
+
+  const gcloud = exec.callsTo('gcloud').filter((c) => c.args[0] !== 'auth');
+  assert.deepEqual(gcloud.map((c) => c.args.slice(0, 2).join(' ')),
+    ['compute ssh', 'run services', 'artifacts docker', 'builds submit', 'run deploy'], 'the VM first, then the dashboard');
+  const [, describe, tags, build, deploy] = gcloud.map((c) => c.args);
+  assert.deepEqual(describe, ['run', 'services', 'describe', 'paraclete', '--region=us-central1', `--project=${PROJECT}`, '--format=json']);
+  assert.deepEqual(tags, ['artifacts', 'docker', 'tags', 'list', IMAGE, `--project=${PROJECT}`, '--format=value(tag.basename())']);
+  assert.deepEqual(build, buildArgs({ repo: 'your-org/paraclete', commit: MAIN, configFile: flagOf(build, 'config'), project: PROJECT, region: 'us-central1' }));
+  assert.equal(flagOf(build, 'service-account'), `projects/${PROJECT}/serviceAccounts/${DASHBOARD}`);
+  assert.equal(flagOf(build, 'substitutions'), `_IMAGE=${IMAGE},_COMMIT=${MAIN}`);
+  assert.deepEqual(deploy, deployArgs({ project: PROJECT, region: 'us-central1', commit: MAIN, envFile: flagOf(deploy, 'env-vars-file') }));
+  assert.ok(deploy.includes('--iap') && deploy.includes('--no-allow-unauthenticated'));
+
+  assert.deepEqual(exec.seen.configs, [CONFIG], "the commit's own cloudbuild.yaml, from git show");
+  assert.deepEqual(exec.seen.envs, [installedEnv(MAIN, { PARACLETE_RELEASE: 'main' })], 'only the commit, release and repo move');
+  assert.ok(exec.seen.files.every((file) => !existsSync(file)), 'the temporary files are gone');
+  assert.match(deps.stdout.text, /BUILD step 0: docker build\nDONE\n/, "the build's output is streamed through");
+  assert.match(deps.stdout.text, /Deploying the dashboard at aaaaaaaaaaaa \(changing: image, environment\)/);
+});
+
+test('an image that exists is not built again, and a dashboard on the commit is not deployed again', async () => {
+  await ready(OLD);
+  const exec = instance({
+    onUpgrade: () => ready(MAIN), tags: [OLD, MAIN],
+    service: dashboardService(MAIN, installedEnv(MAIN, { PARACLETE_RELEASE: 'main' })),
+  });
+  const deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main'], deps), 0, deps.stderr.text);
+  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags']);
+  assert.match(deps.stdout.text, /The dashboard's image for aaaaaaaaaaaa exists; not building it again\./);
+  assert.match(deps.stdout.text, /The dashboard already runs aaaaaaaaaaaa\./);
+  assert.equal(exec.callsTo('git').some((c) => c.args[0] === 'show'), false);
+});
+
+test('--vm-only moves the VM alone, --dashboard-only the dashboard alone, and not both', async () => {
+  await ready(OLD);
+  let exec = instance({ onUpgrade: () => ready(MAIN) });
+  let deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--vm-only'], deps), 0, deps.stderr.text);
+  assert.deepEqual(dashboardCalls(exec), []);
+  assert.match(deps.stdout.text, /The dashboard stays as it is \(--vm-only\)/);
+
+  exec = instance();
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
+  assert.equal(exec.calls.some((c) => c.args[0] === 'compute'), false, 'nothing runs on the VM');
+  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags', 'builds submit', 'run deploy paraclete']);
+  assert.match(deps.stdout.text, /The VM stays as it is \(--dashboard-only\)/);
+
+  deps = devDeps({ firestore, exec: instance() });
+  assert.equal(await main(['main', '--vm-only', '--dashboard-only'], deps), 2);
+  assert.match(deps.stderr.text, /--vm-only and --dashboard-only exclude each other/);
+});
+
+test('a dev instance without a dashboard is told to install one', async () => {
+  const deps = devDeps({ firestore, exec: instance({ service: null }) });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 1);
+  assert.match(deps.stderr.text, /your-gcp-project has no dashboard service paraclete in us-central1\. Install it once with install\/install\.sh --ref <branch>/);
+});
+
+test('a failed build or deploy stops with the reason, and a failed build deploys nothing', async () => {
+  let exec = instance({ build: { code: 1, stdout: 'ERROR: build step 0 failed\n' } });
+  let deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 1);
+  assert.match(deps.stderr.text, /the dashboard's build exited with code 1; read its output above\. The dashboard still runs b{40}\./);
+  assert.ok(!dashboardCalls(exec).includes('run deploy paraclete'));
+
+  exec = instance({ deploy: { code: 1, stderr: 'ERROR: revision failed to start\n' } });
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 1);
+  assert.match(deps.stderr.text, /the dashboard's deploy exited with code 1; read its output above\. It still runs b{40}/);
+});
+
+test("a commit this clone lacks builds with the working tree's config; one from before the dashboard is refused", async () => {
+  let exec = instance({ show: { code: 128, stderr: `fatal: invalid object name '${MAIN}'.\n` } });
+  let deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
+  assert.match(deps.stderr.text, /warning: this clone does not have aaaaaaaaaaaa \(git fetch gets it\); building with the working tree's dashboard\/cloudbuild\.yaml/);
+  assert.deepEqual(exec.seen.configs, [readFileSync(join(REPO_ROOT, 'dashboard', 'cloudbuild.yaml'), 'utf8')]);
+
+  exec = instance({ show: { code: 128, stderr: `fatal: path 'dashboard/cloudbuild.yaml' does not exist in '${MAIN}'\n` } });
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 1);
+  assert.match(deps.stderr.text, /a{40} has no dashboard\/cloudbuild\.yaml: it predates the dashboard\. Deploy it with --vm-only\./);
+  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags']);
 });
 
 test('the wait polls agent/instance until it reports the new commit', async () => {

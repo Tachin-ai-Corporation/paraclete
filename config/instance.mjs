@@ -11,6 +11,7 @@ export const DEFAULT_INSTANCE_PATH = '/etc/paraclete/instance.json';
 
 /** Name of the agent's service account; the installer creates it in the instance's project. */
 const AGENT_SERVICE_ACCOUNT = 'paraclete-agent';
+const DASHBOARD_SERVICE_ACCOUNT = 'paraclete-dashboard';
 
 const ROLE_PATTERN = /^[a-z][a-z0-9-]*$/;
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
@@ -104,4 +105,15 @@ export function agentIdentity(instance) {
     name: instance.agent_name,
     email: instance.workspace?.account || `${AGENT_SERVICE_ACCOUNT}@${instance.project}.iam.gserviceaccount.com`,
   });
+}
+
+/**
+ * The dashboard's service account: the only account whose signed commands the control service runs
+ * (agent/auth/command-signature.mjs). install/lib/names.sh creates it under the same name.
+ *
+ * @param {{project: string}} instance
+ * @returns {string}
+ */
+export function dashboardAccountEmail(instance) {
+  return `${DASHBOARD_SERVICE_ACCOUNT}@${instance.project}.iam.gserviceaccount.com`;
 }

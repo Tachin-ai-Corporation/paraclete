@@ -1,5 +1,5 @@
 {
-  "_comment": "The Firestore composite indexes and TTL policies the agent's queries need. install.sh creates each one that is missing with `gcloud firestore indexes composite create` and `gcloud firestore fields ttls update`; uninstall.sh removes them. The shape follows Firebase's firestore.indexes.json: indexes[] with collectionGroup, queryScope and fields, and fieldOverrides[] whose ttl: true makes the field its collection's TTL field. Collections sit at the database root (agent/storage/collections.mjs).",
+  "_comment": "The Firestore composite indexes and TTL policies the agent's and the dashboard's queries need. install.sh creates each one that is missing with `gcloud firestore indexes composite create` and `gcloud firestore fields ttls update`; uninstall.sh removes them. The shape follows Firebase's firestore.indexes.json: indexes[] with collectionGroup, queryScope and fields, and fieldOverrides[] whose ttl: true makes the field its collection's TTL field. Collections sit at the database root (agent/storage/collections.mjs).",
   "indexes": [
     {
       "_comment": "Conversation context: one thread's messages, newest first.",
@@ -7,6 +7,15 @@
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "thread_id", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "The dashboard's notices: the agent's newest messages, among them the ones sent to no thread.",
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sender", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "DESCENDING" }
       ]
     },

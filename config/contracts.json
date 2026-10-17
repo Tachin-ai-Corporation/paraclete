@@ -111,7 +111,7 @@
   "ears": {
     "firestore_poll_ms": 3000,
     "gchat_poll_ms": 5000,
-    "dedup_window_ms": 300000,
+    "dedup_window_ms": 30000,
     "cooldown_ms": 2000,
     "gchat_context_messages": 0,
     "max_pages_per_poll": 5,

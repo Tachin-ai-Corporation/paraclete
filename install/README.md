@@ -11,7 +11,7 @@ away again.
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -45,7 +45,12 @@ The steps, each printed as `[n/9]`:
    the project inside an organization; the role exists; the ref resolves and has `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
    secretmanager, storage, iap, drive; plus chat, gmail, calendar-json, docs, sheets, slides, people and
-   admin for a Workspace role. Only the ones that are off.
+   admin for a Workspace role. Only the ones that are off. Then the **model check**: the contracts'
+   cortex model (`vertex.models.cortex`, at `vertex.location`; Gemini 4 is served from the global
+   endpoint only) is asked for one word through Vertex AI's `generateContent`, as you. A failure is
+   tried again for about a minute (6 tries, 12 seconds apart: a just-enabled API takes a moment), then
+   stops the install, saying whether it is quota, the model not being available to the project
+   (Model Garden, or an organization policy), or the API still turning on. A dry run skips it.
 3. **accounts**: `paraclete-agent@` with the `gcp_roles` of `generic` and of the role;
    `paraclete-dashboard@` with what the dashboard needs; on a Workspace role `paraclete-dwd@`, which
    `paraclete-agent@` alone may sign as.
@@ -54,7 +59,27 @@ The steps, each printed as `[n/9]`:
 5. **bucket**: `gs://<project>-paraclete` with uniform access, public access prevention, and a lifecycle
    rule deleting `files.prefix` + `in/` after `files.inbox_retention_days` (`config/contracts.json`);
    object admin for both accounts on this bucket only.
-6. **dashboard**: arrives in a later release (build plan phase 6).
+6. **dashboard**, from the release's own `dashboard/cloudbuild.yaml` (downloaded at the commit; a
+   release without one predates the dashboard and installs without it):
+   - the Artifact Registry Docker repository `paraclete` in the region, where `paraclete-dashboard@` alone
+     may push (`roles/artifactregistry.writer` on that repository);
+   - the image `<region>-docker.pkg.dev/<project>/paraclete/dashboard:<commit>`, built by Cloud Build
+     from GitHub at the commit, as `paraclete-dashboard@` (the account its upgrade button builds as), in
+     the region (`--region`: the build, its logs and its record stay beside the image, whatever your own
+     `builds/region` says, and an organization that forbids `global` is no obstacle). Skipped when the
+     repository already has that tag;
+   - IAP's service agent (`service-<number>@gcp-sa-iap.iam.gserviceaccount.com`), asked for with
+     `gcloud beta services identity create` while the service does not already let it in;
+   - the Cloud Run service `paraclete`: that image, running as `paraclete-dashboard@`, `--iap`,
+     `--no-allow-unauthenticated`, ingress `all` (IAP stands in front of the URL itself), 1 CPU, 1 GiB, at
+     most 3 instances, scaling to zero, with the environment below. Skipped when the service already
+     runs that image with that environment, account and settings and is not open to everyone;
+   - who reaches it: IAP's service agent may invoke the service (`roles/run.invoker` on it); on IAP for
+     the service, you get `roles/iap.httpsResourceAccessor` and `paraclete-dashboard@` gets
+     `roles/iap.admin`, so the dashboard adds and removes its users itself;
+   - you, the first admin: `users/<your email, lowercase>` in Firestore,
+     `{ email, role: 'admin', added_by: 'install.sh', added_at }`, written through the REST API with the
+     `currentDocument.exists=false` precondition. A record that exists is never rewritten.
 7. **network**: the `default` network, or a `paraclete` network when there is none; the firewall rule
    `paraclete-allow-iap-ssh` (tcp:22 from IAP's range to the tag `paraclete`, priority 1000) and
    `paraclete-deny-ingress` (deny everything else inbound to that tag, priority 65000, which outranks a
@@ -64,8 +89,9 @@ The steps, each printed as `[n/9]`:
    exists keeps its disk: only its metadata changes.
 9. **wait**: until `agent/instance` reports `ready` (or `failed`) for this commit, up to 20 minutes.
 
-Re-running with another `--ref` moves an existing instance: the VM installs that commit at its next boot,
-or at once through `upgrade.sh`, and the installer prints both commands. To watch the agent:
+Re-running with another `--ref` moves an existing instance: the dashboard is built and deployed at that
+commit at once, and the VM installs it at its next boot, or at once through `upgrade.sh`; the installer
+prints both commands. Re-running with the same commit builds and deploys nothing. To watch the agent:
 
 ```
 gcloud compute ssh paraclete --zone=<zone> --project=<project> --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f
@@ -78,6 +104,12 @@ install/uninstall.sh                   # names exactly what it will delete, then
 install/uninstall.sh --dry-run
 install/uninstall.sh --purge           # also the Firestore database and the bucket: asks you to type the project id
 ```
+
+It removes the VM, the firewall rules (and the network, when the installer made it), the dashboard's
+Cloud Run service and its image repository (which holds only the dashboard's images; the grants on the
+two go with them), the Firestore indexes and TTL policies, and the service accounts with every project
+grant they hold (the dashboard's `roles/logging.logWriter` among them). The dashboard's users records
+are Firestore data: they stay unless `--purge`.
 
 `uninstall.sh` takes `--project`, `--region` (default: the VM's region, else `us-central1`), `--purge`,
 `--yes` (which never skips typing the project id for `--purge`) and `--dry-run`. Enabled APIs stay on.
@@ -97,10 +129,28 @@ install/uninstall.sh --purge           # also the Firestore database and the buc
 | `paraclete-agent-name` | The agent's display name |
 | `paraclete-bucket` | The instance's bucket, `<project>-paraclete` |
 | `paraclete-workspace-account`, `paraclete-workspace-signer` | Workspace roles only: the agent's Google account and the delegation signer service account. Never written by `install.sh`: the account exists only after the dashboard's Workspace setup (build plan phase 8), which records them |
-| `paraclete-dashboard-url` | Once the dashboard exists |
+| `paraclete-dashboard-url` | The dashboard's Cloud Run URL, once step 6 has deployed it |
 | `startup-script` | A short stub: at every boot, read `paraclete-repo` and `paraclete-ref` from metadata, download `install/bootstrap.sh` at that commit, and run it as root in the transient unit `paraclete-bootstrap` (its output goes to the journal) |
 
 The project, zone and region come from the metadata server's own attributes.
+
+### The dashboard's environment (set by `install.sh` on the Cloud Run service, read by the dashboard)
+
+`dashboard/README.md` says what the dashboard does with each. `install.sh` sets them all at every deploy
+(`--env-vars-file`, which replaces the whole environment); `dev/deploy.mjs` keeps what the service has
+and moves `PARACLETE_REPO`, `PARACLETE_RELEASE` and `PARACLETE_COMMIT`.
+
+| Variable | Value |
+|---|---|
+| `PARACLETE_PROJECT`, `PARACLETE_PROJECT_NUMBER`, `PARACLETE_REGION` | The project, its number, and the region of the data, the bucket and the service |
+| `PARACLETE_SERVICE` | `paraclete`, the Cloud Run service |
+| `PARACLETE_BUCKET` | `<project>-paraclete` |
+| `PARACLETE_REPO`, `PARACLETE_RELEASE`, `PARACLETE_COMMIT` | As `paraclete-repo`, `paraclete-release` and `paraclete-ref` above: what the image was built from |
+| `PARACLETE_AGENT_NAME`, `PARACLETE_ROLE` | As `paraclete-agent-name` and `paraclete-role` |
+
+`PARACLETE_IAP_AUDIENCE` is never set: it only overrides the audience the dashboard derives from the
+project number, region and service. The image is tagged with the same commit, which is how
+`dev/status.mjs` reads the dashboard's commit off the service and compares it with the VM's.
 
 ### Environment (set by `upgrade.sh`, read by `bootstrap.sh`)
 

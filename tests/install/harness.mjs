@@ -64,7 +64,10 @@ export function freshProject() {
     deniedPermissions: [],
     gitRemote: REMOTE_URL,
     remotes: { [REMOTE_URL]: LISTING },
-    rawFiles: Object.values(COMMITS).map((commit) => `${REPO}/${commit}/install/bootstrap.sh`),
+    rawFiles: Object.values(COMMITS).flatMap((commit) => [
+      `${REPO}/${commit}/install/bootstrap.sh`,
+      `${REPO}/${commit}/dashboard/cloudbuild.yaml`,
+    ]),
     services: [],
     accounts: [],
     accountPolicies: {},
@@ -75,6 +78,13 @@ export function freshProject() {
     buckets: {},
     runServices: {},
     imageRepositories: [],
+    repositoryPolicies: {},
+    images: {},
+    builds: [],
+    iapAgent: false,
+    iapPolicies: {},
+    users: {},
+    modelAnswers: ['ok'],
     networks: { default: { mode: 'auto', description: 'Default network for the project' } },
     firewallRules: {},
     instances: {},
@@ -145,11 +155,11 @@ export function createSandbox(state = freshProject()) {
       writeFileSync(statePath, JSON.stringify(next, null, 2));
     },
     /**
-     * Runs install/<script> with args; input is what the user types. Resolves to the exit status, the
-     * output, the "+" commands it printed and the fake tool calls it made. Asynchronous, so the tests
-     * of one file can run side by side.
+     * Runs install/<script> with args; input is what the user types, env adds to the environment.
+     * Resolves to the exit status, the output, the "+" commands it printed and the fake tool calls it
+     * made. Asynchronous, so the tests of one file can run side by side.
      */
-    async run(script, args = [], { input = '' } = {}) {
+    async run(script, args = [], { input = '', env = {} } = {}) {
       const before = readCalls().length;
       const child = spawn(bash, [portable(join(repo, 'install', script)), ...args], {
         env: {
@@ -158,6 +168,7 @@ export function createSandbox(state = freshProject()) {
           FAKE_CLOUD_STATE: statePath,
           FAKE_CLOUD_LOG: logPath,
           TMPDIR: portable(work),
+          ...env,
         },
       });
       let stdout = '';

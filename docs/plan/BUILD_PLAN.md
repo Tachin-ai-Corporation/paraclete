@@ -227,7 +227,8 @@ repairs an install.
 install/install.sh
   1  check      caller can act as owner, billing is on, project is in an organization, the ref resolves
   2  apis       compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry,
-                cloudbuild, secretmanager, storage, iap, drive (+ Workspace APIs for flagged roles)
+                cloudbuild, secretmanager, storage, iap, drive (+ Workspace APIs for flagged roles);
+                then checks the cortex model answers
   3  accounts   paraclete-dashboard@, paraclete-agent@ (+ the role's gcp_roles), paraclete-dwd@ if flagged
   4  firestore  native database (delete-protected), indexes and the TTL policy
   5  bucket     <project>-paraclete: uniform access, public access prevention, lifecycle rules
@@ -303,7 +304,7 @@ done.
    `uninstall.sh`, and the `dev/` scripts.
    *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no
    fallbacks, and the cortex runs on Gemini without errors.
-6. **Dashboard.** IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
+6. **Dashboard** (code done; the live check is next). IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
    approvals, work views, memory, settings, and the setup checklist.
    *Exit:* add and remove a user; chat with the agent; approve a gated mission.
 7. **Files and Drive.** The `files` skill and toolchain, signed-URL uploads, mission downloads, and the

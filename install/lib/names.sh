@@ -1,9 +1,11 @@
 # install/lib/names.sh: the name of everything install.sh creates and uninstall.sh removes. Kept in one
 # place so the two scripts can never disagree about what belongs to paraclete. Defines names and
-# functions only. Sourced by install/install.sh and install/uninstall.sh.
+# functions only. Sourced by install/install.sh and install/uninstall.sh; install/lib/dashboard.mjs
+# (and through it dev/deploy.mjs) reads its NAME=value lines, so keep each a plain assignment.
 
 # Service accounts (build plan section 3, "Identities"). config/instance.mjs derives the agent's own
-# identity from the first name; tests/install/install.test.mjs checks the two agree.
+# identity from the first name, and the control service trusts commands signed by the second;
+# tests/config/instance.test.mjs checks the names agree.
 AGENT_ACCOUNT_ID=paraclete-agent
 DASHBOARD_ACCOUNT_ID=paraclete-dashboard
 DWD_ACCOUNT_ID=paraclete-dwd

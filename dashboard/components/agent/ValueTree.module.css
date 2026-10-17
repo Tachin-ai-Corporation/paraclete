@@ -1,0 +1,51 @@
+/* ValueTree.jsx: nested key and value rows, collapsing to one column on a phone. */
+
+.map { display: flex; flex-direction: column; min-width: 0; }
+
+.row {
+  display: grid;
+  grid-template-columns: minmax(120px, 240px) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+.row:last-child { border-bottom: none; }
+
+.key {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.value { min-width: 0; overflow-wrap: anywhere; }
+.nested {
+  min-width: 0;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+}
+
+.note {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-bottom: var(--space-2);
+}
+
+.string { color: var(--text-primary); white-space: pre-wrap; }
+.number { color: var(--text-link); font-family: var(--font-mono); font-size: 12.5px; }
+.bool { color: var(--warn); font-family: var(--font-mono); font-size: 12.5px; }
+.none { color: var(--text-muted); font-style: italic; }
+
+.chips { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); }
+.chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-raised);
+  color: var(--text-primary);
+}
+
+.items { padding-left: 1.4em; display: flex; flex-direction: column; gap: var(--space-2); }
+
+@media (max-width: 760px) {
+  .row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .nested { padding-left: var(--space-2); }
+}

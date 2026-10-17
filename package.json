@@ -8,7 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "setup": "npm ci --prefix agent",
+    "setup": "npm ci --prefix agent && npm ci --prefix dashboard",
+    "build:dashboard": "npm run build --prefix dashboard",
     "test": "node tests/run.mjs"
   }
 }

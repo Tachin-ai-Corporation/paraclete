@@ -1,0 +1,8 @@
+/* dashboard/components/work/WorkHistory.module.css: the step history table. */
+
+.wrap { overflow-x: auto; }
+.wrap > * + * { margin-top: var(--space-2); }
+.when { white-space: nowrap; color: var(--text-secondary); font-size: 13px; }
+.change { white-space: nowrap; font-size: 13px; }
+.by { white-space: nowrap; color: var(--text-secondary); font-size: 13px; }
+.detail { color: var(--text-secondary); font-size: 13px; overflow-wrap: anywhere; min-width: 240px; }

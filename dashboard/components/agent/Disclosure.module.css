@@ -1,0 +1,49 @@
+/* Disclosure.jsx: a bordered section whose title row opens and closes it. */
+
+.disclosure {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+}
+.disclosure + .disclosure { margin-top: var(--space-2); }
+
+.summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+}
+.summary::-webkit-details-marker { display: none; }
+.summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin: 0 2px;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--fast) var(--ease);
+}
+.disclosure[open] > .summary::before { transform: rotate(45deg); }
+.summary:hover { background: var(--bg-hover); }
+
+.title { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.meta {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.body {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  border-top: 1px solid var(--border);
+}
