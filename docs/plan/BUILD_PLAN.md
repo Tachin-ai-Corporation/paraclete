@@ -299,7 +299,7 @@ done.
    prompts in `prompts/`; the base skills; the `generic` role package.
    *Exit:* ears, brain and mouth run a mission end to end against the in-memory Firestore fake in
    `tests/fakes/` with a scripted gateway (`tests/integration/`).
-5. **Install and dev loop** (code done; the live check waits for a dev project). `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
+5. **Install and dev loop** (done; checked live on 2026-10-17). `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
    `uninstall.sh`, and the `dev/` scripts.
    *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no
    fallbacks, and the cortex runs on Gemini without errors.

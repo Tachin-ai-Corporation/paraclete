@@ -31,36 +31,39 @@ that resolves it. Delete an item in the commit that resolves it.
 - **Structured gateway log lines.** `brain-telemetry-read` parses the gateway's log text; give those
   lines structured fields so a wording change can't break it.
 
-## For the first dev instance (phase 5's live check)
+## Phase 5's live check (first run: 2026-10-17)
 
-The install code is tested in dry runs and with fakes; these need a real project and VM:
+A fresh project in an organization, `install/install.sh --yes` from Git Bash on Windows at `main`:
+every step ran first time, and the agent reported ready about three minutes after its VM was created.
+A dashboard-style chat message then ran a full research mission on `gemini-4-argon` (cortex,
+prefrontal, cerebellum) and `gemini-3.8-flash` (memory, research): 15 model calls, no fallbacks, no
+errors, the answer delivered with a Markdown file in `files/out/<mission>/`. Confirmed on the way:
 
-- **The install itself.** `install/install.sh --ref <branch>` on a fresh project in an organization: every
-  gcloud call's real output format (`get-ancestors`, `ttls list`), the bucket lifecycle file shape, the
-  Firestore location in the region, delete protection, `storage rm` on an empty bucket.
-- **The first boot.** apt and NodeSource on Debian 12, `npm ci` as root, the `paraclete` user and its
-  `systemd-journal` group under the sandboxed units, `flock`, the codeload archive's top directory,
-  whether `control.gateway_ready_timeout_ms` (30 s) is enough while IAM grants still propagate, the
-  5-second settle check against a real crash loop, the readiness write with the VM's own credentials,
-  `systemd-run --wait` passing the bootstrap's exit status.
-- **Fences.** The agent cannot write under `/opt/paraclete` or `/etc/paraclete`; `writeFile`'s check is
-  lexical, so file ownership is the real fence.
-- **Upgrades.** Through control's transient unit, through `dev/deploy.mjs` over an SSH session (a dropped
-  IAP connection kills `upgrade.sh`; switch to `systemd-run` if it happens), and a reboot after an
-  upgrade keeping the upgraded release.
-- **Indexes.** Every composite index in `install/firestore.indexes.json` builds; the equality-plus-`IN`
-  queries (the scheduler guard, approvals, project completion, status notes) run on index merging.
-- **The dev scripts.** Remote command quoting through SSH on Windows (plink) and macOS/Linux, non-
-  interactive `sudo` for the developer's SSH user, and a `dev/say.mjs` round trip on real Firestore.
+- every gcloud call's real output (`get-ancestors`, `ttls list`, the lifecycle file, delete protection);
+- the first boot: apt and NodeSource on Debian 12, `npm ci` as root, the `paraclete` user and its
+  journal group, the validation gate, the swap, the 30-second gateway wait, the readiness write;
+- the fences: the `paraclete` user cannot write `/opt/paraclete` or `/etc/paraclete`; it can read the
+  gateway token and write only its data root;
+- the indexes build, and the queries that need them run;
+- real Firestore answers an `updateTime` precondition on a deleted document with FAILED_PRECONDITION
+  (`StoreConflict`), and reads timestamps back normalized (`...:00Z`), so comparing them as instants is
+  required, as the code does;
+- `dev/status`, `dev/logs`, `dev/query` and `dev/say` over IAP SSH and Firestore from Windows.
+
+Still to check on a dev instance:
+
+- **Upgrades.** Through control's transient unit (needs a signed command: phase 6), through
+  `dev/deploy.mjs` over an SSH session (a dropped IAP connection kills `upgrade.sh`; switch to
+  `systemd-run` if it happens), and a reboot after an upgrade keeping the upgraded release.
 - **Gemini 4 reachability.** The installer does not yet check the project can call `gemini-4-argon` (it is
-  global-only and new); add that check to step 1 once its quota behavior is known.
-
-- **Behavior only real Firestore can confirm.** The fakes in `tests/fakes/` mark these unverified; check
-  them on the first dev instance:
-  - the answer to an `updateTime` precondition on a deleted document (FAILED_PRECONDITION, which
-    `commit()` maps to StoreConflict, or NOT_FOUND, which it would report as StoreUnavailable);
-  - that timestamps read back normalized (`...:00Z` for a whole second) are only ever compared as
-    instants, never as strings.
+  global-only and new); add that check to step 1. A fresh project reached it with no quota request.
+- **Index builds after install.** The installer starts the index builds and moves on; for the first
+  minute or two after the first boot the brain logs `The query requires an index ... currently
+  building` every three seconds, with the full error. Either wait for the indexes in step 4 or have the
+  services log a building index once, quietly.
+- **npm install scripts.** npm 11 on the VM skips install scripts that `allowScripts` does not cover
+  and warns about two (`@google/genai`'s no-op, `protobufjs`'s version check). Harmless today; declare
+  them in `agent/package.json` or silence the warning.
 
 ## For phase 6 (dashboard)
 
