@@ -1,0 +1,58 @@
+{
+  "_comment": "The Firestore composite indexes and TTL policies the agent's queries need. install.sh creates each one that is missing with `gcloud firestore indexes composite create` and `gcloud firestore fields ttls update`; uninstall.sh removes them. The shape follows Firebase's firestore.indexes.json: indexes[] with collectionGroup, queryScope and fields, and fieldOverrides[] whose ttl: true makes the field its collection's TTL field. Collections sit at the database root (agent/storage/collections.mjs).",
+  "indexes": [
+    {
+      "_comment": "Conversation context: one thread's messages, newest first.",
+      "collectionGroup": "messages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "thread_id", "order": "ASCENDING" },
+        { "fieldPath": "timestamp", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "Work recall: envelopes in a status, newest first.",
+      "collectionGroup": "work",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "The archival sweep: envelopes in a status, oldest first.",
+      "collectionGroup": "work",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "_comment": "The session summary and the work log commands: envelopes of a type, newest first.",
+      "collectionGroup": "work",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "_comment": "The brain's intake poll: requests in a status, oldest first.",
+      "collectionGroup": "intake",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "created_at", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": [
+    {
+      "_comment": "Full tool results expire after tools.record.store_ttl_days (config/contracts.json); the writer sets expire_at.",
+      "collectionGroup": "tool_results",
+      "fieldPath": "expire_at",
+      "ttl": true
+    }
+  ]
+}

@@ -1,0 +1,794 @@
+#!/usr/bin/env bash
+# install/install.sh: turns a Google Cloud project into a running paraclete. Run by the project's owner
+# in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs, creates the service
+# accounts, Firestore, the bucket, the network and the agent's VM, then waits until the agent reports
+# ready. Every create is "create if missing" and every grant is additive, so re-running repairs, and
+# re-running with another --ref moves the VM to that commit. It never logs in to the VM: what happens
+# on the VM is install/bootstrap.sh's job, and the contract between the two is install/README.md.
+# --dry-run prints every command that would change something and changes nothing.
+set -euo pipefail
+
+INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$INSTALL_DIR/.." && pwd)"
+# shellcheck source=lib/run.sh
+source "$INSTALL_DIR/lib/run.sh"
+# shellcheck source=lib/json.sh
+source "$INSTALL_DIR/lib/json.sh"
+# shellcheck source=lib/names.sh
+source "$INSTALL_DIR/lib/names.sh"
+# shellcheck source=lib/ref.sh
+source "$INSTALL_DIR/lib/ref.sh"
+# shellcheck source=lib/iam.sh
+source "$INSTALL_DIR/lib/iam.sh"
+# shellcheck source=lib/indexes.sh
+source "$INSTALL_DIR/lib/indexes.sh"
+
+# gcloud must never stop to ask a question: an answer the script didn't plan for is a surprise.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
+STEP_TOTAL=9
+
+# How long step 9 waits for the agent's first boot (the toolchain install takes most of it), and how
+# often it looks.
+WAIT_TIMEOUT_SECONDS=1200
+WAIT_POLL_SECONDS=10
+
+# The VM (build plan section 13: LibreOffice and Chromium need more memory than e2-medium has).
+MACHINE_TYPE=e2-standard-2
+BOOT_DISK_SIZE=50GB
+BOOT_DISK_TYPE=pd-balanced
+IMAGE_FAMILY=debian-12
+IMAGE_PROJECT=debian-cloud
+# cloud-platform lets IAM decide what the agent may do; drive is the one Google API outside Cloud that
+# the agent's own account reaches through the VM's scopes.
+VM_SCOPES=cloud-platform,https://www.googleapis.com/auth/drive
+
+# Every instance's APIs, and the Workspace ones a role flagged `workspace` adds (short names; each is
+# <name>.googleapis.com).
+BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive)
+WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
+# The Service Usage API takes a limited number of services per call.
+APIS_PER_CALL=10
+
+# The dashboard's account on the project (build plan sections 3 and 7, phase 6). Its other grants sit
+# on single resources: the bucket (step 5), itself (below), and IAP on its own Cloud Run service once
+# that exists (step 6).
+DASHBOARD_PROJECT_ROLES=(
+  roles/datastore.user           # Firestore: users, threads, messages, approvals, commands, settings
+  roles/secretmanager.admin      # the secret store: creates secrets and grants the agent access to each
+  roles/cloudbuild.builds.editor # self-upgrade: builds the dashboard image at a release
+  roles/run.admin                # self-upgrade: deploys the new revision of its own service
+  roles/aiplatform.user          # Settings, Models: the Test button probes the model
+)
+# Granted on the dashboard's own account, not the project: it deploys revisions and submits builds
+# that run as itself (actAs), and it signs its upload URLs and the commands it sends the VM as itself.
+DASHBOARD_SELF_ROLES=(
+  roles/iam.serviceAccountUser
+  roles/iam.serviceAccountTokenCreator
+)
+
+# Permissions step 1 checks the caller holds. Owners have them all; the list names what the install
+# itself does, so a missing one points at the step that would fail.
+REQUIRED_PERMISSIONS=(
+  resourcemanager.projects.setIamPolicy
+  serviceusage.services.enable
+  iam.serviceAccounts.create
+  iam.serviceAccounts.setIamPolicy
+  datastore.databases.create
+  datastore.indexes.create
+  storage.buckets.create
+  compute.networks.create
+  compute.firewalls.create
+  compute.instances.create
+  run.services.create
+)
+
+# Agent names and release names go into VM metadata as `key=value,...`, so neither may hold a comma.
+AGENT_NAME_PATTERN="^[[:alnum:]][[:alnum:] ._'-]{0,39}\$"
+RELEASE_NAME_PATTERN='^[A-Za-z0-9._/-]+$'
+
+usage() {
+  cat <<'EOF'
+Usage: install/install.sh [options]
+
+Prepares this Google Cloud project for one paraclete and creates its VM. Safe to re-run.
+
+  --project <id>     The project (default: gcloud's configured project)
+  --role <id>        The agent's role, one of roles/<id>/ (default: generic)
+  --name <name>      The agent's display name (default: Paraclete)
+  --region <region>  Where the data, bucket and VM live (default: us-central1)
+  --zone <zone>      The VM's zone (default: <region>-a)
+  --ref <ref>        A release tag, branch or full commit to install (default: the newest release tag,
+                     else the repository's default branch)
+  --repo <owner/name>  The GitHub repository to install from (default: this clone's origin)
+  --yes              Don't ask: take the defaults and skip the confirmation
+  --dry-run          Print every command that would change something; change nothing
+  -h, --help         This help
+EOF
+}
+
+PROJECT=""
+ROLE=""
+AGENT_NAME=""
+REGION=""
+ZONE=""
+REF=""
+REPO=""
+YES=0
+
+parse_flags() {
+  local flag value
+  while (($#)); do
+    case "$1" in
+      --yes | -y) YES=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      -h | --help) usage; exit 0 ;;
+      --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=*)
+        set_flag "${1%%=*}" "${1#*=}"; shift ;;
+      --project | --role | --name | --region | --zone | --ref | --repo)
+        flag="$1"
+        (($# >= 2)) || die "$flag needs a value"
+        value="$2"
+        set_flag "$flag" "$value"; shift 2 ;;
+      *) usage >&2; die "unknown option: $1" ;;
+    esac
+  done
+}
+
+set_flag() {
+  case "$1" in
+    --project) PROJECT="$2" ;;
+    --role) ROLE="$2" ;;
+    --name) AGENT_NAME="$2" ;;
+    --region) REGION="$2" ;;
+    --zone) ZONE="$2" ;;
+    --ref) REF="$2" ;;
+    --repo) REPO="$2" ;;
+  esac
+}
+
+# available_roles: the role ids this clone has, one per line.
+available_roles() {
+  local file
+  for file in "$REPO_ROOT"/roles/*/role.json; do
+    [[ -f "$file" ]] && basename "$(dirname "$file")"
+  done
+}
+
+# The two questions, asked only when neither a flag nor --yes answered them.
+ask_questions() {
+  if [[ "$YES" == 1 ]]; then
+    return 0
+  fi
+  if [[ -z "$ROLE" ]]; then
+    say "Roles: $(available_roles | paste -sd' ' -)"
+    ROLE="$(ask "Which role should the agent have?" generic)"
+  fi
+  if [[ -z "$AGENT_NAME" ]]; then
+    AGENT_NAME="$(ask "What should the agent be called?" Paraclete)"
+  fi
+}
+
+apply_defaults() {
+  ROLE="${ROLE:-generic}"
+  AGENT_NAME="${AGENT_NAME:-Paraclete}"
+  REGION="${REGION:-us-central1}"
+  ZONE="${ZONE:-$REGION-a}"
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 1: check
+# ---------------------------------------------------------------------------------------------------
+
+step_check() {
+  step 1 check "your login and access, billing, the organization, the role and the release"
+  require_tools gcloud git curl node
+  check_login
+  check_project
+  check_permissions
+  check_billing
+  check_organization
+  check_role
+  check_name_and_place
+  resolve_release
+}
+
+check_login() {
+  ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1 || true)"
+  [[ -n "$ACCOUNT" ]] || die "gcloud is not logged in. Run: gcloud auth login"
+  note "logged in as $ACCOUNT"
+}
+
+check_project() {
+  if [[ -z "$PROJECT" ]]; then
+    PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
+  fi
+  [[ -n "$PROJECT" ]] || die "no project given and gcloud has none configured. Pass --project <id>."
+  [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "'$PROJECT' is not a Google Cloud project id"
+  PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)' 2>/dev/null || true)"
+  [[ -n "$PROJECT_NUMBER" ]] || die "project $PROJECT does not exist, or $ACCOUNT cannot see it"
+  note "project $PROJECT ($PROJECT_NUMBER)"
+}
+
+# testIamPermissions answers for the caller's effective access, whether it comes from a direct grant,
+# a group or the organization, which a look at the project's policy would miss.
+check_permissions() {
+  local token body response missing
+  token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+  body="{\"permissions\":[$(printf '"%s",' "${REQUIRED_PERMISSIONS[@]}" | sed 's/,$//')]}"
+  response="$(curl -sS -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    --data "$body" "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT:testIamPermissions")" \
+    || die "could not check your permissions on $PROJECT"
+  missing="$(node -e '
+const fs = require("node:fs");
+const asked = process.argv.slice(1);
+let answer;
+try { answer = JSON.parse(fs.readFileSync(0, "utf8")); } catch { answer = { error: { message: "an unreadable answer" } }; }
+if (answer.error) { console.log(`(the check returned ${answer.error.message || answer.error.status})`); process.exit(0); }
+const granted = new Set(answer.permissions || []);
+console.log(asked.filter((p) => !granted.has(p)).join(" "));
+' "${REQUIRED_PERMISSIONS[@]}" <<<"$response")"
+  [[ -z "$missing" ]] || die "$ACCOUNT needs roles/owner on $PROJECT. Missing: $missing"
+  note "$ACCOUNT can do everything the install needs"
+}
+
+check_billing() {
+  local enabled
+  enabled="$(gcloud billing projects describe "$PROJECT" --format='value(billingEnabled)' 2>/dev/null || true)"
+  case "$enabled" in
+    True | true) note "billing is enabled" ;;
+    False | false) die "billing is not enabled on $PROJECT. Link a billing account: https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT" ;;
+    *) warn "could not read the billing status of $PROJECT; enabling the APIs will fail if billing is off" ;;
+  esac
+}
+
+check_organization() {
+  local ancestors
+  ancestors="$(gcloud projects get-ancestors "$PROJECT" --format='value(type)' 2>&1)" \
+    || die "could not read where $PROJECT sits in its organization: $ancestors"
+  grep -qx organization <<<"$ancestors" \
+    || die "$PROJECT is not inside a Google Cloud organization. The dashboard's Google sign-in (Identity-Aware Proxy) needs one: move the project into your Workspace's organization, then run this again."
+  note "the project is inside an organization"
+}
+
+check_role() {
+  [[ "$ROLE" =~ ^[a-z][a-z0-9-]*$ && -f "$REPO_ROOT/roles/$ROLE/role.json" ]] \
+    || die "there is no role '$ROLE'. Roles: $(available_roles | paste -sd' ' -)"
+  ROLE_FILE="$REPO_ROOT/roles/$ROLE/role.json"
+  ROLE_WORKSPACE="$(json_get "$ROLE_FILE" workspace)"
+  AGENT_ROLES="$(agent_roles)"
+  if [[ "$ROLE_WORKSPACE" == true ]]; then
+    note "role $ROLE, with a Workspace account"
+  else
+    note "role $ROLE"
+  fi
+}
+
+check_name_and_place() {
+  [[ "$AGENT_NAME" =~ $AGENT_NAME_PATTERN ]] \
+    || die "the agent's name must be 1 to 40 letters, digits, spaces or . _ ' - and start with a letter or digit"
+  [[ "$REGION" =~ ^[a-z]+-[a-z]+[0-9]+$ ]] || die "'$REGION' is not a region"
+  [[ "$ZONE" == "$REGION"-[a-z] ]] || die "the zone must be in $REGION, like $REGION-a; got '$ZONE'"
+}
+
+# Turns --ref (or the newest release, or the default branch) into the commit the VM installs, and
+# checks that commit has a bootstrap.sh for the VM to run.
+resolve_release() {
+  local remote listing
+  if [[ -z "$REPO" ]]; then
+    remote="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+    REPO="$(repo_from_remote_url "$remote")" \
+      || die "cannot tell the GitHub repository from this clone's origin ('$remote'). Pass --repo <owner>/<name>."
+  fi
+  [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "--repo must be <owner>/<name>, got '$REPO'"
+  listing="$(remote_refs "$REPO")" \
+    || die "cannot read https://github.com/$REPO. The repository must exist and be public."
+  if [[ -z "$REF" ]]; then
+    REF="$(newest_release_tag "$listing" "$(contract versioning.canonical_regex)")"
+    if [[ -z "$REF" ]]; then
+      REF="$(default_branch "$listing")" || die "https://github.com/$REPO has no release tag and no default branch"
+    fi
+  fi
+  [[ "$REF" =~ $RELEASE_NAME_PATTERN ]] || die "--ref must be a tag, branch or commit name, got '$REF'"
+  COMMIT="$(ref_commit "$listing" "$REF")" \
+    || die "'$REF' is not a tag, branch or full 40-character commit of https://github.com/$REPO"
+  RELEASE="$REF"
+  curl -sSfIL -o /dev/null "$(bootstrap_url)" \
+    || die "$REPO at $COMMIT has no install/bootstrap.sh, so a VM could not install it. Pick a newer --ref."
+  note "release $RELEASE is commit $COMMIT of $REPO"
+}
+
+bootstrap_url() {
+  printf 'https://raw.githubusercontent.com/%s/%s/install/bootstrap.sh\n' "$REPO" "$COMMIT"
+}
+
+# Derived names, once the project is known.
+derive_names() {
+  AGENT_EMAIL="$(account_email "$AGENT_ACCOUNT_ID" "$PROJECT")"
+  DASHBOARD_EMAIL="$(account_email "$DASHBOARD_ACCOUNT_ID" "$PROJECT")"
+  DWD_EMAIL="$(account_email "$DWD_ACCOUNT_ID" "$PROJECT")"
+  BUCKET="$(bucket_name "$PROJECT")"
+}
+
+summarize_and_confirm() {
+  say ""
+  say "paraclete will be installed into $PROJECT:"
+  say "  role        $ROLE"
+  say "  name        $AGENT_NAME"
+  say "  release     $RELEASE ($COMMIT)"
+  say "  repository  $REPO"
+  say "  region      $REGION, VM in $ZONE"
+  say "  bucket      gs://$BUCKET"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    say ""
+    say "Dry run: nothing will change. Each command that would change something is printed after a +."
+    return 0
+  fi
+  if [[ "$YES" != 1 ]]; then
+    confirm "Go ahead?" || die "nothing was changed"
+  fi
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 2: apis
+# ---------------------------------------------------------------------------------------------------
+
+step_apis() {
+  step 2 apis "turn on the Google APIs the agent and the dashboard use"
+  local wanted=("${BASE_APIS[@]}") enabled api missing=() i
+  if [[ "$ROLE_WORKSPACE" == true ]]; then
+    wanted+=("${WORKSPACE_APIS[@]}")
+  fi
+  enabled="$(gcloud services list --enabled --project="$PROJECT" --format='value(config.name)' 2>/dev/null || true)"
+  for api in "${wanted[@]}"; do
+    if grep -Fxq -- "$api.googleapis.com" <<<"$enabled"; then
+      continue
+    fi
+    missing+=("$api.googleapis.com")
+  done
+  if ((${#missing[@]} == 0)); then
+    note "all ${#wanted[@]} are on"
+    return 0
+  fi
+  for ((i = 0; i < ${#missing[@]}; i += APIS_PER_CALL)); do
+    run gcloud services enable "${missing[@]:i:APIS_PER_CALL}" --project="$PROJECT" --quiet
+  done
+  if [[ "$DRY_RUN" == 1 ]]; then
+    note "(dry run: while these APIs are off, the steps below cannot look inside them, so they plan to create everything there)"
+  fi
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 3: accounts
+# ---------------------------------------------------------------------------------------------------
+
+step_accounts() {
+  step 3 accounts "the agent's and the dashboard's service accounts, and what each may do"
+  ensure_account "$AGENT_ACCOUNT_ID" "$AGENT_EMAIL" "paraclete agent" "The paraclete agent: its VM runs as this account."
+  ensure_account "$DASHBOARD_ACCOUNT_ID" "$DASHBOARD_EMAIL" "paraclete dashboard" "The paraclete dashboard on Cloud Run runs as this account."
+  if [[ "$ROLE_WORKSPACE" == true ]]; then
+    ensure_account "$DWD_ACCOUNT_ID" "$DWD_EMAIL" "paraclete Workspace signer" \
+      "Signs the agent's Workspace tokens through domain-wide delegation. Holds no roles in this project."
+  fi
+
+  local policy role self_policy dwd_policy
+  policy="$(read_project_policy "$PROJECT")"
+  while IFS= read -r role; do
+    [[ -n "$role" ]] || continue
+    ensure_project_role "$PROJECT" "$policy" "serviceAccount:$AGENT_EMAIL" "$role"
+  done <<<"$AGENT_ROLES"
+  for role in "${DASHBOARD_PROJECT_ROLES[@]}"; do
+    ensure_project_role "$PROJECT" "$policy" "serviceAccount:$DASHBOARD_EMAIL" "$role"
+  done
+  self_policy="$(read_account_policy "$DASHBOARD_EMAIL" "$PROJECT")"
+  for role in "${DASHBOARD_SELF_ROLES[@]}"; do
+    ensure_account_role "$DASHBOARD_EMAIL" "$PROJECT" "$self_policy" "serviceAccount:$DASHBOARD_EMAIL" "$role"
+  done
+  if [[ "$ROLE_WORKSPACE" == true ]]; then
+    # The agent signs as the Workspace signer, and only as it: the grant sits on that one account.
+    dwd_policy="$(read_account_policy "$DWD_EMAIL" "$PROJECT")"
+    ensure_account_role "$DWD_EMAIL" "$PROJECT" "$dwd_policy" "serviceAccount:$AGENT_EMAIL" roles/iam.serviceAccountTokenCreator
+  fi
+}
+
+# ensure_account <account id> <email> <display name> <description>
+ensure_account() {
+  if gcloud iam service-accounts describe "$2" --project="$PROJECT" --format='value(email)' >/dev/null 2>&1; then
+    note "$2 exists"
+    return 0
+  fi
+  run gcloud iam service-accounts create "$1" --project="$PROJECT" --display-name="$3" --description="$4" --quiet
+}
+
+# agent_roles: the generic role's gcp_roles, then the chosen role's, each once.
+agent_roles() {
+  {
+    json_get "$REPO_ROOT/roles/generic/role.json" gcp_roles
+    if [[ "$ROLE" != generic ]]; then
+      json_get "$ROLE_FILE" gcp_roles
+    fi
+  } | awk 'NF && !seen[$0]++'
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 4: firestore
+# ---------------------------------------------------------------------------------------------------
+
+step_firestore() {
+  step 4 firestore "the database, its indexes and its TTL policies"
+  local type
+  type="$(gcloud firestore databases describe --database="$FIRESTORE_DATABASE" --project="$PROJECT" --format='value(type)' 2>/dev/null || true)"
+  case "$type" in
+    FIRESTORE_NATIVE) note "the $FIRESTORE_DATABASE database exists" ;;
+    "")
+      # Delete protection: removing the agent's memory takes uninstall.sh --purge, or a deliberate
+      # change in the console first.
+      run gcloud firestore databases create --database="$FIRESTORE_DATABASE" --location="$REGION" \
+        --type=firestore-native --delete-protection --project="$PROJECT" --quiet ;;
+    *) die "the $FIRESTORE_DATABASE Firestore database of $PROJECT is in $type. paraclete needs Native mode, and a database cannot change mode." ;;
+  esac
+  ensure_indexes
+  ensure_ttls
+}
+
+# Index builds run in the background (--async); until one is ready, the query it serves fails and the
+# agent's services retry.
+ensure_indexes() {
+  local existing signature group scope fields field_args field_list field
+  existing="$(existing_indexes "$PROJECT")"
+  while IFS=$'\t' read -r signature group scope fields; do
+    if [[ -n "$(index_id "$existing" "$signature")" ]]; then
+      note "index $signature exists"
+      continue
+    fi
+    field_args=()
+    IFS=';' read -ra field_list <<<"$fields"
+    for field in "${field_list[@]}"; do
+      field_args+=("--field-config=field-path=${field%%=*},order=${field#*=}")
+    done
+    run gcloud firestore indexes composite create --collection-group="$group" --query-scope="$scope" \
+      "${field_args[@]}" --database="$FIRESTORE_DATABASE" --project="$PROJECT" --async --quiet
+  done < <(index_plan "$INSTALL_DIR/firestore.indexes.json")
+}
+
+ensure_ttls() {
+  local existing group field state
+  existing="$(existing_ttls "$PROJECT")"
+  while IFS=$'\t' read -r group field; do
+    state="$(ttl_state "$existing" "$group" "$field")"
+    if [[ "$state" == ACTIVE || "$state" == CREATING ]]; then
+      note "TTL on $group.$field is $state"
+      continue
+    fi
+    run gcloud firestore fields ttls update "$field" --collection-group="$group" --enable-ttl \
+      --database="$FIRESTORE_DATABASE" --project="$PROJECT" --async --quiet
+  done < <(ttl_plan "$INSTALL_DIR/firestore.indexes.json")
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 5: bucket
+# ---------------------------------------------------------------------------------------------------
+
+step_bucket() {
+  step 5 bucket "gs://$BUCKET: files, git artifacts, and nothing public"
+  local lifecycle_file="$WORK_DIR/lifecycle.json" policy member
+  lifecycle_json >"$lifecycle_file"
+  show_file "lifecycle.json" "$lifecycle_file"
+  if gcloud storage buckets describe "gs://$BUCKET" --format='value(name)' >/dev/null 2>&1; then
+    note "gs://$BUCKET exists; making sure of its access settings and lifecycle"
+    run gcloud storage buckets update "gs://$BUCKET" --uniform-bucket-level-access --public-access-prevention \
+      --lifecycle-file="$lifecycle_file" --quiet
+  else
+    run gcloud storage buckets create "gs://$BUCKET" --project="$PROJECT" --location="$REGION" \
+      --uniform-bucket-level-access --public-access-prevention --lifecycle-file="$lifecycle_file" --quiet
+  fi
+  policy="$(read_bucket_policy "$BUCKET")"
+  for member in "serviceAccount:$AGENT_EMAIL" "serviceAccount:$DASHBOARD_EMAIL"; do
+    ensure_bucket_role "$BUCKET" "$policy" "$member" roles/storage.objectAdmin
+  done
+}
+
+# lifecycle_json: the bucket's lifecycle rules. Files people send the agent (files.prefix + in/) are
+# deleted after files.inbox_retention_days.
+lifecycle_json() {
+  local prefix days
+  prefix="$(contract files.prefix)in/"
+  days="$(contract files.inbox_retention_days)"
+  [[ "$days" =~ ^[1-9][0-9]*$ ]] || die "contracts files.inbox_retention_days must be a whole number of days, got '$days'"
+  printf '{"lifecycle":{"rule":[{"action":{"type":"Delete"},"condition":{"age":%s,"matchesPrefix":["%s"]}}]}}\n' "$days" "$prefix"
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 6: dashboard
+# ---------------------------------------------------------------------------------------------------
+
+step_dashboard() {
+  step 6 dashboard "the web dashboard on Cloud Run, behind Google sign-in"
+  if [[ -f "$REPO_ROOT/dashboard/package.json" ]]; then
+    deploy_dashboard
+  else
+    note "dashboard: arrives in a later release"
+  fi
+  DASHBOARD_URL="$(gcloud run services describe "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" \
+    --format='value(status.url)' 2>/dev/null || true)"
+}
+
+# Build plan phase 6 fills this in: Cloud Build builds dashboard/ at $COMMIT into the Artifact Registry
+# repository $IMAGE_REPOSITORY in $REGION; Cloud Run deploys it as $SERVICE_NAME, running as
+# $DASHBOARD_EMAIL, with IAP on and no unauthenticated access; the installer ($ACCOUNT) gets
+# roles/iap.httpsResourceAccessor on the service and becomes the first admin; the dashboard's account
+# gets roles/iap.admin on its own service, to add and remove users.
+deploy_dashboard() {
+  warn "this installer cannot deploy dashboard/ yet; the agent installs without it"
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 7: network
+# ---------------------------------------------------------------------------------------------------
+
+step_network() {
+  step 7 network "a network for the VM, and SSH through IAP as the only way in"
+  if gcloud compute networks describe default --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    NETWORK=default
+    note "using the default network"
+  elif gcloud compute networks describe "$NETWORK_NAME" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    NETWORK="$NETWORK_NAME"
+    note "using the $NETWORK_NAME network"
+  else
+    NETWORK="$NETWORK_NAME"
+    run gcloud compute networks create "$NETWORK_NAME" --subnet-mode=auto --description="$NETWORK_DESCRIPTION" \
+      --project="$PROJECT" --quiet
+  fi
+  if gcloud compute firewall-rules describe "$FIREWALL_RULE" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    note "firewall rule $FIREWALL_RULE exists"
+  else
+    run gcloud compute firewall-rules create "$FIREWALL_RULE" --network="$NETWORK" --direction=INGRESS \
+      --action=ALLOW --rules=tcp:22 --source-ranges="$IAP_SOURCE_RANGE" --target-tags="$NETWORK_TAG" \
+      --priority="$FIREWALL_RULE_PRIORITY" \
+      --description="SSH to the paraclete VM through Identity-Aware Proxy only" --project="$PROJECT" --quiet
+  fi
+  if gcloud compute firewall-rules describe "$DENY_RULE" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    note "firewall rule $DENY_RULE exists"
+  else
+    run gcloud compute firewall-rules create "$DENY_RULE" --network="$NETWORK" --direction=INGRESS \
+      --action=DENY --rules=all --source-ranges=0.0.0.0/0 --target-tags="$NETWORK_TAG" \
+      --priority="$DENY_RULE_PRIORITY" \
+      --description="Nothing else reaches the paraclete VM, whatever the network's own rules allow" \
+      --project="$PROJECT" --quiet
+  fi
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 8: vm
+# ---------------------------------------------------------------------------------------------------
+
+step_vm() {
+  step 8 vm "the agent's VM, told which release to install"
+  local startup_file="$WORK_DIR/startup-script.sh" metadata found changed
+  startup_script >"$startup_file"
+  show_file "startup-script" "$startup_file"
+  metadata="$(vm_metadata)"
+
+  found="$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM_NAME" \
+    --format='value(name,zone.basename())' 2>/dev/null | head -n 1 || true)"
+  if [[ -z "$found" ]]; then
+    VM_ZONE="$ZONE"
+    WAIT_SINCE_MS=$((($(date +%s) - 60) * 1000))
+    run gcloud compute instances create "$VM_NAME" --zone="$VM_ZONE" --project="$PROJECT" \
+      --machine-type="$MACHINE_TYPE" --boot-disk-size="$BOOT_DISK_SIZE" --boot-disk-type="$BOOT_DISK_TYPE" \
+      --image-family="$IMAGE_FAMILY" --image-project="$IMAGE_PROJECT" \
+      --service-account="$AGENT_EMAIL" --scopes="$VM_SCOPES" \
+      --network="$NETWORK" --tags="$NETWORK_TAG" \
+      --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
+      --metadata="$metadata" --metadata-from-file=startup-script="$startup_file" --quiet
+    VM_STATE=created
+    return 0
+  fi
+
+  VM_ZONE="${found##*[[:space:]]}"
+  if [[ "$VM_ZONE" != "$ZONE" ]]; then
+    note "$VM_NAME already runs in $VM_ZONE; keeping it there"
+  fi
+  changed="$(changed_metadata "$metadata" "$startup_file")"
+  if [[ -z "$changed" ]]; then
+    note "$VM_NAME exists and its metadata already names $RELEASE ($COMMIT)"
+    VM_STATE=current
+    return 0
+  fi
+  note "$VM_NAME exists; updating: $changed"
+  run gcloud compute instances add-metadata "$VM_NAME" --zone="$VM_ZONE" --project="$PROJECT" \
+    --metadata="$metadata" --metadata-from-file=startup-script="$startup_file" --quiet
+  if grep -qw paraclete-ref <<<"$changed"; then
+    VM_STATE=moved
+  else
+    VM_STATE=current
+  fi
+}
+
+# vm_metadata: the VM metadata install/README.md defines, as key=value,... for --metadata. The two
+# Workspace keys are left out: they go together (config/instance.mjs refuses a signer without an
+# account), and the agent's Workspace account does not exist until the dashboard's setup wizard
+# creates it (build plan phase 8). add-metadata leaves a key it is not given as it was, so a re-run
+# never removes them.
+vm_metadata() {
+  local items=(
+    "paraclete-repo=$REPO"
+    "paraclete-ref=$COMMIT"
+    "paraclete-release=$RELEASE"
+    "paraclete-role=$ROLE"
+    "paraclete-agent-name=$AGENT_NAME"
+    "paraclete-bucket=$BUCKET"
+  )
+  if [[ -n "$DASHBOARD_URL" ]]; then
+    items+=("paraclete-dashboard-url=$DASHBOARD_URL")
+  fi
+  local IFS=,
+  printf '%s\n' "${items[*]}"
+}
+
+# changed_metadata <key=value,...> <startup script file>: the keys whose value on the VM differs from
+# what this run would write, space-separated; nothing when the VM is up to date.
+changed_metadata() {
+  local current
+  current="$(gcloud compute instances describe "$VM_NAME" --zone="$VM_ZONE" --project="$PROJECT" \
+    --format=json 2>/dev/null || printf '{}')"
+  node -e '
+const fs = require("node:fs");
+const [pairs, scriptFile] = process.argv.slice(1);
+const items = (JSON.parse(fs.readFileSync(0, "utf8") || "{}").metadata || {}).items || [];
+const onVm = new Map(items.map((item) => [item.key, item.value]));
+const wanted = new Map(pairs.split(",").map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+wanted.set("startup-script", fs.readFileSync(scriptFile, "utf8"));
+console.log([...wanted].filter(([key, value]) => onVm.get(key) !== value).map(([key]) => key).join(" "));
+' "$1" "$2" <<<"$current"
+}
+
+# startup_script: the VM's startup script. At every boot it fetches install/bootstrap.sh from
+# paraclete-repo at paraclete-ref (read from the metadata, so a new ref needs no new script) and runs it
+# as root in the unit paraclete-bootstrap, whose output goes to the journal.
+startup_script() {
+  cat <<'EOF'
+#!/bin/bash
+# paraclete startup script, written by install/install.sh. Fetches install/bootstrap.sh from the
+# repository and commit in this VM's metadata and runs it as root in the unit paraclete-bootstrap.
+# Read its output with: journalctl -u paraclete-bootstrap
+set -euo pipefail
+attribute() {
+  curl --fail --silent --show-error --retry 5 --retry-connrefused -H 'Metadata-Flavor: Google' \
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"
+}
+repo="$(attribute paraclete-repo)"
+ref="$(attribute paraclete-ref)"
+install -d -m 0700 /run/paraclete-bootstrap
+curl --fail --silent --show-error --location --retry 10 --retry-delay 6 --retry-all-errors \
+  --output /run/paraclete-bootstrap/bootstrap.sh \
+  "https://raw.githubusercontent.com/${repo}/${ref}/install/bootstrap.sh"
+exec systemd-run --unit=paraclete-bootstrap --collect --wait --quiet --setenv=HOME=/root \
+  --property=StandardOutput=journal --property=StandardError=journal \
+  /bin/bash /run/paraclete-bootstrap/bootstrap.sh
+EOF
+}
+
+# ---------------------------------------------------------------------------------------------------
+# Step 9: wait
+# ---------------------------------------------------------------------------------------------------
+
+step_wait() {
+  step 9 wait "until the agent reports ready"
+  if [[ "$DRY_RUN" == 1 ]]; then
+    note "would wait up to $((WAIT_TIMEOUT_SECONDS / 60)) minutes for Firestore agent/instance to report ready on $COMMIT"
+    return 0
+  fi
+  if [[ "$VM_STATE" == moved ]]; then
+    note "$VM_NAME picks up $RELEASE ($COMMIT) at its next boot:"
+    note "  gcloud compute instances reset $VM_NAME --zone=$VM_ZONE --project=$PROJECT"
+    note "or now, without a reboot:"
+    note "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo /opt/paraclete/install/upgrade.sh --ref $COMMIT"
+    return 0
+  fi
+  if [[ "$VM_STATE" == current ]]; then
+    # The VM may have been upgraded since its metadata was written (the dashboard and upgrade.sh never
+    # touch metadata), so any commit it reports ready on is the answer.
+    WAIT_SINCE_MS=0
+    WAIT_ANY_COMMIT=1
+  fi
+  wait_for_agent
+}
+
+# instance_status: "<status> US <commit> US <updated, ms since epoch> US <error>" from the Firestore
+# document agent/instance, or nothing while it doesn't exist or can't be read. US is the unit separator
+# (0x1f): unlike a tab, read keeps an empty field between two of them.
+instance_status() {
+  local token response
+  token="$(gcloud auth print-access-token 2>/dev/null)" || return 0
+  response="$(curl -sS -g -H "Authorization: Bearer $token" -H "x-goog-user-project: $PROJECT" \
+    "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/$FIRESTORE_DATABASE/documents/agent/instance" 2>/dev/null)" || return 0
+  node -e '
+const fs = require("node:fs");
+let doc;
+try { doc = JSON.parse(fs.readFileSync(0, "utf8")); } catch { process.exit(0); }
+if (!doc || !doc.fields) process.exit(0);
+const text = (name) => {
+  const v = doc.fields[name] || {};
+  return String(v.stringValue ?? v.timestampValue ?? "").replace(/[\t\n]/g, " ");
+};
+console.log([text("status"), text("commit"), Date.parse(doc.updateTime) || 0, text("error")].join("\x1f"));
+' <<<"$response"
+}
+
+# Waits for agent/instance to report ready or failed on this commit, written after the VM was created
+# (a document left by an earlier install doesn't count).
+wait_for_agent() {
+  local deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS)) status commit updated error
+  printf '      waiting for %s to install %s and start' "$VM_NAME" "$RELEASE"
+  while ((SECONDS < deadline)); do
+    status="" commit="" updated=0 error=""
+    IFS=$'\x1f' read -r status commit updated error < <(instance_status) || true
+    if [[ -n "$commit" ]] && { [[ "$commit" == "$COMMIT" ]] || ((${WAIT_ANY_COMMIT:-0})); } && ((${updated:-0} >= WAIT_SINCE_MS)); then
+      case "$status" in
+        ready)
+          printf '\n'
+          if [[ "$commit" == "$COMMIT" ]]; then
+            note "the agent is ready on $RELEASE ($COMMIT)"
+          else
+            note "the agent is ready on $commit, upgraded since install (its metadata still names $COMMIT)"
+          fi
+          return 0 ;;
+        failed)
+          printf '\n'
+          note "the agent's install failed: ${error:-no reason given}"
+          print_log_hint
+          exit 1 ;;
+      esac
+    fi
+    printf '.'
+    sleep "$WAIT_POLL_SECONDS"
+  done
+  printf '\n'
+  note "the agent has not reported ready after $((WAIT_TIMEOUT_SECONDS / 60)) minutes"
+  print_log_hint
+  exit 1
+}
+
+print_log_hint() {
+  note "Read what happened on the VM:"
+  note "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -u google-startup-scripts --no-pager"
+  note "The VM tries again at every boot (gcloud compute instances reset $VM_NAME --zone=$VM_ZONE --project=$PROJECT),"
+  note "and re-running install/install.sh, with a fixed --ref if the release was at fault, is safe."
+}
+
+finish() {
+  say ""
+  if [[ "$DRY_RUN" == 1 ]]; then
+    say "Dry run complete: nothing was changed."
+    return 0
+  fi
+  say "Done. $AGENT_NAME runs on the VM $VM_NAME in $VM_ZONE."
+  if [[ -n "$DASHBOARD_URL" ]]; then
+    say "Dashboard: $DASHBOARD_URL"
+  fi
+  say "Watch its logs:"
+  say "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f"
+}
+
+main() {
+  parse_flags "$@"
+  ask_questions
+  apply_defaults
+  step_check
+  derive_names
+  summarize_and_confirm
+  WORK_DIR="$(mktemp -d)"
+  trap 'rm -rf "$WORK_DIR"' EXIT
+  step_apis
+  step_accounts
+  step_firestore
+  step_bucket
+  step_dashboard
+  step_network
+  step_vm
+  step_wait
+  finish
+}
+
+main "$@"

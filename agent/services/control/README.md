@@ -220,8 +220,8 @@ systemd no longer knows (the VM restarted mid-upgrade) fails with an unknown out
 - `<install root>/install/upgrade.sh --ref <ref>`: exits 0 on success, logs to stdout and stderr (the
   unit's journal), fetches that ref's upgrader instead of trusting the installed copy, and restarts
   the services itself, control included. Safe to run twice.
-- `<install root>/release.json`, written at install and upgrade: `{ version, ref, commit,
-  installed_at }`.
+- `<install root>/release.json`, written at install and upgrade: `{ version, ref, commit, repo,
+  installed_at, metadata }` (see [install/README.md](../../../install/README.md)).
 
 ## Timings
 

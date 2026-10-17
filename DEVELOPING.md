@@ -92,9 +92,10 @@ product: something a fresh install needs.
 | `dev/` | Tooling for working on the repo: deploy, status, logs, queries | **Never** |
 | `DEVELOPING.md`, `CLAUDE.md`, `AGENTS.md` | Developer guidance | **Never** |
 
-**Repo path equals VM path.** An install manifest line is `<src> <dest>`, and the two columns are the
-same string. `agent/work/approvals.mjs` in the repo is `/opt/paraclete/agent/work/approvals.mjs` on
-the VM, so imports resolve the same way in both places. Keep it that way.
+**Repo path equals VM path.** Each line of `install/manifest.txt` is a repo path (a trailing `/` installs
+a whole directory), and it lands at the same path under `/opt/paraclete`: `agent/work/approvals.mjs` in
+the repo is `/opt/paraclete/agent/work/approvals.mjs` on the VM, so imports resolve the same way in both
+places. Keep it that way.
 
 `tests/repo/structure.test.mjs` checks that the root README map lists exactly the top-level
 directories, and that nothing developer-only enters the install manifest. Update the maps in the same
@@ -185,24 +186,24 @@ Instances install from GitHub at an exact commit, so push your branch first.
 | Situation | Command |
 |---|---|
 | New dev instance | `install/install.sh --ref <branch>` in Cloud Shell or a terminal logged in to the dev project. For a fork, add `--repo <owner>/paraclete`; the fork must be public. |
-| Existing dev instance | `dev/deploy <branch>` resolves the branch to a commit, then moves the dashboard and the VM to it through the same path a release upgrade takes. Testing a branch therefore also tests the upgrade. |
-| Check what it runs | `dev/status` shows the commit the dashboard and the agent are on. Both must match the commit you pushed. |
+| Existing dev instance | `node dev/deploy.mjs <branch>` resolves the branch to a commit on GitHub, moves the VM to it through the same upgrader a release upgrade runs, and waits until the agent reports ready on it. Testing a branch therefore also tests the upgrade. Moving the dashboard too arrives with the dashboard (build plan phase 6). |
+| Check what it runs | `node dev/status.mjs` shows the commit the agent runs and whether its services are healthy. It must match the commit you pushed. The dashboard's commit joins it in phase 6. |
 
-These commands arrive with the install work in the build plan. Until then there is no instance to
-test on, and the ladder below stops at step 2.
+The `dev/` commands run on your machine (Git Bash on Windows, macOS or Linux) with Node 24 and `gcloud`
+logged in to the dev project. [dev/README.md](dev/README.md) lists their options.
 
 ### The verification ladder
 
 1. **Local tests:** `npm test`. Run `npm run setup` once first, and again when
    `agent/package-lock.json` changes; it installs the gateway's SDKs.
 2. **CI:** push and wait for green.
-3. **Deploy:** `dev/deploy <branch>`.
+3. **Deploy:** `node dev/deploy.mjs <branch>`.
 4. **Exercise the change:**
    - the way a user would, through the dashboard;
-   - with `dev/trigger <responsibility-id>` to run a responsibility now;
-   - or with `dev/say "<request>"` to send the agent a chat message from your account.
-5. **Read the evidence:** use `dev/status`, `dev/logs <service>`, `dev/query <collection>`
-   (read-only) and the mission record in the dashboard.
+   - with `node dev/trigger.mjs <responsibility-id>` to run a responsibility now;
+   - or with `node dev/say.mjs "<request>"` to send the agent a chat message from your account.
+5. **Read the evidence:** use `node dev/status.mjs`, `node dev/logs.mjs <service>`,
+   `node dev/query.mjs <collection>` (read-only) and the mission record in the dashboard.
 6. **Report:** say what you saw and include the evidence. Only then is the change ready to merge.
 
 Climb only as high as the change needs. A change to a pure function stops at step 2. Anything the
@@ -221,7 +222,7 @@ You may:
 You may not:
 
 - **Edit installed files on the VM** (`/opt/paraclete/...`) or run ad-hoc fixes there. A fix is a
-  commit, and it reaches the instance through `dev/deploy`.
+  commit, and it reaches the instance through `node dev/deploy.mjs`.
 - **Change state by hand to make a test pass.** Don't write to Firestore for this, and don't edit the
   agent's memory, prompts or responsibilities.
 - **Stand in for the agent or its users.** Don't answer the agent's chat as if you were its user,

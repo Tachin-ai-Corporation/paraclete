@@ -11,6 +11,8 @@ Wants=network-online.target paraclete-gateway.service
 Type=simple
 User=paraclete
 Group=paraclete
+Environment=PATH=/opt/paraclete/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/paraclete/home
 ExecStart=/usr/bin/node /opt/paraclete/agent/services/brain/main.mjs
 WorkingDirectory=/var/lib/paraclete
 Restart=always

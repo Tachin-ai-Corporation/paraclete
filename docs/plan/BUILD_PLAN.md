@@ -225,16 +225,17 @@ repairs an install.
 
 ```
 install/install.sh
-  1  check      caller is project owner, billing is on, project is in an organization
+  1  check      caller can act as owner, billing is on, project is in an organization, the ref resolves
   2  apis       compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry,
                 cloudbuild, secretmanager, storage, iap, drive (+ Workspace APIs for flagged roles)
   3  accounts   paraclete-dashboard@, paraclete-agent@ (+ the role's gcp_roles), paraclete-dwd@ if flagged
-  4  firestore  native database, indexes and TTL policies through the REST API
+  4  firestore  native database (delete-protected), indexes and the TTL policy
   5  bucket     <project>-paraclete: uniform access, public access prevention, lifecycle rules
   6  dashboard  Cloud Build at the tag → Artifact Registry → Cloud Run with IAP; grant the installer
-  7  agent VM   e2-standard-2, 50 GB, paraclete-agent@, cloud-platform + drive scopes,
-                no inbound ports; the startup script runs install/bootstrap.sh at the tag
-  8  wait       until the agent reports ready, then print the dashboard URL
+  7  network    the default network (or a paraclete one); SSH from IAP only, everything else denied
+  8  agent VM   e2-standard-2, 50 GB, Debian 12, paraclete-agent@, cloud-platform + drive scopes;
+                the startup script runs install/bootstrap.sh at the release's commit on every boot
+  9  wait       until the agent reports ready, then print where to find it
 ```
 
 For development, `--ref <branch>` installs a branch and `--repo <owner>/paraclete` installs from a
@@ -298,7 +299,7 @@ done.
    prompts in `prompts/`; the base skills; the `generic` role package.
    *Exit:* ears, brain and mouth run a mission end to end against the in-memory Firestore fake in
    `tests/fakes/` with a scripted gateway (`tests/integration/`).
-5. **Install and dev loop.** `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
+5. **Install and dev loop** (code done; the live check waits for a dev project). `install.sh` (with `--ref` and `--repo`), `bootstrap.sh`, the manifest,
    `uninstall.sh`, and the `dev/` scripts.
    *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no
    fallbacks, and the cortex runs on Gemini without errors.

@@ -1,0 +1,21 @@
+# install/manifest.txt: the repo paths install/bootstrap.sh installs onto the agent's VM, each at the
+# same path under /opt/paraclete. One path per line; a path ending in / installs everything beneath it
+# except node_modules/; {role} is the instance's role. The format is in install/README.md. Never list
+# dev/, docs/, tests/, dashboard/ (it runs on Cloud Run) or the root guidance files:
+# tests/repo/structure.test.mjs checks.
+
+# The code that runs on the VM, and its configuration.
+agent/
+config/
+
+# What the agent reads: organ prompts, the base skills, the generic role and the instance's own.
+prompts/
+skills/
+roles/generic/
+roles/{role}/
+
+# What keeps the instance current.
+install/bootstrap.sh
+install/upgrade.sh
+install/manifest.txt
+install/vm/

@@ -5,11 +5,6 @@ that resolves it. Delete an item in the commit that resolves it.
 
 ## Still open from phase 4 (services and configuration)
 
-- **Status needs the token.** The gateway's `GET /status` requires the bearer token, so `dev/status`
-  must send it.
-- **Write fences.** `writeFile` checks writable roots lexically and `runCommand` is a full shell, so
-  the real fence is file ownership and permissions on the VM (phase 4 and 5).
-
 - **Workspace file names.** The artifact sweep keeps, and the artifact excludes skip, a list of
   workspace file names (organ prompt files, memory files, progress files). Reconcile the list with
   the workspace layout phase 4 defines.
@@ -36,35 +31,30 @@ that resolves it. Delete an item in the commit that resolves it.
 - **Structured gateway log lines.** `brain-telemetry-read` parses the gateway's log text; give those
   lines structured fields so a wording change can't break it.
 
-## For phase 5 (install)
+## For the first dev instance (phase 5's live check)
 
-- **What the services and commands need from the installer.**
-  - The `paraclete` user, with a writable home under the data root (`gcloud` and `npm` write to it under
-    `ProtectSystem=strict`) and the `systemd-journal` group (telemetry reads the journal).
-  - Data directories: `memory`, `missions`, `workspace`, `files`, `skills`, `services`.
-  - `/etc/paraclete/instance.json`, and `/etc/paraclete/gateway-token` readable by `paraclete` and root.
-  - `npm ci` in `agent/`, then the units enabled.
-  - A launcher per command in `/opt/paraclete/bin/`: `exec /usr/bin/node <file> "$@"`, not a symlink
-    (a symlink breaks each command's run-directly check). One for every `agent/cli/<name>.mjs` except
-    `cli-runtime.mjs`, and every command a skill governs.
-  - `install/upgrade.sh --ref <ref>`: exits 0 on success, is idempotent, restarts the services (control
-    included), and fetches the target ref's own upgrader. Plus `<install root>/release.json`
-    (`{version, ref, commit, installed_at}`), written at install and every upgrade.
-  - The agent's service account is named `paraclete-agent` (`agentIdentity` in `config/instance.mjs`
-    derives the agent's identity from it).
-- **Command signing key.** See phase 6: generate it at install, store it in Secret Manager readable only
-  by the dashboard's service account, and write it to a root-only file on the VM for the control
-  service.
+The install code is tested in dry runs and with fakes; these need a real project and VM:
 
-- **Firestore indexes and TTL.**
-  - Composite index on `messages`: `thread_id` ascending, `timestamp` descending, for conversation
-    context.
-  - Composite indexes on `work`: `status` with `created_at` descending (work recall) and ascending
-    (archival), and `type` with `created_at` descending (session summary and the work log commands).
-  - Composite index on `intake`: `status` with `created_at` ascending (the brain's intake poll).
-  - TTL policy on `tool_results.expire_at`.
-  - The scheduler's guard, the approvals poll and project completion combine equality and `IN`
-    filters and rely on index merging. Confirm each on a dev instance.
+- **The install itself.** `install/install.sh --ref <branch>` on a fresh project in an organization: every
+  gcloud call's real output format (`get-ancestors`, `ttls list`), the bucket lifecycle file shape, the
+  Firestore location in the region, delete protection, `storage rm` on an empty bucket.
+- **The first boot.** apt and NodeSource on Debian 12, `npm ci` as root, the `paraclete` user and its
+  `systemd-journal` group under the sandboxed units, `flock`, the codeload archive's top directory,
+  whether `control.gateway_ready_timeout_ms` (30 s) is enough while IAM grants still propagate, the
+  5-second settle check against a real crash loop, the readiness write with the VM's own credentials,
+  `systemd-run --wait` passing the bootstrap's exit status.
+- **Fences.** The agent cannot write under `/opt/paraclete` or `/etc/paraclete`; `writeFile`'s check is
+  lexical, so file ownership is the real fence.
+- **Upgrades.** Through control's transient unit, through `dev/deploy.mjs` over an SSH session (a dropped
+  IAP connection kills `upgrade.sh`; switch to `systemd-run` if it happens), and a reboot after an
+  upgrade keeping the upgraded release.
+- **Indexes.** Every composite index in `install/firestore.indexes.json` builds; the equality-plus-`IN`
+  queries (the scheduler guard, approvals, project completion, status notes) run on index merging.
+- **The dev scripts.** Remote command quoting through SSH on Windows (plink) and macOS/Linux, non-
+  interactive `sudo` for the developer's SSH user, and a `dev/say.mjs` round trip on real Firestore.
+- **Gemini 4 reachability.** The installer does not yet check the project can call `gemini-4-argon` (it is
+  global-only and new); add that check to step 1 once its quota behavior is known.
+
 - **Behavior only real Firestore can confirm.** The fakes in `tests/fakes/` mark these unverified; check
   them on the first dev instance:
   - the answer to an `updateTime` precondition on a deleted document (FAILED_PRECONDITION, which
@@ -75,10 +65,14 @@ that resolves it. Delete an item in the commit that resolves it.
 ## For phase 6 (dashboard)
 
 - **Commands must be signed.** The agent's own service account can write to the `commands` collection,
-  so today the agent could restart services, switch Claude or start an upgrade on its own instance.
-  Control must accept only commands signed with a key the agent cannot read: an HMAC over the command,
-  keyed by a secret only the dashboard's service account (Secret Manager) and root (a 0600 file on the
-  VM) hold. The dashboard signs; control verifies and refuses anything else.
+  so today the agent could restart services, switch Claude or start an upgrade on its own instance. The
+  dashboard signs each command as its own service account through IAM Credentials `signJwt` (claims: the
+  command id, type and a digest of its params, a short expiry, audience `paraclete-control`); control
+  verifies the JWT against Google's published certificates for `paraclete-dashboard@` and refuses
+  anything unsigned, expired, or signed by any other account. The agent's account has no
+  `iam.serviceAccountTokenCreator` on the dashboard's, so it cannot sign; no shared secret exists to
+  leak or distribute. Developer tools that send commands sign the same way, as the developer (an owner
+  can be granted token-creator on the dashboard account) or reach the VM over SSH instead.
 - **The command protocol** is in [agent/services/control/README.md](../../agent/services/control/README.md).
   Until `commit()` supports field masks, write `created_at` as an ISO string: the claim rewrites the whole
   document.
@@ -104,6 +98,15 @@ that resolves it. Delete an item in the commit that resolves it.
 
 - **Platform version on envelopes.** `platform_version` is declared on envelopes but nothing stamps it.
   Stamp it from `<install root>/release.json` once releases exist.
+
+## For phase 8 (roles)
+
+- **The Workspace account on the VM.** `install.sh` never writes the Workspace metadata keys: the agent's
+  Google account exists only after the setup wizard. The wizard records it through a signed control
+  command that writes it where `bootstrap.sh` keeps it across upgrades (a file under `/etc/paraclete`
+  the bootstrap merges into `instance.json`), then restarts ears and mouth.
+- **Role setup packages.** `bootstrap.sh` refuses a role whose `setup` lists `pip` or `npm` packages;
+  add support when a role first needs them.
 
 ## For phase 7 (files and Drive)
 

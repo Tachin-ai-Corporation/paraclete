@@ -1,10 +1,11 @@
 // tests/repo/structure.test.mjs: the layout explains itself. Every top-level directory, agent package
 // and role has a README.md, and every skill has a SKILL.md. The root and agent/ READMEs map exactly the
-// directories that exist. The guidance files point to DEVELOPING.md. Nothing developer-only enters the
-// install manifest, and every manifest line installs a file at its repo path.
+// directories that exist. The guidance files point to DEVELOPING.md. The install manifest names only
+// repo paths that exist, for every role, and nothing developer-only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { repoFiles, readRepoFile } from './repo-files.mjs';
+import { parseManifest, expandManifest } from '../../install/vm/manifest.mjs';
 
 const files = repoFiles();
 
@@ -23,13 +24,13 @@ function mappedDirectories(readmePath) {
   return [...new Set([...rows].map((m) => m[1]))].sort();
 }
 
-/** Non-comment lines of install/manifest.txt as [src, dest] pairs. */
-function manifestEntries() {
-  return readRepoFile('install/manifest.txt')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .map((line) => line.split(/\s+/));
+/**
+ * The repo paths install/manifest.txt installs, read with the parser bootstrap.sh uses, with {role}
+ * expanded for every role in the repo (generic included). Directories keep their trailing slash.
+ */
+function manifestPaths() {
+  const entries = parseManifest(readRepoFile('install/manifest.txt'));
+  return [...new Set(childDirectories('roles').flatMap((role) => expandManifest(entries, role)))];
 }
 
 test('every top-level directory has a README.md', () => {
@@ -70,18 +71,15 @@ test('the guidance files point to DEVELOPING.md', () => {
   }
 });
 
-test('nothing developer-only enters the install manifest', (t) => {
-  if (!files.includes('install/manifest.txt')) return t.skip('install/manifest.txt arrives in build plan phase 5');
-  const devOnly = manifestEntries()
-    .map(([src]) => src)
-    .filter((src) => /^(dev|docs|tests|\.github)\//.test(src) || /^[A-Z]+\.md$/.test(src));
-  assert.deepEqual(devOnly, []);
+test('nothing developer-only enters the install manifest', () => {
+  const devOnly = manifestPaths().filter((path) =>
+    /^(dev|docs|tests|dashboard|\.github)(\/|$)/.test(path) || (!path.includes('/') && /\.md$/i.test(path)));
+  assert.deepEqual(devOnly, [], 'dev/, docs/, tests/, dashboard/, .github/ and the root guidance files are never installed');
 });
 
-test('every manifest line installs a file at its repo path', (t) => {
-  if (!files.includes('install/manifest.txt')) return t.skip('install/manifest.txt arrives in build plan phase 5');
-  const moved = manifestEntries().filter(([src, dest]) => src !== dest).map((pair) => pair.join(' '));
-  const missing = manifestEntries().filter(([src]) => !files.includes(src)).map(([src]) => src);
-  assert.deepEqual(moved, [], 'repo path must equal VM path');
-  assert.deepEqual(missing, [], 'manifest lists files that do not exist');
+test('every manifest path exists in the repo', () => {
+  const missing = manifestPaths().filter((path) => (path.endsWith('/')
+    ? !files.some((file) => file.startsWith(path))
+    : !files.includes(path)));
+  assert.deepEqual(missing, [], 'the manifest lists paths the repo does not have (a directory needs its trailing /, a file must not have one)');
 });

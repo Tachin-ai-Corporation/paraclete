@@ -1,0 +1,466 @@
+// tests/install/bootstrap.test.mjs: install/bootstrap.sh and the Node helpers it runs from a release
+// (install/vm/): the command launchers, the instance record, release.json, the role's packages, the
+// validation gate and the readiness document. The helpers run here as they run on the VM, on the real
+// repo or on scratch directories; the readiness document is written to the in-memory Firestore fake.
+// The script's own logic runs by sourcing it in bash, on Linux only; nothing here needs root, the
+// metadata server or the network.
+import { test, describe } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { repoRoot, readRepoFile } from '../repo/repo-files.mjs';
+import { listCommands, launcherScript, writeLaunchers, skillRoots, CLI_RUNTIME } from '../../install/vm/launchers.mjs';
+import * as instanceRecord from '../../install/vm/instance-record.mjs';
+import * as releaseRecord from '../../install/vm/release-record.mjs';
+import * as rolePackagesCli from '../../install/vm/role-packages.mjs';
+import { checkRelease } from '../../install/vm/check-release.mjs';
+import * as readiness from '../../install/vm/readiness.mjs';
+import { validateInstance, loadInstance, dataPaths, DEFAULT_INSTANCE_PATH } from '../../config/instance.mjs';
+import { loadContracts } from '../../config/contracts.mjs';
+import { createClient } from '../../agent/storage/firestore.mjs';
+import { start as startFirestore } from '../fakes/firestore-server.mjs';
+
+const BASH_AVAILABLE = spawnSync('bash', ['--version'], { encoding: 'utf8' }).status === 0;
+const LINUX_ONLY = process.platform !== 'linux' && 'runs bash scripts the way the VM does; Linux only';
+const COMMIT = 'a'.repeat(40);
+const OTHER = 'b'.repeat(40);
+
+function scratch(t, prefix = 'paraclete-bootstrap-') {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+function writeTree(root, files) {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), content);
+  }
+}
+
+function sink() {
+  let text = '';
+  return { write(chunk) { text += chunk; return true; }, text: () => text };
+}
+
+/** Runs a bash snippet with install/bootstrap.sh sourced, from the repo root. */
+function bashWithBootstrap(snippet, env = {}) {
+  return spawnSync('bash', ['-c', `source install/bootstrap.sh\n${snippet}`], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: { PATH: process.env.PATH, ...env },
+  });
+}
+
+test('bootstrap.sh parses', { skip: !BASH_AVAILABLE && 'no bash on this machine' }, () => {
+  const r = spawnSync('bash', ['-n', 'install/bootstrap.sh'], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('bootstrap.sh uses the paths config/instance.mjs and the units use', () => {
+  const script = readRepoFile('install/bootstrap.sh');
+  const constant = (name) => script.match(new RegExp(`^readonly ${name}=(.+)$`, 'm'))?.[1];
+  assert.equal(constant('INSTANCE_FILE'), DEFAULT_INSTANCE_PATH);
+  const dirs = constant('DATA_DIRS').replace(/^\(|\)$/g, '').split(' ');
+  const expected = Object.values(dataPaths({ data_root: '/d' }))
+    .filter((p) => p !== '/d' && !p.endsWith('.md'))
+    .map((p) => p.slice('/d/'.length));
+  assert.deepEqual(dirs.filter((d) => d !== 'home').sort(), expected.sort(), 'the data directories are the ones dataPaths() names');
+  assert.ok(dirs.includes('home'), "the paraclete user's home is under the data root");
+
+  const dir = mkdtempSync(join(tmpdir(), 'paraclete-instance-'));
+  try {
+    const path = join(dir, 'instance.json');
+    writeFileSync(path, JSON.stringify({ project: 'p', region: 'r', zone: 'z', agent_name: 'a', role: 'generic',
+      install_root: constant('INSTALL_ROOT'), data_root: constant('DATA_ROOT'), bucket: 'b' }));
+    assert.equal(loadInstance({ path }).gateway_token_file, constant('TOKEN_FILE'), 'the token file is where the services look');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  for (const service of ['gateway', 'brain', 'ears', 'mouth']) {
+    const unit = readRepoFile(`agent/services/${service}/paraclete-${service}.service`).split('\n');
+    assert.ok(unit.includes(`Environment=PATH=${constant('INSTALL_ROOT')}/bin:/usr/local/bin:/usr/bin:/bin`), `${service} finds the launchers`);
+    assert.ok(unit.includes(`Environment=HOME=${constant('DATA_ROOT')}/home`), `${service} has a writable home`);
+    assert.ok(unit.includes(`ExecStart=${constant('NODE')} ${constant('INSTALL_ROOT')}/agent/services/${service}/main.mjs`));
+  }
+});
+
+describe('command launchers', () => {
+  /** What the README says gets a launcher, worked out from the repo independently of launchers.mjs. */
+  function expectedCommands() {
+    const expected = {};
+    for (const name of readdirSync(join(repoRoot, 'agent', 'cli'))) {
+      if (name.endsWith('.mjs') && name !== 'cli-runtime.mjs') expected[name.slice(0, -4)] = `agent/cli/${name}`;
+    }
+    for (const base of ['skills', 'roles/generic/skills']) {
+      if (!existsSync(join(repoRoot, base))) continue;
+      for (const skill of readdirSync(join(repoRoot, base))) {
+        const manifest = join(repoRoot, base, skill, 'skill.json');
+        if (!existsSync(manifest)) continue;
+        for (const command of JSON.parse(readFileSync(manifest, 'utf8')).commands) {
+          if (existsSync(join(repoRoot, base, skill, `${command}.mjs`))) expected[command] = `${base}/${skill}/${command}.mjs`;
+        }
+      }
+    }
+    return expected;
+  }
+
+  test('every agent/cli command but cli-runtime, and every skill command file, gets one', () => {
+    const commands = listCommands(repoRoot, 'generic');
+    assert.deepEqual(Object.fromEntries(commands.map((c) => [c.name, c.file])), expectedCommands());
+    const names = commands.map((c) => c.name);
+    assert.deepEqual(names, [...names].sort(), 'sorted by name');
+    for (const name of ['git-store', 'agent-status', 'web-search', 'web-fetch', 'secret-read', 'work-commit']) assert.ok(names.includes(name), name);
+    assert.ok(!names.includes(CLI_RUNTIME.slice(0, -4)), 'cli-runtime is not a command');
+  });
+
+  test('a launcher is the two lines install/README.md gives', () => {
+    assert.equal(launcherScript('/opt/paraclete', 'agent/cli/git-store.mjs'),
+      '#!/bin/sh\nexec /usr/bin/node /opt/paraclete/agent/cli/git-store.mjs "$@"\n');
+    assert.ok(readRepoFile('install/README.md').includes('exec /usr/bin/node /opt/paraclete/<path>.mjs "$@"'));
+    assert.throws(() => launcherScript('/opt/para clete', 'agent/cli/x.mjs'), /plain absolute/);
+    assert.throws(() => launcherScript('/opt/paraclete', 'agent/cli/$(x).mjs'), /plain absolute/);
+  });
+
+  test('writeLaunchers writes real files into bin/, naming the install root', (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'agent/cli/cli-runtime.mjs': '',
+      'agent/cli/core-memory-read.mjs': '',
+      'skills/web/skill.json': JSON.stringify({ commands: ['web-get', 'core-memory-read', 'listed-only'] }),
+      'skills/web/web-get.mjs': '',
+      'roles/generic/skills/notes/skill.json': JSON.stringify({ commands: ['note-add'] }),
+      'roles/generic/skills/notes/note-add.mjs': '',
+      'roles/writer/skills/draft/skill.json': JSON.stringify({ commands: ['draft-new'] }),
+      'roles/writer/skills/draft/draft-new.mjs': '',
+    });
+    const generic = writeLaunchers({ root, installRoot: '/opt/paraclete', role: 'generic' });
+    assert.deepEqual(generic.map((c) => c.name), ['core-memory-read', 'note-add', 'web-get']);
+    rmSync(join(root, 'bin'), { recursive: true });
+    const writer = writeLaunchers({ root, installRoot: '/opt/paraclete', role: 'writer' });
+    assert.deepEqual(writer.map((c) => c.name), ['core-memory-read', 'draft-new', 'note-add', 'web-get']);
+    const path = join(root, 'bin', 'draft-new');
+    assert.ok(!lstatSync(path).isSymbolicLink());
+    assert.equal(readFileSync(path, 'utf8'), '#!/bin/sh\nexec /usr/bin/node /opt/paraclete/roles/writer/skills/draft/draft-new.mjs "$@"\n');
+    if (process.platform !== 'win32') assert.equal(statSync(path).mode & 0o777, 0o755);
+  });
+
+  test('two files claiming one command name, or an unreadable skill.json, stop the install', (t) => {
+    const clash = scratch(t);
+    writeTree(clash, {
+      'agent/cli/web-get.mjs': '',
+      'skills/web/skill.json': JSON.stringify({ commands: ['web-get'] }),
+      'skills/web/web-get.mjs': '',
+    });
+    assert.throws(() => listCommands(clash, 'generic'), /'web-get' is claimed by both agent\/cli\/web-get\.mjs and skills\/web\/web-get\.mjs/);
+    const broken = scratch(t);
+    writeTree(broken, { 'skills/web/skill.json': '{ not json' });
+    assert.throws(() => listCommands(broken, 'generic'), /skills\/web\/skill\.json cannot be read/);
+    assert.throws(() => skillRoots('../etc'), /role id/);
+  });
+});
+
+describe('the instance record', () => {
+  const metadata = {
+    project: 'your-gcp-project',
+    zone: 'europe-west4-b',
+    agentName: 'Ada',
+    role: 'generic',
+    bucket: 'your-gcp-project-paraclete',
+    release: 'v2026.10.17.1.1',
+    sourceRepo: 'your-org/paraclete',
+    installRoot: '/opt/paraclete',
+    dataRoot: '/var/lib/paraclete',
+  };
+
+  test('built from sample metadata, it is a record config/instance.mjs accepts', (t) => {
+    const record = instanceRecord.buildInstance(metadata);
+    assert.deepEqual(record, {
+      project: 'your-gcp-project', region: 'europe-west4', zone: 'europe-west4-b', agent_name: 'Ada', role: 'generic',
+      install_root: '/opt/paraclete', data_root: '/var/lib/paraclete', bucket: 'your-gcp-project-paraclete',
+      release: 'v2026.10.17.1.1', source_repo: 'your-org/paraclete',
+    });
+    assert.deepEqual(validateInstance(record), []);
+    const path = join(scratch(t), 'instance.json');
+    writeFileSync(path, JSON.stringify(record));
+    assert.equal(loadInstance({ path }).workspace, null);
+  });
+
+  test('a Workspace role and a dashboard add their fields', () => {
+    const record = instanceRecord.buildInstance({
+      ...metadata,
+      dashboardUrl: 'https://paraclete-dashboard.example.com',
+      workspaceAccount: 'agent@example.com',
+      workspaceSigner: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com',
+    });
+    assert.equal(record.dashboard_url, 'https://paraclete-dashboard.example.com');
+    assert.deepEqual(record.workspace, { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com' });
+    assert.deepEqual(validateInstance(record), []);
+    const half = instanceRecord.buildInstance({ ...metadata, workspaceAccount: 'agent@example.com' });
+    assert.ok(validateInstance(half).some((p) => /workspace\.signer/.test(p)), 'an account without a signer is refused');
+  });
+
+  test('the region comes from the zone', () => {
+    assert.equal(instanceRecord.regionOf('us-central1-a'), 'us-central1');
+    assert.equal(instanceRecord.regionOf('northamerica-northeast2-c'), 'northamerica-northeast2');
+    for (const zone of ['us-central1', 'projects/1/zones/us-central1-a', '', undefined]) {
+      assert.throws(() => instanceRecord.regionOf(zone), /not a Compute Engine zone/, String(zone));
+    }
+  });
+
+  test('the command line writes the record, or names every problem and writes nothing', (t) => {
+    const dir = scratch(t);
+    const out = join(dir, 'instance.json');
+    const args = ['--project=your-gcp-project', '--zone=us-central1-a', '--agent-name=Ada Lovelace', '--role=generic',
+      '--bucket=your-gcp-project-paraclete', '--release=main', '--source-repo=your-org/paraclete',
+      '--install-root=/opt/paraclete', '--data-root=/var/lib/paraclete'];
+    const stderr = sink();
+    assert.equal(instanceRecord.main([`--out=${out}`, ...args], { stdout: sink(), stderr }), 0, stderr.text());
+    assert.equal(loadInstance({ path: out }).agent_name, 'Ada Lovelace');
+    assert.ok(!existsSync(`${out}.tmp`));
+
+    const bad = join(dir, 'bad.json');
+    const errors = sink();
+    const code = instanceRecord.main([`--out=${bad}`, ...args.filter((a) => !a.startsWith('--bucket') && !a.startsWith('--release')),
+      '--data-root=/opt/paraclete', '--role=Not A Role'], { stdout: sink(), stderr: errors });
+    assert.equal(code, 1);
+    for (const problem of ['instance.bucket is required', 'instance.role must be a role id', 'data_root must differ', 'instance.release is required']) {
+      assert.ok(errors.text().includes(problem), problem);
+    }
+    assert.ok(!existsSync(bad));
+  });
+});
+
+describe('release.json', () => {
+  const canonicalRegex = loadContracts().versioning.canonical_regex;
+
+  test('the version is the release tag, else the version prefix of the commit message, else null', () => {
+    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1', canonicalRegex }), 'v2026.10.17.1.1');
+    assert.equal(releaseRecord.releaseVersion({ ref: 'my-branch', commitMessage: 'v2026.10.17.5.2: install the agent', canonicalRegex }), 'v2026.10.17.5.2');
+    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1-rc', commitMessage: 'no prefix', canonicalRegex }), null);
+    assert.equal(releaseRecord.releaseVersion({ ref: COMMIT, commitMessage: null, canonicalRegex }), null);
+  });
+
+  test("the commit message comes from GitHub, and any failure leaves it unknown", async () => {
+    const calls = [];
+    const ok = async (url, init) => { calls.push({ url, init }); return Response.json({ commit: { message: 'v2026.10.17.5.2: x' } }); };
+    assert.equal(await releaseRecord.lookupCommitMessage({ repo: 'your-org/paraclete', commit: COMMIT, fetch: ok }), 'v2026.10.17.5.2: x');
+    assert.equal(calls[0].url, `https://api.github.com/repos/your-org/paraclete/commits/${COMMIT}`);
+    assert.equal(calls[0].init.headers['User-Agent'], 'paraclete-bootstrap');
+    assert.equal(await releaseRecord.lookupCommitMessage({ repo: 'r/r', commit: COMMIT, fetch: async () => new Response('rate limited', { status: 403 }) }), null);
+    assert.equal(await releaseRecord.lookupCommitMessage({ repo: 'r/r', commit: COMMIT, fetch: async () => { throw new Error('offline'); } }), null);
+  });
+
+  test('the command line writes the record, with the metadata it was installed under', async (t) => {
+    const out = join(scratch(t), 'release.json');
+    let fetched = 0;
+    const fetch = async () => { fetched += 1; return Response.json({ commit: { message: 'v2026.10.17.5.2: x' } }); };
+    const base = ['--repo=your-org/paraclete', `--commit=${COMMIT}`, '--metadata-repo=your-org/paraclete', `--metadata-ref=${OTHER}`];
+    const now = () => '2026-10-17T12:00:00.000Z';
+
+    assert.equal(await releaseRecord.main([`--out=${out}`, '--ref=feature/x', ...base], { fetch, now, stdout: sink(), stderr: sink() }), 0);
+    assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), {
+      version: 'v2026.10.17.5.2', ref: 'feature/x', commit: COMMIT, repo: 'your-org/paraclete',
+      installed_at: '2026-10-17T12:00:00.000Z', metadata: { repo: 'your-org/paraclete', ref: OTHER },
+    });
+    assert.equal(fetched, 1);
+
+    assert.equal(await releaseRecord.main([`--out=${out}`, '--ref=v2026.10.17.1.1', ...base], { fetch, now, stdout: sink(), stderr: sink() }), 0);
+    assert.equal(JSON.parse(readFileSync(out, 'utf8')).version, 'v2026.10.17.1.1');
+    assert.equal(fetched, 1, 'a release tag needs no lookup');
+
+    const errors = sink();
+    assert.equal(await releaseRecord.main([`--out=${out}`, '--ref=main', '--repo=r/r', '--commit=abc', '--metadata-repo=r/r', `--metadata-ref=${OTHER}`],
+      { fetch, now, stdout: sink(), stderr: errors }), 1);
+    assert.match(errors.text(), /not a 40-character commit/);
+  });
+});
+
+describe("the role's packages", () => {
+  test("the generic role's apt packages, read from the release", () => {
+    const stdout = sink();
+    assert.equal(rolePackagesCli.main([`--root=${repoRoot}`, '--role=generic'], { stdout, stderr: sink() }), 0);
+    assert.deepEqual(stdout.text().trim().split('\n'), JSON.parse(readRepoFile('roles/generic/role.json')).setup.apt);
+  });
+
+  test("a role's packages come after generic's, once each", (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'roles/generic/role.json': JSON.stringify({ setup: { apt: ['git', 'jq'], pip: [], npm: [] } }),
+      'roles/writer/role.json': JSON.stringify({ setup: { apt: ['jq', 'pandoc'] } }),
+    });
+    assert.deepEqual(rolePackagesCli.rolePackages(root, 'writer'), ['git', 'jq', 'pandoc']);
+  });
+
+  test('a missing role, a pip or npm list, or a name that is not a package stops the install', (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'roles/generic/role.json': JSON.stringify({ setup: { apt: ['git'] } }),
+      'roles/py/role.json': JSON.stringify({ setup: { apt: [], pip: ['pandas'] } }),
+      'roles/evil/role.json': JSON.stringify({ setup: { apt: ['--allow-unauthenticated', 'ok'] } }),
+    });
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'absent'), /role 'absent' is not in this release/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'py'), /setup\.pip packages, which this bootstrap does not install/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'evil'), /"--allow-unauthenticated" is not a Debian package name/);
+  });
+});
+
+describe('the validation gate', () => {
+  test('the repo, with its launchers, passes', { skip: !existsSync(join(repoRoot, 'agent', 'node_modules')) && 'run npm run setup first' }, async (t) => {
+    const bin = scratch(t);
+    for (const { name, file } of listCommands(repoRoot, 'generic')) writeFileSync(join(bin, name), launcherScript('/opt/paraclete', file));
+    const { problems, services, commands: checked } = await checkRelease({ root: repoRoot, installRoot: '/opt/paraclete', binDir: bin });
+    assert.deepEqual(problems, []);
+    assert.deepEqual(services, ['brain', 'control', 'ears', 'gateway', 'mouth']);
+    assert.equal(checked.length, listCommands(repoRoot, 'generic').length);
+  });
+
+  test('a release whose contracts, services or launchers are broken is refused, with every reason', async (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'config/contracts.mjs': readRepoFile('config/contracts.mjs'),
+      'config/contracts.json': readRepoFile('config/contracts.json').replace('"port": 18789', '"port": 0'),
+      'agent/services/brain/main.mjs': 'export const ok = true;\n',
+      'agent/services/brain/paraclete-brain.service': '[Unit]\n',
+      'agent/services/ears/main.mjs': "import './missing.mjs';\n",
+      'agent/services/ears/paraclete-ears.service': '[Unit]\n',
+      'agent/services/mouth/main.mjs': 'export const ok = true;\n',
+      'agent/cli/fine.mjs': 'export const ok = true;\n',
+      'bin/fine': launcherScript('/opt/paraclete', 'agent/cli/fine.mjs'),
+      'bin/gone': launcherScript('/opt/paraclete', 'agent/cli/gone.mjs'),
+      'bin/other': '#!/bin/sh\nexec /bin/rm -rf / "$@"\n',
+    });
+    const { problems, commands } = await checkRelease({ root, installRoot: '/opt/paraclete' });
+    const expected = [/contracts do not validate: .*gateway\.port must be a TCP port/s, /service ears .* does not load/,
+      /service mouth has no unit/, /bin\/gone runs agent\/cli\/gone\.mjs, which the release does not have/,
+      /bin\/other is not a launcher/];
+    for (const pattern of expected) assert.ok(problems.some((p) => pattern.test(p)), `${pattern} in ${problems.join(' | ')}`);
+    assert.equal(problems.length, expected.length, problems.join(' | '));
+    assert.deepEqual(commands, ['fine']);
+  });
+});
+
+describe('the readiness document', () => {
+  test('ready, failed, then ready again: each write sets only its own fields', async (t) => {
+    const firestore = await startFirestore();
+    t.after(() => firestore.stop());
+    const db = createClient({ projectId: firestore.projectId, firestoreHost: firestore.origin, getAccessToken: async () => 'vm-token' });
+    const doc = () => firestore.dump()['agent/instance'].fields;
+
+    await db.write('agent/instance', { set_by_someone_else: 'kept' });
+    await readiness.writeReadiness(db, { status: 'ready', release: 'v2026.10.17.1.1', commit: COMMIT, now: '2026-10-17T12:00:00.000Z' });
+    assert.deepEqual(doc(), {
+      set_by_someone_else: { stringValue: 'kept' },
+      status: { stringValue: 'ready' },
+      release: { stringValue: 'v2026.10.17.1.1' },
+      commit: { stringValue: COMMIT },
+      ready_at: { stringValue: '2026-10-17T12:00:00.000Z' },
+    });
+
+    await readiness.writeReadiness(db, { status: 'failed', release: 'v2026.10.18.1.1', commit: OTHER, error: 'x'.repeat(5000), now: '2026-10-18T09:00:00.000Z' });
+    assert.equal(doc().status.stringValue, 'failed');
+    assert.equal(doc().commit.stringValue, OTHER);
+    assert.equal(doc().ready_at.stringValue, '2026-10-17T12:00:00.000Z', 'a failure keeps when it was last ready');
+    assert.equal(doc().failed_at.stringValue, '2026-10-18T09:00:00.000Z');
+    assert.equal(doc().error.stringValue.length, readiness.MAX_ERROR_CHARS + 1);
+
+    await readiness.writeReadiness(db, { status: 'ready', release: 'v2026.10.18.1.1', commit: OTHER, now: '2026-10-18T09:05:00.000Z' });
+    assert.equal(doc().status.stringValue, 'ready');
+    assert.ok(!('error' in doc()) && !('failed_at' in doc()), 'ready clears the last error');
+    assert.ok(firestore.requests.every((r) => r.token === 'vm-token'));
+  });
+
+  test('the command line writes through the given Firestore, and refuses an unknown status', async (t) => {
+    const firestore = await startFirestore();
+    t.after(() => firestore.stop());
+    const deps = { firestoreHost: firestore.origin, getAccessToken: async () => 'vm-token', now: () => '2026-10-17T12:00:00.000Z', stdout: sink() };
+    const errors = sink();
+    const code = await readiness.main([`--project=${firestore.projectId}`, '--status=failed', '--release=main', `--commit=${COMMIT}`, '--error=-step stage failed'],
+      { ...deps, stderr: errors });
+    assert.equal(code, 0, errors.text());
+    assert.equal(firestore.dump()['agent/instance'].fields.error.stringValue, '-step stage failed');
+    assert.equal(await readiness.main([`--project=${firestore.projectId}`, '--status=done'], { ...deps, stderr: sink() }), 1);
+    assert.equal(await readiness.main([], { ...deps, stderr: sink() }), 2);
+  });
+});
+
+describe('bootstrap.sh logic', { skip: LINUX_ONLY }, () => {
+  const meta = { META_REPO: 'your-org/paraclete', META_REF: COMMIT, META_RELEASE: 'v2026.10.17.1.1' };
+  const assignments = (vars) => Object.entries(vars).map(([k, v]) => `${k}='${v}'`).join('\n');
+
+  function target({ installed = {}, env = {} } = {}) {
+    const r = bashWithBootstrap(`${assignments(meta)}\n${assignments(installed)}
+choose_target
+printf '%s|%s|%s|%s|%s' "$TARGET_COMMIT" "$TARGET_REPO" "$TARGET_RELEASE" "$TARGET_SOURCE" "$SELF_COMMIT"`, env);
+    assert.equal(r.status, 0, r.stderr);
+    const [commit, repo, release, source, self] = r.stdout.split('|');
+    return { commit, repo, release, source, self };
+  }
+
+  test('a first boot installs what the metadata names', () => {
+    assert.deepEqual(target(), { commit: COMMIT, repo: 'your-org/paraclete', release: 'v2026.10.17.1.1', source: 'the VM metadata', self: COMMIT });
+  });
+
+  test('after an upgrade, a reboot keeps the upgraded release while the metadata is unchanged', () => {
+    const installed = { INSTALLED_COMMIT: OTHER, INSTALLED_REPO: 'your-org/paraclete', INSTALLED_REF: 'v2026.10.18.1.1',
+      INSTALLED_META_REPO: 'your-org/paraclete', INSTALLED_META_REF: COMMIT };
+    assert.deepEqual(target({ installed }), { commit: OTHER, repo: 'your-org/paraclete', release: 'v2026.10.18.1.1', source: 'the installed release', self: COMMIT },
+      'the target differs from this script, so it hands over to the installed bootstrap');
+    const changed = target({ installed: { ...installed, INSTALLED_META_REF: OTHER } });
+    assert.equal(changed.commit, COMMIT, 'a changed paraclete-ref (install.sh run again) wins');
+    assert.equal(changed.source, 'the VM metadata');
+  });
+
+  test('PARACLETE_REF, PARACLETE_REPO and PARACLETE_RELEASE override everything', () => {
+    const installed = { INSTALLED_COMMIT: COMMIT, INSTALLED_REPO: 'your-org/paraclete', INSTALLED_REF: 'x', INSTALLED_META_REPO: 'your-org/paraclete', INSTALLED_META_REF: COMMIT };
+    const env = { PARACLETE_REF: OTHER, PARACLETE_REPO: 'someone/paraclete', PARACLETE_RELEASE: 'v2026.10.18.1.1' };
+    assert.deepEqual(target({ installed, env }), { commit: OTHER, repo: 'someone/paraclete', release: 'v2026.10.18.1.1', source: 'PARACLETE_REF', self: OTHER });
+  });
+
+  test('a malformed ref, repository or label is refused before anything is installed', () => {
+    for (const env of [{ PARACLETE_REF: 'main' }, { PARACLETE_REF: COMMIT.toUpperCase() }, { PARACLETE_REF: OTHER, PARACLETE_REPO: 'no-slash' },
+      { PARACLETE_REF: OTHER, PARACLETE_RELEASE: 'v1; reboot' }]) {
+      const r = bashWithBootstrap(`${assignments(meta)}\nchoose_target`, env);
+      assert.equal(r.status, 1, JSON.stringify(env));
+      assert.match(r.stderr, /paraclete-bootstrap: error: /);
+    }
+  });
+
+  test('the metadata must name a full commit, a repository, a role, a name and a bucket', () => {
+    const good = { PROJECT: 'your-gcp-project', ZONE: 'us-central1-a', ROLE: 'generic', AGENT_NAME: 'Ada', BUCKET: 'b', ...meta };
+    assert.equal(bashWithBootstrap(`${assignments(good)}\ncheck_metadata`).status, 0);
+    const cases = [
+      [{ META_REF: 'main' }, /paraclete-ref must be a full 40-character commit, got 'main'/],
+      [{ META_REF: COMMIT.slice(0, 12) }, /paraclete-ref must be a full 40-character commit/],
+      [{ META_REPO: 'https://github.com/your-org/paraclete' }, /paraclete-repo must be owner\/name/],
+      [{ ROLE: '../etc' }, /paraclete-role must be a role id/],
+      [{ AGENT_NAME: '' }, /paraclete-agent-name is not set/],
+      [{ BUCKET: '' }, /paraclete-bucket is not set/],
+    ];
+    for (const [change, message] of cases) {
+      const r = bashWithBootstrap(`${assignments({ ...good, ...change })}\ncheck_metadata`);
+      assert.equal(r.status, 1, JSON.stringify(change));
+      assert.match(r.stderr, message);
+    }
+  });
+
+  test('a release archive must hold one top directory named for the commit', (t) => {
+    const dir = scratch(t);
+    mkdirSync(join(dir, 'one', `paraclete-${COMMIT}`), { recursive: true });
+    mkdirSync(join(dir, 'two', 'a'), { recursive: true });
+    mkdirSync(join(dir, 'two', 'b'), { recursive: true });
+    const one = bashWithBootstrap(`archive_top_directory '${join(dir, 'one')}'`);
+    assert.equal(one.stdout.trim(), `${join(dir, 'one')}/paraclete-${COMMIT}`);
+    assert.equal(bashWithBootstrap(`archive_top_directory '${join(dir, 'two')}'`).status, 1);
+    assert.equal(bashWithBootstrap(`archive_top_directory '${join(dir, 'missing')}'`).status, 1);
+  });
+
+  test('bootstrap.sh refuses to run as anyone but root', { skip: process.getuid?.() === 0 && 'running as root' }, () => {
+    const r = spawnSync('bash', ['install/bootstrap.sh'], { cwd: repoRoot, encoding: 'utf8' });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /bootstrap\.sh runs as root/);
+  });
+});

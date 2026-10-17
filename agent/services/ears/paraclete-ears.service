@@ -9,6 +9,8 @@ Wants=network-online.target
 Type=simple
 User=paraclete
 Group=paraclete
+Environment=PATH=/opt/paraclete/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/var/lib/paraclete/home
 ExecStart=/usr/bin/node /opt/paraclete/agent/services/ears/main.mjs
 Restart=always
 RestartSec=3
