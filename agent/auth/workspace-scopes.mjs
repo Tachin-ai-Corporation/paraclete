@@ -4,7 +4,7 @@
 // only the subset of the API it calls, so a scope missing from the grant breaks only the APIs that need
 // it, and the error can name it. Only Workspace roles use these.
 //
-// Pure constants and two small helpers: no imports, so the dashboard's setup wizard can import it too.
+// Pure constants and three small helpers: no imports, so the dashboard's setup wizard can import it too.
 // Callers: the ears and mouth (Chat), agent/providers/drive.mjs (Drive), the Workspace API clients in
 // agent/providers/workspace*.mjs, and control's Workspace check.
 
@@ -72,4 +72,17 @@ export function adminConsoleScopes(list = WORKSPACE_SCOPES) {
 export function scopeName(scope) {
   const s = String(scope ?? '');
   return s.startsWith(ROOT) ? s.slice(ROOT.length) : s;
+}
+
+/**
+ * The Cloud console page where the project's Chat app is configured. Google requires a Chat app
+ * record (a name and a description; interactive features off) of the project that calls the Chat API,
+ * also for calls made as a user, as the agent's are. Nobody sees the record: the agent is a person in
+ * Chat, not an app. Google has no API to write it, so an admin saves it on this page.
+ *
+ * @param {string} project
+ * @returns {string}
+ */
+export function chatAppPage(project) {
+  return `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${encodeURIComponent(project)}`;
 }

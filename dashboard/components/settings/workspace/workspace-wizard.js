@@ -81,15 +81,17 @@ export function saveDecision(check, account) {
 }
 
 /**
- * The state of the first three steps, for their markers: 'done', 'problem' or 'todo'. The delegation
+ * The state of the steps before Save, for their markers: 'done', 'problem' or 'todo'. The delegation
  * is done once a check of this address found every scope granted (`missing_scopes: []`), and a
- * problem when it found some missing or the client ID cannot be read.
+ * problem when it found some missing or the client ID cannot be read. The Chat app record has no
+ * state of its own in Google that the dashboard can read, so its step follows Chat in the check: done
+ * when Chat answered, a problem when it did not with every scope granted.
  *
  * @param {object} o
  * @param {string|null} o.account   the checked address typed, or null
  * @param {object|null} o.setup     GET /api/workspace/setup
  * @param {object|null} o.check     the latest check, of any address
- * @returns {{user: string, delegation: string, test: string}}
+ * @returns {{user: string, delegation: string, chat: string, test: string}}
  */
 export function stepStates({ account, setup, check }) {
   const checked = account && check?.account === account ? check : null;
@@ -97,9 +99,14 @@ export function stepStates({ account, setup, check }) {
   let delegation = 'todo';
   if (missing && missing.length === 0) delegation = 'done';
   else if (missing?.length || setup?.client_id_error) delegation = 'problem';
+  const chatEntry = (Array.isArray(checked?.apis) ? checked.apis : []).find((entry) => entry?.api === 'chat');
+  let chat = 'todo';
+  if (chatEntry?.ok === true) chat = 'done';
+  else if (chatEntry && delegation === 'done') chat = 'problem';
   return {
     user: account ? 'done' : 'todo',
     delegation,
+    chat,
     test: !checked ? 'todo' : checked.ready ? 'done' : 'problem',
   };
 }

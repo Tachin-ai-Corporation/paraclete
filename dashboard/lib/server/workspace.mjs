@@ -7,13 +7,13 @@
 //     the last check, from config/workspace_account (only the VM's control service writes it);
 //   - the setup, for admins: the delegation signer and its OAuth client ID (IAM
 //     projects.serviceAccounts.get, as the dashboard's account, which the installer lets read that one
-//     account), the scope list from agent/auth/workspace-scopes.mjs, the Admin console's pages, and a
-//     suggested address.
+//     account), the scope list from agent/auth/workspace-scopes.mjs, the Admin console's pages, the
+//     Cloud console page of the project's Chat app record, and a suggested address.
 // Testing and recording the account are the control service's `workspace_check` and
 // `set_workspace_account` commands, which the browser sends through POST /api/commands. Called by the
 // /api/workspace routes.
 
-import { WORKSPACE_SCOPES, WORKSPACE_APIS, adminConsoleScopes, scopeName } from '../../../agent/auth/workspace-scopes.mjs';
+import { WORKSPACE_SCOPES, WORKSPACE_APIS, adminConsoleScopes, chatAppPage, scopeName } from '../../../agent/auth/workspace-scopes.mjs';
 import { HttpError } from './errors.mjs';
 
 /**
@@ -190,7 +190,7 @@ export async function readWorkspaceSetup(runtime, user) {
     scopes: [...WORKSPACE_SCOPES],
     scopes_text: adminConsoleScopes(),
     apis: Object.entries(WORKSPACE_APIS).map(([api, { name, scopes }]) => ({ api, name, scopes: scopes.map(scopeName) })),
-    links: { ...ADMIN_LINKS },
+    links: { ...ADMIN_LINKS, chat_app: chatAppPage(runtime.settings.project) },
     suggested_account: suggestAccount(runtime.settings.agentName, user.email),
   };
 }

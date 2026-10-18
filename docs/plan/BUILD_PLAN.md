@@ -255,7 +255,9 @@ fork.
 **What stays manual.** Nothing, for a role without Workspace. Turning on Claude needs the owner to
 accept Anthropic's terms in Model Garden. A Workspace role needs the dashboard's setup wizard: create
 the agent's user, paste one client ID and the scope list into the Admin console (copy buttons and a
-direct link), then click Test. Google has no API for the DWD grant.
+direct link), save the project's Chat app record in the Cloud console (a name and a description,
+interactive features off; a direct link), then click Test. Google has no API for the DWD grant or for
+the Chat app record.
 
 **Uninstall.** `install/uninstall.sh` removes everything the installer created. It keeps the bucket
 unless you pass `--purge`.

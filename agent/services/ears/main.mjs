@@ -40,6 +40,12 @@ export const CHAT_READ_SCOPES = CHAT_READ;
 const CHAT_RETRY_MS = 30_000;
 /** How long the Chat loop waits after Chat answered 429 (its quota is per minute). */
 const CHAT_RATE_LIMIT_MS = 60_000;
+/**
+ * How long the Chat loop waits at most while Chat keeps refusing the account (401 or 403). A refusal
+ * lasts until a person changes something in the Admin console or the Cloud console, so the wait
+ * doubles from CHAT_RETRY_MS up to this.
+ */
+const CHAT_REFUSED_MAX_MS = 300_000;
 /** Dashboard user records read at most, for matching Chat senders. */
 const USERS_READ_LIMIT = 500;
 
@@ -213,6 +219,10 @@ export function createEars(runtime, deps = {}) {
     return cfg.firestore_poll_ms;
   }
 
+  // The same Chat failure every few seconds says nothing new: it is logged when it starts or changes.
+  let chatError = null;
+  let chatRefusals = 0;
+
   /** One Chat poll, or one attempt to come online. Returns the delay until the next. */
   async function tickChat() {
     if (!chat.ready) {
@@ -226,6 +236,7 @@ export function createEars(runtime, deps = {}) {
     }
     health.gchat.last_poll_at = iso();
     let rateLimited = false;
+    let refused = false;
     try {
       await takeIn(await chat.poll(), chat, health.gchat);
       const status = chat.status();
@@ -238,11 +249,16 @@ export function createEars(runtime, deps = {}) {
           ? 'the Chat API quota is spent; reading again in a minute'
           : `${status.errors} space(s) could not be read`;
       }
+      if (chatError) log('INFO', 'Chat poll works again', { after: chatError });
+      chatError = null;
     } catch (err) {
       rateLimited = err.status === 429;
+      refused = err.status === 401 || err.status === 403;
       health.gchat.last_error = err.message;
-      log('ERROR', 'Chat poll failed', { error: err.message });
+      if (err.message !== chatError) log('ERROR', 'Chat poll failed', { error: err.message });
+      chatError = err.message;
     }
+    chatRefusals = refused ? chatRefusals + 1 : 0;
     const status = chat.status();
     Object.assign(health.gchat, {
       spaces: status.spaces,
@@ -253,6 +269,7 @@ export function createEars(runtime, deps = {}) {
       rate_limited: rateLimited,
     });
     beat();
+    if (refused) return Math.min(CHAT_RETRY_MS * 2 ** (chatRefusals - 1), CHAT_REFUSED_MAX_MS);
     return rateLimited ? CHAT_RATE_LIMIT_MS : cfg.gchat_poll_ms;
   }
 

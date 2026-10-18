@@ -100,7 +100,11 @@ test("the setup: the signer's client ID read from IAM as the dashboard, the scop
   assert.deepEqual(setup.scopes, [...WORKSPACE_SCOPES]);
   assert.equal(setup.scopes_text, WORKSPACE_SCOPES.join(','));
   assert.deepEqual(setup.apis.find((a) => a.api === 'chat'), { api: 'chat', name: 'Google Chat', scopes: ['chat.messages', 'chat.messages.readonly', 'chat.spaces.readonly'] });
-  assert.deepEqual(setup.links, { users: 'https://admin.google.com/ac/users', delegation: 'https://admin.google.com/ac/owl/domainwidedelegation' });
+  assert.deepEqual(setup.links, {
+    users: 'https://admin.google.com/ac/users',
+    delegation: 'https://admin.google.com/ac/owl/domainwidedelegation',
+    chat_app: `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${SIGNER.split('@')[1].split('.')[0]}`,
+  });
   assert.equal(setup.links.delegation, DELEGATION_PAGE, 'the wizard and the check send admins to the same page');
   assert.equal(setup.suggested_account, 'ada.lovelace@example.com');
   assert.equal(iam.calls.length, 1);

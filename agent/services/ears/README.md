@@ -31,8 +31,14 @@ Not here: classifying what came in (the brain), replying (the mouth), the Addres
   [agent/auth/workspace-scopes.mjs](../../auth/workspace-scopes.mjs). The ears ask for
   `chat.messages.readonly` and `chat.spaces.readonly`; the mouth for `chat.messages` and
   `chat.spaces.readonly`. `install/install.sh` turns on the Chat API for a Workspace role.
-- Nothing else. The agent is a person in Chat, not a Chat app: there is no Chat app to configure in
-  the Google Cloud console, and people find it the way they find a colleague.
+- A Chat app record in the project. Google requires one of the project that calls the Chat API, also
+  for calls made as a user, as the agent's are; Chat's refusals then say only "permission denied".
+  Google has no API to write it, so an admin saves it once in the Cloud console
+  (the wizard's step 3 links to the page): an app name, a description, Interactive features off.
+  Nobody sees it. The agent is still a person in Chat, not a Chat app: people find it the way they
+  find a colleague.
+- While Chat refuses the account (401 or 403), the Chat loop waits twice as long after each refusal,
+  from 30 seconds up to five minutes, and logs the refusal once, not on every poll.
 - Give the agent's Workspace user the agent's name as its name (or the start of it: "Paraclete" or
   "Paraclete Agent" for an agent called Paraclete). Until the agent has posted its first message,
   the ears recognize a mention of it by that name.

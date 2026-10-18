@@ -14,6 +14,7 @@ this.
 | workspace role | A role flagged `workspace: true`. Its agent gets its own Google Workspace account through domain-wide delegation |
 | Workspace account | The agent's own Google account on a workspace role: a user an admin creates, connected in the dashboard's setup wizard, and recorded on the VM in `/etc/paraclete/workspace.json`. The agent acts as it for Chat, Drive, Docs, Sheets, Slides, Calendar and Gmail |
 | domain-wide delegation | The Admin console grant that lets `paraclete-dwd@` sign tokens as the agent's Workspace account, for the scopes listed. Google has no API for it, so an admin pastes the client ID and scopes the wizard shows |
+| Chat app record | The Chat API's configuration in the project: an app name and a description, interactive features off. Google requires it of the project that calls the Chat API, also for calls made as a user. Nobody sees it; the agent is a person in Chat, not an app. An admin saves it once in the Cloud console, from the wizard's link |
 | agent-images | The Artifact Registry repository a role with `resource_roles` on `agent-repository` pushes its images to; the agent may write there and nowhere else in Artifact Registry |
 | role move | A developer re-running `install.sh --role <other>` on an existing instance. Not a product feature: the old role's own grants are revoked, its packages stay, memory stays |
 | release | A tag of this repo that instances can install or upgrade to |

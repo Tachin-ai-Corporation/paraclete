@@ -58,11 +58,15 @@ test('no token, or no Drive, blocks a save; other failures allow one after a war
   assert.match(saveDecision(check({ failing: ['gmail'] }), ACCOUNT).warning, /cannot use it until/);
 });
 
-test('the steps follow the address, the delegation the test found, and the test', () => {
-  assert.deepEqual(stepStates({ account: null, setup: null, check: null }), { user: 'todo', delegation: 'todo', test: 'todo' });
-  assert.deepEqual(stepStates({ account: ACCOUNT, setup: {}, check: check() }), { user: 'done', delegation: 'done', test: 'done' });
+test('the steps follow the address, the delegation the test found, Chat, and the test', () => {
+  assert.deepEqual(stepStates({ account: null, setup: null, check: null }), { user: 'todo', delegation: 'todo', chat: 'todo', test: 'todo' });
+  assert.deepEqual(stepStates({ account: ACCOUNT, setup: {}, check: check() }), { user: 'done', delegation: 'done', chat: 'done', test: 'done' });
   assert.deepEqual(stepStates({ account: ACCOUNT, setup: {}, check: check({ failing: ['gmail'], missing: ['https://www.googleapis.com/auth/gmail.readonly'] }) }),
-    { user: 'done', delegation: 'problem', test: 'problem' });
+    { user: 'done', delegation: 'problem', chat: 'done', test: 'problem' });
+  assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ failing: ['chat'] }) }).chat, 'problem',
+    'Chat refused with every scope granted: the Chat app record is the likely cause');
+  assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ failing: ['chat'], missing: ['https://www.googleapis.com/auth/chat.messages'] }) }).chat, 'todo',
+    'with a scope missing, the delegation is the problem, not the Chat app record');
   assert.equal(stepStates({ account: ACCOUNT, setup: { client_id_error: 'denied' }, check: null }).delegation, 'problem');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ account: 'other@example.com' }) }).test, 'todo', 'a test of another address does not count');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: { ...check({ failing: ['chat'] }), missing_scopes: null } }).delegation, 'todo',

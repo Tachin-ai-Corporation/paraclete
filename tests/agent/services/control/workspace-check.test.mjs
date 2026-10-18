@@ -2,7 +2,8 @@
 // (workspace-fakes.mjs). A complete grant passes every API, with Docs, Sheets and Slides proved by
 // "not found"; a grant missing scopes names exactly those, and the client ID; no grant, an unknown
 // user and a signer the agent cannot use stop every API with one fix; an API turned off, a Chat app not
-// configured and Gmail off for the user each get their own fix; a bad address is refused.
+// configured and Gmail off for the user each get their own fix, and Chat's bare "permission denied"
+// names the project's Chat app record before the user's settings; a bad address is refused.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkWorkspace, tokenFailure, API_PROBES, DELEGATION_PAGE, PROBE_FILE_ID } from '../../../../agent/services/control/workspace-check.mjs';
@@ -133,11 +134,21 @@ test('an API off in the project, a Chat app not configured and Gmail off for the
   assert.equal(apis.docs.ok, true);
   assert.match(apis.sheets.error, /^HTTP 403: sheets\.googleapis\.com has not been used/);
   assert.ok(apis.sheets.fix.includes(`https://console.cloud.google.com/apis/library/sheets.googleapis.com?project=${PROJECT}`));
-  assert.match(apis.chat.fix, /Chat app configured/);
+  assert.match(apis.chat.fix, /needs a Chat app record/);
   assert.ok(apis.chat.fix.includes(`chat.googleapis.com/hangouts-chat?project=${PROJECT}`));
+  assert.match(apis.chat.fix, /turn Interactive features off/);
   assert.match(apis.gmail.fix, /Gmail is off for agent@example\.com/);
   assert.match(apis.calendar.fix, /Google Calendar is on for the user's organizational unit/);
   assert.match(apis.drive.fix, /Run Test again in a minute/);
+});
+
+test("Chat's bare permission denied names the project's Chat app record first, then Chat for the user", async () => {
+  const google = fakeGoogle({ apis: { chat: answers.status(403, "Permission denied to perform the requested action on the specified resource, or the resource doesn't exist.") } });
+  const apis = byApi(await run(google));
+  assert.equal(apis.chat.ok, false);
+  assert.ok(apis.chat.fix.includes(`chat.googleapis.com/hangouts-chat?project=${PROJECT}`));
+  assert.ok(apis.chat.fix.indexOf('Chat app record') < apis.chat.fix.indexOf('organizational unit'), 'the project first, then the user');
+  assert.equal(apis.drive.ok, true, 'the other APIs are unaffected');
 });
 
 test('without a network, every API says so', async () => {

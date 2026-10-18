@@ -175,6 +175,35 @@ test('a rate-limited Chat poll backs off for a minute and says so', async () => 
   assert.match(h.gchat.last_error, /quota/);
 });
 
+test('while Chat refuses the account the loop backs off to five minutes and logs the refusal once', async () => {
+  let refusing = true;
+  const t = fakeRuntime({ workspace: WORKSPACE });
+  const ears = createEars(t.runtime, {
+    vertexText: vertexText(),
+    getChatToken: async () => 'chat-token',
+    listSpaces: async () => {
+      if (!refusing) return [];
+      const err = new Error('listing the Chat spaces failed: HTTP 403: Permission denied');
+      err.status = 403;
+      throw err;
+    },
+    findDirectMessage: async () => null,
+    chatStore: { load: () => ({ cursors: {}, seen: [], agentUserId: null, listedAt: null, people: {} }), save: () => {} },
+    now: () => NOW,
+  });
+  const delays = [];
+  for (let i = 0; i < 6; i += 1) delays.push(await ears.tickChat());
+  assert.deepEqual(delays, [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
+  assert.match(health(t.root).gchat.last_error, /HTTP 403/);
+  const failures = () => t.logs.filter(([, message]) => message === 'Chat poll failed');
+  assert.equal(failures().length, 1, 'the same refusal is logged once, not on every poll');
+
+  refusing = false;
+  assert.equal(await ears.tickChat(), t.runtime.contracts.ears.gchat_poll_ms, 'a poll that works goes back to the normal pace');
+  assert.ok(t.logs.some(([, message]) => message === 'Chat poll works again'));
+  assert.equal(health(t.root).gchat.last_error, null);
+});
+
 test('start runs every channel loop until stop', async () => {
   const t = fakeRuntime({ workspace: WORKSPACE });
   let chatTicks = 0;

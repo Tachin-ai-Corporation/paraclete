@@ -2,14 +2,16 @@
 // dashboard/components/settings/workspace/WorkspaceTab.jsx: Settings, Workspace, shown only on a role
 // whose role.json sets `workspace`. The agent acts as a Google user of the organization through
 // domain-wide delegation, which Google lets only an admin grant, by hand, in the Admin console. For
-// an admin this tab walks through it in four steps, each with its state:
+// an admin this tab walks through it in five steps, each with its state:
 //   1. create the agent's user (a link to the Admin console's Users page, a suggested address), then
 //      enter its address;
 //   2. grant domain-wide delegation: the signer's client ID and the scope list, each with a copy
 //      button, and a link to the Admin console's page for them (GET /api/workspace/setup);
-//   3. Test: the workspace_check command, which runs on the VM as the agent and reports each API with
+//   3. configure the project's Chat app record, which Google Chat requires even of a user's token
+//      (a link to the Cloud console page; agent/auth/workspace-scopes.mjs chatAppPage);
+//   4. Test: the workspace_check command, which runs on the VM as the agent and reports each API with
 //      the one thing to change when it failed;
-//   4. Save: the set_workspace_account command, once a test of that address passed (or, after a
+//   5. Save: the set_workspace_account command, once a test of that address passed (or, after a
 //      warning, when only APIs other than Drive failed: workspace-wizard.js saveDecision).
 // Once an account is recorded it shows that account, its last test, and Test again, Change and Remove.
 // Members see the state only. SettingsView.jsx reads GET /api/workspace and passes it in.
@@ -229,7 +231,16 @@ function Wizard({ workspace, setup, setupError, check, save, onSave, onCancel, b
         {links.delegation && <External href={links.delegation}>Open domain-wide delegation</External>}
       </Step>
 
-      <Step number={3} title="Test" state={states.test}>
+      <Step number={3} title="Configure the Google Chat API" state={states.chat}>
+        <p>
+          Google requires a Chat app record of this Google Cloud project before Chat answers the agent. In the Cloud console,
+          open the Chat API's Configuration page, enter an app name and a description, turn Interactive features
+          off, and Save. Nobody sees this record: the agent is a person in Chat, not an app.
+        </p>
+        {links.chat_app && <External href={links.chat_app}>Open the Chat API configuration</External>}
+      </Step>
+
+      <Step number={4} title="Test" state={states.test}>
         <p>Asks Google, as the agent, for a token for each API, and makes one read-only call with each. Nothing is changed.</p>
         <button type="button" className="btn btn-sm" disabled={!account || busy} onClick={() => check.run({ account })}>
           {check.running ? 'Testing…' : 'Test'}
@@ -241,7 +252,7 @@ function Wizard({ workspace, setup, setupError, check, save, onSave, onCancel, b
         <CheckResults check={forTyped} isAdmin />
       </Step>
 
-      <Step number={4} title="Save">
+      <Step number={5} title="Save">
         <p>
           Records {account || 'the address'} as the agent's account on its VM. Its services restart, which takes a few
           seconds; from then on it uses Chat, Drive and the Workspace skills as that user.

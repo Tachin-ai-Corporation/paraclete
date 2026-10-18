@@ -15,7 +15,7 @@
 // whole list is refused each scope is asked for alone, to name exactly the ones missing.
 
 import { createDwdTokenSource } from '../../auth/dwd-token.mjs';
-import { WORKSPACE_SCOPES, WORKSPACE_APIS } from '../../auth/workspace-scopes.mjs';
+import { WORKSPACE_SCOPES, WORKSPACE_APIS, chatAppPage } from '../../auth/workspace-scopes.mjs';
 import { checkWorkspaceAccount, signerFor } from './workspace-account.mjs';
 
 /** A file id shaped like Google's (44 letters, digits, - and _) that no file has. */
@@ -140,7 +140,7 @@ export function apiFix(api, e, { account, project }) {
     return `Turn on the ${api.name} API (${api.service}) in ${project}: https://console.cloud.google.com/apis/library/${api.service}?project=${project}. Running install/install.sh again turns on every API a Workspace role uses. A just-enabled API can take a few minutes to answer.`;
   }
   if (api.api === 'chat' && e.status === 404 && /chat app/i.test(text)) {
-    return `The Google Chat API needs a Chat app configured in ${project}: open https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${project}, give the app a name, an avatar and a description, and save.`;
+    return `The Google Chat API needs a Chat app record in ${project}: open ${chatAppPage(project)}, enter an app name and a description, turn Interactive features off, and Save.`;
   }
   if (api.api === 'gmail' && /mail service not enabled|failedPrecondition|FAILED_PRECONDITION/i.test(text)) {
     return `Gmail is off for ${account}: give the user a license that includes Gmail, or turn Gmail on for its organizational unit (Admin console, Apps, Google Workspace, Gmail).`;
@@ -152,6 +152,11 @@ export function apiFix(api, e, { account, project }) {
     return `Google did not accept the token for ${account}. If the delegation entry just changed, wait a few minutes, then run Test again.`;
   }
   if (e.status === 429 || e.status >= 500) return `${api.name} is busy or failing on Google's side. Run Test again in a minute.`;
+  if (api.api === 'chat' && e.status === 403) {
+    // Chat says only "permission denied" both for a project without a Chat app record and for a user
+    // Chat is off for, so the fix names both, the project's first.
+    return `Google Chat refused ${account}. First check that ${project} has a Chat app record: open ${chatAppPage(project)}, enter an app name and a description, turn Interactive features off, and Save (a new record can take a few minutes to apply). Then check that Google Chat is on for the user's organizational unit (Admin console, Apps, Google Workspace, Google Chat) and that its license includes it.`;
+  }
   if (e.status === 403) {
     return `Google refused ${api.name} for ${account}. Check that ${api.name} is on for the user's organizational unit (Admin console, Apps, Google Workspace) and that its license includes it.`;
   }
