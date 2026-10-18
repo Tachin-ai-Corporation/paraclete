@@ -1,0 +1,8 @@
+{
+  "id": "coding",
+  "name": "Coding in a Codebase",
+  "version": 1,
+  "when_to_use": "Changing code in an existing repository: a feature, a bug fix, wiring something up, or turning a design into working code. Understand the codebase, make the smallest idiomatic change, prove it with the project's own build and tests, and leave the tree green. Not for a throwaway script, and not for reviewing someone else's change.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

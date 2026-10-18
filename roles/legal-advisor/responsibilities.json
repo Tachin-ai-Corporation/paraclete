@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_comment": "No scheduled work ships with this role. A check of upcoming contract deadlines needs an obligations tracker, which exists only after the agent has reviewed contracts, so at install it would check nothing. When people want one, they ask the agent, which creates it as its own responsibility (responsibility-manage, the work-management skill) naming the tracker.",
+  "responsibilities": []
+}

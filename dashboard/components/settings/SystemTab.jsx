@@ -1,14 +1,16 @@
 'use client';
 // dashboard/components/settings/SystemTab.jsx: Settings, System. The agent's VM as its control service
 // reports it (the `status` command): each service's systemd state and heartbeat, the model gateway, the
-// installed release and the host. The dashboard's own build sits beside the agent's release, since one
-// upgrade moves both. Every user can look; admins can restart a service (`restart_service`).
+// installed release and the host, and the Google Chat channel as the ears and the mouth report it. The
+// dashboard's own build sits beside the agent's release, since one upgrade moves both. Every user can
+// look; admins can restart a service (`restart_service`).
 import { useState } from 'react';
 import { useCommand } from '@/lib/client/use-command.js';
 import { formatBytes, formatDate, timeAgo } from '@/lib/client/format.js';
 import { AsyncState } from '@/components/ui/AsyncState.jsx';
 import { ConfirmButton } from './ConfirmButton.jsx';
 import { Notice } from './Notice.jsx';
+import { chatChannelView } from './chat-channel.js';
 import { compareBuilds, formatDuration, serviceHealth, SERVICE_ORDER, shortCommit } from './service-health.js';
 import styles from './Settings.module.css';
 
@@ -67,6 +69,10 @@ export function SystemTab({ me }) {
                 busy={Boolean(restarting) || restart.running}
                 restarting={restarting}
                 onRestart={restartService}
+              />
+              <ChatChannel
+                ears={result.services?.ears?.heartbeat?.gchat}
+                mouth={result.services?.mouth?.heartbeat?.gchat}
               />
               <div className={styles.grid}>
                 <Gateway gateway={result.gateway} />
@@ -193,6 +199,30 @@ function Services({ services, isAdmin, busy, restarting, onRestart }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function ChatChannel({ ears, mouth }) {
+  const view = chatChannelView(ears, mouth);
+  return (
+    <div className={`card ${styles.panel}`}>
+      <h2 className={styles.panelTitle}>
+        Google Chat <span className={`badge badge-${view.badge.level}`}>{view.badge.label}</span>
+      </h2>
+      <p className={`muted ${styles.small}`}>{view.summary}</p>
+      {view.error && <p className={`error-text ${styles.small}`}>{view.error}</p>}
+      {view.facts.length > 0 && (
+        <dl className={styles.facts}>
+          {view.facts.map((fact) => (
+            <FactRow
+              key={fact.label}
+              label={fact.label}
+              value={fact.at ? <span title={fact.at}>{timeAgo(fact.at)}</span> : fact.value}
+            />
+          ))}
+        </dl>
+      )}
     </div>
   );
 }

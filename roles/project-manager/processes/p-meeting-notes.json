@@ -1,0 +1,17 @@
+{
+  "id": "p-meeting-notes",
+  "name": "Meeting Notes to Minutes",
+  "description": "Turning a meeting's notes or transcript into minutes: decisions with who made them and when, action items with an owner and a due date, open questions with who will answer them, and the action tracker brought up to date.",
+  "narrative": "Minutes record what was decided and promised, not everything that was said. Read the whole source first, notes or transcript, and match it to its meeting for the date and the attendees. Pull out every explicit decision with who made it, every commitment as an action item with its owner and due date, and every question left open with who will settle it. Use only what the source says: an item with no owner or no date is written as missing one and listed for the person to resolve, never filled with a guess, and a discussion that ended without agreement is an open question, not a decision. Deliver the minutes as a document. Then bring the tracker up to date: read it, append the new items, and mark the changed ones, without deleting or rewriting history. Close by naming what still lacks an owner or a date.",
+  "intent_keywords": [
+    "meeting notes",
+    "meeting minutes",
+    "write up the minutes",
+    "transcript",
+    "action items",
+    "who owes what",
+    "follow-ups from the meeting"
+  ],
+  "status": "active",
+  "version": 1
+}

@@ -1,0 +1,17 @@
+{
+  "id": "p-bug-fix",
+  "name": "Bug Fix",
+  "description": "Fixing a reported bug in code: reproduce it with a failing test, find the root cause, make the smallest fix, prove it with the whole suite, and hand it back as a commit or pull request.",
+  "narrative": "A bug fix starts from evidence, not from a guess. Read the report and turn it into something you can run: the input, the steps, what happens and what should. Take a baseline of the test suite, then write a test that fails exactly the way the bug does; if you cannot make it fail, you have not found the bug yet, and you say so rather than fixing something else. Follow the failure to its root cause, the first place the behavior goes wrong, not where the symptom shows. Fix that with the smallest change in the code's own style, watch the new test pass, and run the whole suite to prove nothing that passed before now fails. Hand back the fix with its test, the cause in a sentence, and the before and after results, as a commit on a branch or a pull request. Related problems you noticed are reported, not fixed in the same change.",
+  "intent_keywords": [
+    "fix the bug",
+    "fix this bug",
+    "bug in",
+    "regression",
+    "crashes when",
+    "throws an error",
+    "failing test"
+  ],
+  "status": "active",
+  "version": 1
+}

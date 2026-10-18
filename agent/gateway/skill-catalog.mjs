@@ -2,13 +2,17 @@
 // when to use it and where its SKILL.md is, so the organ reads the procedure before running a command
 // instead of guessing its syntax. Built from the skill directories the caller passes (the base skills,
 // the generic role's, the chosen role's, and any the agent wrote); it reads skill.json files and
-// nothing else. The gateway service builds the text once at startup and passes it to every turn.
+// nothing else. A skill whose `requires` the instance does not meet (agent/context/skill-requirements.mjs:
+// a Workspace skill on an instance with no Workspace account) is left out. The gateway service builds
+// the text once at startup and passes it to every turn, so a new Workspace account shows after a
+// gateway restart.
 //
 // The text is part of the cached system prefix, so it is byte-stable: directories in the order given,
 // skills sorted by directory name.
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { skillRequires, unavailableReason } from '../context/skill-requirements.mjs';
 
 /** Organs that only plan. A skill used by nothing else is left out: a tool-using organ never reads it. */
 export const PLANNING_ORGANS = Object.freeze(['cortex', 'prefrontal']);
@@ -18,7 +22,7 @@ export const PLANNING_ORGANS = Object.freeze(['cortex', 'prefrontal']);
  * an unreadable or invalid one is skipped.
  *
  * @param {string[]} skillDirs
- * @returns {Array<{id: string, name: string, whenToUse: string, organs: string[], path: string}>}
+ * @returns {Array<{id: string, name: string, whenToUse: string, organs: string[], requires: string[], path: string}>}
  */
 export function findSkills(skillDirs) {
   const entries = [];
@@ -38,6 +42,7 @@ export function findSkills(skillDirs) {
           name: m.name || m.id || name,
           whenToUse: m.when_to_use || m.description || '',
           organs,
+          requires: skillRequires(m),
           path: join(skillDir, 'SKILL.md'),
         });
       } catch { /* an invalid skill.json leaves that skill out */ }
@@ -48,14 +53,18 @@ export function findSkills(skillDirs) {
 
 /**
  * The skill index text, ready to append to a system prompt, or '' when there are no skills. Skills
- * whose `organs` are all planning organs are left out; a skill that names no organs is in.
+ * whose `organs` are all planning organs are left out; a skill that names no organs is in. So is a
+ * skill whose `requires` the instance does not meet; with no instance record, none is met.
  *
  * @param {string[]} skillDirs e.g. [skills/, roles/generic/skills/, roles/<role>/skills/, <agent-written skills>]
+ * @param {object} [options]
+ * @param {object|null} [options.instance] the instance record the skills' `requires` are checked against
  * @returns {string}
  */
-export function buildSkillCatalog(skillDirs) {
+export function buildSkillCatalog(skillDirs, { instance = null } = {}) {
   const entries = findSkills(skillDirs)
-    .filter((e) => !(e.organs.length > 0 && e.organs.every((o) => PLANNING_ORGANS.includes(o))));
+    .filter((e) => !(e.organs.length > 0 && e.organs.every((o) => PLANNING_ORGANS.includes(o))))
+    .filter((e) => unavailableReason(e.requires, instance) === null);
   if (entries.length === 0) return '';
   const lines = entries.map((e) => `- ${e.name} (${e.id}): ${e.whenToUse}\n  → readFile ${e.path}`);
   return `\n\n## Available Skills\nBefore using any command tool, read the relevant SKILL.md:\n${lines.join('\n')}\n\nDo NOT guess skill paths. Only the paths listed above exist.\n`;

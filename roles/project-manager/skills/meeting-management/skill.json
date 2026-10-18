@@ -1,0 +1,8 @@
+{
+  "id": "meeting-management",
+  "name": "Meeting Management",
+  "version": 1,
+  "when_to_use": "Preparing agendas, turning meeting notes or transcripts into minutes, keeping an action-item tracker, and writing status reports. Every decision with its owner and date, every action item with an owner and a due date, and gaps marked rather than guessed.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

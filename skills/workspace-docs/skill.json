@@ -1,0 +1,9 @@
+{
+  "id": "workspace-docs",
+  "name": "Google Docs",
+  "version": 1,
+  "when_to_use": "Reading Google Docs as Markdown or text, commenting on them, creating new Docs from Markdown, and editing in place only the Docs your own account created. A Doc someone shared with you is read and commented on, never changed.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["docs-get", "docs-create", "docs-comment", "docs-replace"],
+  "requires": ["workspace"]
+}

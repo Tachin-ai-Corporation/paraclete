@@ -1,0 +1,9 @@
+{
+  "id": "workspace-sheets",
+  "name": "Google Sheets",
+  "version": 1,
+  "when_to_use": "Reading Google Sheets cell by cell, creating new Sheets from CSV, and writing values only into Sheets your own account created. A Sheet someone shared with you is read, never changed.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["sheets-get", "sheets-create", "sheets-append", "sheets-update"],
+  "requires": ["workspace"]
+}

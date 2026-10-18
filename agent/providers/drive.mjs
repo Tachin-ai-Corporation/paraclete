@@ -23,9 +23,13 @@
 import { randomBytes } from 'node:crypto';
 import { getAccessToken as getVmAccessToken } from '../auth/metadata-token.mjs';
 import { createDwdTokenSource } from '../auth/dwd-token.mjs';
+import { DRIVE } from '../auth/workspace-scopes.mjs';
 
-/** The scope every Drive call needs. The VM is created with it; a Workspace grant must include it. */
-export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+/**
+ * The scope every Drive call needs (agent/auth/workspace-scopes.mjs's). The VM is created with it; a
+ * Workspace grant must include it.
+ */
+export const DRIVE_SCOPE = DRIVE[0];
 
 /** The Drive API origin. The instance record's `endpoints.drive` overrides it (tests, development). */
 export const DRIVE_HOST = 'https://www.googleapis.com';

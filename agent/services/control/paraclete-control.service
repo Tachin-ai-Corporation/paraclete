@@ -1,9 +1,10 @@
 # agent/services/control/paraclete-control.service: runs the control service, the dashboard's bridge
 # to the VM. The one paraclete unit that runs as root: it restarts services and starts upgrades. Its
 # privilege is fenced in code (a fixed set of commands, allowlisted units, refs checked against a strict
-# pattern; see README.md) and here: it can read the installed code, the data and the instance record,
-# and write nothing on disk. An upgrade runs in its own transient unit, outside this sandbox. The
-# installer (install/) enables this unit.
+# pattern; see README.md) and here: it can read the installed code and the data, and write only
+# /etc/paraclete, where set_workspace_account records the agent's Workspace account in
+# workspace.json and instance.json (the code writes those two files and no other). An upgrade runs in
+# its own transient unit, outside this sandbox. The installer (install/) enables this unit.
 
 [Unit]
 Description=paraclete control: carries out the dashboard's commands on the VM
@@ -17,7 +18,8 @@ ExecStart=/usr/bin/node /opt/paraclete/agent/services/control/main.mjs
 Restart=always
 RestartSec=5
 ProtectSystem=strict
-ReadOnlyPaths=/opt/paraclete /etc/paraclete
+ReadOnlyPaths=/opt/paraclete
+ReadWritePaths=/etc/paraclete
 ProtectHome=yes
 PrivateTmp=yes
 NoNewPrivileges=yes

@@ -7,33 +7,41 @@
 // Health: after every poll the service rewrites <data root>/services/ears/health.json with when each
 // channel last polled and last succeeded. The control service reads it: a beat_at older than a
 // minute means a hung loop, a fresh beat_at with a stale last_ok_at means a channel it cannot read.
+// The `gchat` block is what the dashboard's System tab shows for Google Chat: its state ('off' with
+// no Workspace account, 'connecting' while the account's token fails, 'ready'), the account, how many
+// spaces and direct messages it reads, how many it leaves alone because they admit people outside the
+// organization, and the last error. How people use Chat with the agent: README.md beside this file.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServiceRuntime } from '../service-runtime.mjs';
-import { initChannel, discoverSpaces, resolveAgentUserId } from '../../providers/channel.mjs';
+import { initChannel, listSpaces, findDirectMessage } from '../../providers/channel.mjs';
 import { createVertexText } from '../../providers/vertex-text.mjs';
 import { createDwdTokenSource } from '../../auth/dwd-token.mjs';
+import { CHAT_READ } from '../../auth/workspace-scopes.mjs';
 import { appendTurn } from '../../context/thread-ledger.mjs';
 import { createInboundGate } from './inbound-gate.mjs';
 import { createPreprocessor } from './preprocess.mjs';
 import { createInboundHandler } from './inbound.mjs';
 import { createDashboardInbox } from './dashboard-inbox.mjs';
 import { createChatInbox } from './chat-inbox.mjs';
+import { createChatIdentity, dashboardUserEmails } from './chat-identity.mjs';
 import { createFileStateStore } from './chat-state.mjs';
 
 /**
- * The ears read Chat and never post to it: they hold read scopes only. The scope that can send a
- * message belongs to the mouth alone.
+ * The ears read Chat and never post to it: they hold read scopes only (spaces.list,
+ * spaces.findDirectMessage, spaces.messages.list). The scope that can send a message belongs to the
+ * mouth alone. The scopes themselves are agent/auth/workspace-scopes.mjs's.
  */
-export const CHAT_READ_SCOPES = Object.freeze([
-  'https://www.googleapis.com/auth/chat.messages.readonly',
-  'https://www.googleapis.com/auth/chat.spaces.readonly',
-]);
+export const CHAT_READ_SCOPES = CHAT_READ;
 
 /** How long the Chat loop waits before trying the Workspace token again. */
 const CHAT_RETRY_MS = 30_000;
+/** How long the Chat loop waits after Chat answered 429 (its quota is per minute). */
+const CHAT_RATE_LIMIT_MS = 60_000;
+/** Dashboard user records read at most, for matching Chat senders. */
+const USERS_READ_LIMIT = 500;
 
 const PREPROCESS_PROMPT = new URL('./preprocess-prompt.md', import.meta.url);
 
@@ -51,8 +59,8 @@ function writeJsonFile(path, data) {
  * @param {object} [deps]  overrides for tests
  * @param {object}   [deps.vertexText]    a client from agent/providers/vertex-text.mjs
  * @param {Function} [deps.getChatToken]  () => Promise<string>, the Workspace token with read scopes
- * @param {Function} [deps.discoverSpaces]
- * @param {Function} [deps.resolveAgentUserId]
+ * @param {Function} [deps.listSpaces]    (token) => Promise<ChatSpace[]>
+ * @param {Function} [deps.findDirectMessage] (token, email) => Promise<string|null>
  * @param {object}   [deps.chatStore]     { load, save } for the Chat state
  * @param {string}   [deps.preprocessPrompt]
  * @param {Function} [deps.now]           clock in milliseconds
@@ -118,18 +126,27 @@ export function createEars(runtime, deps = {}) {
   let chat = null;
   if (instance.workspace) {
     const getDwdToken = createDwdTokenSource({ fetch: runtime.fetch, getVmAccessToken: runtime.getAccessToken });
+    const store = deps.chatStore || createFileStateStore(join(serviceDir, 'chat-state.json'), { log });
+    const identity = createChatIdentity({
+      readUsers: async () => dashboardUserEmails(await db.query('', collections.users, [],
+        { noOrderBy: true, limit: USERS_READ_LIMIT, strict: true })),
+      findDirectMessage: deps.findDirectMessage || ((token, email) => findDirectMessage(token, email, { fetch: runtime.fetch })),
+      agentAccount: instance.workspace.account,
+      people: store.load().people,
+      log,
+      now,
+    });
     chat = createChatInbox({
       getToken: deps.getChatToken || (() => getDwdToken({
         signerServiceAccount: instance.workspace.signer,
         subjectEmail: instance.workspace.account,
         scopes: CHAT_READ_SCOPES,
       })),
-      discoverSpaces: deps.discoverSpaces || discoverSpaces,
-      resolveAgentUserId: deps.resolveAgentUserId || resolveAgentUserId,
-      store: deps.chatStore || createFileStateStore(join(serviceDir, 'chat-state.json'), { log }),
+      listSpaces: deps.listSpaces || ((token) => listSpaces(token, { fetch: runtime.fetch })),
+      identity,
+      store,
       appendTurn: (turn) => appendTurn({ db, config: contracts.conversation, log, source: 'backfill', ...turn }),
       agentName: instance.agent_name,
-      mention: `@${instance.agent_name}`,
       config: {
         maxPagesPerPoll: cfg.max_pages_per_poll,
         newSpaceSeed: cfg.new_space_seed,
@@ -149,7 +166,20 @@ export function createEars(runtime, deps = {}) {
     started_at: iso(),
     beat_at: null,
     dashboard: { last_poll_at: null, last_ok_at: null, last_error: null, taken_in: 0 },
-    gchat: { state: chat ? 'connecting' : 'off', last_poll_at: null, last_ok_at: null, last_error: null, spaces: 0, taken_in: 0 },
+    gchat: {
+      state: chat ? 'connecting' : 'off',
+      account: instance.workspace?.account || null,
+      last_poll_at: null,
+      last_ok_at: null,
+      last_error: null,
+      spaces: 0,
+      direct_messages: 0,
+      external_spaces: 0,
+      known_users: 0,
+      agent_user_id: null,
+      rate_limited: false,
+      taken_in: 0,
+    },
   };
 
   function beat() {
@@ -187,29 +217,43 @@ export function createEars(runtime, deps = {}) {
   async function tickChat() {
     if (!chat.ready) {
       if (!(await chat.connect())) {
-        health.gchat.last_error = 'waiting for the Workspace token';
+        const reason = chat.status().tokenError;
+        health.gchat.last_error = `waiting for the Workspace token${reason ? `: ${reason}` : ''}`;
         beat();
         return CHAT_RETRY_MS;
       }
       health.gchat.state = 'ready';
     }
     health.gchat.last_poll_at = iso();
+    let rateLimited = false;
     try {
       await takeIn(await chat.poll(), chat, health.gchat);
       const status = chat.status();
-      health.gchat.spaces = status.spaces;
-      if (status.errors === 0) {
+      rateLimited = status.rateLimited;
+      if (status.errors === 0 && !rateLimited) {
         health.gchat.last_ok_at = iso();
         health.gchat.last_error = null;
       } else {
-        health.gchat.last_error = `${status.errors} space(s) could not be read`;
+        health.gchat.last_error = rateLimited
+          ? 'the Chat API quota is spent; reading again in a minute'
+          : `${status.errors} space(s) could not be read`;
       }
     } catch (err) {
+      rateLimited = err.status === 429;
       health.gchat.last_error = err.message;
       log('ERROR', 'Chat poll failed', { error: err.message });
     }
+    const status = chat.status();
+    Object.assign(health.gchat, {
+      spaces: status.spaces,
+      direct_messages: status.directMessages,
+      external_spaces: status.external,
+      known_users: status.knownUsers,
+      agent_user_id: status.agentUserId,
+      rate_limited: rateLimited,
+    });
     beat();
-    return cfg.gchat_poll_ms;
+    return rateLimited ? CHAT_RATE_LIMIT_MS : cfg.gchat_poll_ms;
   }
 
   let running = false;

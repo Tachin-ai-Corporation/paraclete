@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "responsibilities": [
+    {
+      "id": "r-cloud-run-review",
+      "name": "Weekly Cloud Run Review",
+      "schedule": "0 7 * * 1",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 4320,
+      "instruction": "Review the health of every Cloud Run service in this project, read-only: whether each one's latest revision is ready and serving, where its traffic goes, and its errors and 5xx responses over the last seven days. Compare with the previous review and report what changed. Change nothing. Follow the gcloud skill.",
+      "success_criteria": "Every Cloud Run service in the project is in the report with its region, its serving revision, whether its newest revision became ready, its traffic split, and its count of error log entries and 5xx responses over the last seven days. Each service open to unauthenticated callers had its URL fetched once, with the status recorded. Differences from the previous review are named, or the report says there was no previous review. Nothing was deployed, moved, deleted or reconfigured.",
+      "context": {
+        "purpose": "A failed deploy, a service stuck on an old revision, or a rising error rate is cheap to catch in a weekly look and expensive to find when people report it. This review reads state and logs only; any fix it suggests is separate work a person asks for.",
+        "process": [
+          "STEP 1 - LIST: run `gcloud config get-value project`, then `gcloud run services list --project=<project>` for every service with its region and URL. No services is a valid result: report it and stop.",
+          "STEP 2 - EACH SERVICE: `gcloud run services describe <service> --region=<region> --project=<project> --format=yaml` gives its conditions, `status.latestCreatedRevisionName` and `status.latestReadyRevisionName` (when they differ, the newest deploy never became ready) and `status.traffic`.",
+          "STEP 3 - ERRORS: for each service, count `gcloud logging read 'resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"<service>\" AND severity>=ERROR' --project=<project> --freshness=7d --limit=500 --format='value(timestamp)'` and the same filter with `AND httpRequest.status>=500` in place of the severity term. Note the three most frequent error messages (`--format='value(textPayload)'`, or jsonPayload.message for structured logs).",
+          "STEP 4 - PUBLIC ENDPOINTS: `gcloud run services get-iam-policy <service> --region=<region> --project=<project>` shows whether allUsers may invoke it. Fetch only those services' URLs, once each, and record the status code and time. Never probe a private service; the instance's own dashboard (`paraclete`) sits behind sign-in and is reviewed from its state and logs only.",
+          "STEP 5 - COMPARE: find the previous run of this review with `work-log-read --hours 200 --status complete` (its title is this responsibility's name) and read its output with `work-output-read <id>`. Name new and removed services, revision changes, and error counts that rose by half or more.",
+          "STEP 6 - REPORT: a table with one row per service (service, region, serving revision, newest revision ready, traffic, errors, 5xx, public status), then what changed since the last review, then at most three recommendations, each with the evidence behind it. Say plainly that nothing was changed."
+        ],
+        "prior_learnings": "A service with no traffic for a week has no request logs, so zero 5xx proves nothing about it: say so rather than calling it healthy. Count with `--limit` large enough to see the real number, and say when a count reached the limit. Error logs from a revision that no longer serves describe the past: attribute each error to its revision."
+      }
+    }
+  ]
+}

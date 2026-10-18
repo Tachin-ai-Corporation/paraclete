@@ -18,9 +18,10 @@ const healthyStatus = () => ({
 const readyAgent = { status: 'ready', release: 'v2027.01.15.1.1', commit: '0123456789abcdef0123456789abcdef01234567' };
 const setupOf = (overrides = {}) => ({ users: { total: 1, admins: 1 }, role: 'generic', workspace: 'not_needed', claude_enabled: false, ...overrides });
 const byKey = (list) => Object.fromEntries(list.items.map((item) => [item.key, item]));
+const NO_WORKSPACE = { needed: false, role: 'generic' };
 
 test('a healthy fresh instance: the required steps are done, the rest optional or for later', () => {
-  const list = setupChecklist({ agent: readyAgent, status: healthyStatus(), setup: setupOf(), agentAccount: AGENT_ACCOUNT, isAdmin: true });
+  const list = setupChecklist({ agent: readyAgent, status: healthyStatus(), setup: setupOf(), agentAccount: AGENT_ACCOUNT, workspace: NO_WORKSPACE, isAdmin: true });
   assert.deepEqual(list.items.map((i) => [i.key, i.state]), [
     ['agent', 'done'], ['services', 'done'], ['models', 'done'], ['users', 'optional'], ['drive', 'info'], ['claude', 'later'], ['workspace', 'not_needed'],
   ]);
@@ -78,11 +79,41 @@ test('a gateway that is down or missing a provider is a model problem', () => {
   assert.match(models.detail, /no client for vertex-google/);
 });
 
-test('Claude on, and a role whose Workspace needs are not known yet', () => {
-  const items = byKey(setupChecklist({ setup: setupOf({ claude_enabled: true, role: 'project-manager', workspace: 'unknown' }) }));
+test('Claude on', () => {
+  const items = byKey(setupChecklist({ setup: setupOf({ claude_enabled: true, role: 'project-manager' }) }));
   assert.equal(items.claude.state, 'done');
-  assert.equal(items.workspace.state, 'later');
-  assert.match(items.workspace.detail, /project-manager role/);
+});
+
+test('a Workspace role: the account is required, links to its tab, and follows the record and the last test', () => {
+  const recorded = { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com', recorded_at: '2026-10-18T09:00:00.000Z', recorded_by: 'admin@example.com' };
+  const apis = (failing = []) => ['chat', 'drive', 'gmail'].map((api) => ({ api, name: { chat: 'Google Chat', drive: 'Google Drive', gmail: 'Gmail' }[api], ok: !failing.includes(api) }));
+  const check = (failing = [], account = 'agent@example.com') => ({ account, checked_at: '2026-10-18T09:00:00.000Z', ready: failing.length === 0, apis: apis(failing) });
+  const run = (workspace, extra = {}) => setupChecklist({ agent: readyAgent, status: healthyStatus(), setup: setupOf({ role: 'executive-assistant' }), workspace, isAdmin: true, ...extra });
+
+  const none = run({ needed: true, role: 'executive-assistant', account: null, last_check: null });
+  const todo = byKey(none).workspace;
+  assert.equal(todo.state, 'todo');
+  assert.equal(todo.href, '#workspace');
+  assert.match(todo.action, /^Set it up under Workspace/);
+  assert.deepEqual(none.required, { done: 3, total: 4 }, 'a Workspace role cannot work without its account');
+  assert.match(byKey(run({ needed: true, role: 'executive-assistant', account: null, last_check: null }, { isAdmin: false })).workspace.action, /^Ask a dashboard admin/);
+
+  const ready = run({ needed: true, account: recorded, last_check: check() });
+  assert.equal(byKey(ready).workspace.state, 'done');
+  assert.deepEqual(ready.required, { done: 4, total: 4 });
+  assert.equal(byKey(ready).drive.address, 'agent@example.com', "people share Drive files with the agent's own account");
+
+  const failing = byKey(run({ needed: true, account: recorded, last_check: check(['chat', 'gmail']) })).workspace;
+  assert.equal(failing.state, 'problem');
+  assert.match(failing.detail, /Google Chat and Gmail did not answer/);
+
+  const untested = byKey(run({ needed: true, account: recorded, last_check: check(['drive'], 'someone@example.com') })).workspace;
+  assert.equal(untested.state, 'done', 'a test of another address says nothing about the recorded one');
+  assert.match(untested.detail, /not been tested since/);
+
+  const unreadable = byKey(setupChecklist({ workspaceError: 'Firestore is down' })).workspace;
+  assert.equal(unreadable.state, 'problem');
+  assert.match(unreadable.detail, /Firestore is down/);
 });
 
 test('the Drive item follows Test Drive: checking, what it found, or why it did not finish', () => {

@@ -1,0 +1,8 @@
+{
+  "id": "site-audit",
+  "name": "Site Audit and Improvement Proposals",
+  "version": 1,
+  "when_to_use": "Reviewing a live website across its message, design, mobile layout, accessibility, performance, search and social previews, links and content, then proposing the few improvements that matter most, ranked, with the top one shown on a preview channel. It proposes; it never applies a change to the live site. Not for a narrow, literal edit.",
+  "organs": ["motor"],
+  "commands": []
+}

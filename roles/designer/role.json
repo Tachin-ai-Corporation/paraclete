@@ -1,0 +1,12 @@
+{
+  "id": "designer",
+  "title": "Designer",
+  "summary": "Gives the organization's materials a clear, consistent and accessible look: design systems and brand guides, presentations and documents built from them, consistency audits, and accessibility checks on everything it delivers.",
+  "version": 1,
+  "workspace": true,
+  "skills": ["design-system", "accessibility-checks"],
+  "_gcp_roles_comment": "None beyond the generic base set. Slides, Docs and Drive are reached as the agent's own Google Workspace account through domain-wide delegation, which needs no Google Cloud role on the project.",
+  "gcp_roles": [],
+  "_setup_comment": "No packages beyond the generic role's: rendering uses LibreOffice and Chromium, pixel sampling ImageMagick, PDF checks poppler-utils, all in the generic toolchain; contrast-check is a Node command.",
+  "setup": { "apt": [], "pip": [], "npm": [] }
+}

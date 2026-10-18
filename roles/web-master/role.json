@@ -1,0 +1,22 @@
+{
+  "id": "web-master",
+  "title": "Web Master",
+  "summary": "Looks after the organization's websites on Firebase Hosting: changes pages and copy, shows every change on a preview link first, releases to the live site only after approval, connects custom domains, and audits a site to propose the few improvements that matter most.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["firebase-hosting", "custom-domains", "site-audit", "site-gcloud"],
+  "_gcp_roles_comment": "Added to the generic base set, on the project, for what the four skills do. firebasehosting.admin: Hosting sites, preview channels, deploys, releases and rollbacks, and custom domains (the customDomains API). run.viewer: read the Cloud Run services a site's rewrites send traffic to, when it serves badly. logging.viewer: read those services' logs. Nothing here deploys a backend, changes IAM or touches DNS: a person adds DNS records at the domain's provider.",
+  "gcp_roles": [
+    "roles/firebasehosting.admin",
+    "roles/run.viewer",
+    "roles/logging.viewer"
+  ],
+  "_apis_comment": "Turned on by the installer: the Firebase Hosting API (sites, channels, releases, custom domains) and the Firebase Management API, which the firebase CLI uses to find the project's sites. Adding Firebase to the project is still a person's step (README).",
+  "apis": ["firebasehosting", "firebase"],
+  "_setup_comment": "gcloud comes with Debian 12's Compute Engine image. bind9-dnsutils gives dig, to read a domain's records; openssl reads a site's TLS certificate (ca-certificates already depends on it; named because the skills run it). firebase-tools is the Firebase CLI and lighthouse audits a page's performance, accessibility, best practices and SEO with the Chromium the generic role installs; both pinned (published 2026-09-30 and 2026-09-18).",
+  "setup": {
+    "apt": ["bind9-dnsutils", "openssl"],
+    "pip": [],
+    "npm": ["firebase-tools@15.32.1", "lighthouse@13.5.0"]
+  }
+}

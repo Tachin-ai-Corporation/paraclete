@@ -1,0 +1,16 @@
+{
+  "id": "p-rollback",
+  "name": "Rollback",
+  "description": "Putting back the last version that worked when a release broke something people use: find the last good revision or version, restore it after approval, prove the live service answers, then hand the cause to a separate investigation.",
+  "narrative": "A rollback restores service first and asks why later. Establish from the live system what serves now and what served before it: the service's revisions and traffic split, or the site's recent releases, with the time each went out. Pick the last version that is known to have worked, and say why you believe it did. Because a rollback changes what people use, show exactly what will move (from which revision or version to which) and get it approved, unless the person already asked for that exact rollback. Then move traffic, or release that version again, and hold the result to the bar of a deploy: read the split or the release back, and fetch the URL people use until it answers with a 2xx and the right content. Report what serves now and what was rolled back. Finding out why the release broke is separate, read-only work; do not fix forward inside the rollback.",
+  "intent_keywords": [
+    "roll back",
+    "rollback",
+    "revert the deploy",
+    "previous revision",
+    "previous version",
+    "undo the release"
+  ],
+  "status": "active",
+  "version": 1
+}

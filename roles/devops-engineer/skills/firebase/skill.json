@@ -1,0 +1,8 @@
+{
+  "id": "firebase",
+  "name": "Firebase CLI: Hosting deploys, channels and releases",
+  "version": 1,
+  "when_to_use": "Driving Firebase Hosting with the firebase CLI as the agent's own account: listing sites and channels, writing firebase.json, deploying to a preview channel or to live, promoting a reviewed version, rolling back, and routing paths to a Cloud Run service.",
+  "organs": ["motor"],
+  "commands": []
+}

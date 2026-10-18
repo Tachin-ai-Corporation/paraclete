@@ -8,7 +8,7 @@ import { listUsers } from './users.mjs';
 
 /**
  * @param {object} runtime
- * @returns {Promise<{users: {total: number, admins: number}, role: string, workspace: 'not_needed'|'unknown',
+ * @returns {Promise<{users: {total: number, admins: number}, role: string, workspace_role: boolean,
  *   claude_enabled: boolean}>}
  */
 export async function readSetup(runtime) {
@@ -20,9 +20,9 @@ export async function readSetup(runtime) {
   return {
     users: { total: users.length, admins: users.filter((user) => user.role === 'admin').length },
     role,
-    // Which roles need a Workspace account is the role's own `workspace` flag, which the dashboard
-    // learns with the role catalog (build plan phase 8). The generic role never needs one.
-    workspace: role === 'generic' ? 'not_needed' : 'unknown',
+    // Whether the role needs a Workspace account: its role.json `workspace` flag, which the installer
+    // passes as PARACLETE_WORKSPACE_ROLE. The account's own state is GET /api/workspace's.
+    workspace_role: runtime.settings.workspaceRole === true,
     claude_enabled: settings?.claude_enabled === true,
   };
 }

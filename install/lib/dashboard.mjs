@@ -111,11 +111,13 @@ export function buildArgs({ repo, commit, configFile, project, region }) {
 
 /**
  * The service's environment, in dashboard/README.md's order. PARACLETE_IAP_AUDIENCE stays unset: it
- * only overrides the audience the dashboard derives from these.
+ * only overrides the audience the dashboard derives from these. `workspaceRole` is the role's
+ * `workspace` flag from its role.json (the image carries no roles/): 'true' shows the dashboard's
+ * Workspace setup; anything else is 'false'.
  *
  * @returns {Record<string, string>}
  */
-export function serviceEnv({ project, projectNumber, region, bucket, repo, release, commit, agentName, role }) {
+export function serviceEnv({ project, projectNumber, region, bucket, repo, release, commit, agentName, role, workspaceRole }) {
   const values = { project, projectNumber, region, bucket, repo, release, commit, agentName, role };
   need(values, Object.keys(values));
   return {
@@ -129,6 +131,7 @@ export function serviceEnv({ project, projectNumber, region, bucket, repo, relea
     PARACLETE_COMMIT: commit,
     PARACLETE_AGENT_NAME: agentName,
     PARACLETE_ROLE: role,
+    PARACLETE_WORKSPACE_ROLE: String(workspaceRole) === 'true' ? 'true' : 'false',
   };
 }
 

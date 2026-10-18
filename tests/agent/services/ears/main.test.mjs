@@ -93,50 +93,86 @@ test('a failed dashboard poll is recorded, not thrown, and the beat still lands'
   assert.equal(h.beat_at, '2026-10-17T12:00:00.000Z');
 });
 
-test('with a Workspace account, Chat waits for its token, then takes in mentions alongside the dashboard', async () => {
+test('with a Workspace account, Chat waits for its token, then takes in mentions and direct messages alongside the dashboard', async () => {
   const long = `@Paraclete open the file_name report\n${'line\n'.repeat(4)}`;
-  const chatFetch = async (url) => ({
-    ok: true,
-    status: 200,
-    json: async () => (url.includes('/spaces/A/messages') ? { messages: [{
-      name: 'spaces/A/messages/1', text: long, createTime: new Date(NOW + 1000).toISOString(),
-      sender: { name: 'users/1', displayName: 'Ana' }, thread: { name: 'spaces/A/threads/t1' },
-    }] } : {}),
-  });
-  const db = fakeDb();
+  const at = (s) => new Date(NOW + s * 1000).toISOString();
+  const pages = {
+    'spaces/A': [{ name: 'spaces/A/messages/1', text: long, createTime: at(1), sender: { name: 'users/2', type: 'HUMAN' }, thread: { name: 'spaces/A/threads/t1' } }],
+    'spaces/D': [{ name: 'spaces/D/messages/1', text: 'approve', createTime: at(2), sender: { name: 'users/1', type: 'HUMAN' }, thread: { name: 'spaces/D/threads/x' } }],
+  };
+  const chatFetch = async (url) => {
+    const space = Object.keys(pages).find((name) => url.includes(`/${name}/messages`));
+    return { ok: true, status: 200, json: async () => ({ messages: pages[space] || [] }) };
+  };
+  const db = fakeDb({ 'users/ana@example.com': { email: 'ana@example.com', role: 'member' } });
   const t = fakeRuntime({ workspace: WORKSPACE, db, fetch: chatFetch });
   let tokenReady = false;
   const vt = vertexText(JSON.stringify({ cleaned: 'repaired', repairs: ['file_name'], confidence: 'high' }));
   const saved = [];
+  const lookups = [];
   const ears = createEars(t.runtime, {
     vertexText: vt,
-    getChatToken: async () => { if (!tokenReady) throw new Error('invalid_grant'); return 'chat-token'; },
-    discoverSpaces: async () => ['spaces/A'],
-    resolveAgentUserId: async () => 'users/900',
-    chatStore: { load: () => ({ cursors: { 'spaces/A': new Date(NOW).toISOString() }, seen: [], agentUserId: null }), save: (s) => saved.push(s) },
+    getChatToken: async () => { if (!tokenReady) throw new Error('Delegated token exchange failed: unauthorized_client'); return 'chat-token'; },
+    listSpaces: async () => [
+      { name: 'spaces/A', spaceType: 'SPACE', external: false, lastActiveTime: at(1) },
+      { name: 'spaces/D', spaceType: 'DIRECT_MESSAGE', external: false, lastActiveTime: at(2) },
+      { name: 'spaces/X', spaceType: 'SPACE', external: true, lastActiveTime: at(2) },
+    ],
+    findDirectMessage: async (token, email) => { lookups.push([token, email]); return 'spaces/D'; },
+    chatStore: {
+      load: () => ({ cursors: { 'spaces/A': at(0), 'spaces/D': at(0), 'spaces/X': at(0) }, seen: [], agentUserId: null, listedAt: at(0), people: {} }),
+      save: (s) => saved.push(s),
+    },
     preprocessPrompt: 'REPAIR',
-    now: () => NOW,
+    now: () => NOW + 3000,
   });
   assert.equal(ears.health.gchat.state, 'connecting');
+  assert.equal(ears.health.gchat.account, WORKSPACE.account);
 
   assert.equal(await ears.tickChat(), 30_000);
-  assert.equal(health(t.root).gchat.last_error, 'waiting for the Workspace token');
+  assert.equal(health(t.root).gchat.last_error, 'waiting for the Workspace token: Delegated token exchange failed: unauthorized_client',
+    "Google's reason is shown, so an admin can tell a missing user from a missing grant");
 
   tokenReady = true;
   assert.equal(await ears.tickChat(), t.runtime.contracts.ears.gchat_poll_ms);
   await ears.chat.settle();
-  const intake = db.get('intake/i-gchat-spaces~A~messages~1');
-  assert.equal(intake.text, 'repaired', 'the repair pass ran on the Chat message');
-  assert.equal(intake.source, 'gchat');
-  assert.deepEqual(intake.source_meta.address, { channel: 'gchat', space: 'spaces/A', thread: 'spaces/A/threads/t1' });
+  const mention = db.get('intake/i-gchat-spaces~A~messages~1');
+  assert.equal(mention.text, 'repaired', 'the repair pass ran on the Chat message');
+  assert.equal(mention.source, 'gchat');
+  assert.deepEqual(mention.source_meta.address, { channel: 'gchat', space: 'spaces/A', thread: 'spaces/A/threads/t1' });
+  assert.equal(mention.source_meta.sender, 'users/2');
+  assert.equal(mention.source_meta.sender_email, undefined, 'a sender the dashboard does not know carries no email');
   assert.equal(vt.calls[0][1], 'REPAIR');
   assert.deepEqual(vt.calls[0][2], { maxTokens: 2000, temperature: 0, disableThinking: true });
 
+  const direct = db.get('intake/i-gchat-spaces~D~messages~1');
+  assert.deepEqual(direct.source_meta.address, { channel: 'gchat', space: 'spaces/D' }, 'a direct message is answered in the conversation');
+  assert.equal(direct.source_meta.sender_email, 'ana@example.com', 'the dashboard user of the direct message');
+  assert.deepEqual(lookups, [['chat-token', 'ana@example.com']]);
+
   const h = health(t.root);
-  assert.equal(h.gchat.state, 'ready');
-  assert.equal(h.gchat.taken_in, 1);
-  assert.equal(h.gchat.spaces, 1);
-  assert.equal(saved.at(-1).cursors['spaces/A'], new Date(NOW + 1000).toISOString());
+  assert.deepEqual({ ...h.gchat, last_poll_at: undefined, last_ok_at: undefined }, {
+    state: 'ready', account: WORKSPACE.account, last_poll_at: undefined, last_ok_at: undefined, last_error: null,
+    spaces: 1, direct_messages: 1, external_spaces: 1, known_users: 1, agent_user_id: null, rate_limited: false, taken_in: 2,
+  });
+  assert.equal(saved.at(-1).cursors['spaces/A'], at(1));
+  assert.deepEqual(saved.at(-1).people, { 'users/1': 'ana@example.com' });
+});
+
+test('a rate-limited Chat poll backs off for a minute and says so', async () => {
+  const t = fakeRuntime({ workspace: WORKSPACE, fetch: async () => ({ ok: false, status: 429, json: async () => ({}) }) });
+  const ears = createEars(t.runtime, {
+    vertexText: vertexText(),
+    getChatToken: async () => 'chat-token',
+    listSpaces: async () => [{ name: 'spaces/A', spaceType: 'SPACE', external: false, lastActiveTime: null }],
+    findDirectMessage: async () => null,
+    chatStore: { load: () => ({ cursors: {}, seen: [], agentUserId: null, listedAt: null, people: {} }), save: () => {} },
+    now: () => NOW,
+  });
+  assert.equal(await ears.tickChat(), 60_000);
+  const h = health(t.root);
+  assert.equal(h.gchat.rate_limited, true);
+  assert.match(h.gchat.last_error, /quota/);
 });
 
 test('start runs every channel loop until stop', async () => {
@@ -145,7 +181,7 @@ test('start runs every channel loop until stop', async () => {
   const ears = createEars(t.runtime, {
     vertexText: vertexText(),
     getChatToken: async () => { chatTicks += 1; throw new Error('not yet'); },
-    chatStore: { load: () => ({ cursors: {}, seen: [], agentUserId: null }), save: () => {} },
+    chatStore: { load: () => ({ cursors: {}, seen: [], agentUserId: null, listedAt: null, people: {} }), save: () => {} },
   });
   const running = ears.start();
   await new Promise((resolve) => setTimeout(resolve, 20));

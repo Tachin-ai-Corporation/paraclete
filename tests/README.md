@@ -8,7 +8,8 @@ Every test in the repo. `npm test` runs them all with Node's built-in test runne
 
 Tests mirror the source tree. The tests for `agent/work/approvals.mjs` live in
 `tests/agent/work/approvals.test.mjs`; the dashboard's in `tests/dashboard/`; a skill's commands in
-`tests/skills/<skill>/` (the older skills' commands are still in `content/skill-commands.test.mjs`).
+`tests/skills/<skill>/` (the older skills' commands are still in `content/skill-commands.test.mjs`); a
+role skill's commands in `tests/roles/<role>/skills/<skill>/`.
 
 | Path | Tests |
 |---|---|

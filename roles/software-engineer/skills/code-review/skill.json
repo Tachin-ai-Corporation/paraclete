@@ -1,0 +1,8 @@
+{
+  "id": "code-review",
+  "name": "Code Review",
+  "version": 1,
+  "when_to_use": "Reviewing a code change (a pull request, a branch, a diff) for correctness, safety and fit with the codebase, and giving a verdict with findings a person can act on. Read-only: it runs the change's tests but never edits the change.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

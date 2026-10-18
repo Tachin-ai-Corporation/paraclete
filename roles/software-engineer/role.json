@@ -1,0 +1,16 @@
+{
+  "id": "software-engineer",
+  "title": "Software Engineer",
+  "summary": "Works in the organization's code: understands a codebase, makes the smallest change that does the job, proves it with the project's own tests, and hands it back as a commit or a pull request; reviews other people's changes. Done means tested.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["coding", "code-review", "pull-requests"],
+  "_gcp_roles_comment": "None beyond the generic base set. Code lives in git repositories: the instance's own artifact store (its bucket and Firestore, already in the base set) and outside hosts reached with a token from Secret Manager, which a dashboard admin grants per secret. Nothing here runs or deploys on Google Cloud; that is the DevOps Engineer role's work.",
+  "gcp_roles": [],
+  "_setup_comment": "gh is the GitHub CLI from Debian 12 (2.23), for pull requests; it reads its token from the GH_TOKEN variable set for one command from Secret Manager, never a login. python3-venv lets the agent give a Python project its own environment (Debian splits venv out of python3), so a project's requirements never touch the system's Python. Node 24 with npm, git, build-essential, python3-pip and python3-dev come with the generic role.",
+  "setup": {
+    "apt": ["gh", "python3-venv"],
+    "pip": [],
+    "npm": []
+  }
+}

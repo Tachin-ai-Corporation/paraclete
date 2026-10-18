@@ -1,0 +1,12 @@
+{
+  "id": "project-manager",
+  "title": "Project Manager",
+  "summary": "Keeps projects moving and visible: prepares agendas, turns meeting notes into decisions and action items with owners and dates, keeps the action tracker, and writes status reports that lead with blockers.",
+  "version": 1,
+  "workspace": true,
+  "skills": ["meeting-management"],
+  "_gcp_roles_comment": "None beyond the generic base set. Docs, Sheets and Calendar are reached as the agent's own Google Workspace account through domain-wide delegation, which needs no Google Cloud role on the project.",
+  "gcp_roles": [],
+  "_setup_comment": "No packages beyond the generic role's.",
+  "setup": { "apt": [], "pip": [], "npm": [] }
+}

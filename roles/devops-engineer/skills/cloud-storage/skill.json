@@ -1,0 +1,8 @@
+{
+  "id": "cloud-storage",
+  "name": "Cloud Storage with gcloud storage",
+  "version": 1,
+  "when_to_use": "Working with Cloud Storage objects and buckets with gcloud storage (or gsutil): listing and inspecting buckets and objects, copying and syncing files up and down, and setting object metadata such as caching. Not for changing a bucket's settings or access, which a person does.",
+  "organs": ["motor"],
+  "commands": []
+}

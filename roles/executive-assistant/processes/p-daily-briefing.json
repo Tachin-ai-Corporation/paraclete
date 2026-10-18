@@ -1,0 +1,16 @@
+{
+  "id": "p-daily-briefing",
+  "name": "Daily Briefing",
+  "description": "Preparing a person's briefing for the day: their schedule in their own timezone, what needs attention, the mail that asks something of them, and the open items due. Read-only: it reads calendars, mail and memory and changes nothing.",
+  "narrative": "A briefing is read in two minutes at the start of the day, so it leads with what needs attention and stays short. Settle whose day it is and their timezone first: a briefing in the wrong zone is worse than none. Read the day's events on every calendar in scope and order them in local time. Then look for trouble: overlapping meetings, back-to-back runs with no break, invitations still waiting for their answer, meetings with nothing to prepare from. Read the mail that reached your account since the last briefing and keep only what asks something of the person: who, what, and by when. Add the open items from memory that fall due. Every line traces to something you read in this mission. The briefing changes nothing: no event created, moved or answered, no mail sent.",
+  "intent_keywords": [
+    "daily briefing",
+    "brief me",
+    "my day",
+    "today's schedule",
+    "morning summary",
+    "what's on today"
+  ],
+  "status": "active",
+  "version": 1
+}

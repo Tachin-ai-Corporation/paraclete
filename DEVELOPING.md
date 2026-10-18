@@ -192,6 +192,24 @@ Instances install from GitHub at an exact commit, so push your branch first.
 The `dev/` commands run on your machine (Git Bash on Windows, macOS or Linux) with Node 24 and `gcloud`
 logged in to the dev project. [dev/README.md](dev/README.md) lists their options.
 
+### Checking another role on the same dev instance
+
+An instance keeps the role it was installed with; changing it is not a product feature. To check a
+change against several roles on one dev project, move the dev instance between them:
+
+1. `install/install.sh --role <id> --ref <branch> --yes`: the VM's metadata names the new role, the
+   agent's account gets the new role's grants and loses the ones only the previous role declared, and
+   the dashboard is deployed for the new role.
+2. `gcloud compute instances reset <vm> ...` (or the `upgrade.sh` line the installer prints): the VM's
+   bootstrap installs the same commit again for the new role, with its packages, skills, prompts,
+   playbooks and default responsibilities, and drops the previous role's.
+3. `node dev/smoke.mjs`: sends the role a request in its area and reports whether the mission passed.
+
+The agent's memory, missions, files and its own responsibilities stay across the move, so a test
+that depends on a fresh agent needs a fresh project. A Workspace role also needs its account set up
+through the dashboard's setup wizard before its smoke test. The details and the caveats are in
+[install/README.md](install/README.md), "Moving an instance to another role".
+
 ### The verification ladder
 
 1. **Local tests:** `npm test`. Run `npm run setup` once first, and again when
@@ -201,7 +219,9 @@ logged in to the dev project. [dev/README.md](dev/README.md) lists their options
 4. **Exercise the change:**
    - the way a user would, through the dashboard;
    - with `node dev/trigger.mjs <responsibility-id>` to run a responsibility now;
-   - or with `node dev/say.mjs "<request>"` to send the agent a chat message from your account.
+   - with `node dev/say.mjs "<request>"` to send the agent a chat message from your account;
+   - or with `node dev/smoke.mjs` to run the instance's role through one request in its area, pass or
+     fail.
 5. **Read the evidence:** use `node dev/status.mjs`, `node dev/logs.mjs <service>`,
    `node dev/query.mjs <collection>` (read-only) and the mission record in the dashboard.
 6. **Report:** say what you saw and include the evidence. Only then is the change ready to merge.

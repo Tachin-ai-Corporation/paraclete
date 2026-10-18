@@ -1,0 +1,9 @@
+{
+  "id": "workspace-calendar",
+  "name": "Google Calendar",
+  "version": 1,
+  "when_to_use": "Reading calendars and scheduling on your own Google Calendar: agendas, when people are free, creating and moving events you organize. Invitations go out only to people the request names, and you never accept or decline for anyone.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["cal-list", "cal-get", "cal-freebusy", "cal-create", "cal-update"],
+  "requires": ["workspace"]
+}

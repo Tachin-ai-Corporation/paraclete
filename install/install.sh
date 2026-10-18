@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # install/install.sh: turns a Google Cloud project into a running paraclete. Run by the project's owner
-# in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs and checks the agent's
-# model answers, creates the service accounts, Firestore, the bucket, the dashboard (built by Cloud
-# Build, on Cloud Run behind IAP, with the installer as its first admin; the bucket's CORS setting lets
-# its pages upload into the bucket), the network and the agent's VM, then waits until the agent reports
+# in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs (the role's among
+# them) and checks the agent's model answers, creates the service accounts with their grants (a role's
+# grants on single resources among them), Firestore, the bucket, the dashboard (built by Cloud Build,
+# on Cloud Run behind IAP, with the installer as its first admin; the bucket's CORS setting lets its
+# pages upload into the bucket), the network and the agent's VM, then waits until the agent reports
 # ready. Every create is "create if missing" and every grant is additive, so re-running repairs, and
-# re-running with another --ref moves the dashboard and the VM to that commit. It never logs in to the
-# VM: what happens on the VM is install/bootstrap.sh's job, and the contract between the two is
-# install/README.md.
+# re-running with another --ref moves the dashboard and the VM to that commit. Two things are taken
+# back: on a move to another role, the grants only the previous role declared; and on every run, a
+# project-wide role that would let the agent act as any service account or push to any image
+# repository. It never logs in to the VM: what happens on the VM is install/bootstrap.sh's job, and
+# the contract between the two is install/README.md.
 # --dry-run prints every command that would change something and changes nothing.
 set -euo pipefail
 
@@ -33,6 +36,9 @@ STEP_TOTAL=9
 
 # The dashboard's build and deploy commands, written once for this script and dev/deploy.mjs.
 DASHBOARD_JS="$INSTALL_DIR/lib/dashboard.mjs"
+# What a role's role.json asks for beyond project roles (its APIs and single-resource grants), and the
+# roles never granted project-wide: checked once here and in tests/content/packages.test.mjs.
+ROLE_ACCESS_JS="$INSTALL_DIR/lib/role-access.mjs"
 
 # How long step 9 waits for the agent's first boot, and how often it looks. A first boot takes about 8
 # to 12 minutes, most of it apt-get installing the role's packages and the file toolchain among them
@@ -51,8 +57,9 @@ IMAGE_PROJECT=debian-cloud
 VM_SCOPES=cloud-platform,https://www.googleapis.com/auth/drive
 
 # Every instance's APIs, and the Workspace ones a role flagged `workspace` adds (short names; each is
-# <name>.googleapis.com). cloudresourcemanager is there for gcloud itself: `iap web` commands look the
-# project up through it, and fail on a project that never turned it on.
+# <name>.googleapis.com). A role's own `apis` come on top (read in step 1). cloudresourcemanager is there
+# for gcloud itself: `iap web` commands look the project up through it, and fail on a project that
+# never turned it on.
 BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive cloudresourcemanager)
 WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
 # The Service Usage API takes a limited number of services per call.
@@ -104,6 +111,7 @@ REQUIRED_PERMISSIONS=(
 # writes the first: the installer, as an admin.
 USERS_COLLECTION=users
 IMAGE_REPOSITORY_DESCRIPTION='Images of the paraclete dashboard, one per release'
+AGENT_IMAGE_REPOSITORY_DESCRIPTION='Images the paraclete agent builds'
 
 # Agent names and release names go into VM metadata as `key=value,...`, so neither may hold a comma.
 AGENT_NAME_PATTERN="^[[:alnum:]][[:alnum:] ._'-]{0,39}\$"
@@ -177,25 +185,63 @@ available_roles() {
   done
 }
 
-# The two questions, asked only when neither a flag nor --yes answered them.
+# The instance this project already holds, if any: the role, name and zone its VM was installed with
+# (its metadata). They become the defaults, so re-running install.sh repairs the instance instead of
+# renaming it, moving it to another region or back to generic; a --role that differs moves it to that
+# role (the developer path in install/README.md, "Moving an instance to another role"). Read quietly:
+# a project with no VM yet, or no Compute Engine API yet, has none.
+EXISTING_ROLE=""
+EXISTING_NAME=""
+EXISTING_ZONE=""
+read_existing_instance() {
+  local project="$PROJECT" found details
+  [[ -n "$project" ]] || project="$(gcloud config get-value project 2>/dev/null || true)"
+  [[ "$project" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || return 0
+  found="$(gcloud compute instances list --project="$project" --filter="name=$VM_NAME" \
+    --format='value(name,zone.basename())' 2>/dev/null | head -n 1 || true)"
+  [[ -n "$found" ]] || return 0
+  EXISTING_ZONE="${found##*[[:space:]]}"
+  [[ "$EXISTING_ZONE" =~ ^[a-z]+-[a-z]+[0-9]+-[a-z]$ ]] || EXISTING_ZONE=""
+  details="$(gcloud compute instances describe "$VM_NAME" --zone="$EXISTING_ZONE" --project="$project" \
+    --format=json 2>/dev/null || printf '{}')"
+  IFS=$'\x1f' read -r EXISTING_ROLE EXISTING_NAME < <(node -e '
+const fs = require("node:fs");
+let items = [];
+try { items = (JSON.parse(fs.readFileSync(0, "utf8") || "{}").metadata || {}).items || []; } catch { process.exit(0); }
+const value = (key) => String((items.find((item) => item.key === key) || {}).value || "").replace(/[\x1f\n]/g, " ");
+console.log([value("paraclete-role"), value("paraclete-agent-name")].join("\x1f"));
+' <<<"$details") || true
+}
+
+# The two questions, asked only when neither a flag nor --yes answered them. On an existing instance
+# the answers it was installed with are the defaults.
 ask_questions() {
   if [[ "$YES" == 1 ]]; then
     return 0
   fi
   if [[ -z "$ROLE" ]]; then
     say "Roles: $(available_roles | paste -sd' ' -)"
-    ROLE="$(ask "Which role should the agent have?" generic)"
+    ROLE="$(ask "Which role should the agent have?" "${EXISTING_ROLE:-generic}")"
   fi
   if [[ -z "$AGENT_NAME" ]]; then
-    AGENT_NAME="$(ask "What should the agent be called?" Paraclete)"
+    AGENT_NAME="$(ask "What should the agent be called?" "${EXISTING_NAME:-Paraclete}")"
   fi
 }
 
 apply_defaults() {
-  ROLE="${ROLE:-generic}"
-  AGENT_NAME="${AGENT_NAME:-Paraclete}"
+  ROLE="${ROLE:-${EXISTING_ROLE:-generic}}"
+  AGENT_NAME="${AGENT_NAME:-${EXISTING_NAME:-Paraclete}}"
+  if [[ -z "$REGION" && -n "$EXISTING_ZONE" ]]; then
+    REGION="${EXISTING_ZONE%-*}"
+    ZONE="${ZONE:-$EXISTING_ZONE}"
+  fi
   REGION="${REGION:-us-central1}"
   ZONE="${ZONE:-$REGION-a}"
+  # The role this instance moves from, when it has one and --role names another.
+  PREVIOUS_ROLE=""
+  if [[ -n "$EXISTING_ROLE" && "$EXISTING_ROLE" != "$ROLE" ]]; then
+    PREVIOUS_ROLE="$EXISTING_ROLE"
+  fi
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -278,12 +324,24 @@ check_role() {
     || die "there is no role '$ROLE'. Roles: $(available_roles | paste -sd' ' -)"
   ROLE_FILE="$REPO_ROOT/roles/$ROLE/role.json"
   ROLE_WORKSPACE="$(json_get "$ROLE_FILE" workspace)"
+  local problems
+  problems="$(role_access check "$ROLE" 2>&1)" || die "the role cannot be installed as it is:"$'\n'"$problems"
   AGENT_ROLES="$(agent_roles)"
+  ROLE_APIS="$(role_access apis "$ROLE")"
+  RESOURCE_ROLES="$(role_access resource-roles "$ROLE")"
+  REFUSED_PROJECT_ROLES="$(node "$ROLE_ACCESS_JS" project-wide-refused)"
   if [[ "$ROLE_WORKSPACE" == true ]]; then
     note "role $ROLE, with a Workspace account"
   else
     note "role $ROLE"
   fi
+}
+
+# role_access <command> <role>: install/lib/role-access.mjs on generic and <role> in this clone: `check`
+# (the role's grants and APIs are well formed, and none it asks for project-wide is refused), `apis`
+# (short names) or `resource-roles` (<kind> TAB <role> lines).
+role_access() {
+  node "$ROLE_ACCESS_JS" "$1" "$REPO_ROOT" "$2"
 }
 
 check_name_and_place() {
@@ -343,6 +401,11 @@ summarize_and_confirm() {
   say ""
   say "paraclete will be installed into $PROJECT:"
   say "  role        $ROLE"
+  if [[ -n "$PREVIOUS_ROLE" ]]; then
+    say "              moved from $PREVIOUS_ROLE at the VM's next boot: that role's skills, prompts, playbooks and"
+    say "              default responsibilities go, and the grants only it needed are removed; the agent's"
+    say "              memory, missions, files and own responsibilities stay (install/README.md)"
+  fi
   say "  name        $AGENT_NAME"
   say "  release     $RELEASE ($COMMIT)"
   say "  repository  $REPO"
@@ -369,11 +432,20 @@ step_apis() {
   check_model
 }
 
+# Turns on what is off of: every instance's APIs, the Workspace ones for a Workspace role, and the
+# `apis` of generic and the role, each once. Never turns one off: an API a previous role needed stays
+# on after a move.
 enable_apis() {
-  local wanted=("${BASE_APIS[@]}") enabled api missing=() i
+  local candidates=("${BASE_APIS[@]}") wanted=() enabled api missing=() i
   if [[ "$ROLE_WORKSPACE" == true ]]; then
-    wanted+=("${WORKSPACE_APIS[@]}")
+    candidates+=("${WORKSPACE_APIS[@]}")
   fi
+  while IFS= read -r api; do
+    [[ -n "$api" ]] && candidates+=("$api")
+  done <<<"$ROLE_APIS"
+  for api in "${candidates[@]}"; do
+    [[ " ${wanted[*]} " == *" $api "* ]] || wanted+=("$api")
+  done
   enabled="$(gcloud services list --enabled --project="$PROJECT" --format='value(config.name)' 2>/dev/null || true)"
   for api in "${wanted[@]}"; do
     if grep -Fxq -- "$api.googleapis.com" <<<"$enabled"; then
@@ -495,6 +567,8 @@ step_accounts() {
     [[ -n "$role" ]] || continue
     ensure_project_role "$PROJECT" "$policy" "serviceAccount:$AGENT_EMAIL" "$role"
   done <<<"$AGENT_ROLES"
+  revoke_project_wide_refused "$policy"
+  revoke_previous_role_grants "$policy"
   for role in "${DASHBOARD_PROJECT_ROLES[@]}"; do
     ensure_project_role "$PROJECT" "$policy" "serviceAccount:$DASHBOARD_EMAIL" "$role"
   done
@@ -506,7 +580,12 @@ step_accounts() {
     # The agent signs as the Workspace signer, and only as it: the grant sits on that one account.
     dwd_policy="$(read_account_policy "$DWD_EMAIL" "$PROJECT")"
     ensure_account_role "$DWD_EMAIL" "$PROJECT" "$dwd_policy" "serviceAccount:$AGENT_EMAIL" roles/iam.serviceAccountTokenCreator
+    # The dashboard's Workspace setup shows the signer's client ID, which an admin pastes into the Admin
+    # console's domain-wide delegation; reading it needs this viewer role, on that one account only.
+    ensure_account_role "$DWD_EMAIL" "$PROJECT" "$dwd_policy" "serviceAccount:$DASHBOARD_EMAIL" roles/iam.serviceAccountViewer
   fi
+  ensure_resource_roles
+  revoke_previous_resource_roles
 }
 
 # ensure_account <account id> <email> <display name> <description>
@@ -518,6 +597,50 @@ ensure_account() {
   run gcloud iam service-accounts create "$1" --project="$PROJECT" --display-name="$3" --description="$4" --quiet
 }
 
+# revoke_previous_role_grants <project policy>: on a move to another role, the project roles the
+# previous role's role.json declared that neither generic nor the new role needs, taken back from the
+# agent's account, which keeps least privilege. Nothing else is touched: any other grant the agent's
+# account holds stays, whoever made it. IAM cannot tell the installer's grant from the same role
+# granted by hand, so a role the previous role declared goes either way. When this clone has no
+# role.json for the previous role, nothing is taken back and the run says so.
+revoke_previous_role_grants() {
+  [[ -n "$PREVIOUS_ROLE" ]] || return 0
+  local file="$REPO_ROOT/roles/$PREVIOUS_ROLE/role.json" role
+  if [[ ! "$PREVIOUS_ROLE" =~ ^[a-z][a-z0-9-]*$ || ! -f "$file" ]]; then
+    warn "this clone has no role '$PREVIOUS_ROLE', so the grants it added cannot be told apart; the agent's account keeps them"
+    return 0
+  fi
+  while IFS= read -r role; do
+    [[ -n "$role" ]] || continue
+    # A refused role was taken back already, by revoke_project_wide_refused.
+    if grep -Fxq -- "$role" <<<"$AGENT_ROLES" || grep -Fxq -- "$role" <<<"$REFUSED_PROJECT_ROLES"; then
+      continue
+    fi
+    if has_binding "$1" "$role" "serviceAccount:$AGENT_EMAIL"; then
+      run_retry gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:$AGENT_EMAIL" \
+        --role="$role" --condition=None --quiet
+    fi
+  done < <(json_get "$file" gcp_roles)
+}
+
+# revoke_project_wide_refused <project policy>: the agent's account never holds, on the whole project, a
+# role that reaches every service account or every image repository (install/lib/role-access.mjs,
+# PROJECT_WIDE_REFUSED): acting as any account includes the dashboard's, whose signature the VM's
+# control service obeys, and pushing to any repository includes the dashboard's images. No role in
+# this clone asks for one (step 1 refuses it), so one the account holds was left by an older role
+# definition or granted by hand: it is taken back on every run, saying so. A role that needs one has it
+# on the agent's own account or repository (ensure_resource_roles).
+revoke_project_wide_refused() {
+  local role
+  while IFS= read -r role; do
+    [[ -n "$role" ]] || continue
+    has_binding "$1" "$role" "serviceAccount:$AGENT_EMAIL" || continue
+    note "the agent's account holds $role on the whole project, which reaches the dashboard's own account or images: taking it back"
+    run_retry gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:$AGENT_EMAIL" \
+      --role="$role" --condition=None --quiet
+  done <<<"$REFUSED_PROJECT_ROLES"
+}
+
 # agent_roles: the generic role's gcp_roles, then the chosen role's, each once.
 agent_roles() {
   {
@@ -526,6 +649,88 @@ agent_roles() {
       json_get "$ROLE_FILE" gcp_roles
     fi
   } | awk 'NF && !seen[$0]++'
+}
+
+# ensure_resource_roles: the grants generic and the role ask for on single resources (`resource_roles`,
+# read in step 1), never on the project. `agent-account`: on the agent's own service account, granted
+# to that account, so it may act as itself and as no other. `agent-repository`: on the agent's own
+# Docker repository in the instance's region, created here the first time a role asks for it.
+ensure_resource_roles() {
+  local lines=() line kind role account_policy repository_policy have_account=0 have_repository=0
+  mapfile -t lines <<<"$RESOURCE_ROLES"
+  for line in "${lines[@]}"; do
+    [[ -n "$line" ]] || continue
+    kind="${line%%$'\t'*}"
+    role="${line#*$'\t'}"
+    case "$kind" in
+      agent-account)
+        if ((!have_account)); then
+          account_policy="$(read_account_policy "$AGENT_EMAIL" "$PROJECT")"
+          have_account=1
+        fi
+        ensure_account_role "$AGENT_EMAIL" "$PROJECT" "$account_policy" "serviceAccount:$AGENT_EMAIL" "$role" ;;
+      agent-repository)
+        if ((!have_repository)); then
+          ensure_agent_repository
+          repository_policy="$(read_repository_policy "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT")"
+          have_repository=1
+        fi
+        ensure_repository_role "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT" "$repository_policy" \
+          "serviceAccount:$AGENT_EMAIL" "$role" ;;
+      *) die "install/lib/role-access.mjs named an unknown resource '$kind'" ;;
+    esac
+  done
+}
+
+# The agent's own Docker repository, for the images its builds push. Never the dashboard's.
+ensure_agent_repository() {
+  if gcloud artifacts repositories describe "$AGENT_IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" \
+    --format='value(name)' >/dev/null 2>&1; then
+    note "image repository $AGENT_IMAGE_REPOSITORY exists in $REGION"
+    return 0
+  fi
+  run gcloud artifacts repositories create "$AGENT_IMAGE_REPOSITORY" --repository-format=docker --location="$REGION" \
+    --description="$AGENT_IMAGE_REPOSITORY_DESCRIPTION" --project="$PROJECT" --quiet
+}
+
+# revoke_previous_resource_roles: on a move to another role, the single-resource grants the previous
+# role declared that neither generic nor the new role declares, taken back: from the agent's own
+# account, and from its image repository, which stays with its images (they are the agent's builds;
+# uninstall.sh --purge deletes them). When this clone cannot read the previous role, nothing is taken
+# back: revoke_previous_role_grants has said so already, or the warning here does.
+revoke_previous_resource_roles() {
+  [[ -n "$PREVIOUS_ROLE" ]] || return 0
+  [[ "$PREVIOUS_ROLE" =~ ^[a-z][a-z0-9-]*$ && -f "$REPO_ROOT/roles/$PREVIOUS_ROLE/role.json" ]] || return 0
+  local previous lines=() line kind role account_policy repository_policy have_account=0 have_repository=0
+  if ! previous="$(role_access resource-roles "$PREVIOUS_ROLE" 2>&1)"; then
+    warn "roles/$PREVIOUS_ROLE/role.json cannot be read ($previous), so its single-resource grants stay"
+    return 0
+  fi
+  mapfile -t lines <<<"$previous"
+  for line in "${lines[@]}"; do
+    [[ -n "$line" ]] || continue
+    grep -Fxq -- "$line" <<<"$RESOURCE_ROLES" && continue
+    kind="${line%%$'\t'*}"
+    role="${line#*$'\t'}"
+    case "$kind" in
+      agent-account)
+        if ((!have_account)); then
+          account_policy="$(read_account_policy "$AGENT_EMAIL" "$PROJECT")"
+          have_account=1
+        fi
+        revoke_account_role "$AGENT_EMAIL" "$PROJECT" "$account_policy" "serviceAccount:$AGENT_EMAIL" "$role" ;;
+      agent-repository)
+        if ((!have_repository)); then
+          repository_policy="$(read_repository_policy "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT")"
+          have_repository=1
+          if [[ -n "$repository_policy" ]]; then
+            note "image repository $AGENT_IMAGE_REPOSITORY stays in $REGION, with its images"
+          fi
+        fi
+        revoke_repository_role "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT" "$repository_policy" \
+          "serviceAccount:$AGENT_EMAIL" "$role" ;;
+    esac
+  done
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -628,7 +833,8 @@ step_dashboard() {
     DASHBOARD_IMAGE="$(dashboard_js image project="$PROJECT" region="$REGION")"
     IAP_AGENT="$(dashboard_js iap-agent projectNumber="$PROJECT_NUMBER")"
     DASHBOARD_ENV=(project="$PROJECT" projectNumber="$PROJECT_NUMBER" region="$REGION" bucket="$BUCKET"
-      repo="$REPO" release="$RELEASE" commit="$COMMIT" agentName="$AGENT_NAME" role="$ROLE")
+      repo="$REPO" release="$RELEASE" commit="$COMMIT" agentName="$AGENT_NAME" role="$ROLE"
+      workspaceRole="$ROLE_WORKSPACE")
     ensure_image_repository
     ensure_image
     ensure_service
@@ -917,7 +1123,8 @@ step_vm() {
   note "$VM_NAME exists; updating: $changed"
   run gcloud compute instances add-metadata "$VM_NAME" --zone="$VM_ZONE" --project="$PROJECT" \
     --metadata="$metadata" --metadata-from-file=startup-script="$startup_file" --quiet
-  if grep -qw paraclete-ref <<<"$changed"; then
+  # A new commit, or a new role: either takes the next bootstrap (a boot, or upgrade.sh) to install.
+  if grep -qw -e paraclete-ref -e paraclete-role <<<"$changed"; then
     VM_STATE=moved
   else
     VM_STATE=current
@@ -999,7 +1206,11 @@ step_wait() {
     return 0
   fi
   if [[ "$VM_STATE" == moved ]]; then
-    note "$VM_NAME picks up $RELEASE ($COMMIT) at its next boot:"
+    if [[ -n "$PREVIOUS_ROLE" ]]; then
+      note "$VM_NAME moves from role $PREVIOUS_ROLE to $ROLE at its next boot:"
+    else
+      note "$VM_NAME picks up $RELEASE ($COMMIT) at its next boot:"
+    fi
     note "  gcloud compute instances reset $VM_NAME --zone=$VM_ZONE --project=$PROJECT"
     note "or now, without a reboot:"
     note "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo /opt/paraclete/install/upgrade.sh --ref $COMMIT"
@@ -1092,6 +1303,7 @@ finish() {
 
 main() {
   parse_flags "$@"
+  read_existing_instance
   ask_questions
   apply_defaults
   step_check

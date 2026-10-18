@@ -7,6 +7,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname, uptime, loadavg, totalmem, freemem } from 'node:os';
+import { skillRequires, unavailableReason } from '../../context/skill-requirements.mjs';
 import { SERVICES } from './systemd.mjs';
 
 /** The release record the installer writes under the install root. */
@@ -140,6 +141,8 @@ export async function readStatus({ systemd, probe, installRoot, dataRoot, readTe
 /**
  * Every skill on the instance, in the gateway's catalog order: the base skills, the generic role's, the
  * chosen role's, then the ones the agent wrote. A directory with a skill.json or a SKILL.md is a skill.
+ * A skill whose `requires` this instance does not meet carries `unavailable` with the reason (`needs a
+ * Workspace account`): the gateway leaves it out of the organs' catalog.
  *
  * @param {object} o
  * @param {object} o.paths    the service runtime's paths
@@ -164,6 +167,8 @@ export function readSkills({ paths, instance }) {
         try { manifest = JSON.parse(manifestText); } catch (err) { manifestError = `skill.json is not valid JSON: ${err.message}`; }
       }
       const md = skillMd === null ? { content: null, truncated: false } : budget(skillMd);
+      const requires = skillRequires(manifest);
+      const unavailable = unavailableReason(requires, instance);
       skills.push({
         id: manifest.id || name,
         name: manifest.name || manifest.id || name,
@@ -171,6 +176,8 @@ export function readSkills({ paths, instance }) {
         when_to_use: manifest.when_to_use || '',
         organs: Array.isArray(manifest.organs) ? manifest.organs : [],
         commands: Array.isArray(manifest.commands) ? manifest.commands : [],
+        requires,
+        ...(unavailable ? { unavailable } : {}),
         origin,
         path: skillDir,
         skill_md: md.content,

@@ -1,0 +1,17 @@
+{
+  "id": "p-data-load",
+  "name": "Data Load",
+  "description": "Bringing data into BigQuery so people can trust it: inspect the source, load into a staging table, check counts, keys, nulls, ranges and schema, then move it into the target with a step that can run twice, and check again.",
+  "narrative": "A load is only as good as its checks. Start with the source: where it is, its format and encoding, how many rows it has, and the schema it should have; those are what you will check against. Make sure the target exists, or plan it, partitioned and clustered if it will grow past a gigabyte. Load into a staging table, replacing it, so running the load again gives the same result. Check the staging table before anything else sees it: counts reconciled with the source, keys unique, nulls in key columns, plausible ranges, and the schema as planned. If a check fails, stop there and report what failed and the rows behind it; a partial load never reaches a table people read. Then move the data into the target with a merge on the key, or a replacement behind an approval gate when the whole table changes, and run the same checks on the target. Report the counts at each step, the checks and their results, and the cost of the jobs.",
+  "intent_keywords": [
+    "load data",
+    "load the csv",
+    "import into bigquery",
+    "ingest",
+    "etl pipeline",
+    "data pipeline",
+    "load into bigquery"
+  ],
+  "status": "active",
+  "version": 1
+}

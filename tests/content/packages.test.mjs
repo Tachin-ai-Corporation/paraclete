@@ -1,9 +1,13 @@
 // tests/content/packages.test.mjs: the agent-facing content packages are well formed. Every skill (in
 // skills/ and roles/<id>/skills/) has a skill.json of the documented shape, organs the gateway knows, a
 // SKILL.md that names every command the skill governs, and commands that exist: as a file in the skill's
-// directory, or as a shared command in agent/cli/. Every role has a role.json of the documented shape;
+// directory, or as a shared command in agent/cli/. Every role has a role.json of the documented shape,
+// whose setup packages the VM bootstrap can install (npm and pip ones pinned to exact versions);
 // every responsibility validates against agent/work/responsibility-schema.mjs; every process parses;
-// every organ has a prompt. The wording of these files is checked by content-hygiene.test.mjs.
+// every organ has a prompt. A role never asks for a project-wide grant that reaches every service
+// account or image repository: those are single-resource grants (resource_roles) on the agent's own
+// account or repository, and its APIs are short names (install/lib/role-access.mjs, which the installer
+// runs). The wording of these files is checked by content-hygiene.test.mjs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -14,6 +18,9 @@ import { RESPONSIBILITY_SCHEMA } from '../../agent/work/responsibility-schema.mj
 import { validate } from '../../agent/work/validate-schema.mjs';
 import { checkCron } from '../../agent/work/responsibility-store.mjs';
 import { ID_PATTERN } from '../../agent/work/work-ids.mjs';
+import { SKILL_REQUIREMENTS } from '../../agent/context/skill-requirements.mjs';
+import { parsePackage, roleSetup } from '../../install/vm/role-packages.mjs';
+import { PROJECT_WIDE_REFUSED, RESOURCE_KINDS, accessProblems } from '../../install/lib/role-access.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const read = (...parts) => readFileSync(join(root, ...parts), 'utf8');
@@ -37,8 +44,10 @@ const SHARED_COMMANDS = new Set([
 
 const ORGAN_IDS = Object.keys(ORGANS);
 const KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
-const SKILL_KEYS = ['id', 'name', 'version', 'when_to_use', 'organs', 'commands'];
-const ROLE_KEYS = ['id', 'title', 'summary', 'version', 'workspace', 'skills', 'gcp_roles', 'setup'];
+const SKILL_KEYS = ['id', 'name', 'version', 'when_to_use', 'organs', 'commands', 'requires'];
+/** What a skill may require of its instance: agent/context/skill-requirements.mjs knows each one. */
+const KNOWN_REQUIREMENTS = Object.keys(SKILL_REQUIREMENTS);
+const ROLE_KEYS = ['id', 'title', 'summary', 'version', 'workspace', 'skills', 'gcp_roles', 'apis', 'resource_roles', 'setup'];
 
 /** Keys a package file may carry: the documented ones, plus `_`-prefixed documentation. */
 function unexpectedKeys(object, allowed) {
@@ -68,7 +77,7 @@ for (const { id, dir } of skillPackages) {
     const path = join(root, dir, 'skill.json');
     assert.ok(existsSync(path), `${dir}/skill.json is missing`);
     const skill = JSON.parse(readFileSync(path, 'utf8'));
-    assert.deepEqual(unexpectedKeys(skill, SKILL_KEYS), [], 'skill.json has fields outside { id, name, version, when_to_use, organs, commands }');
+    assert.deepEqual(unexpectedKeys(skill, SKILL_KEYS), [], 'skill.json has fields outside { id, name, version, when_to_use, organs, commands, requires }');
     assert.equal(skill.id, id, 'id must match the directory name');
     assert.match(skill.id, KEBAB);
     assert.equal(typeof skill.name, 'string');
@@ -82,6 +91,11 @@ for (const { id, dir } of skillPackages) {
     assert.ok(Array.isArray(skill.commands), 'commands must be an array');
     assert.equal(new Set(skill.commands).size, skill.commands.length, 'commands has duplicates');
     for (const command of skill.commands) assert.match(command, KEBAB);
+    if (skill.requires !== undefined) {
+      assert.ok(Array.isArray(skill.requires) && skill.requires.length > 0, 'requires, when present, is a non-empty array');
+      assert.deepEqual(skill.requires.filter((r) => !KNOWN_REQUIREMENTS.includes(r)), [], `requires may name only ${KNOWN_REQUIREMENTS.join(', ')}`);
+      assert.equal(new Set(skill.requires).size, skill.requires.length, 'requires has duplicates');
+    }
   });
 
   test(`skill ${dir}: SKILL.md exists and documents every command`, () => {
@@ -144,11 +158,24 @@ for (const role of roles) {
     assert.ok(Array.isArray(r.gcp_roles), 'gcp_roles must be an array');
     assert.deepEqual(r.gcp_roles.filter((g) => !/^roles\/[A-Za-z0-9_.]+$/.test(g)), [], 'gcp_roles are role names like roles/aiplatform.user');
     assert.equal(new Set(r.gcp_roles).size, r.gcp_roles.length, 'gcp_roles has duplicates');
+    // apis (optional): short API names; resource_roles (optional): { role, on } on the agent's own
+    // account or repository, each kind with its own short list of roles; nothing refused project-wide.
+    assert.deepEqual(accessProblems(r), [], 'gcp_roles, apis and resource_roles as install/lib/role-access.mjs accepts them');
     assert.ok(r.setup && typeof r.setup === 'object', 'setup is required');
     assert.deepEqual(Object.keys(r.setup).sort(), ['apt', 'npm', 'pip']);
     for (const [manager, packages] of Object.entries(r.setup)) {
       assert.ok(Array.isArray(packages) && packages.every((p) => typeof p === 'string' && /^[A-Za-z0-9@._/=<>~+-]+$/.test(p)),
         `setup.${manager} must be a list of package names`);
+    }
+  });
+
+  test(`role ${role}: the bootstrap can install its setup: Debian names, npm and pip pinned to exact versions`, () => {
+    // install/vm/role-packages.mjs is what the VM bootstrap reads; it refuses a range, a tag or an
+    // unpinned npm or pip package, and a package generic pins at another version.
+    assert.doesNotThrow(() => roleSetup(root, role));
+    const { setup } = readJson('roles', role, 'role.json');
+    for (const kind of ['npm', 'pip']) {
+      for (const spec of setup[kind]) assert.ok(parsePackage(kind, spec)?.version, `setup.${kind} ${spec} is pinned to one version`);
     }
   });
 
@@ -223,6 +250,42 @@ test('the generic role is the plain base: no Workspace account and no skills of 
   }
 });
 
+test('no role grants the agent a basic role, or one that hands out access', () => {
+  // A role's gcp_roles are granted on the whole project. A basic role, or one that grants roles, keys
+  // or service accounts, would let the agent widen its own access: a person makes those changes.
+  const forbidden = /^roles\/(owner|editor|viewer|resourcemanager\.projectIamAdmin|iam\.securityAdmin|iam\.serviceAccountAdmin|iam\.serviceAccountKeyAdmin|iam\.serviceAccountTokenCreator|iam\.roleAdmin|serviceusage\.serviceUsageAdmin)$/;
+  const found = roles.flatMap((role) => readJson('roles', role, 'role.json').gcp_roles
+    .filter((g) => forbidden.test(g)).map((g) => `${role}: ${g}`));
+  assert.deepEqual(found, []);
+});
+
+test('no role acts as any service account or pushes to any image repository project-wide', () => {
+  // Project-wide, act-as reaches the dashboard's account, whose signature the VM's control service
+  // obeys, and Artifact Registry write reaches the dashboard's images. Both are granted only on the
+  // agent's own account or repository.
+  for (const name of ['roles/iam.serviceAccountUser', 'roles/iam.serviceAccountTokenCreator', 'roles/artifactregistry.writer',
+    'roles/artifactregistry.admin', 'roles/artifactregistry.repoAdmin']) {
+    assert.ok(PROJECT_WIDE_REFUSED.includes(name), `${name} is refused project-wide`);
+  }
+  const found = roles.flatMap((role) => readJson('roles', role, 'role.json').gcp_roles
+    .filter((g) => PROJECT_WIDE_REFUSED.includes(g)).map((g) => `${role}: ${g}`));
+  assert.deepEqual(found, []);
+  // What a role may ask for on a single resource: acting as itself, and its own images.
+  assert.deepEqual(Object.keys(RESOURCE_KINDS), ['agent-account', 'agent-repository']);
+  assert.ok(RESOURCE_KINDS['agent-account'].includes('roles/iam.serviceAccountUser'));
+  assert.ok(RESOURCE_KINDS['agent-repository'].includes('roles/artifactregistry.writer'));
+  assert.ok(!Object.values(RESOURCE_KINDS).flat().includes('roles/artifactregistry.admin'), 'admin would let it share its repository');
+});
+
+test('the DevOps Engineer acts as itself and pushes to its own repository, and nothing wider', () => {
+  const devops = readJson('roles', 'devops-engineer', 'role.json');
+  assert.deepEqual(devops.resource_roles, [
+    { role: 'roles/iam.serviceAccountUser', on: 'agent-account' },
+    { role: 'roles/artifactregistry.writer', on: 'agent-repository' },
+  ]);
+  assert.ok(!devops.gcp_roles.some((g) => /^roles\/(iam|artifactregistry)\./.test(g)), 'no act-as or registry role on the project');
+});
+
 test('the generic role installs its upkeep as locked responsibilities', () => {
   const { responsibilities } = readJson('roles', 'generic', 'responsibilities.json');
   const byId = Object.fromEntries(responsibilities.map((r) => [r.id, r]));
@@ -230,6 +293,38 @@ test('the generic role installs its upkeep as locked responsibilities', () => {
   assert.equal(byId['r-memory-consolidation']?.effect_scope, 'memory');
   assert.equal(byId['r-git-gc']?.locked, true);
   assert.match(byId['r-git-gc']?.instruction || '', /git-store gc <projectId> main/);
+});
+
+test("no role reuses an id of the generic role's responsibilities or playbooks", () => {
+  // Installed defaults are layered generic first and the first id wins (collectDefaults in
+  // agent/work/responsibility-store.mjs, readInstalledProcesses in agent/work/role-packages.mjs), so a
+  // role's responsibility or playbook with a generic id would be dropped without a word.
+  const genericResponsibilities = new Set(readJson('roles', 'generic', 'responsibilities.json').responsibilities.map((r) => r.id));
+  const genericPlaybooks = new Set(readdirSync(join(root, 'roles', 'generic', 'processes')).map((f) => f.replace(/\.json$/, '')));
+  const clashes = [];
+  for (const role of roles.filter((r) => r !== 'generic')) {
+    const path = join(root, 'roles', role, 'responsibilities.json');
+    const own = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')).responsibilities || [] : [];
+    clashes.push(...own.filter((r) => genericResponsibilities.has(r.id)).map((r) => `roles/${role}: responsibility ${r.id}`));
+    const dir = join(root, 'roles', role, 'processes');
+    const playbooks = isDir(dir) ? readdirSync(dir).map((f) => f.replace(/\.json$/, '')) : [];
+    clashes.push(...playbooks.filter((id) => genericPlaybooks.has(id)).map((id) => `roles/${role}: playbook ${id}`));
+  }
+  assert.deepEqual(clashes, []);
+});
+
+test('a role skill that needs a Workspace account belongs to a Workspace role', () => {
+  const misplaced = [];
+  for (const role of roles.filter((r) => existsSync(join(root, 'roles', r, 'role.json')))) {
+    if (readJson('roles', role, 'role.json').workspace === true) continue;
+    for (const id of subdirs('roles', role, 'skills')) {
+      const path = join(root, 'roles', role, 'skills', id, 'skill.json');
+      if (existsSync(path) && (JSON.parse(readFileSync(path, 'utf8')).requires || []).includes('workspace')) {
+        misplaced.push(`roles/${role}/skills/${id}`);
+      }
+    }
+  }
+  assert.deepEqual(misplaced, [], 'an instance of a role without a Workspace account could never use these skills');
 });
 
 test('every organ has a non-empty base prompt, and the identity exists', () => {

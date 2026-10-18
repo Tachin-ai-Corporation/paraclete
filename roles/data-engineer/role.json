@@ -1,0 +1,21 @@
+{
+  "id": "data-engineer",
+  "title": "Data Engineer",
+  "summary": "Works with the organization's data in BigQuery: finds and explains datasets, writes queries that stay within a cost cap, loads data through staging tables with quality checks, exports results, and changes schemas without breaking what reads them.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["bigquery"],
+  "_gcp_roles_comment": "Added to the generic base set, on the project, for what the bigquery skill does. bigquery.user: run query, load, extract and copy jobs, list datasets and tables, and create datasets (the agent owns those). bigquery.dataEditor: read and write table data and create, update and delete tables in the project's datasets, which bigquery.user alone cannot do in datasets the agent did not create. Not granted: deleting other people's datasets or changing who can read them (bigquery.dataOwner, bigquery.admin), and reading other projects' data, which their owners grant. Loading from or exporting to a bucket needs access to that bucket: the instance's own bucket is in the base set.",
+  "gcp_roles": [
+    "roles/bigquery.user",
+    "roles/bigquery.dataEditor"
+  ],
+  "_apis_comment": "Turned on by the installer: the BigQuery API, on in most new projects but not all.",
+  "apis": ["bigquery"],
+  "_setup_comment": "bq comes with Debian 12's Compute Engine image (the google-cloud-cli package), so it is not listed. python3-pandas is for looking at and reshaping exported data on the VM (Debian 12's pandas 1.5, installed without its recommended extras).",
+  "setup": {
+    "apt": ["python3-pandas"],
+    "pip": [],
+    "npm": []
+  }
+}

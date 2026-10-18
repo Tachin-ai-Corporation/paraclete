@@ -39,7 +39,7 @@ function fakeRuntime({ workspace = null, db = fakeDb() } = {}) {
 
 function recorder() {
   const sent = [];
-  return { sent, deliver: async (addr, text, opts) => { sent.push({ addr, text, token: opts.token }); return true; } };
+  return { sent, deliver: async (addr, text, opts) => { sent.push({ addr, text, token: opts.token, ...(addr.channel === 'gchat' ? { messageKey: opts.messageKey } : {}) }); return true; } };
 }
 
 const vertexText = (answers = []) => ({ calls: [], async transform(...args) { this.calls.push(args); return answers.shift() ?? null; } });
@@ -108,8 +108,12 @@ test('Chat goes out with the Workspace token; without an account a Chat delivery
   const chatEnv = envelope({ delivery_address: { channel: 'gchat', space: 'spaces/A', thread: 'spaces/A/threads/t' }, source_channel: 'gchat' });
   const withChat = fakeRuntime({ workspace: WORKSPACE, db: fakeDb({ 'work/w-1': chatEnv }) });
   const out = recorder();
-  await createMouth(withChat.runtime, { vertexText: vertexText(), deliver: out.deliver, getChatToken: async () => 'chat-token', now: () => NOW }).tick();
+  const mouth = createMouth(withChat.runtime, { vertexText: vertexText(), deliver: out.deliver, getChatToken: async () => 'chat-token', now: () => NOW });
+  await mouth.tick();
   assert.equal(out.sent[0].token, 'chat-token');
+  assert.match(out.sent[0].messageKey, /^delivery:w-1:/, 'a Chat post is keyed, so a retry is posted once');
+  assert.deepEqual(health(withChat.root).gchat, { sent: 0, refused: 0, last_sent_at: null, last_error: null, last_error_at: null },
+    'the recorder never reports, so nothing is counted; the block is there for the System tab');
 
   const db = fakeDb({ 'work/w-1': chatEnv });
   await createMouth(fakeRuntime({ db }).runtime, { vertexText: vertexText(), deliver: recorder().deliver, now: () => NOW }).tick();

@@ -1,0 +1,17 @@
+{
+  "id": "p-cost-report",
+  "name": "Cloud Cost Report",
+  "description": "A cost report for a period from the Cloud Billing export: totals by service, project and SKU, credits, tax and adjustments shown apart, the change against the previous period and any budget, and every number traced to its query. Read-only toward billing.",
+  "narrative": "A cost report is only as good as its traceability. Settle the scope first: which billing account and projects, which period, and whether it must match an invoice (use the invoice month) or the usage dates. Check how fresh the export is and state the as-of time, because it runs behind usage. Query totals by service, by project and the top SKUs, with gross cost, credits, tax and adjustments as separate figures rather than one silent net. Compare with the previous period and any budget people gave you, and explain each material change by the services and SKUs that drove it. Save every query with its result, check that the parts add up to the totals, and deliver a document or spreadsheet in which every number names its query. Recommend where useful, with the cost impact and the do-nothing option; never change billing, budgets or resources.",
+  "intent_keywords": [
+    "cost report",
+    "billing report",
+    "cloud spend",
+    "cloud costs",
+    "monthly costs",
+    "what did we spend",
+    "invoice"
+  ],
+  "status": "active",
+  "version": 1
+}

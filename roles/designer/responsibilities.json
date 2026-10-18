@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_comment": "No scheduled work ships with this role. Design work comes from requests; a recurring check, such as an accessibility pass over a team's templates, needs the templates named, which happens only after install. When people want one, they ask the agent, which creates it as its own responsibility (responsibility-manage, the work-management skill).",
+  "responsibilities": []
+}

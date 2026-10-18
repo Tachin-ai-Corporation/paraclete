@@ -63,7 +63,7 @@ function setup(docs = {}, { answers = [], spokenAt = 0, enabled = true, llmEnabl
   const calls = [];
   const outbound = {
     lastSpokenAt: () => spokenAt,
-    send: async (addr, text) => { sent.push({ addr, text }); return true; },
+    send: async (addr, text, opts) => { sent.push({ addr, text, key: opts?.key }); return true; },
   };
   const notes = createStatusUpdates({
     db,
@@ -87,7 +87,7 @@ describe('the status notes pass', () => {
     assert.equal(await t.notes.pass(), 0, 'the first sighting only records the mission');
     t.clock.now = CREATED + 11_000;
     assert.equal(await t.notes.pass(), 1);
-    assert.deepEqual(t.sent[0], { addr: DASH, text: 'On it, give me a moment.' });
+    assert.deepEqual(t.sent[0], { addr: DASH, text: 'On it, give me a moment.', key: 'status:w-1:0' });
     assert.equal(t.calls[0].instruction, 'ACK as Paraclete: thinking it through / Can you write the Q3 report?');
     assert.equal(t.calls[0].text, 'Question: "Can you write the Q3 report?"');
     assert.deepEqual(t.calls[0].opts, { maxTokens: 2000 });
@@ -118,6 +118,7 @@ describe('the status notes pass', () => {
     t.clock.now = CREATED + 601_000;
     await t.notes.pass();
     assert.equal(t.sent.length, 1);
+    assert.equal(t.sent[0].key, 'status:w-1:2', 'one key per mission and step: a note is posted to Chat once');
   });
 
   test('the plain fallback stands in for the model', async () => {

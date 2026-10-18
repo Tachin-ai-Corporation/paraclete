@@ -1,6 +1,7 @@
 // Tests for agent/services/brain/approval-replies.mjs: "approve" and "reject" in chat, recognized
 // before any model classifies the message, resolving only the pending approvals of the reply's own
-// conversation, and patching only the resolution fields.
+// conversation, and patching only the resolution fields. In Google Chat, only a sender the ears matched
+// to a dashboard user may approve, and a reply stays inside its own space.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { start as startFirestore } from '../../../fakes/firestore-server.mjs';
@@ -8,7 +9,7 @@ import { createClient } from '../../../../agent/storage/firestore.mjs';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import { addressFor, createEnvelopeStore } from '../../../../agent/services/brain/envelope-store.mjs';
 import {
-  chooseTargets, createApprovalReplies, listApprovals, parseApprovalReply,
+  chatScopedApprovals, chooseTargets, createApprovalReplies, listApprovals, NOT_AUTHORIZED_REPLY, parseApprovalReply,
 } from '../../../../agent/services/brain/approval-replies.mjs';
 
 const NOW = Date.parse('2026-10-17T12:00:00.000Z');
@@ -130,4 +131,87 @@ test('approvals that cannot be read leave the message to the classifier', async 
   const failing = { ...db, query: async () => { throw new Error('unavailable'); } };
   const handler = createApprovalReplies({ db: failing, store, approvals: { checkPending: async () => {} }, addressFor });
   assert.equal(await handler.handle(intake('approve')), null);
+});
+
+// Chat: the dashboard's users list is the authority, and a reply stays inside its own space.
+const SPACE = { channel: 'gchat', space: 'spaces/A', thread: 'spaces/A/threads/t1' };
+
+async function seedChat(gates, users = { 'ana@example.com': 'member' }) {
+  const store = createEnvelopeStore({ db, clock: () => NOW });
+  for (const [email, role] of Object.entries(users)) await db.write(`${COLLECTIONS.users}/${email}`, { email, role });
+  for (const [id, { address, ...a }] of Object.entries(gates)) {
+    await db.write(`${COLLECTIONS.approvals}/${id}`, {
+      checkpointId: 'c', checkpointIndex: 0, taskIndex: 1, description: 'If approved, this runs next: send it', projectName: '', project_id: '',
+      source_channel: address.channel, source_thread: address.thread || '', requestedBy: 'users/1', requestedAt: '2026-10-17T11:00:00.000Z',
+      status: 'pending', _processed: false, ...a,
+    });
+    await store.save({
+      id: a.envelopeId, type: 'M', parent_id: null, status: 'awaiting_approval', intent: 'decide', instruction: 'x', accept_criteria: null,
+      source_channel: address.channel, source_meta: { address }, created_at: '2026-10-17T11:00:00.000Z', updated_at: '2026-10-17T11:00:00.000Z', iteration: 1,
+    });
+  }
+  let checks = 0;
+  const handler = createApprovalReplies({ db, store, approvals: { checkPending: async () => { checks += 1; } }, addressFor });
+  return { handler, checks: () => checks };
+}
+
+const chatIntake = (text, { address = SPACE, email = 'ana@example.com', sender = 'users/1' } = {}) => ({
+  id: 'i-gchat-m9', text, source: 'gchat',
+  source_meta: { address, raw_text: text, sender, sender_name: email || '', ...(email ? { sender_email: email } : {}) },
+});
+
+test('in Chat, a dashboard user approves the gate raised in the same space, and is recorded by email', async () => {
+  const { handler, checks } = await seedChat({ 'apr-1': { envelopeId: 'w-1', title: 'Send the summary', address: SPACE } });
+  await db.write(`${COLLECTIONS.intake}/i-gchat-m9`, { status: 'claimed', text: 'approve' });
+  assert.equal(await handler.handle(chatIntake('approve')), 'approved');
+  const a = await db.read(`${COLLECTIONS.approvals}/apr-1`);
+  assert.deepEqual([a.status, a.resolvedBy], ['approved', 'ana@example.com']);
+  const receipt = (await db.query('', COLLECTIONS.work, [{ field: 'intent', op: 'EQUAL', value: { stringValue: 'notification' } }], { noOrderBy: true }))[0];
+  assert.deepEqual(receipt.delivery_address, SPACE, 'the receipt goes back to the Chat thread');
+  assert.equal(checks(), 1);
+});
+
+test('in Chat, a sender who is not a known dashboard user is told how to approve, and nothing is resolved', async () => {
+  const { handler, checks } = await seedChat({ 'apr-1': { envelopeId: 'w-1', title: 'Send the summary', address: SPACE } }, { 'old@example.com': 'guest' });
+  await db.write(`${COLLECTIONS.intake}/i-gchat-m9`, { status: 'claimed', text: 'yes' });
+  for (const intake of [
+    chatIntake('yes', { email: null, sender: 'users/7' }),
+    chatIntake('yes', { email: 'cy@example.com' }),
+    chatIntake('yes', { email: 'old@example.com' }),
+  ]) {
+    assert.equal(await handler.handle(intake), 'not_authorized');
+  }
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-1`)).status, 'pending');
+  assert.equal(checks(), 0);
+  const told = await db.query('', COLLECTIONS.work, [{ field: 'type', op: 'EQUAL', value: { stringValue: 'R' } }], { noOrderBy: true });
+  assert.equal(told[0].output, NOT_AUTHORIZED_REPLY);
+  assert.deepEqual(told[0].delivery_address, SPACE);
+  const i = await db.read(`${COLLECTIONS.intake}/i-gchat-m9`);
+  assert.deepEqual([i.status, i.resolution], ['resolved_approval', 'not_authorized']);
+});
+
+test('a Chat reply never reaches a gate raised in the dashboard or in another space, even the only one', async () => {
+  const { handler } = await seedChat({
+    'apr-dash': { envelopeId: 'w-1', title: 'Dashboard gate', address: { channel: 'dashboard', thread: 'th-1' } },
+  });
+  assert.equal(await handler.handle(chatIntake('approve')), null, 'nothing pending here: an ordinary message');
+  const other = await seedChat({ 'apr-b': { envelopeId: 'w-2', title: 'Other space', address: { channel: 'gchat', space: 'spaces/B', thread: 'spaces/B/threads/x' } } });
+  assert.equal(await other.handler.handle(chatIntake('approve')), null);
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-dash`)).status, 'pending');
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-b`)).status, 'pending');
+  assert.deepEqual(chatScopedApprovals([{ id: 'x', _address: null }], SPACE), [], 'a gate whose mission could not be read is left out');
+});
+
+test('in a direct message, the gate raised there is approved; in a space, its own thread comes first', async () => {
+  const DM = { channel: 'gchat', space: 'spaces/D' };
+  const { handler } = await seedChat({
+    'apr-dm': { envelopeId: 'w-1', title: 'From the direct message', address: DM },
+    'apr-t1': { envelopeId: 'w-2', title: 'Thread one', address: SPACE },
+    'apr-t2': { envelopeId: 'w-3', title: 'Thread two', address: { ...SPACE, thread: 'spaces/A/threads/t2' } },
+  });
+  assert.equal(await handler.handle(chatIntake('approve', { address: DM })), 'approved');
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-dm`)).status, 'approved');
+  assert.equal(await handler.handle(chatIntake('approve')), 'approved');
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-t1`)).status, 'approved');
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-t2`)).status, 'pending', 'the other thread\'s gate waits');
 });

@@ -1,0 +1,8 @@
+{
+  "id": "gcloud",
+  "name": "gcloud: Cloud Run, Cloud Build, logs and discovery",
+  "version": 1,
+  "when_to_use": "Running Google Cloud with the gcloud CLI as the agent's own service account: discovering what exists, deploying, rolling back and checking Cloud Run services, following builds, and reading Cloud Logging. Read it before any gcloud command that changes something.",
+  "organs": ["motor"],
+  "commands": []
+}

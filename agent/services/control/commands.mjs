@@ -2,9 +2,11 @@
 // what each one does. There is no way to run an arbitrary program: each command checks its params
 // strictly and calls the module that does the work, and the only programs control ever starts are
 // systemctl, systemd-run and journalctl on allowlisted units (systemd.mjs) and the installer's upgrade
-// script (upgrade.mjs). The one command that writes outside Firestore, drive_check, creates and trashes
-// a single test file in the admin's Drive output folder (drive-check.mjs). The queue that claims and
-// records commands is command-queue.mjs; the request and result shapes are documented in README.md.
+// script (upgrade.mjs). Two commands write outside Firestore: drive_check creates and trashes a single
+// test file in the admin's Drive output folder (drive-check.mjs), and set_workspace_account writes the
+// two files that hold the agent's Workspace account, /etc/paraclete/workspace.json and instance.json,
+// and no other (workspace-account.mjs). The queue that claims and records commands is
+// command-queue.mjs; the request and result shapes are documented in README.md.
 
 import { readFileSync } from 'node:fs';
 import { createDriveClient } from '../../providers/drive.mjs';
@@ -16,11 +18,14 @@ import { readSettingsView, readBrainConfig, setClaude } from './models.mjs';
 import { listResponsibilities, setResponsibilityEnabled, runResponsibility } from './responsibilities.mjs';
 import { startUpgrade, upgradeOutcome } from './upgrade.mjs';
 import { checkDrive } from './drive-check.mjs';
+import { checkWorkspace } from './workspace-check.mjs';
+import { setWorkspaceAccount, writeLastCheck, INSTANCE_FILE } from './workspace-account.mjs';
 
 /** Every command type, in the order README.md documents them. */
 export const COMMAND_TYPES = Object.freeze([
   'status', 'skills', 'config', 'workspace', 'brain_config', 'responsibilities',
   'set_responsibility_enabled', 'run_responsibility', 'set_model', 'restart_service', 'upgrade', 'drive_check',
+  'workspace_check', 'set_workspace_account',
 ]);
 
 /**
@@ -35,10 +40,12 @@ export const COMMAND_TYPES = Object.freeze([
  * @param {Function} [o.now]              () => Date
  * @param {Function} [o.sleep]            (ms) => Promise
  * @param {Function} [o.createDrive]      () => a Drive client acting as the agent (createDriveClient)
+ * @param {object}   [o.files]            the file calls set_workspace_account makes on /etc/paraclete
+ *   ({ readFileSync, writeFileSync, chmodSync, renameSync }; node:fs by default)
  * @returns {Record<string, {run: Function, watch?: Function}>}
  */
 export function createHandlers({
-  runtime, systemd, settings, readText = (p) => readFileSync(p, 'utf8'), exists, now = () => new Date(), sleep, createDrive,
+  runtime, systemd, settings, readText = (p) => readFileSync(p, 'utf8'), exists, now = () => new Date(), sleep, createDrive, files,
 }) {
   const { contracts, instance, paths, db, collections, subcollections, log, gatewayUrl, fetch } = runtime;
   const driveClient = createDrive || (() => createDriveClient({ instance, getAccessToken: runtime.getAccessToken, fetch }));
@@ -144,6 +151,45 @@ export function createHandlers({
     },
     drive_check: {
       run: () => checkDrive({ drive: driveClient(), db, now }),
+    },
+    workspace_check: {
+      run: async (params, ctx) => {
+        const result = await checkWorkspace({
+          account: params.account,
+          project: instance.project,
+          fetch,
+          getVmAccessToken: runtime.getAccessToken,
+          now,
+        });
+        // The dashboard shows the last check beside the recorded account; a check that cannot be
+        // stored still answers the person who ran it.
+        try {
+          await writeLastCheck(db, collections, { ...result, checked_by: ctx.requestedBy || null });
+        } catch (err) {
+          log('WARN', `the Workspace check of ${result.account} could not be recorded: ${err.message}`);
+        }
+        return result;
+      },
+    },
+    set_workspace_account: {
+      run: async (params, ctx) => {
+        const result = await setWorkspaceAccount({
+          params,
+          actor: ctx.requestedBy,
+          instance,
+          paths,
+          readText,
+          ...(files ? { files } : {}),
+          db,
+          collections,
+          restart: restartService,
+          nowIso,
+        });
+        if (!result.files.includes(INSTANCE_FILE)) return result;
+        // Control reads the record too (drive_check acts as the agent's Drive identity): it restarts
+        // last, once this command is recorded.
+        return thenRun({ ...result, restarting: 'control' }, () => systemd.restart('control', { noBlock: true }));
+      },
     },
   };
 }

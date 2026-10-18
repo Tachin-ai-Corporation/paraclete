@@ -3,7 +3,8 @@
 The control service: the dashboard's bridge to the VM. The dashboard writes a command document to
 Firestore; control carries it out on the VM and writes the outcome back onto the same document. It
 reports status, skills, configuration and the agent's workspace; switches responsibilities and Claude;
-restarts services; upgrades the instance; and checks what the agent can reach in Google Drive.
+restarts services; upgrades the instance; checks what the agent can reach in Google Drive; and, on a
+role with a Google Workspace account, checks that account and records it on the VM.
 
 **Belongs here:** the command queue, the closed set of commands, the signature check, and the calls to
 systemd they need.
@@ -25,6 +26,8 @@ for a command (the dashboard decides; see [Trust](#trust)).
 | `introspection.mjs` | The status, skills, configuration and workspace views |
 | `gateway-probe.mjs` | Asks the local gateway whether it is ready and which models it runs |
 | `drive-check.mjs` | The Drive check: what the agent's Drive identity can reach, whether the output folder takes new files, and advice in plain sentences |
+| `workspace-check.mjs` | The Workspace check: a delegated token per API and one read-only call each, and for every failure the one thing to change |
+| `workspace-account.mjs` | Records the agent's Workspace account in `/etc/paraclete/workspace.json`, the instance record and `config/workspace_account`, and restarts the services that read it; the address rule and the signer's name |
 | `paraclete-control.service` | The systemd unit |
 
 ## Privilege
@@ -49,10 +52,26 @@ release need it. Every other service runs as the `paraclete` user. The privilege
   read-only to the agent.
 - `drive_check` reaches Google Drive as the agent's own Drive identity, never with more access than
   the agent has, and writes nothing there but its own test file, which it moves to the trash at once.
+- `workspace_check` acts only as the agent would: the VM's service account signs as
+  `paraclete-dwd@<project>`, which it may already do, and the calls only read.
+- On disk, control writes two files and no other: `/etc/paraclete/workspace.json` and
+  `/etc/paraclete/instance.json`, from `set_workspace_account`. The paths are constants in
+  `workspace-account.mjs`, which refuses any other; the account is checked first (an address in an
+  organization's domain, never a personal Gmail account or a service account), the signer is derived
+  from the project, every other field of the instance record is kept as it was, and the new record must
+  pass `validateInstance()` before it is written. An account is recorded only when the installed role's
+  `role.json` sets `workspace`.
 
-**In the unit.** `ProtectSystem=strict` with nothing writable (control writes nothing on disk; its
-results go to Firestore), `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, and the kernel and cgroup
+**In the unit.** `ProtectSystem=strict` with `/opt/paraclete` read-only and one writable path,
+`/etc/paraclete`; `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, and the kernel and cgroup
 protections. Talking to systemd over its socket works inside that sandbox.
+
+**Why `/etc/paraclete` may be writable.** It holds only configuration: the instance record, the
+gateway token and the Workspace record, nothing that runs. A file can only be replaced atomically by
+renaming a sibling into place, which needs the directory, not just the two files, to be writable. And
+the sandbox was never what stops code running as control: control asks systemd to start units (an
+upgrade runs outside this sandbox by design), so the closed command set above is the fence that
+matters, and it names the two files. Everything else on the system stays read-only to control.
 
 **Why an upgrade runs in a unit of its own.** The upgrade writes the install root, which control's
 sandbox forbids, and restarts every service, control included. As control's child it would be killed
@@ -142,9 +161,12 @@ instead, and control is the one answering.
 ### `skills`
 
 Params: none.
-Result: `{ skills: [{ id, name, version, when_to_use, organs, commands, origin, path, skill_md,
-skill_md_truncated, problem? }] }`, in catalog order. `origin` is `base`, `role:generic`,
-`role:<role>` or `agent`. `skill_md` is null once the content budget is spent.
+Result: `{ skills: [{ id, name, version, when_to_use, organs, commands, requires, unavailable?, origin,
+path, skill_md, skill_md_truncated, problem? }] }`, in catalog order. `origin` is `base`, `role:generic`,
+`role:<role>` or `agent`. `skill_md` is null once the content budget is spent. `requires` is the
+skill's list (`["workspace"]` for a Workspace skill, else `[]`); `unavailable` says why the skill
+cannot work on this instance (`needs a Workspace account`), and such a skill is not in the organs'
+catalog.
 
 ### `config`
 
@@ -247,6 +269,61 @@ reachable (the API off, the scope missing, the token refused), no output folder 
 output folder that does not take new files. Empty when nothing needs doing. A Drive failure never
 fails the command; a Firestore failure reading the settings does.
 
+### `workspace_check`
+
+Params: `{ account: string }`, the address of the Google user the agent should be. The dashboard's
+Workspace Test button; admins only.
+Asks Google, the way the agent will, whether that account works for it. The VM's service account has
+IAM sign a token request as the delegation signer, `paraclete-dwd@<project>.iam.gserviceaccount.com`,
+with `account` as its subject, and exchanges it for a token (`agent/auth/dwd-token.mjs`) for each
+API's scopes (`agent/auth/workspace-scopes.mjs`). Then one read-only call per API: Chat
+`spaces.list`, Drive `about.get`, Docs `documents.get`, Sheets `spreadsheets.get`, Slides
+`presentations.get`, Calendar `calendarList.list` and Gmail `users.getProfile`. Docs, Sheets and
+Slides are asked for a file id that cannot exist: their "not found" proves the API is on and took the
+token. Nothing in Google is written.
+Result:
+```
+{ account,                        lowercased
+  signer,                         paraclete-dwd@<project>.iam.gserviceaccount.com
+  client_id:      string | null,  the signer's OAuth client ID, looked up only when the grant is at fault
+  checked_at,
+  ready:          boolean,        every API answered
+  missing_scopes: [string] | null, scopes the Admin console's grant lacks; null when the cause was elsewhere
+  apis: [{ api: "chat"|"drive"|"docs"|"sheets"|"slides"|"calendar"|"gmail", name, scopes, ok, error, fix }] }
+```
+`error` is Google's answer, `fix` the one thing to change, both null when `ok`. When the whole scope
+list is refused, each scope is asked for alone, so `fix` names the missing ones; when all are refused,
+`fix` says the Admin console has no grant for the signer's client ID (none, or one made for another
+client ID). A user Google does not know, or a suspended one, an API off in the project, a Chat app not
+configured, Gmail off for the user, and a signer that does not exist or that the agent may not sign as
+each get their own `fix`. An address that is not a Workspace user's (not an address, a personal Gmail
+account, a service account) fails the command. The result is also written as `last_check` on
+[`config/workspace_account`](#the-workspace-account-record), with `checked_by`; a failure to write it is
+logged and does not fail the command.
+
+### `set_workspace_account`
+
+Params: `{ account: string | null }`. The dashboard's Save, once a check has passed, and Remove (`null`).
+Records the agent's Workspace account on the VM. The address is checked as `workspace_check` checks it,
+and an account is refused unless the installed role's `role.json` sets `workspace`. Then:
+
+1. `/etc/paraclete/workspace.json` (root, 0644) becomes `{ account, signer, recorded_at, recorded_by }`
+   (`account` and `signer` null after a removal). The VM's bootstrap merges it into the instance
+   record at every boot and upgrade while the VM metadata sets no `paraclete-workspace-account`, so the
+   account outlives both (install/README.md).
+2. `/etc/paraclete/instance.json` is rewritten with `workspace: { account, signer }` (or without
+   `workspace`), every other field as it was, once it passes `validateInstance()`. Skipped when the
+   record already says so.
+3. [`config/workspace_account`](#the-workspace-account-record) gets the same four fields.
+4. When the instance record changed: the gateway (waited for until ready), the brain, ears and mouth
+   restart, and control itself once the command is recorded.
+
+Result: `{ account, signer, previous, recorded_at, recorded_by, files, restarted, message,
+restarting? }`. `previous` is the account the record named before; `files` the files written;
+`restarted` the services restarted; `restarting: "control"` when control restarts next. A Firestore or
+restart failure fails the command with this result: the files are written by then, and sending the
+command again is safe.
+
 ## The admin settings document
 
 `config/settings` holds what a dashboard admin changes:
@@ -260,6 +337,17 @@ fails the command; a Firestore failure reading the settings does.
 | `drive_output_folder` | the dashboard | A Drive folder id, or null: where `drive-put` saves new files when not told a folder, and what `drive_check` tests |
 | `drive_output_folder_updated_at`, `drive_output_folder_updated_by` | the dashboard | When and by whom the output folder last changed |
 
+## The Workspace account record
+
+`config/workspace_account` tells the dashboard what the VM holds, since it cannot read the VM's
+files. Only control writes it, each command its own fields:
+
+| Field | Written by | Meaning |
+|---|---|---|
+| `account`, `signer` | `set_workspace_account` | The recorded account and the delegation signer, or null after a removal |
+| `recorded_at`, `recorded_by` | `set_workspace_account` | When and by whom |
+| `last_check` | `workspace_check` | The last check's result, as above, plus `checked_by`. It may be for an address other than `account`: a check runs before anything is recorded |
+
 ## What the installer provides
 
 - This unit, enabled, running as root; `systemctl`, `systemd-run` and `journalctl` on the PATH.
@@ -268,6 +356,9 @@ fails the command; a Firestore failure reading the settings does.
   the services itself, control included. Safe to run twice.
 - `<install root>/release.json`, written at install and upgrade: `{ version, ref, commit, repo,
   installed_at, metadata }` (see [install/README.md](../../../install/README.md)).
+- On a role flagged `workspace`: the signer `paraclete-dwd@<project>`, on which the agent's account
+  holds Service Account Token Creator, and the Workspace APIs turned on in the project. The bootstrap
+  merges `/etc/paraclete/workspace.json` into the instance record it writes.
 
 ## Timings
 

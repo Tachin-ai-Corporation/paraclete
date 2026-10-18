@@ -1,0 +1,16 @@
+{
+  "id": "p-regression-run",
+  "name": "Regression Run",
+  "description": "Running a project's whole test suite after a change or before a release and comparing it with the last baseline: what regressed, what was fixed, what still fails, what is flaky, and whether the run can be trusted.",
+  "narrative": "A regression run answers one question: did anything that used to work stop working? Fix the scope first: which code, at which commit, with which suite, against which environment. Find the last baseline for the same suite before you run, so you know what you are comparing with, and say plainly when there is none. Run the whole suite with the project's own command, capturing everything, and count from the runner's own results. Rerun only the failures, a few times, to tell real regressions from flaky tests, and never let a rerun turn a failure into a pass. Then compare test by test: regressions, fixes, persistent failures, new tests, and the totals and duration against the baseline, flagging tests that vanished. Report the summary, each regression with its evidence and severity, and a verdict on whether the change or release is safe to go ahead, with what went untested. Save this run's results as the next baseline. A regression run changes nothing in the code.",
+  "intent_keywords": [
+    "regression run",
+    "regression test",
+    "run the test suite",
+    "run the tests",
+    "test before the release",
+    "did anything break"
+  ],
+  "status": "active",
+  "version": 1
+}

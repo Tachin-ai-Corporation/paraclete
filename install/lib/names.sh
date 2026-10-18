@@ -32,6 +32,11 @@ NETWORK_DESCRIPTION='Created by the paraclete installer'
 SERVICE_NAME=paraclete
 IMAGE_REPOSITORY=paraclete
 
+# The agent's own Docker repository, in the instance's region, made only for a role whose role.json
+# asks for a grant `on: agent-repository` (install/lib/role-access.mjs). The agent's builds push there;
+# it never holds the dashboard's images.
+AGENT_IMAGE_REPOSITORY=agent-images
+
 FIRESTORE_DATABASE='(default)'
 
 # account_email <account id> <project>: a service account's email address.

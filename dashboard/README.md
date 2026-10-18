@@ -80,6 +80,7 @@ The build's root is the repo for this reason (`next.config.mjs`).
 | `responsibility_triggers` | reads | Follows a "run now" until the brain fires, skips or fails it |
 | `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` and `drive_output_folder`, `drive_output_folder_updated_at`, `drive_output_folder_updated_by` (each setting field-masked to its own three); reads `claude_enabled` | `claude_enabled` is changed only through the `set_model` command. `drive_output_folder` is a Drive folder id or null |
 | `agent/instance` | reads | Written by the VM's bootstrap |
+| `config/workspace_account` | reads | Written only by the control service: the recorded Workspace account and the last check (see [Workspace](#workspace-the-agents-own-google-account)) |
 
 **Threads.** Each user's thread id is `user-` and the first 32 hex digits of the SHA-256 of their
 lowercased email: fixed per person, a valid document id, and the same key the agent's thread ledger
@@ -120,6 +121,38 @@ Signed URLs always name `storage.googleapis.com`; `PARACLETE_STORAGE_HOST` redir
 dashboard's own calls to the bucket (the existence and size checks), so against the fakes the browser's
 PUT and GET have nowhere to go.
 
+## Workspace: the agent's own Google account
+
+On a role whose `role.json` sets `workspace` (`PARACLETE_WORKSPACE_ROLE=true`), the agent acts as a
+Google user of the organization through domain-wide delegation. Google has no API for that grant, so
+Settings has a Workspace tab (`components/settings/workspace/`) that walks an admin through it; on
+other roles the tab is hidden and the Setup checklist says the account is not needed.
+
+1. **The user.** The admin creates it in the Admin console (Directory, Users, with a license that
+   includes Chat, Drive, Docs, Sheets, Slides, Calendar and Gmail) and enters its address here. The
+   suggested address is the agent's name at the admin's own domain.
+2. **Domain-wide delegation.** The client ID of the signer `paraclete-dwd@<project>`, read with IAM
+   `projects.serviceAccounts.get` (`oauth2ClientId`) as the dashboard's account (the installer gives it
+   `roles/iam.serviceAccountViewer` on that one account), and the full scope list
+   (`agent/auth/workspace-scopes.mjs`), each with a copy button and a link to the Admin console page
+   where they go.
+3. **Test** sends the `workspace_check` command: the VM asks Google for a token per API, as the agent,
+   and makes one read-only call each. Every API shows its result and, when it failed, the one thing to
+   change.
+4. **Save** sends `set_workspace_account`, which records the account on the VM and restarts its
+   services. It is offered once a test of that address passed. When only some APIs failed and Drive
+   and the token work, the admin may save anyway after a warning naming what will not work: Drive
+   moves to the new account the moment it is saved, so a Drive failure always blocks. Remove sends
+   `{ account: null }`.
+
+| Route | Who | Does (`lib/server/workspace.mjs`) |
+|---|---|---|
+| `GET /api/workspace` | any user | Whether the role needs an account, the recorded account and the last check, from `config/workspace_account` (written by the control service) |
+| `GET /api/workspace/setup` | admins | The signer, its client ID (or why it cannot be read), the scope list, the Admin console links and a suggested address |
+
+Members see the state only. The commands and the record are in
+[agent/services/control/README.md](../agent/services/control/README.md).
+
 ## Running it locally
 
 ```
@@ -144,6 +177,7 @@ account to hold Token Creator on it; without it, views that need the VM say so.
 | `PARACLETE_BUCKET` | The instance's bucket |
 | `PARACLETE_REPO`, `PARACLETE_RELEASE`, `PARACLETE_COMMIT` | What the dashboard was built from |
 | `PARACLETE_AGENT_NAME`, `PARACLETE_ROLE` | The agent's name and role |
+| `PARACLETE_WORKSPACE_ROLE` | `true` when the role's `role.json` sets `workspace` (the image carries no `roles/`): Settings then shows the Workspace setup |
 | `PARACLETE_IAP_AUDIENCE` | Overrides the IAP audience, which is normally derived; the installer never sets it |
 
 For development only, `PARACLETE_FIRESTORE_HOST` and `PARACLETE_STORAGE_HOST` point the server at the

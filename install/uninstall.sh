@@ -2,11 +2,14 @@
 # install/uninstall.sh: removes what install/install.sh created from a Google Cloud project: the VM, the
 # firewall rules (and the network, when the installer made it), the dashboard's Cloud Run service and
 # its image repository (it holds only the dashboard's images; the grants on the two go with them), the
-# Firestore indexes and TTL policies, the service accounts and their grants.
-# Keeps the Firestore database and the bucket, with all their data, unless --purge, which also takes
-# typing the project id. Enabled APIs stay on. Run by the project's owner in Cloud Shell. It finds what
-# exists first and names exactly that before deleting anything; re-running finishes an interrupted
-# uninstall. --dry-run prints every command that would change something and changes nothing.
+# Firestore indexes and TTL policies, the service accounts and their grants (the grants on an account
+# go with it: the agent's on its own account among them).
+# Keeps the Firestore database, the bucket and the agent's own image repository (`agent-images`, which
+# holds the agent's builds), with all their data, unless --purge, which also takes typing the project
+# id; what stays loses the accounts' grants on it first. Enabled APIs stay on. Run by the project's
+# owner in Cloud Shell. It finds what exists first and names exactly that before deleting anything;
+# re-running finishes an interrupted uninstall. --dry-run prints every command that would change
+# something and changes nothing.
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,18 +27,19 @@ source "$INSTALL_DIR/lib/indexes.sh"
 
 export CLOUDSDK_CORE_DISABLE_PROMPTS=1
 
-STEP_TOTAL=7
+STEP_TOTAL=8
 
 usage() {
   cat <<'EOF'
 Usage: install/uninstall.sh [options]
 
-Removes paraclete from this Google Cloud project. Keeps the Firestore database and the bucket, and
-everything in them, unless --purge.
+Removes paraclete from this Google Cloud project. Keeps the Firestore database, the bucket and the
+agent's image repository, and everything in them, unless --purge.
 
   --project <id>     The project (default: gcloud's configured project)
   --region <region>  Where the dashboard was deployed (default: the VM's region, else us-central1)
-  --purge            Also delete the Firestore database and the bucket, with all the agent's data.
+  --purge            Also delete the Firestore database, the bucket and the agent's image repository,
+                     with all the agent's data and builds.
                      Irreversible: asks you to type the project id, even with --yes
   --yes              Don't ask before deleting (except the --purge confirmation)
   --dry-run          Print every command that would change something; change nothing
@@ -122,6 +126,10 @@ discover() {
   if gcloud artifacts repositories describe "$IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
     IMAGES_EXIST=1
   fi
+  AGENT_IMAGES_EXIST=0
+  if gcloud artifacts repositories describe "$AGENT_IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    AGENT_IMAGES_EXIST=1
+  fi
 
   DATABASE_PROTECTION="$(gcloud firestore databases describe --database="$FIRESTORE_DATABASE" --project="$PROJECT" \
     --format='value(name,deleteProtectionState)' 2>/dev/null || true)"
@@ -175,6 +183,7 @@ confirm_plan() {
   ((NETWORK_OWNED)) && doomed+=("network $NETWORK_NAME (the installer created it)")
   ((SERVICE_EXISTS)) && doomed+=("Cloud Run service $SERVICE_NAME in $REGION (the dashboard)")
   ((IMAGES_EXIST)) && doomed+=("Artifact Registry repository $IMAGE_REPOSITORY in $REGION (the dashboard's images)")
+  ((PURGE && AGENT_IMAGES_EXIST)) && doomed+=("Artifact Registry repository $AGENT_IMAGE_REPOSITORY in $REGION and ALL the agent's images (irreversible)")
   if ((PURGE && DATABASE_EXISTS)); then
     doomed+=("the Firestore $FIRESTORE_DATABASE database and ALL its data: chats, missions, memory (irreversible)")
   else
@@ -192,6 +201,9 @@ confirm_plan() {
   if ((DATABASE_EXISTS && !PURGE)); then
     kept+=("the Firestore $FIRESTORE_DATABASE database and its data")
   fi
+  if ((AGENT_IMAGES_EXIST && !PURGE)); then
+    kept+=("Artifact Registry repository $AGENT_IMAGE_REPOSITORY in $REGION and the agent's images")
+  fi
   kept+=("the enabled APIs")
 
   if ((${#doomed[@]} == 0)); then
@@ -204,8 +216,8 @@ confirm_plan() {
   for line in "${doomed[@]}"; do say "  - $line"; done
   say "It keeps:"
   for line in "${kept[@]}"; do say "  - $line"; done
-  if ((BUCKET_EXISTS || DATABASE_EXISTS)) && ((!PURGE)); then
-    say "(--purge deletes the database and the bucket too.)"
+  if ((BUCKET_EXISTS || DATABASE_EXISTS || AGENT_IMAGES_EXIST)) && ((!PURGE)); then
+    say "(--purge deletes the database, the bucket and the agent's image repository too.)"
   fi
 
   if [[ "$DRY_RUN" == 1 ]]; then
@@ -213,7 +225,7 @@ confirm_plan() {
     say "Dry run: nothing will change. Each command that would change something is printed after a +."
     return 0
   fi
-  if ((PURGE && (DATABASE_EXISTS || BUCKET_EXISTS))); then
+  if ((PURGE && (DATABASE_EXISTS || BUCKET_EXISTS || AGENT_IMAGES_EXIST))); then
     local typed=""
     printf 'This cannot be undone. Type the project id (%s) to confirm: ' "$PROJECT" >&2
     read -r typed || true
@@ -226,7 +238,7 @@ confirm_plan() {
 }
 
 # ---------------------------------------------------------------------------------------------------
-# Steps 2 to 7: delete, the VM first (it uses the accounts), the accounts last (grants name them)
+# Steps 2 to 8: delete, the VM first (it uses the accounts), the accounts last (grants name them)
 # ---------------------------------------------------------------------------------------------------
 
 step_vm() {
@@ -271,8 +283,33 @@ step_dashboard() {
   fi
 }
 
+# The agent's own image repository holds its builds, so it goes only with --purge. Kept, it loses the
+# accounts' grants on it first, as the bucket does: a binding that outlives its account lingers in the
+# policy as deleted:serviceAccount:...
+step_images() {
+  step 5 images "the agent's image repository: kept, with its images, unless --purge"
+  if ((!AGENT_IMAGES_EXIST)); then
+    note "no image repository $AGENT_IMAGE_REPOSITORY in $REGION"
+    return 0
+  fi
+  if ((PURGE)); then
+    run gcloud artifacts repositories delete "$AGENT_IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --quiet
+    return 0
+  fi
+  local policy member role
+  policy="$(read_repository_policy "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT")"
+  for member in "serviceAccount:$AGENT_EMAIL" "serviceAccount:$DASHBOARD_EMAIL"; do
+    while IFS= read -r role; do
+      [[ -n "$role" ]] || continue
+      run gcloud artifacts repositories remove-iam-policy-binding "$AGENT_IMAGE_REPOSITORY" --location="$REGION" \
+        --project="$PROJECT" --member="$member" --role="$role" --quiet
+    done < <(roles_of "$policy" "$member")
+  done
+  note "the repository and its images stay"
+}
+
 step_firestore() {
-  step 5 firestore "the indexes and TTL policies, or with --purge the whole database"
+  step 6 firestore "the indexes and TTL policies, or with --purge the whole database"
   local id line
   if ((PURGE && DATABASE_EXISTS)); then
     if [[ "$DATABASE_PROTECTION" == *DELETE_PROTECTION_ENABLED* ]]; then
@@ -300,7 +337,7 @@ step_firestore() {
 # Without --purge the bucket stays, so the grants the accounts hold on it go first: a binding that
 # outlives its account lingers in the policy as deleted:serviceAccount:...
 step_bucket() {
-  step 6 bucket "gs://$BUCKET"
+  step 7 bucket "gs://$BUCKET"
   if ((!BUCKET_EXISTS)); then
     note "no bucket gs://$BUCKET"
     return 0
@@ -322,8 +359,10 @@ step_bucket() {
 
 # Every project role an account holds goes before the account does, whoever granted it: the
 # installer's (the dashboard's logging.logWriter, for its builds, among them) and any added since.
+# Grants on an account itself (the agent's act-as on its own account, the dashboard's on its own) live
+# in that account's policy and go with the account.
 step_accounts() {
-  step 7 accounts "the service accounts and their project grants"
+  step 8 accounts "the service accounts and their project grants"
   if ((${#ACCOUNTS[@]} == 0)); then
     note "no paraclete service accounts"
     return 0
@@ -346,6 +385,7 @@ main() {
   step_vm
   step_network
   step_dashboard
+  step_images
   step_firestore
   step_bucket
   step_accounts

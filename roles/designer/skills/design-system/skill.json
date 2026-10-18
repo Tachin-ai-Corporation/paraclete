@@ -1,0 +1,8 @@
+{
+  "id": "design-system",
+  "name": "Design System",
+  "version": 1,
+  "when_to_use": "Creating, documenting or applying a design system (palette, type scale, spacing, components and their states, as tokens and a guide), designing presentations and documents from it, and auditing several deliverables for consistency. Find the existing system first; every visual value traces to a token or a stated reason.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

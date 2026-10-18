@@ -85,3 +85,15 @@ test('an outage is thrown, not mistaken for an existing intake', async () => {
   db.fail('commit');
   await assert.rejects(writeIntake(db, COLLECTIONS, buildIntake(dashboardMsg(), { createdAt: CREATED })), StoreUnavailable);
 });
+
+test('a Chat sender matched to a dashboard user carries the email; an unmatched one does not', () => {
+  const chat = (over) => dashboardMsg({
+    channel: 'gchat', id: 'spaces/D/messages/m1', sender: 'users/1', senderName: '', attachments: [],
+    address: makeAddress('gchat', { space: 'spaces/D' }), ...over,
+  });
+  const known = buildIntake(chat({ senderEmail: 'ana@example.com', senderName: 'ana@example.com' }), { createdAt: CREATED });
+  assert.equal(known.source_meta.sender, 'users/1');
+  assert.equal(known.source_meta.sender_email, 'ana@example.com');
+  assert.deepEqual(known.source_meta.address, { channel: 'gchat', space: 'spaces/D' }, 'a direct message has no thread');
+  assert.equal('sender_email' in buildIntake(chat({ senderEmail: null }), { createdAt: CREATED }).source_meta, false);
+});

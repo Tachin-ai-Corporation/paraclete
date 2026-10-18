@@ -1,0 +1,17 @@
+{
+  "id": "p-pull-request",
+  "name": "Change by Pull Request",
+  "description": "Making a change to an outside repository and handing it back as a pull request: clone, branch, change and test, push, open the request with its evidence, then follow its checks and answer its reviews. Merging is the owners' decision.",
+  "narrative": "A change to someone else's repository goes back to them as a request, never straight onto their default branch. Check first that you can: the token the person gave you can read the repository and push a branch to it. Clone it, start a branch from the current default branch, and make the change the way the coding skill says: understand, baseline, change, prove with the project's own tests, read your own diff. Push the branch and open the pull request with a description that lets a reviewer trust it without redoing your work: what changed and why, the commands that prove it and their results, the risks and how to undo it. Then read its checks back, and fix on the same branch what they or the reviewers find, answering each comment. The request is done when it is open with its checks passing, or when its failures are explained; merging it is for its owners, or for you only when a person asks and approves it.",
+  "intent_keywords": [
+    "open a pr",
+    "open a pull request",
+    "as a pull request",
+    "submit a pr",
+    "raise a pr",
+    "send a pull request",
+    "contribute a change"
+  ],
+  "status": "active",
+  "version": 1
+}

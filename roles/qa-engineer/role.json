@@ -1,0 +1,16 @@
+{
+  "id": "qa-engineer",
+  "title": "QA Engineer",
+  "summary": "Tests the organization's software and reports what it finds as evidence: runs suites and compares them with the last baseline, finds flaky tests, measures coverage, and writes defects anyone can reproduce. It reports what is true, and never makes a run pass by changing what it tests.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["test-runs"],
+  "_gcp_roles_comment": "None beyond the generic base set. Tests run on the VM against code from the instance's artifact store or an outside repository reached with a token from Secret Manager. Testing a deployed service through its public URL needs no role; reading its logs would need roles/logging.viewer, which a person can add if the work turns that way.",
+  "gcp_roles": [],
+  "_setup_comment": "python3-venv gives a Python project its own environment for its test requirements (Debian splits venv out of python3), so they never touch the system's Python. Node 24 with npm, git, build-essential and Chromium (for browser tests) come with the generic role.",
+  "setup": {
+    "apt": ["python3-venv"],
+    "pip": [],
+    "npm": []
+  }
+}

@@ -6,13 +6,17 @@
 // changes nothing; a real run followed by a re-run creates nothing twice; a new --ref rebuilds the
 // dashboard and moves the VM; each piece of the dashboard that already exists is left alone; the model
 // check retries and then stops with a reason; and each check in step 1 stops the install before
-// anything changes.
+// anything changes. A role's own APIs are turned on; its grants on single resources (the DevOps
+// Engineer's act-as on its own account and push to its own `agent-images` repository) are made exactly
+// so, and taken back on a move away, the repository and its images staying; act-as and image push are
+// never granted project-wide, and one found there is taken back.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { agentIdentity } from '../../config/instance.mjs';
+import { API_PROBES } from '../../agent/services/control/workspace-check.mjs';
 import {
   bash, bashWith, createSandbox, find, flag, freshProject, needsBash, repoRoot, steps,
   COMMITS, OLDER_TAG, PROJECT, RELEASE_TAG, REPO, WORKSPACE_ROLE,
@@ -21,6 +25,7 @@ import {
 const readJson = (...path) => JSON.parse(readFileSync(join(repoRoot, ...path), 'utf8'));
 const contracts = readJson('config', 'contracts.json');
 const genericRole = readJson('roles', 'generic', 'role.json');
+const devopsRole = readJson('roles', 'devops-engineer', 'role.json');
 const indexesFile = readJson('install', 'firestore.indexes.json');
 
 const AGENT = `paraclete-agent@${PROJECT}.iam.gserviceaccount.com`;
@@ -62,6 +67,25 @@ const projectGrants = (commands, email) => find(commands, 'gcloud', 'projects', 
   .filter((command) => flag(command, 'member') === `serviceAccount:${email}`)
   .map((command) => flag(command, 'role'));
 
+/** Roles that would reach every service account or image repository (install/lib/role-access.mjs). */
+const REACHES_EVERYTHING = /^roles\/(iam\.(serviceAccountUser|serviceAccountTokenCreator|serviceAccountOpenIdTokenCreator|workloadIdentityUser)|artifactregistry\.\w+)$/;
+
+/** The agent's own Docker repository, and the commands a role asking for grants on it and on its account prints. */
+const AGENT_IMAGES = 'agent-images';
+const AGENT_RESOURCE_COMMANDS = [
+  ['gcloud', 'iam', 'service-accounts', 'add-iam-policy-binding', AGENT, `--project=${PROJECT}`,
+    `--member=serviceAccount:${AGENT}`, '--role=roles/iam.serviceAccountUser', '--quiet'],
+  ['gcloud', 'artifacts', 'repositories', 'create', AGENT_IMAGES, '--repository-format=docker', '--location=us-central1',
+    '--description=Images the paraclete agent builds', `--project=${PROJECT}`, '--quiet'],
+  ['gcloud', 'artifacts', 'repositories', 'add-iam-policy-binding', AGENT_IMAGES, '--location=us-central1', `--project=${PROJECT}`,
+    `--member=serviceAccount:${AGENT}`, '--role=roles/artifactregistry.writer', '--quiet'],
+];
+
+/** The commands of a run that touch the agent's own account policy or its image repository. */
+const agentResourceCommands = (commands) => commands.filter((command) =>
+  (command[1] === 'iam' && command[2] === 'service-accounts' && /-iam-policy-binding$/.test(command[3]) && command[4] === AGENT)
+  || (command[1] === 'artifacts' && command[2] === 'repositories' && command[4] === AGENT_IMAGES));
+
 /** The --metadata=key=value,... of a VM command, as an object. */
 function metadataOf(command) {
   return Object.fromEntries(flag(command, 'metadata').split(',').map((pair) => [pair.slice(0, pair.indexOf('=')), pair.slice(pair.indexOf('=') + 1)]));
@@ -88,7 +112,7 @@ function shownEnv(stdout) {
 }
 
 /** The environment the dashboard should have for a release, by dashboard/README.md's names. */
-function dashboardEnv({ commit = COMMITS.release, release = RELEASE_TAG, name = 'Paraclete', role = 'generic' } = {}) {
+function dashboardEnv({ commit = COMMITS.release, release = RELEASE_TAG, name = 'Paraclete', role = 'generic', workspace = false } = {}) {
   return {
     PARACLETE_PROJECT: PROJECT,
     PARACLETE_PROJECT_NUMBER: freshProject().projectNumber,
@@ -100,6 +124,7 @@ function dashboardEnv({ commit = COMMITS.release, release = RELEASE_TAG, name = 
     PARACLETE_COMMIT: commit,
     PARACLETE_AGENT_NAME: name,
     PARACLETE_ROLE: role,
+    PARACLETE_WORKSPACE_ROLE: String(workspace),
   };
 }
 
@@ -180,8 +205,10 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.deepEqual(created, ['paraclete-agent', 'paraclete-dashboard']);
   });
 
-  test("grants the agent the generic role's gcp_roles on the project", () => {
+  test("grants the agent the generic role's gcp_roles on the project, and nothing on single resources", () => {
     assert.deepEqual(projectGrants(run.commands, AGENT), genericRole.gcp_roles);
+    assert.deepEqual(agentResourceCommands(run.commands), [], 'generic asks for no resource_roles: no agent-images, no act-as');
+    assert.deepEqual(find(run.commands, 'gcloud', 'projects', 'remove-iam-policy-binding'), []);
   });
 
   test('grants the dashboard what phase 6 needs, and itself only on its own account', () => {
@@ -464,15 +491,28 @@ describe('a Workspace role', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(enabledApis(run.commands).sort(), [...BASE_APIS, ...WORKSPACE_APIS].sort());
   });
 
-  test('adds the signer account, which only the agent may sign as', () => {
+  test('turns on every API the Workspace check calls', () => {
+    const enabled = enabledApis(run.commands);
+    for (const probe of API_PROBES) assert.ok(enabled.includes(probe.service), `${probe.api}: ${probe.service}`);
+  });
+
+  test('adds the signer account, which only the agent may sign as, and whose client ID the dashboard may read', () => {
     const created = find(run.commands, 'gcloud', 'iam', 'service-accounts', 'create').map((command) => command[4]);
     assert.deepEqual(created, ['paraclete-agent', 'paraclete-dashboard', 'paraclete-dwd']);
     const onSigner = find(run.commands, 'gcloud', 'iam', 'service-accounts', 'add-iam-policy-binding')
       .filter((command) => command[4] === DWD)
       .map((command) => [flag(command, 'member'), flag(command, 'role')]);
-    assert.deepEqual(onSigner, [[`serviceAccount:${AGENT}`, 'roles/iam.serviceAccountTokenCreator']]);
+    assert.deepEqual(onSigner, [
+      [`serviceAccount:${AGENT}`, 'roles/iam.serviceAccountTokenCreator'],
+      [`serviceAccount:${DASHBOARD}`, 'roles/iam.serviceAccountViewer'],
+    ]);
     assert.deepEqual(projectGrants(run.commands, DWD), [], 'the signer holds no project role');
     assert.ok(!projectGrants(run.commands, AGENT).includes('roles/iam.serviceAccountTokenCreator'), 'never project-wide');
+    assert.ok(!projectGrants(run.commands, DASHBOARD).includes('roles/iam.serviceAccountViewer'), 'never project-wide');
+  });
+
+  test('tells the dashboard the role has a Workspace account', () => {
+    assert.deepEqual(shownEnv(run.stdout), dashboardEnv({ role: WORKSPACE_ROLE.id, workspace: true }));
   });
 
   test("adds the role's gcp_roles to the generic ones, each once", () => {
@@ -498,6 +538,200 @@ describe('a Workspace role', { skip: needsBash, concurrency: true }, () => {
     assert.equal(metadata['paraclete-workspace-account'], workspace['paraclete-workspace-account']);
     assert.equal(metadata['paraclete-workspace-signer'], DWD);
     assert.equal(metadata['paraclete-role'], WORKSPACE_ROLE.id);
+  });
+});
+
+describe('the DevOps Engineer role: APIs, and grants on its own account and repository only', { skip: needsBash, concurrency: true }, () => {
+  let run;
+  before(async () => {
+    run = await createSandbox().run('install.sh', ['--dry-run', '--yes', '--role', 'devops-engineer']);
+  });
+
+  test("turns on the role's APIs with the base ones", () => {
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(enabledApis(run.commands).sort(),
+      [...BASE_APIS, 'firebasehosting.googleapis.com', 'firebase.googleapis.com'].sort());
+    assert.deepEqual(devopsRole.apis, ['firebasehosting', 'firebase']);
+  });
+
+  test("grants generic's and the role's project roles, and none that reaches every account or repository", () => {
+    assert.deepEqual(projectGrants(run.commands, AGENT), [...new Set([...genericRole.gcp_roles, ...devopsRole.gcp_roles])]);
+    const everywhere = find(run.commands, 'gcloud', 'projects', 'add-iam-policy-binding').map((c) => flag(c, 'role'))
+      .filter((role) => REACHES_EVERYTHING.test(role));
+    assert.deepEqual(everywhere, [], 'act-as and image push are never granted on the project, to anyone');
+  });
+
+  test('acts as itself only, and pushes to agent-images only: exactly these commands, in step 3', () => {
+    assert.deepEqual(agentResourceCommands(run.commands), AGENT_RESOURCE_COMMANDS);
+    const last = run.commands.indexOf(agentResourceCommands(run.commands).at(-1));
+    assert.ok(last > position(run.commands, 'gcloud', 'iam', 'service-accounts', 'create'), 'after the account exists');
+    assert.ok(last < position(run.commands, 'gcloud', 'firestore', 'databases', 'create'), 'within step 3');
+    // The dashboard's repository is still the dashboard's alone.
+    const onDashboardImages = find(run.commands, 'gcloud', 'artifacts', 'repositories', 'add-iam-policy-binding')
+      .filter((c) => c[4] === 'paraclete').map((c) => flag(c, 'member'));
+    assert.deepEqual(onDashboardImages, [`serviceAccount:${DASHBOARD}`]);
+    // Nobody is let act as the dashboard's account but the dashboard itself.
+    const onDashboardAccount = find(run.commands, 'gcloud', 'iam', 'service-accounts', 'add-iam-policy-binding')
+      .filter((c) => c[4] === DASHBOARD).map((c) => flag(c, 'member'));
+    assert.ok(onDashboardAccount.every((member) => member === `serviceAccount:${DASHBOARD}`));
+  });
+
+  test('a real run, then a re-run, creates its repository and grants once', async () => {
+    const box = createSandbox();
+    const first = await box.run('install.sh', ['--yes', '--role', 'devops-engineer']);
+    assert.equal(first.status, 0, first.stderr);
+    const state = box.state();
+    assert.deepEqual(state.accountPolicies[AGENT], [['roles/iam.serviceAccountUser', `serviceAccount:${AGENT}`]]);
+    assert.ok(state.imageRepositories.includes(`us-central1/${AGENT_IMAGES}`));
+    assert.deepEqual(state.repositoryPolicies[`us-central1/${AGENT_IMAGES}`], [['roles/artifactregistry.writer', `serviceAccount:${AGENT}`]]);
+    assert.ok(state.services.includes('firebasehosting.googleapis.com') && state.services.includes('firebase.googleapis.com'));
+    const again = await box.run('install.sh', ['--yes']);
+    assert.equal(again.status, 0, again.stderr);
+    assert.deepEqual(writes(again.calls).map((call) => call.command), ['storage buckets update']);
+    assert.match(again.stdout, new RegExp(`serviceAccount:${AGENT.replace(/\./g, '\\.')} has roles/iam\\.serviceAccountUser on ${AGENT.replace(/\./g, '\\.')}`));
+    assert.match(again.stdout, new RegExp(`image repository ${AGENT_IMAGES} exists in us-central1`));
+  });
+});
+
+describe("every role's APIs are turned on, each once, and never turned off", { skip: needsBash, concurrency: true }, () => {
+  const roles = readdirSync(join(repoRoot, 'roles'))
+    .filter((id) => existsSync(join(repoRoot, 'roles', id, 'role.json')))
+    .map((id) => readJson('roles', id, 'role.json'))
+    .filter((role) => role.apis?.length && role.id !== 'devops-engineer');
+
+  test('some roles ask for APIs', () => {
+    assert.deepEqual(roles.map((role) => role.id).sort(), ['data-engineer', 'finance-analyst', 'security-engineer', 'web-master']);
+  });
+
+  for (const role of roles) {
+    test(`${role.id}: ${role.apis.join(', ')}`, async () => {
+      const run = await createSandbox().run('install.sh', ['--dry-run', '--yes', '--role', role.id]);
+      assert.equal(run.status, 0, run.stderr);
+      const expected = new Set([...BASE_APIS, ...(role.workspace ? WORKSPACE_APIS : []), ...role.apis.map((api) => `${api}.googleapis.com`)]);
+      assert.deepEqual(enabledApis(run.commands).sort(), [...expected].sort());
+      assert.deepEqual(agentResourceCommands(run.commands), [], `${role.id} asks for no single-resource grant`);
+    });
+  }
+
+  test('an API already on is not turned on again', async () => {
+    const state = freshProject();
+    state.services = [...BASE_APIS, 'bigquery.googleapis.com'];
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes', '--role', 'data-engineer']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(enabledApis(run.commands), []);
+    assert.match(run.stdout, new RegExp(`all ${BASE_APIS.length + 1} are on`));
+  });
+});
+
+describe('step 1 refuses a role that asks for too much', { skip: needsBash, concurrency: true }, () => {
+  /** A sandbox with one more role, `wide`, holding these fields. */
+  function withRole(fields) {
+    const box = createSandbox();
+    mkdirSync(join(box.repo, 'roles', 'wide'), { recursive: true });
+    writeFileSync(join(box.repo, 'roles', 'wide', 'role.json'), JSON.stringify({
+      id: 'wide', title: 'Wide', summary: 'A test role.', version: 1, workspace: false, skills: [], gcp_roles: [],
+      setup: { apt: [], pip: [], npm: [] }, ...fields,
+    }));
+    return box;
+  }
+
+  for (const [name, fields, message] of [
+    ['act-as on the whole project', { gcp_roles: ['roles/run.admin', 'roles/iam.serviceAccountUser'] },
+      /roles\/wide\/role\.json gcp_roles: roles\/iam\.serviceAccountUser is never granted on the whole project; ask for it in resource_roles, on agent-account/],
+    ['image push on the whole project', { gcp_roles: ['roles/artifactregistry.writer'] }, /artifactregistry\.writer is never granted on the whole project/],
+    ['a grant on a resource that is not its own', { resource_roles: [{ role: 'roles/iam.serviceAccountUser', on: 'dashboard-account' }] },
+      /on must be one of agent-account, agent-repository/],
+    ['an API given by its full name', { apis: ['bigquery.googleapis.com'] }, /is not a short API name/],
+  ]) {
+    test(name, async () => {
+      const run = await withRole(fields).run('install.sh', ['--yes', '--role', 'wide']);
+      assert.equal(run.status, 1);
+      assert.match(run.stderr, /error: the role cannot be installed as it is:/);
+      assert.match(run.stderr, message);
+      assert.deepEqual(writes(run.calls), []);
+      assert.deepEqual(steps(run.stdout).map(([n]) => n), [1]);
+    });
+  }
+});
+
+describe('the agent never keeps act-as or image push on the whole project', { skip: needsBash, concurrency: false }, () => {
+  const AGENT_MEMBER = `serviceAccount:${AGENT}`;
+
+  test('a re-run takes back what an older DevOps definition, or a person, granted project-wide, and nothing else', async () => {
+    const box = createSandbox();
+    const first = await box.run('install.sh', ['--yes', '--role', 'devops-engineer']);
+    assert.equal(first.status, 0, first.stderr);
+    box.update((state) => {
+      for (const role of ['roles/iam.serviceAccountUser', 'roles/artifactregistry.writer', 'roles/bigquery.dataViewer']) {
+        state.projectPolicy.push([role, AGENT_MEMBER]);
+      }
+    });
+    const again = await box.run('install.sh', ['--yes']);
+    assert.equal(again.status, 0, again.stderr);
+    const removed = find(again.commands, 'gcloud', 'projects', 'remove-iam-policy-binding');
+    assert.deepEqual(removed.map((c) => [flag(c, 'member'), flag(c, 'role'), flag(c, 'condition')]), [
+      [AGENT_MEMBER, 'roles/iam.serviceAccountUser', 'None'],
+      [AGENT_MEMBER, 'roles/artifactregistry.writer', 'None'],
+    ]);
+    assert.match(again.stdout, /the agent's account holds roles\/iam\.serviceAccountUser on the whole project, which reaches the dashboard's own account or images: taking it back/);
+    const held = box.state().projectPolicy.filter(([, member]) => member === AGENT_MEMBER).map(([role]) => role);
+    assert.ok(!held.some((role) => REACHES_EVERYTHING.test(role)));
+    assert.ok(held.includes('roles/bigquery.dataViewer'), 'a grant that reaches no account or repository stays');
+    assert.ok(held.includes('roles/run.admin'));
+    assert.deepEqual(box.state().accountPolicies[AGENT], [['roles/iam.serviceAccountUser', AGENT_MEMBER]], 'act-as on itself stays');
+  });
+});
+
+describe('a move to and from the DevOps Engineer role', { skip: needsBash, concurrency: false }, () => {
+  const AGENT_MEMBER = `serviceAccount:${AGENT}`;
+  const REPOSITORY = `us-central1/${AGENT_IMAGES}`;
+  const BUILT = `us-central1-docker.pkg.dev/${PROJECT}/${AGENT_IMAGES}/site`;
+  let box;
+  before(async () => {
+    box = createSandbox();
+    const installed = await box.run('install.sh', ['--yes']);
+    assert.equal(installed.status, 0, installed.stderr);
+  });
+
+  test("moving to it adds its APIs, its repository and its two grants, and the project roles it declares", async () => {
+    const moved = await box.run('install.sh', ['--yes', '--role', 'devops-engineer']);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.deepEqual(agentResourceCommands(moved.commands), AGENT_RESOURCE_COMMANDS);
+    assert.deepEqual(enabledApis(moved.commands), ['firebasehosting.googleapis.com', 'firebase.googleapis.com']);
+    const state = box.state();
+    assert.deepEqual(state.accountPolicies[AGENT], [['roles/iam.serviceAccountUser', AGENT_MEMBER]]);
+    assert.deepEqual(state.repositoryPolicies[REPOSITORY], [['roles/artifactregistry.writer', AGENT_MEMBER]]);
+    assert.equal(state.instances.paraclete.metadata['paraclete-role'], 'devops-engineer');
+    // The agent builds an image there.
+    box.update((s) => { s.images[BUILT] = ['v1']; });
+  });
+
+  test('moving away takes both grants back, and leaves the repository, its images and the APIs', async () => {
+    const moved = await box.run('install.sh', ['--yes', '--role', 'generic']);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.deepEqual(agentResourceCommands(moved.commands), [
+      ['gcloud', 'iam', 'service-accounts', 'remove-iam-policy-binding', AGENT, `--project=${PROJECT}`,
+        `--member=${AGENT_MEMBER}`, '--role=roles/iam.serviceAccountUser', '--quiet'],
+      ['gcloud', 'artifacts', 'repositories', 'remove-iam-policy-binding', AGENT_IMAGES, '--location=us-central1', `--project=${PROJECT}`,
+        `--member=${AGENT_MEMBER}`, '--role=roles/artifactregistry.writer', '--quiet'],
+    ]);
+    assert.match(moved.stdout, new RegExp(`image repository ${AGENT_IMAGES} stays in us-central1, with its images`));
+    const state = box.state();
+    assert.deepEqual(state.accountPolicies[AGENT], []);
+    assert.deepEqual(state.repositoryPolicies[REPOSITORY], []);
+    assert.ok(state.imageRepositories.includes(REPOSITORY), 'the repository stays');
+    assert.deepEqual(state.images[BUILT], ['v1'], 'with the images the agent built');
+    assert.ok(state.services.includes('firebase.googleapis.com'), 'an API is never turned off');
+    assert.ok(!moved.calls.some((call) => /services disable/.test(call.command)));
+    const held = state.projectPolicy.filter(([, member]) => member === AGENT_MEMBER).map(([role]) => role);
+    assert.deepEqual(held.sort(), [...genericRole.gcp_roles].sort(), "only generic's project roles are left");
+  });
+
+  test('a re-run after the move takes nothing more back', async () => {
+    const again = await box.run('install.sh', ['--yes']);
+    assert.equal(again.status, 0, again.stderr);
+    assert.deepEqual(agentResourceCommands(again.commands), []);
+    assert.deepEqual(writes(again.calls).map((call) => call.command), ['storage buckets update']);
   });
 });
 
@@ -597,8 +831,10 @@ describe('step 1 stops a project that cannot hold a paraclete', { skip: needsBas
   }
 
   test('an unknown role, a bad name or a zone outside the region', async () => {
+    // Every role the sandbox has, sorted as the shell lists them: the repo's roles and the fixture.
+    const roles = [...readdirSync(join(repoRoot, 'roles')).filter((id) => existsSync(join(repoRoot, 'roles', id, 'role.json'))), WORKSPACE_ROLE.id].sort();
     for (const [args, message] of [
-      [['--role', 'no-such-role'], /there is no role 'no-such-role'\. Roles: generic workspace-example/],
+      [['--role', 'no-such-role'], new RegExp(`there is no role 'no-such-role'\\. Roles: ${roles.join(' ')}\\n`)],
       [['--name', 'Bad,Name'], /the agent's name must be/],
       [['--region', 'europe-west1', '--zone', 'us-central1-a'], /the zone must be in europe-west1/],
     ]) {
@@ -932,11 +1168,31 @@ describe('the VM and the network as found', { skip: needsBash, concurrency: true
   test('a VM in another zone is updated where it is', async () => {
     const state = freshProject();
     state.instances.paraclete = { zone: 'us-central1-f', metadata: { 'paraclete-ref': COMMITS.olderRelease } };
-    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes']);
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes', '--zone', 'us-central1-a']);
     assert.equal(run.status, 0, run.stderr);
     assert.deepEqual(find(run.commands, 'gcloud', 'compute', 'instances', 'create'), []);
     assert.equal(flag(find(run.commands, 'gcloud', 'compute', 'instances', 'add-metadata')[0], 'zone'), 'us-central1-f');
     assert.match(run.stdout, /already runs in us-central1-f/);
+  });
+
+  test("without flags, an existing instance keeps its role, its name and its VM's region", async () => {
+    const state = freshProject();
+    state.instances.paraclete = {
+      zone: 'europe-west1-b',
+      metadata: { 'paraclete-ref': COMMITS.olderRelease, 'paraclete-role': WORKSPACE_ROLE.id, 'paraclete-agent-name': 'Ada' },
+    };
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /region {6}europe-west1, VM in europe-west1-b/);
+    assert.doesNotMatch(run.stdout, /moved from/);
+    const metadata = metadataOf(find(run.commands, 'gcloud', 'compute', 'instances', 'add-metadata')[0]);
+    assert.equal(metadata['paraclete-role'], WORKSPACE_ROLE.id);
+    assert.equal(metadata['paraclete-agent-name'], 'Ada');
+
+    const asked = await createSandbox(state).run('install.sh', ['--dry-run'], { input: '\n\n' });
+    assert.equal(asked.status, 0, asked.stderr);
+    assert.match(asked.stderr, new RegExp(`Which role should the agent have\\? \\[${WORKSPACE_ROLE.id}\\]`));
+    assert.match(asked.stderr, /What should the agent be called\? \[Ada\]/);
   });
 
   test("without a default network, it creates paraclete's own and puts the VM on it", async () => {
@@ -959,5 +1215,55 @@ describe('the VM and the network as found', { skip: needsBash, concurrency: true
     assert.equal(run.status, 1);
     assert.match(run.stdout, /the agent's install failed: npm ci failed/);
     assert.match(run.stdout, /journalctl -u 'paraclete-\*' -u google-startup-scripts/);
+  });
+});
+
+describe('moving an instance to another role', { skip: needsBash, concurrency: false }, () => {
+  const AGENT_MEMBER = `serviceAccount:${AGENT}`;
+  let box;
+  let installed;
+  before(async () => {
+    box = createSandbox();
+    installed = await box.run('install.sh', ['--yes', '--role', WORKSPACE_ROLE.id, '--name', 'Ada']);
+    box.update((state) => { state.projectPolicy.push(['roles/bigquery.dataViewer', AGENT_MEMBER]); });
+  });
+
+  test('--role on an existing instance moves it: new metadata, the old role\'s own grants taken back, the reboot named', async () => {
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.ok(box.state().projectPolicy.some(([role, member]) => role === 'roles/example.viewer' && member === AGENT_MEMBER));
+
+    const moved = await box.run('install.sh', ['--yes', '--role', 'generic']);
+    assert.equal(moved.status, 0, moved.stderr);
+    assert.match(moved.stdout, new RegExp(`moved from ${WORKSPACE_ROLE.id} at the VM's next boot`));
+    const state = box.state();
+    assert.equal(state.instances.paraclete.metadata['paraclete-role'], 'generic');
+    assert.equal(state.instances.paraclete.metadata['paraclete-agent-name'], 'Ada', 'the name it was installed with stays');
+    const agentRoles = state.projectPolicy.filter(([, member]) => member === AGENT_MEMBER).map(([role]) => role);
+    assert.ok(!agentRoles.includes('roles/example.viewer'), 'only the old role needed it');
+    assert.ok(agentRoles.includes('roles/aiplatform.user'), 'generic needs it too, so it stays');
+    assert.ok(agentRoles.includes('roles/bigquery.dataViewer'), 'a grant no role of this instance declared is never touched');
+    assert.deepEqual(find(moved.commands, 'gcloud', 'projects', 'remove-iam-policy-binding').map((c) => flag(c, 'role')), ['roles/example.viewer']);
+    assert.equal(flag(find(moved.commands, 'gcloud', 'projects', 'remove-iam-policy-binding')[0], 'condition'), 'None');
+    assert.match(moved.stdout, new RegExp(`paraclete moves from role ${WORKSPACE_ROLE.id} to generic at its next boot`));
+    assert.match(moved.stdout, /gcloud compute instances reset paraclete --zone=us-central1-a --project=your-gcp-project/);
+    assert.match(moved.stdout, new RegExp(`sudo /opt/paraclete/install/upgrade\.sh --ref ${COMMITS.release}`));
+    assert.equal(state.runServices.paraclete.env.PARACLETE_ROLE, 'generic', 'the dashboard follows the role');
+  });
+
+  test('the same role again moves nothing and takes nothing back', async () => {
+    const again = await box.run('install.sh', ['--yes']);
+    assert.equal(again.status, 0, again.stderr);
+    assert.doesNotMatch(again.stdout, /moved from|moves from role/);
+    assert.deepEqual(find(again.commands, 'gcloud', 'projects', 'remove-iam-policy-binding'), []);
+    assert.equal(box.state().instances.paraclete.metadata['paraclete-role'], 'generic');
+  });
+
+  test('a previous role this clone does not have takes no grant back, and says so', async () => {
+    const state = freshProject();
+    state.instances.paraclete = { zone: 'us-central1-a', metadata: { 'paraclete-ref': COMMITS.release, 'paraclete-role': 'retired-role' } };
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes', '--role', 'generic']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stderr, /this clone has no role 'retired-role', so the grants it added cannot be told apart/);
+    assert.deepEqual(find(run.commands, 'gcloud', 'projects', 'remove-iam-policy-binding'), []);
   });
 });

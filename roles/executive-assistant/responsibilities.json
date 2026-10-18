@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "_comment": "The daily briefing ships turned off. At install the agent does not yet know whose day to brief, their timezone, or which calendars are theirs, and its Workspace account is set up only afterwards, so a briefing that ran from day one would brief nobody, every weekday. Its answer also lands as a dashboard notice that every dashboard user sees. It is safe once on: it only reads calendars, mail and memory, and changes and sends nothing. Turn it on by asking the agent (it sets the schedule and timezone with responsibility-manage) or in the dashboard.",
+  "responsibilities": [
+    {
+      "id": "r-daily-briefing",
+      "name": "Daily Briefing",
+      "schedule": "0 7 * * 1-5",
+      "timezone": "UTC",
+      "enabled": false,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 600,
+      "processRef": "p-daily-briefing",
+      "instruction": "Prepare today's briefing for the person you assist: their schedule in their own timezone, what needs their attention, the mail that asks something of them, and their open items due today. Read-only: change and send nothing. Follow the calendar-management skill's daily briefing procedure.",
+      "success_criteria": "The answer is the briefing: today's events from every calendar in scope in the person's timezone, the overlaps, back-to-back runs and invitations awaiting an answer, the mail since the last briefing that asks something (sender, ask, deadline), and the open items due today, each traceable to a calendar, mail or memory read made in this mission. A quiet day gets a short briefing that says so. When working memory does not say whom to brief or their timezone, the answer says exactly that and what to set, instead of a briefing. Nothing was created, moved, answered, sent or edited.",
+      "context": {
+        "purpose": "A short start-of-day view, so the person sees conflicts and asks before the day starts rather than during it. It reads the calendars shared with the agent's Workspace account, the mail that reached that account, and working memory.",
+        "process": [
+          "STEP 1 - WHOSE DAY: read working memory for the person you brief, their IANA timezone, and the calendars that are theirs. If any of these is missing, stop and answer with what is missing and how to set it (tell the agent who it briefs and in which timezone, and share the calendar with the agent's address).",
+          "STEP 2 - SCHEDULE: list today's events, midnight to midnight in their timezone, on each calendar in scope (cal-list, the workspace-calendar skill). Note each event's local time, title, organizer, video link or location, and their response.",
+          "STEP 3 - ATTENTION: mark overlapping events, back-to-back runs with no break, invitations still waiting for their answer, and meetings with nothing to prepare from.",
+          "STEP 4 - MAIL: search your inbox for mail since the last briefing (the last day; on a Monday, since Friday) with gmail-search, and read the messages that ask something with gmail-get. Keep the sender, the ask and any deadline, not the message text.",
+          "STEP 5 - OPEN ITEMS: take the open items and follow-ups in working memory that fall due today.",
+          "STEP 6 - WRITE: a one-line day at a glance, then Schedule, Needs attention, Mail that asks something, and Open items. Short enough to read in two minutes. That is your answer."
+        ],
+        "prior_learnings": "A briefing from the wrong calendar or in the wrong timezone misleads more than no briefing: when unsure whose day it is, say so. The briefing is read by everyone who uses the dashboard, so keep private detail to what the person needs to act."
+      }
+    }
+  ]
+}

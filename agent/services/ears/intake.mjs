@@ -70,6 +70,9 @@ export function buildIntake(msg, { text, createdAt }) {
       sender_name: msg.senderName || '',
     },
   };
+  // A Chat sender the ears matched to a dashboard user (chat-identity.mjs). Chat names a sender only
+  // by its user id; the brain takes an approval from Chat only with this email.
+  if (msg.senderEmail) intake.source_meta.sender_email = String(msg.senderEmail);
   // The conversation around a Chat message, read from the same poll page. Dashboard threads have
   // no copy here: the brain reads them from the messages collection by thread.
   if (msg.conversation) intake.conversation_ctx = JSON.stringify(msg.conversation);

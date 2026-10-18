@@ -1,0 +1,16 @@
+{
+  "id": "p-status-report",
+  "name": "Status Report",
+  "description": "Writing a status report for a project or workstream: blockers first, then milestones, progress since the last report, what comes next and who owns it, risks, and the decisions needed.",
+  "narrative": "A status report is read for what needs a decision, so blockers come first: what is stuck, who can unblock it, since when, and what the delay costs. Read the tracker, the last report and the minutes since then before writing, so the report says what changed, not only what is. Then the milestones with their target dates and status, where a moved date carries its new date and the reason; progress since the last report, each item with its evidence; what comes next, with an owner and a date; new or changed risks; and the decisions needed, from whom and by when. Keep the same structure every period so readers know where to look. Bad news goes in plainly and early. The report is a deliverable for the person who asked; sending it to stakeholders is their call or an approved step.",
+  "intent_keywords": [
+    "status report",
+    "status update",
+    "project update",
+    "weekly update",
+    "progress report",
+    "where are we on"
+  ],
+  "status": "active",
+  "version": 1
+}

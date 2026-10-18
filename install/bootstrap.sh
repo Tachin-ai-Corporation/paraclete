@@ -18,9 +18,13 @@
 # A commit is installed by that commit's own bootstrap: this script hands over to the installed copy
 # when the commit it would act on is not the one it came from. Run twice with the same commit, the
 # second run only puts back a role package that went missing, checks that the services run and writes
-# readiness again. The role's packages include the file toolchain (LibreOffice, Chromium, pandoc and
-# the rest, roles/generic/role.json), so a first boot and any upgrade that adds a package spend a few
-# minutes in apt-get; the running services keep running meanwhile.
+# readiness again. When the metadata's paraclete-role names another role than the installed release was
+# staged for, the same commit is installed again for the new role: its packages, its skills'
+# launchers, its prompts, playbooks and responsibilities come in and the old role's package goes,
+# while the data root (memory, missions, files) stays. The role's packages include the file toolchain
+# (LibreOffice, Chromium, pandoc and the rest, roles/generic/role.json), so a first boot and any
+# upgrade that adds a package spend a few minutes in apt-get; the running services keep running
+# meanwhile.
 
 set -Eeuo pipefail
 
@@ -31,6 +35,9 @@ readonly DATA_ROOT=/var/lib/paraclete
 readonly DATA_DIRS=(memory missions workspace files skills services home)
 readonly ETC_DIR=/etc/paraclete
 readonly INSTANCE_FILE=/etc/paraclete/instance.json
+# The agent's Workspace account as the dashboard's setup wizard recorded it (the control service writes
+# it); merged into the instance record while the metadata names no account.
+readonly WORKSPACE_FILE=/etc/paraclete/workspace.json
 readonly TOKEN_FILE=/etc/paraclete/gateway-token
 readonly UNIT_DIR=/etc/systemd/system
 readonly SERVICE_USER=paraclete
@@ -58,6 +65,7 @@ STEP=start
 FAILURE=''
 FAILED_AT=''
 SERVICE_FAILURE=''
+PINNED_FAILURE=''
 MOVED_PREVIOUS=0
 SWAPPED=0
 WORK_DIR=''
@@ -199,7 +207,23 @@ node_is_current() {  # Node.js at $NODE, NODE_MAJOR or later
   [[ "$major" =~ ^[0-9]+$ ]] && (( major >= NODE_MAJOR ))
 }
 
-installed_release_is_target() {  # the target commit is installed whole, from the target repository
+# staged_for_role <release root>: the release's roles/ holds the generic role and ROLE's package and no
+# other, so its launchers, prompts, playbooks and responsibilities are this role's. A release staged
+# for another role (the metadata's paraclete-role changed: install.sh --role on an existing instance)
+# is installed again, same commit, for this one.
+staged_for_role() {
+  local dir name want=(generic) have=()
+  [[ "$ROLE" == generic ]] || want+=("$ROLE")
+  for dir in "$1"/roles/*/; do
+    [[ -d "$dir" ]] || continue
+    name="${dir%/}"
+    have+=("${name##*/}")
+  done
+  (( ${#have[@]} == ${#want[@]} )) || return 1
+  for name in "${want[@]}"; do contains "$name" "${have[@]}" || return 1; done
+}
+
+installed_release_is_target() {  # the target commit is installed whole, from the target repository, for this role
   [[ "$INSTALLED_COMMIT" == "$TARGET_COMMIT" && "$INSTALLED_REPO" == "$TARGET_REPO" ]] || return 1
   local path missing=''
   for path in agent/node_modules bin config/contracts.mjs install/vm/instance-record.mjs install/vm/readiness.mjs; do
@@ -207,6 +231,10 @@ installed_release_is_target() {  # the target commit is installed whole, from th
   done
   if [[ -n "$missing" ]]; then
     warn "the installed release lacks${missing}; installing it again"
+    return 1
+  fi
+  if ! staged_for_role "$INSTALL_ROOT"; then
+    warn "the installed release was installed for another role than ${ROLE}; installing it again for ${ROLE}"
     return 1
   fi
   if ! node_is_current; then
@@ -332,13 +360,17 @@ node_step() {  # node_step <what failed> <node arguments...>: runs a release hel
 
 # A full install (every new commit, upgrades included) installs the packages the release's own role.json
 # names before anything is stopped, so a release that adds packages gets them, and one whose packages
-# cannot be installed stops here with the running release untouched.
+# cannot be installed stops here with the running release untouched: the Debian packages first, then
+# the pinned npm and pip packages (ensure_pinned, below).
 install_role_packages() {
-  local list="$WORK_DIR/role-packages" packages=()
+  local list="$WORK_DIR/role-packages" packages=() kind
   node_step "the packages of role ${ROLE} cannot be read" \
     "$RELEASE_DIR/install/vm/role-packages.mjs" "--root=$RELEASE_DIR" "--role=$ROLE" > "$list"
   mapfile -t packages < "$list"
   ensure_packages "${packages[@]}"
+  for kind in npm pip; do
+    ensure_pinned "$RELEASE_DIR" "$kind" || die "$PINNED_FAILURE"
+  done
 }
 
 role_package_list() {  # role_package_list <release root>: the role's packages, one per line, as that release reads them
@@ -349,17 +381,88 @@ role_package_list() {  # role_package_list <release root>: the role's packages, 
 # as one removed by hand. It never stops the run: the services ran without it before this run and still
 # can, so a package that cannot be read or installed is a warning, and the next run tries again.
 recheck_role_packages() {
-  local list="$WORK_DIR/role-packages" packages=() missing=()
+  local list="$WORK_DIR/role-packages" packages=() missing=() kind
   if ! role_package_list "$INSTALL_ROOT" > "$list" 2>"$WORK_DIR/step-errors"; then
     warn "the packages of role ${ROLE} cannot be read, so they were not checked: $(head -c 500 "$WORK_DIR/step-errors" | tr '\n' ' ')"
     return 0
   fi
   mapfile -t packages < "$list"
   mapfile -t missing < <(missing_packages "${packages[@]}")
+  if (( ${#missing[@]} > 0 )); then
+    warn "the role's packages ${missing[*]} are not installed; installing them"
+    if ! ensure_packages "${missing[@]}"; then
+      warn "could not install ${missing[*]}; the services start without them, and the next boot or upgrade tries again"
+    fi
+  fi
+  for kind in npm pip; do
+    if ! ensure_pinned "$INSTALL_ROOT" "$kind"; then
+      warn "${PINNED_FAILURE}; the services start without them, and the next boot or upgrade tries again"
+    fi
+  done
+}
+
+# ---- pinned npm and pip packages -----------------------------------------------------------------
+# A role pins its npm and pip packages to exact versions. The npm ones are installed globally, as root:
+# under npm's global root (/usr/lib/node_modules), with their commands in /usr/bin, where the services
+# can run them and cannot change them. The pip ones are installed for the paraclete user only (pip's
+# --user, under its home in the data root). pip as root would write /usr/local, which Debian's Python
+# reads ahead of the libraries apt installed, so a pinned package or one of its dependencies could
+# shadow a library apt or the system's own tools rely on; Debian marks its Python externally managed
+# for that reason, hence --break-system-packages, which here breaks nothing outside that one user. What
+# the paraclete user installs only its own Python sees, which is the agent's, and it is no more than the
+# agent could install itself. Its commands land in the home's .local/bin, which is not on the services'
+# PATH: a skill runs a pip package as `python3 -m <module>`.
+
+pinned_package_list() {  # pinned_package_list <release root> <npm|pip> [listing]: the role's pins, one per line; with what is installed, only those missing or at another version
+  local args=("--root=$1" "--role=$ROLE" "--kind=$2")
+  if [[ -n "${3:-}" ]]; then args+=("--installed=$3"); fi
+  "$NODE" "$1/install/vm/role-packages.mjs" "${args[@]}"
+}
+
+npm_list_installed() {  # npm's JSON listing of the global packages
+  npm ls --global --depth=0 --json 2>/dev/null
+}
+
+npm_install_pinned() {  # npm_install_pinned <name@version...>
+  npm_config_update_notifier=false npm install --global --no-fund --no-audit "$@"
+}
+
+pip_as_agent() {  # pip_as_agent <pip arguments...>: pip as the paraclete user, in its home
+  runuser -u "$SERVICE_USER" -- env HOME="$DATA_ROOT/home" python3 -m pip --disable-pip-version-check --no-input "$@"
+}
+
+pip_list_installed() {  # pip's JSON listing of the paraclete user's own packages
+  pip_as_agent list --user --format=json 2>/dev/null
+}
+
+pip_install_pinned() {  # pip_install_pinned <name==version...>: the user and its home come first (a first boot installs packages before prepare_host)
+  ensure_user && ensure_directories || return 1
+  pip_as_agent install --user --break-system-packages --no-cache-dir --no-warn-script-location "$@"
+}
+
+# ensure_pinned <release root> <npm|pip>: installs the role's pins of that kind that are missing or at
+# another version, and nothing when each one is installed. Returns 1 with PINNED_FAILURE set when they
+# cannot be read or installed; it checks every step itself, because its callers decide whether a failure
+# stops the run (a full install) or is a warning (the fast path).
+ensure_pinned() {
+  local root="$1" kind="$2" list="$WORK_DIR/pinned-$2" installed="$WORK_DIR/installed-$2.json" missing=()
+  PINNED_FAILURE=''
+  if ! pinned_package_list "$root" "$kind" > "$list" 2>"$WORK_DIR/step-errors"; then
+    PINNED_FAILURE="the ${kind} packages of role ${ROLE} cannot be read: $(head -c 1000 "$WORK_DIR/step-errors" | tr '\n' ' ')"
+    return 1
+  fi
+  [[ -s "$list" ]] || return 0
+  "${kind}_list_installed" > "$installed" || true
+  if ! pinned_package_list "$root" "$kind" "$installed" > "$list" 2>"$WORK_DIR/step-errors"; then
+    PINNED_FAILURE="the ${kind} packages of role ${ROLE} cannot be read: $(head -c 1000 "$WORK_DIR/step-errors" | tr '\n' ' ')"
+    return 1
+  fi
+  mapfile -t missing < "$list"
   (( ${#missing[@]} > 0 )) || return 0
-  warn "the role's packages ${missing[*]} are not installed; installing them"
-  if ! ensure_packages "${missing[@]}"; then
-    warn "could not install ${missing[*]}; the services start without them, and the next boot or upgrade tries again"
+  log "installing ${kind} packages: ${missing[*]}"
+  if ! "${kind}_install_pinned" "${missing[@]}"; then
+    PINNED_FAILURE="the ${kind} packages ${missing[*]} of role ${ROLE} could not be installed"
+    return 1
   fi
 }
 
@@ -392,6 +495,8 @@ build_instance_record() {  # build_instance_record <release root> <out file>: ch
   if [[ -n "$DASHBOARD_URL" ]]; then args+=("--dashboard-url=$DASHBOARD_URL"); fi
   if [[ -n "$WORKSPACE_ACCOUNT" ]]; then args+=("--workspace-account=$WORKSPACE_ACCOUNT"); fi
   if [[ -n "$WORKSPACE_SIGNER" ]]; then args+=("--workspace-signer=$WORKSPACE_SIGNER"); fi
+  # The wizard's record; the helper uses it only when the metadata keys above are absent.
+  if [[ -f "$WORKSPACE_FILE" ]]; then args+=("--workspace-file=$WORKSPACE_FILE"); fi
   node_step "the instance record is not valid" "$1/install/vm/instance-record.mjs" "${args[@]}"
 }
 

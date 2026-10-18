@@ -1,0 +1,8 @@
+{
+  "id": "legal-review",
+  "name": "Legal Review",
+  "version": 1,
+  "when_to_use": "Reviewing a contract or legal document clause by clause, proposing changes as comments or in a copy of your own, comparing versions, extracting obligations and deadlines, and preparing questions for a lawyer. Assist and escalate: flag with the exact quote, never give legal advice, never edit the document under review.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

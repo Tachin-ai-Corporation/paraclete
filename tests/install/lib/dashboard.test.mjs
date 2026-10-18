@@ -102,6 +102,14 @@ test("the environment file keeps any agent name exactly, quotes and commas inclu
   assert.throws(() => serviceEnv({ ...INPUTS, role: '' }), /missing role/);
 });
 
+test("the role's workspace flag reaches the dashboard as PARACLETE_WORKSPACE_ROLE, 'true' or 'false'", () => {
+  assert.equal(serviceEnv(INPUTS).PARACLETE_WORKSPACE_ROLE, 'false');
+  assert.equal(serviceEnv({ ...INPUTS, workspaceRole: 'true' }).PARACLETE_WORKSPACE_ROLE, 'true');
+  assert.equal(serviceEnv({ ...INPUTS, workspaceRole: true }).PARACLETE_WORKSPACE_ROLE, 'true');
+  for (const flag of ['false', '', 'yes', undefined]) assert.equal(serviceEnv({ ...INPUTS, workspaceRole: flag }).PARACLETE_WORKSPACE_ROLE, 'false', String(flag));
+  assert.match(cli(['env-file', ...Object.entries({ ...INPUTS, workspaceRole: 'true' }).map(([k, v]) => `${k}=${v}`)]), /^PARACLETE_WORKSPACE_ROLE: "true"$/m);
+});
+
 test('a service as it should be needs no deploy, however Cloud Run spells its sizes', () => {
   const wanted = { project: PROJECT, region: REGION, commit: COMMIT, env: serviceEnv(INPUTS) };
   assert.deepEqual(serviceDrift(goodService(), wanted), []);

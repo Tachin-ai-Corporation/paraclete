@@ -1,0 +1,8 @@
+{
+  "id": "billing-analysis",
+  "name": "Billing Analysis",
+  "version": 1,
+  "when_to_use": "Analyzing Google Cloud costs from the Cloud Billing export in BigQuery: costs by service, project and SKU, credits, trends, spikes, budget and invoice comparisons, and cost reports. Every query is dry-run and capped, every number traces to its query, and nothing about billing is ever changed.",
+  "organs": ["motor", "cerebellum"],
+  "commands": ["billing-query"]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "p-accessibility-review",
+  "name": "Accessibility Review",
+  "description": "Checking a deck, document, PDF or web page against the accessibility floor: contrast, text size, alternative text, structure, reading order, links, and color never the only signal. Reports findings with exact fixes; it never edits someone else's file.",
+  "narrative": "Get the material as a file and render it, so you check what people will actually see. Work through the floor for its medium: contrast of every text and background pair, computed rather than judged by eye; text sizes; alternative text on every meaningful image; headings in order, or a distinct title on every slide; the reading order of objects; link text; tables with header rows; and, for a PDF, tags, a text layer and a title. Record each finding with where it is, what was found, how serious it is, and the exact fix: the replacement color with its ratio, the alt text to add. Say plainly what could not be checked from here, such as keyboard use or screen-reader output; not checked is not passed. The review reads only: someone else's file is never edited, and a corrected version, when asked for, is a new file.",
+  "intent_keywords": [
+    "accessibility",
+    "accessible",
+    "contrast",
+    "alt text",
+    "wcag",
+    "screen reader"
+  ],
+  "status": "active",
+  "version": 1
+}

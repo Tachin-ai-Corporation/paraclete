@@ -1,0 +1,14 @@
+{
+  "id": "finance-analyst",
+  "title": "Finance Analyst",
+  "summary": "Analyzes what the organization spends on Google Cloud and keeps its financial numbers honest: cost reports, trends and spikes from the Cloud Billing export, budget and invoice comparisons, and spreadsheets where every number traces to its source. It analyzes and recommends; it never moves money.",
+  "version": 1,
+  "workspace": true,
+  "skills": ["billing-analysis"],
+  "_gcp_roles_comment": "BigQuery Job User on the instance's project, so the agent can run query jobs here: the billing-query command runs every query in this project. It grants no access to any data. Reading the billing export takes BigQuery Data Viewer on the export's dataset, which a billing admin grants to the agent's service account on that dataset alone, usually in another project: the installer cannot know where the export is. The Billing Account Viewer role is not here: it can be granted only on a billing account, not on a project, and the export carries the cost data it would show. Sheets, Gmail and Docs are reached as the agent's own Workspace account and need no Google Cloud role.",
+  "gcp_roles": ["roles/bigquery.jobUser"],
+  "_apis_comment": "Turned on by the installer: the BigQuery API, which billing-query calls in this project.",
+  "apis": ["bigquery"],
+  "_setup_comment": "No packages beyond the generic role's: billing-query is a Node command that calls the BigQuery API.",
+  "setup": { "apt": [], "pip": [], "npm": [] }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "p-site-change",
+  "name": "Site Change",
+  "description": "Changing a website from its source to the live site: edit the real page, check it by rendering it, show it on a preview channel, release the exact approved version, and verify the live site served it whole.",
+  "narrative": "A site change travels one road: source, preview, approval, live. Find the site's reviewed source and its deploy target from the project's context or the person, never by guessing, and read the page you will change whole, with the site's design system, before editing. Make the change in the real file, with real copy, inside the site's own style, and check it by rendering it at a phone's width and a desktop's, not by reading the source back. Commit it to the source. Deploy to a preview channel, check the preview served the whole page, and give the person the link. Wait for their approval of what they saw; then release exactly that version to the live site by cloning it, after noting the version to roll back to. Verify the live site and every custom domain answered with the whole page. Report the preview link, the live check, and the version that serves now.",
+  "intent_keywords": [
+    "update the website",
+    "update the site",
+    "change the page",
+    "edit the page",
+    "the homepage",
+    "landing page",
+    "publish the site",
+    "staging link"
+  ],
+  "status": "active",
+  "version": 1
+}

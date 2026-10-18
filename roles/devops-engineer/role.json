@@ -1,0 +1,30 @@
+{
+  "id": "devops-engineer",
+  "title": "DevOps Engineer",
+  "summary": "Builds, ships and runs the organization's services on Google Cloud: container images built by Cloud Build into Artifact Registry, Cloud Run services, Cloud Storage and Firebase Hosting. A deploy is done only when the live service answers, and every production change keeps a way back.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["gcloud", "container-images", "cloud-storage", "firebase"],
+  "_gcp_roles_comment": "Added to the generic base set, on the project, for what the four skills do. run.admin: deploy, update, roll back and delete Cloud Run services, and make one public (the invoker binding needs run.services.setIamPolicy, which run.developer lacks); project-wide, so it reaches every Cloud Run service, the dashboard's included (README: what this grant reaches). cloudbuild.builds.editor: submit, read and cancel builds. logging.viewer: build logs (builds log to Cloud Logging only) and service logs. storage.objectUser and storage.bucketViewer: read and write objects and see buckets, never bucket settings or IAM (objectUser, unlike objectAdmin, cannot change object ACLs). firebasehosting.admin: Hosting sites, preview channels, deploys and releases. Never here: act-as and Artifact Registry write, which project-wide would reach the dashboard's account and images (resource_roles has them, on the agent's own account and repository). Not granted: creating service accounts, project IAM, creating buckets; a person does those, and the skills say exactly what to ask for.",
+  "gcp_roles": [
+    "roles/run.admin",
+    "roles/cloudbuild.builds.editor",
+    "roles/logging.viewer",
+    "roles/storage.objectUser",
+    "roles/storage.bucketViewer",
+    "roles/firebasehosting.admin"
+  ],
+  "_resource_roles_comment": "Granted by the installer on single resources, never the project. iam.serviceAccountUser on the agent's own account (paraclete-agent@): its builds run as itself, and the services it deploys run as itself, unless an admin lets it act as another runtime account on that account alone. artifactregistry.writer on agent-images, the Docker repository the installer creates for this role in the instance's region: the only repository its builds push to.",
+  "resource_roles": [
+    { "role": "roles/iam.serviceAccountUser", "on": "agent-account" },
+    { "role": "roles/artifactregistry.writer", "on": "agent-repository" }
+  ],
+  "_apis_comment": "Turned on by the installer, on top of every instance's (Cloud Run, Cloud Build and Artifact Registry among them): the Firebase Hosting API and the Firebase Management API, for the firebase skill. Adding Firebase to the project is still a person's step (README).",
+  "apis": ["firebasehosting", "firebase"],
+  "_setup_comment": "gcloud, gsutil and bq come with Debian 12's Compute Engine image (the google-cloud-cli package from Google's apt repository), so they are not listed. bind9-dnsutils gives dig, for checking a domain's records; openssl, for reading a site's TLS certificate (ca-certificates already depends on it; named because the skills run it). firebase-tools is the Firebase CLI, pinned. No Docker: the docker group is root on the machine, which would let the agent rewrite its own installed code, and rootless Docker or Podman needs setuid helpers the services' NoNewPrivileges blocks; images are built by Cloud Build instead.",
+  "setup": {
+    "apt": ["bind9-dnsutils", "openssl"],
+    "pip": [],
+    "npm": ["firebase-tools@15.32.1"]
+  }
+}

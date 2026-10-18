@@ -1,0 +1,9 @@
+{
+  "id": "calendar-management",
+  "name": "Calendar Management",
+  "version": 1,
+  "when_to_use": "Finding time, scheduling and moving meetings, and preparing meeting briefs and the daily briefing from calendars and mail. Free/busy first, times in the person's own zone, and no invitation or change reaches anyone until the person confirms it.",
+  "organs": ["motor", "cerebellum"],
+  "commands": [],
+  "requires": ["workspace"]
+}

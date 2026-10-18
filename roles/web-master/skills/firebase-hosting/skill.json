@@ -1,0 +1,8 @@
+{
+  "id": "firebase-hosting",
+  "name": "Firebase Hosting: change, preview, release, recover",
+  "version": 1,
+  "when_to_use": "Changing a website on Firebase Hosting from its source to the live site: checking a page edit by rendering it, deploying to a preview channel to show it, releasing the approved version to live, verifying it served whole, rolling back, and diagnosing why a URL does not serve what it should.",
+  "organs": ["motor"],
+  "commands": []
+}

@@ -204,6 +204,18 @@ const GCLOUD = {
       out('');
     },
   },
+  'iam service-accounts remove-iam-policy-binding': {
+    write: true,
+    run: ([email], f) => {
+      if (!state.accounts.includes(email)) fail('NOT_FOUND');
+      const before = state.accountPolicies[email] || [];
+      // As gcloud does, a binding that is not there is an error.
+      if (!before.some(([r, m]) => r === f.role && m === f.member)) fail('Policy binding with the specified principal and role not found!');
+      state.accountPolicies[email] = removeBinding(before, f.role, f.member);
+      save();
+      out('');
+    },
+  },
   'firestore databases describe': {
     write: false,
     run: (_, f) => {
@@ -461,6 +473,18 @@ const GCLOUD = {
     run: ([name], f) => {
       if (!state.imageRepositories.includes(`${f.location}/${name}`)) fail('NOT_FOUND');
       addBinding((state.repositoryPolicies[`${f.location}/${name}`] ||= []), f.role, f.member);
+      save();
+      out('');
+    },
+  },
+  'artifacts repositories remove-iam-policy-binding': {
+    write: true,
+    run: ([name], f) => {
+      const key = `${f.location}/${name}`;
+      if (!state.imageRepositories.includes(key)) fail('NOT_FOUND');
+      const before = state.repositoryPolicies[key] || [];
+      if (!before.some(([r, m]) => r === f.role && m === f.member)) fail('Policy binding with the specified principal and role not found!');
+      state.repositoryPolicies[key] = removeBinding(before, f.role, f.member);
       save();
       out('');
     },

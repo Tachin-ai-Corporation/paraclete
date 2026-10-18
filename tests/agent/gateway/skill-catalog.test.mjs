@@ -54,3 +54,37 @@ describe('buildSkillCatalog', () => {
     assert.equal(buildSkillCatalog([join(root, 'missing')]), '');
   });
 });
+
+describe('skills that require a Workspace account', () => {
+  let dir;
+  before(() => {
+    dir = join(root, 'workspace-skills');
+    skill(dir, 'calendar', { id: 'calendar', name: 'Calendar', when_to_use: 'Read and write the calendar.', organs: ['motor'], requires: ['workspace'] });
+    skill(dir, 'notes', { id: 'notes', name: 'Notes', when_to_use: 'Keep notes.', organs: ['motor'] });
+    skill(dir, 'future', { id: 'future', name: 'Future', when_to_use: 'Needs something new.', organs: ['motor'], requires: ['telepathy'] });
+  });
+
+  const withAccount = { workspace: { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com' } };
+
+  it('are listed when the instance has a Workspace account', () => {
+    const text = buildSkillCatalog([dir], { instance: withAccount });
+    assert.match(text, /- Calendar \(calendar\): Read and write the calendar\./);
+    assert.match(text, /- Notes \(notes\)/);
+  });
+
+  it('are left out when it has none, and when no instance is given', () => {
+    for (const options of [{ instance: { workspace: null } }, { instance: {} }, {}, undefined]) {
+      const text = buildSkillCatalog([dir], options);
+      assert.doesNotMatch(text, /Calendar/);
+      assert.match(text, /- Notes \(notes\)/, 'skills that require nothing stay');
+    }
+  });
+
+  it('a requirement the code does not know is never met', () => {
+    assert.doesNotMatch(buildSkillCatalog([dir], { instance: withAccount }), /Future/);
+  });
+
+  it("findSkills reports each skill's requirements", () => {
+    assert.deepEqual(findSkills([dir]).map((s) => [s.id, s.requires]), [['calendar', ['workspace']], ['future', ['telepathy']], ['notes', []]]);
+  });
+});

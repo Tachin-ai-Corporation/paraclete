@@ -78,14 +78,15 @@ export function deliveryDecision(env, nowMs) {
 
 /**
  * Who to @mention in Chat: the person who asked, else everyone in the space when the agent is
- * stuck and nobody in particular asked. Dashboard messages mention no one.
+ * stuck and nobody in particular asked. A reply to a direct message (an Address with no thread) and
+ * a dashboard message mention no one: the one person there hears it anyway.
  *
  * @param {object} env
  * @param {object} addr
  * @returns {string[]} Chat user ids or emails
  */
 export function mentionsFor(env, addr) {
-  if (addr?.channel !== 'gchat') return [];
+  if (addr?.channel !== 'gchat' || !addr.thread) return [];
   const sender = String(env.source_meta?.sender || '').replace(/^users\//, '');
   if (sender) return [sender];
   if (env.status === 'needs_input' || env.status === 'blocked') return ['all'];
@@ -232,7 +233,10 @@ export function createDelivery({
     });
 
     if (voiced.action === 'deliver') {
-      const ok = await outbound.send(addr, voiced.text, { mentions: mentionsFor(env, addr), attachments: attachmentsOf(env) });
+      // Keyed by the envelope and what it says: a delivery retried after a crash is posted once.
+      const ok = await outbound.send(addr, voiced.text, {
+        mentions: mentionsFor(env, addr), attachments: attachmentsOf(env), key: `delivery:${env.id}:${digest}`,
+      });
       if (!ok) throw new Error(`the ${addr.channel} channel refused the message`);
       remember(env.id, digest);
       await recordInLedger(env, addr, voiced.text);

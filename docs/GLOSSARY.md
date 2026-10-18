@@ -12,6 +12,10 @@ this.
 | dev instance | An instance in a project used only for developing this repo |
 | role | The agent's focus, chosen at install. One per instance. `generic` is the default and the base of every role |
 | workspace role | A role flagged `workspace: true`. Its agent gets its own Google Workspace account through domain-wide delegation |
+| Workspace account | The agent's own Google account on a workspace role: a user an admin creates, connected in the dashboard's setup wizard, and recorded on the VM in `/etc/paraclete/workspace.json`. The agent acts as it for Chat, Drive, Docs, Sheets, Slides, Calendar and Gmail |
+| domain-wide delegation | The Admin console grant that lets `paraclete-dwd@` sign tokens as the agent's Workspace account, for the scopes listed. Google has no API for it, so an admin pastes the client ID and scopes the wizard shows |
+| agent-images | The Artifact Registry repository a role with `resource_roles` on `agent-repository` pushes its images to; the agent may write there and nowhere else in Artifact Registry |
+| role move | A developer re-running `install.sh --role <other>` on an existing instance. Not a product feature: the old role's own grants are revoked, its packages stay, memory stays |
 | release | A tag of this repo that instances can install or upgrade to |
 | upgrade | Moving an instance, dashboard and VM together, to a release or commit |
 | dashboard | The web app where people use and manage an instance |

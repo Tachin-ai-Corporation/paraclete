@@ -149,6 +149,24 @@ test('an unreadable settings document stops startup instead of guessing the mode
   assert.equal(clients.calls.length, 0);
 });
 
+test('the skill catalog shows the Workspace skills only when the instance record names a Workspace account', async () => {
+  const { runtime } = fakeRuntime();
+  mkdirSync(join(runtime.paths.skills, 'workspace-calendar'), { recursive: true });
+  writeFileSync(join(runtime.paths.skills, 'workspace-calendar', 'skill.json'), JSON.stringify({
+    id: 'workspace-calendar', name: 'Google Calendar', when_to_use: 'Calendars.', organs: ['motor'], requires: ['workspace'],
+  }));
+  mkdirSync(join(runtime.paths.skills, 'files'), { recursive: true });
+  writeFileSync(join(runtime.paths.skills, 'files', 'skill.json'), JSON.stringify({ id: 'files', name: 'Files', when_to_use: 'Files.', organs: ['motor'] }));
+
+  const without = await buildGateway(runtime, { createClients: fakeClients().create });
+  assert.match(without.skillCatalog, /\(files\)/);
+  assert.doesNotMatch(without.skillCatalog, /workspace-calendar/);
+
+  const workspace = { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com' };
+  const withAccount = await buildGateway({ ...runtime, instance: { ...runtime.instance, workspace } }, { createClients: fakeClients().create });
+  assert.match(withAccount.skillCatalog, /- Google Calendar \(workspace-calendar\): Calendars\./);
+});
+
 test('the workspace and memory directories exist before the first command runs', async () => {
   const { runtime } = fakeRuntime();
   const gateway = await buildGateway(runtime, { createClients: fakeClients().create });

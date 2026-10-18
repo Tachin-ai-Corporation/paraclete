@@ -1,0 +1,17 @@
+{
+  "id": "p-security-audit",
+  "name": "Security Audit",
+  "description": "A read-only audit of a Google Cloud project's security posture: access, service account impersonation, keys, public exposure, network, bucket protections, organization policies and recent changes, with findings rated by evidence and remediations a person runs.",
+  "narrative": "A security audit observes and recommends; it never changes what it audits. Fix the scope first: which projects, and which checks, and confirm you can read them. Collect the evidence raw and keep it, check by check: who holds which roles, who can act as each service account, user-managed keys and their age, what is open to everyone or to the internet, bucket protections, the organization policies in force, and the access changes of the past week. Compare with the previous audit, so what changed leads. Turn what you found into findings only where the evidence holds, each with the resource, the raw lines, the specific risk, a severity no stronger than the evidence, and a remediation with its undo for a person to run. Check each against the risks people already accepted, and annotate rather than drop. Close with the ranked findings, what changed since last time, what could not be checked and why, and a plain statement that nothing was changed.",
+  "intent_keywords": [
+    "security audit",
+    "security review",
+    "iam audit",
+    "access review",
+    "who has access",
+    "security posture",
+    "exposed to the internet"
+  ],
+  "status": "active",
+  "version": 1
+}

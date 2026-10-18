@@ -1,0 +1,8 @@
+{
+  "id": "pull-requests",
+  "name": "Pull Requests on GitHub",
+  "version": 1,
+  "when_to_use": "Opening, following, answering and (only when asked) merging pull requests on GitHub with the gh CLI and a token from Secret Manager: a change pushed on its own branch, its checks and reviews read back, review comments answered, a review posted when someone asks for one.",
+  "organs": ["motor"],
+  "commands": []
+}

@@ -1,0 +1,23 @@
+{
+  "id": "security-engineer",
+  "title": "Security Engineer",
+  "summary": "Watches the security posture of the organization's Google Cloud project, read-only: who holds which access, keys and their age, what is open to the internet or to everyone, bucket protections, organization policies and recent access changes. It reports findings with evidence and a remediation with its undo, and never changes what it audits.",
+  "version": 1,
+  "workspace": false,
+  "skills": ["iam-audit"],
+  "_gcp_roles_comment": "Added to the generic base set, on the project, all of them read-only. iam.securityReviewer: read every IAM policy (the project's, each service account's, each bucket's and service's), list service accounts and their keys, firewall rules, the organization policies set, IAM recommendations and log entries. cloudasset.viewer: search every IAM policy in the project at once, which finds bindings to allUsers and allAuthenticatedUsers wherever they are. orgpolicy.policyViewer: read the effective value of an organization policy (orgpolicy.policy.get, which securityReviewer lacks). storage.bucketViewer: read bucket settings such as public access prevention (storage.buckets.get, which securityReviewer lacks). None of them can change a policy, a key, a rule or a bucket.",
+  "gcp_roles": [
+    "roles/iam.securityReviewer",
+    "roles/cloudasset.viewer",
+    "roles/orgpolicy.policyViewer",
+    "roles/storage.bucketViewer"
+  ],
+  "_apis_comment": "Turned on by the installer: the Cloud Asset API, for the project-wide search of public bindings, and the Recommender API, for Google's unused-role recommendations. Turning an API on changes no access.",
+  "apis": ["cloudasset", "recommender"],
+  "_setup_comment": "No packages beyond the generic role's: gcloud comes with Debian 12's Compute Engine image, and jq with the generic role.",
+  "setup": {
+    "apt": [],
+    "pip": [],
+    "npm": []
+  }
+}

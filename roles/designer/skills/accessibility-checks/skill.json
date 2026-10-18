@@ -1,0 +1,8 @@
+{
+  "id": "accessibility-checks",
+  "name": "Accessibility Checks",
+  "version": 1,
+  "when_to_use": "Checking a deck, document, PDF, web page or chart against the accessibility floor before it is delivered, or when asked whether something is accessible: contrast computed with contrast-check, text size, alternative text, structure, reading order, and color never the only signal.",
+  "organs": ["motor", "cerebellum"],
+  "commands": ["contrast-check"]
+}

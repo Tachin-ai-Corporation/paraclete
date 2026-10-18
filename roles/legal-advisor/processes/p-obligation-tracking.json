@@ -1,0 +1,16 @@
+{
+  "id": "p-obligation-tracking",
+  "name": "Obligations and Deadlines",
+  "description": "Extracting the obligations, deadlines and notice periods from contracts into a tracker: who owes what to whom, by when, from which clause, with the dates that fall soon pointed out.",
+  "narrative": "Every obligation you record comes from the document's own words, with its section and a short exact quote. Capture the parties and their roles, the effective and end dates, renewal terms and the notice windows that protect them, payment and delivery duties, reporting duties and conditions. Compute dates from dates in the text with a date tool and show how (a notice due 60 days before a renewal date), and when a date hangs on an event, such as delivery or acceptance, record the rule instead of guessing a date. Keep them in a spreadsheet your own account created, one row per obligation, appended and marked rather than rewritten. Close by pointing out the dates that fall in the next 90 days; you cannot send reminders, so the person decides whom to tell. Interpreting what an obligation legally requires is a question for counsel, not for the tracker.",
+  "intent_keywords": [
+    "obligations",
+    "deadlines in the contract",
+    "notice period",
+    "renewal date",
+    "key dates",
+    "contract tracker"
+  ],
+  "status": "active",
+  "version": 1
+}

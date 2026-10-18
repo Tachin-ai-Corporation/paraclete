@@ -1,0 +1,55 @@
+/* dashboard/components/settings/workspace/WorkspaceTab.module.css: the Workspace tab: its summary line,
+   the four numbered steps, the recorded account, and the per-API results table. The fact list, the
+   address chip and the table wrapper reuse Settings.module.css; colors and spacing come only from the
+   tokens in app/globals.css. */
+
+.summary { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; color: var(--text-secondary); }
+
+.steps { list-style: none; max-width: 860px; }
+
+.step > * + * { margin-top: var(--space-3); }
+
+.stepHead { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.stepHead h3 { font-size: 15px; }
+
+.stepNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--text-link);
+  font-size: 13px;
+  font-weight: 600;
+  flex: none;
+}
+
+.stepBody > * + * { margin-top: var(--space-2); }
+.stepBody p { color: var(--text-secondary); max-width: 720px; }
+.stepBody p:global(.error-text) { color: var(--danger); }
+.stepBody p:global(.muted) { color: var(--text-muted); }
+
+.address { max-width: 360px; }
+
+.suggestion { display: inline-flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; color: var(--text-secondary); font-size: 13px; }
+
+.copyLine { display: inline-flex; align-items: flex-start; gap: var(--space-2); flex-wrap: wrap; max-width: 100%; }
+.copyLine code { overflow-wrap: anywhere; }
+.scopes { font-size: 12.5px; line-height: 1.5; }
+
+.warning { color: var(--warn); }
+.stepBody p.warning { color: var(--warn); }
+
+.recordedHead { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.recordedHead h3 { font-size: 15px; }
+.recordedHead p { margin-top: var(--space-2); }
+
+.results > * + * { margin-top: var(--space-2); }
+.results p { max-width: 720px; }
+.apiTable td p + p { margin-top: var(--space-1); }
+
+@media (max-width: 760px) {
+  .address { max-width: none; }
+}

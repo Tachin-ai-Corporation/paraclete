@@ -1,0 +1,17 @@
+{
+  "id": "p-site-review",
+  "name": "Site Review",
+  "description": "Reviewing a website the way its owner would and proposing the few improvements that matter most, ranked, with the strongest one shown on a preview channel. Nothing reaches the live site from a review.",
+  "narrative": "A site review ends in a choice for the person, not a change to their site. Learn the site's goal and its design system first, then look at it as a visitor does: on a phone and on a desktop, as served. Walk what fits the site: whether its message lands in seconds, design consistency, mobile layout, accessibility, performance, search and social previews, links and assets, and the freshness of its words, recording each finding with its evidence. Rank them by how much each helps the visitor or the goal against its effort and risk, and keep only the few that matter. Build the first on a preview channel so the person can see it, and present the short ranked list with that link. Their choices become site changes of their own; what they took and declined is kept in the project's context so the next review fits better.",
+  "intent_keywords": [
+    "review the site",
+    "review the website",
+    "improve the site",
+    "improve the website",
+    "audit the site",
+    "what would you change",
+    "make it better"
+  ],
+  "status": "active",
+  "version": 1
+}

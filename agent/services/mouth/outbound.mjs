@@ -1,7 +1,8 @@
 // agent/services/mouth/outbound.mjs: the mouth's one send call. Picks the token an Address's channel
 // needs, hands the text to deliverToAddress (agent/providers/channel.mjs), and remembers when the
-// agent last spoke to each Address, which the status notes consult. Deciding what to say is
-// voice.mjs; which envelopes to send is delivery.mjs. Used by delivery.mjs and status-updates.mjs.
+// agent last spoke to each Address, which the status notes consult, and how Google Chat last
+// answered, which the mouth's health file reports. Deciding what to say is voice.mjs; which envelopes
+// to send is delivery.mjs. Used by delivery.mjs and status-updates.mjs.
 
 import { deliverToAddress } from '../../providers/channel.mjs';
 
@@ -41,12 +42,14 @@ function channelLogger(log) {
  * @param {Function} [deps.deliver]         deliverToAddress (injectable for tests)
  * @param {Function} [deps.log]             (level, message, fields) logger
  * @param {Function} [deps.now]             clock in milliseconds (injectable for tests)
- * @returns {{send: Function, lastSpokenAt: (addr: object) => number}}
+ * @returns {{send: Function, lastSpokenAt: (addr: object) => number, chatStatus: () => object}}
  */
 export function createOutbound({
   getVmToken, getChatToken = null, replyInThread = true, deliver = deliverToAddress, log = () => {}, now = Date.now,
 }) {
   const spokenAt = new Map();
+  const iso = () => new Date(now()).toISOString();
+  const chat = { sent: 0, refused: 0, last_sent_at: null, last_error: null, last_error_at: null };
 
   /**
    * Sends text to an Address.
@@ -55,16 +58,31 @@ export function createOutbound({
    * @param {string} text
    * @param {object} [opts]
    * @param {string[]} [opts.mentions]    Chat only
+   * @param {string}   [opts.key]         Chat only: what this message is; the same key posts once
    * @param {Array}    [opts.attachments] dashboard only: { name, size, gcsPath }
    * @returns {Promise<boolean>} whether the channel accepted the message
    * @throws {UndeliverableError} for Chat on an instance without a Workspace account
    */
-  async function send(addr, text, { mentions = [], attachments = [] } = {}) {
-    if (addr?.channel === 'gchat' && !getChatToken) {
+  async function send(addr, text, { mentions = [], attachments = [], key } = {}) {
+    const isChat = addr?.channel === 'gchat';
+    if (isChat && !getChatToken) {
       throw new UndeliverableError('Google Chat is not set up on this instance');
     }
-    const token = addr?.channel === 'gchat' ? await getChatToken() : await getVmToken();
-    const ok = await deliver(addr, text, { token, replyInThread, mentions, attachments, log: channelLogger(log) });
+    let token;
+    try {
+      token = isChat ? await getChatToken() : await getVmToken();
+    } catch (err) {
+      if (isChat) Object.assign(chat, { refused: chat.refused + 1, last_error: `no Workspace token: ${err.message}`, last_error_at: iso() });
+      throw err;
+    }
+    const report = ({ ok, error }) => {
+      if (!isChat) return;
+      if (ok) Object.assign(chat, { sent: chat.sent + 1, last_sent_at: iso() });
+      else Object.assign(chat, { refused: chat.refused + 1, last_error: error || 'refused', last_error_at: iso() });
+    };
+    const ok = await deliver(addr, text, {
+      token, replyInThread, mentions, attachments, messageKey: key, report, log: channelLogger(log),
+    });
     if (ok) spokenAt.set(addressKey(addr), now());
     return ok;
   }
@@ -74,5 +92,8 @@ export function createOutbound({
     return spokenAt.get(addressKey(addr)) || 0;
   }
 
-  return { send, lastSpokenAt };
+  /** How Google Chat has answered the mouth in this run: posts accepted and refused, the last error. */
+  const chatStatus = () => ({ ...chat });
+
+  return { send, lastSpokenAt, chatStatus };
 }

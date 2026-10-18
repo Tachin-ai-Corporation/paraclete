@@ -1,0 +1,19 @@
+{
+  "id": "p-schedule-meeting",
+  "name": "Schedule a Meeting",
+  "description": "Finding a time and putting a meeting on the calendar: constraints, free/busy, options in each person's zone, the exact invitation approved before it goes out, then the event read back. Also moving or changing a meeting the agent organized.",
+  "narrative": "Scheduling starts from constraints, not from the first free slot. Settle who must attend, how long, by when, each person's timezone and working hours, and whether it needs a video link or a room. Check free/busy for everyone across the window, and treat anyone you cannot see as unknown, not free. Offer two or three options in local time instead of choosing silently. When one is chosen, write the event out exactly: title, start and end with zone, guests, and description. The event lives on your own calendar and reaches people as invitations from your address, so when anyone besides the person asking is invited, that exact text goes to the person for approval before it is created; changing an event others are invited to is gated the same way. Create exactly what was approved, read it back to confirm time, zone and guests, and report its link. Never book over a conflict unless the person says so, and never claim to have cancelled a meeting or answered an invitation: the calendar commands do neither.",
+  "intent_keywords": [
+    "schedule a meeting",
+    "set up a meeting",
+    "book a meeting",
+    "find a time",
+    "find time",
+    "reschedule",
+    "move the meeting",
+    "send an invite",
+    "calendar invite"
+  ],
+  "status": "active",
+  "version": 1
+}

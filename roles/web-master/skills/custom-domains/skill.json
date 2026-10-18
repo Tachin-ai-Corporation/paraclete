@@ -1,0 +1,8 @@
+{
+  "id": "custom-domains",
+  "name": "Custom Domains for Firebase Hosting",
+  "version": 1,
+  "when_to_use": "Connecting a custom domain (example.com or www.example.com) to a Firebase Hosting site: registering it through the Hosting API, handing a person the exact DNS records to add at their provider, and checking until the domain serves the site over HTTPS. Also checking or removing a domain already connected.",
+  "organs": ["motor"],
+  "commands": []
+}

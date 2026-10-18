@@ -1,0 +1,17 @@
+{
+  "id": "p-cost-investigation",
+  "name": "Cost Investigation",
+  "description": "Explaining a cost change or spike: when it started, which service, SKU, project and resource drove it, what changed, and what could be done, with the cost impact. Read-only: it recommends and never acts.",
+  "narrative": "A spike is explained when you can say what drove it and since when. Start broad and narrow down: daily net cost over a window that begins well before the change, to find when it started; then by service, then by SKU within the services that moved, then by project and labels, and by resource when the detailed export exists, until a few lines account for most of the change. Separate one-time charges and credits that ended from real growth in usage. Look for the cause in what you can read: usage that grew, a new SKU, a different region, a label that points to an owner. Report the size of the change, its drivers with numbers, the likely cause with how you know it, and options with their cost impact. Investigating changes nothing: no resource is stopped, resized or deleted, and billing is never touched.",
+  "intent_keywords": [
+    "cost spike",
+    "costs went up",
+    "why did costs",
+    "unexpected charge",
+    "cost increase",
+    "billing anomaly",
+    "where is the money going"
+  ],
+  "status": "active",
+  "version": 1
+}

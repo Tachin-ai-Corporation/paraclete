@@ -12,8 +12,9 @@
 
 import { firestoreEncode, StoreConflict } from '../../../agent/storage/firestore.mjs';
 import { HttpError } from './errors.mjs';
+import { DASHBOARD_ROLES } from '../../../agent/storage/dashboard-users.mjs';
 
-export const DASHBOARD_ROLES = Object.freeze(['admin', 'member']);
+export { DASHBOARD_ROLES };
 
 const EMAIL_PATTERN = /^[^@\s/]+@[^@\s/]+\.[^@\s/]+$/;
 

@@ -1,0 +1,16 @@
+{
+  "id": "p-defect-report",
+  "name": "Defect Report",
+  "description": "Turning a reported problem into a defect anyone can reproduce: reproduce it, narrow it to the smallest case, rate its severity from the evidence, and write it up with steps, expected and actual, and proof. Read-only: it documents, never fixes.",
+  "narrative": "A defect report is a recipe a stranger can follow to see the failure for themselves. Start from what was reported and reproduce it on a known version, in a known environment, with exact inputs; if you cannot reproduce it, say what you tried and stop short of calling it a defect. Narrow it: the fewest steps and the smallest input that still fail, and whether it fails always or only sometimes, with how often. Capture the evidence while it is in front of you: the verbatim error, the log, a screenshot or a captured request and response. Rate severity from what you can show, not from how loudly it was reported. Write it up with a specific title, the severity, where it happens, numbered steps, expected and actual in one sentence each, and the evidence, and where possible a failing test that encodes it. Hand it back, or file it where the person asked; fixing it is separate work.",
+  "intent_keywords": [
+    "bug report",
+    "defect report",
+    "write up the bug",
+    "file a bug",
+    "reproduce the bug",
+    "repro steps"
+  ],
+  "status": "active",
+  "version": 1
+}

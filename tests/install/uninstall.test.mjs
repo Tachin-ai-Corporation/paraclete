@@ -3,7 +3,9 @@
 // delete, deletes that (the dashboard's service, its image repository and every project grant of the
 // accounts, the dashboard's log writer among them) and keeps the database and the bucket; --purge
 // deletes those too, but only after the project id is typed; a dry run deletes nothing; and it never
-// touches what the installer didn't create.
+// touches what the installer didn't create. The agent's own image repository (a DevOps Engineer
+// instance's `agent-images`) is kept with its images, without the agent's grant on it, unless --purge;
+// the agent's act-as on its own account goes with the account.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSandbox, find, flag, freshProject, needsBash, steps, PROJECT } from './harness.mjs';
@@ -71,7 +73,8 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     ]);
     assert.deepEqual(writes(run.calls), []);
     assert.deepEqual(box.state(), installed);
-    assert.deepEqual(steps(run.stdout).map(([, name]) => name), ['check', 'vm', 'network', 'dashboard', 'firestore', 'bucket', 'accounts']);
+    assert.deepEqual(steps(run.stdout).map(([, name]) => name), ['check', 'vm', 'network', 'dashboard', 'images', 'firestore', 'bucket', 'accounts']);
+    assert.match(run.stdout, /no image repository agent-images in us-central1/);
   });
 
   test('the plan deletes the VM first and the accounts last, and keeps the data', async () => {
@@ -218,5 +221,85 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     state.networks.paraclete = { mode: 'custom', description: 'our own' };
     const run = await createSandbox(state).run('uninstall.sh', ['--dry-run']);
     assert.deepEqual(find(run.commands, 'gcloud', 'compute', 'networks', 'delete'), []);
+  });
+});
+
+describe("uninstall.sh on a DevOps Engineer instance: the agent's image repository", { skip: needsBash, concurrency: true }, () => {
+  const REPOSITORY = 'us-central1/agent-images';
+  const BUILT = `us-central1-docker.pkg.dev/${PROJECT}/agent-images/api`;
+  const KEPT = "Artifact Registry repository agent-images in us-central1 and the agent's images";
+  let installed;
+  before(async () => {
+    const box = createSandbox();
+    const run = await box.run('install.sh', ['--yes', '--role', 'devops-engineer']);
+    assert.equal(run.status, 0, run.stderr);
+    box.update((state) => { state.images[BUILT] = ['v1', 'v2']; });
+    installed = box.state();
+    assert.deepEqual(installed.accountPolicies[AGENT], [['roles/iam.serviceAccountUser', `serviceAccount:${AGENT}`]]);
+  });
+
+  test('a dry run keeps the repository and names it, and plans only to take the grant on it back', async () => {
+    const run = await createSandbox(installed).run('uninstall.sh', ['--dry-run']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.ok(listed(run.stdout, 'It keeps:').includes(KEPT));
+    assert.ok(!listed(run.stdout, 'This deletes from your-gcp-project:').some((line) => line.includes('agent-images')));
+    assert.match(run.stdout, /--purge deletes the database, the bucket and the agent's image repository too/);
+    assert.deepEqual(find(run.commands, 'gcloud', 'artifacts', 'repositories', 'delete').map((c) => c[4]), ['paraclete'], "only the dashboard's");
+    assert.deepEqual(find(run.commands, 'gcloud', 'artifacts', 'repositories', 'remove-iam-policy-binding'), [
+      ['gcloud', 'artifacts', 'repositories', 'remove-iam-policy-binding', 'agent-images', '--location=us-central1',
+        `--project=${PROJECT}`, `--member=serviceAccount:${AGENT}`, '--role=roles/artifactregistry.writer', '--quiet'],
+    ]);
+    const grantGone = position(run.commands, 'gcloud', 'artifacts', 'repositories', 'remove-iam-policy-binding');
+    assert.ok(grantGone < position(run.commands, 'gcloud', 'iam', 'service-accounts', 'delete'), 'before the account it names');
+    assert.deepEqual(writes(run.calls), []);
+  });
+
+  test('without --purge, the repository and its images stay; the grants on it and on the agent\'s account go', async () => {
+    const box = createSandbox(installed);
+    const run = await box.run('uninstall.sh', ['--yes']);
+    assert.equal(run.status, 0, run.stderr);
+    const after = box.state();
+    assert.deepEqual(after.imageRepositories, [REPOSITORY]);
+    assert.deepEqual(after.images, { [BUILT]: ['v1', 'v2'] });
+    assert.deepEqual(after.repositoryPolicies[REPOSITORY], []);
+    assert.deepEqual(after.accounts, []);
+    assert.equal(after.accountPolicies[AGENT], undefined, "the act-as on its own account went with the account");
+    assert.deepEqual(after.projectPolicy, OWNER_ONLY);
+    assert.match(run.stdout, /the repository and its images stay/);
+  });
+
+  test('--purge deletes the repository and every image in it, after the project id is typed', async () => {
+    const plan = await createSandbox(installed).run('uninstall.sh', ['--purge', '--dry-run']);
+    assert.equal(plan.status, 0, plan.stderr);
+    assert.ok(listed(plan.stdout, 'This deletes from your-gcp-project:')
+      .includes("Artifact Registry repository agent-images in us-central1 and ALL the agent's images (irreversible)"));
+    assert.ok(!listed(plan.stdout, 'It keeps:').includes(KEPT));
+    assert.deepEqual(find(plan.commands, 'gcloud', 'artifacts', 'repositories', 'delete').map((c) => [c[4], flag(c, 'location')]),
+      [['paraclete', 'us-central1'], ['agent-images', 'us-central1']]);
+    assert.deepEqual(find(plan.commands, 'gcloud', 'artifacts', 'repositories', 'remove-iam-policy-binding'), [], 'it goes whole');
+
+    const refused = createSandbox(installed);
+    const no = await refused.run('uninstall.sh', ['--purge', '--yes'], { input: '\n' });
+    assert.equal(no.status, 1);
+    assert.deepEqual(refused.state(), installed);
+
+    const box = createSandbox(installed);
+    const run = await box.run('uninstall.sh', ['--purge'], { input: `${PROJECT}\n` });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(box.state().imageRepositories, []);
+    assert.deepEqual(box.state().images, {});
+  });
+
+  test('--purge alone is enough for a repository left by an earlier uninstall', async () => {
+    const state = structuredClone(freshProject());
+    state.imageRepositories = [REPOSITORY];
+    state.images = { [BUILT]: ['v1'] };
+    const box = createSandbox(state);
+    const kept = await box.run('uninstall.sh', ['--yes']);
+    assert.equal(kept.status, 0, kept.stderr);
+    assert.match(kept.stdout, /Nothing of paraclete's is left to remove/);
+    const purged = await box.run('uninstall.sh', ['--purge'], { input: `${PROJECT}\n` });
+    assert.equal(purged.status, 0, purged.stderr);
+    assert.deepEqual(box.state().imageRepositories, []);
   });
 });

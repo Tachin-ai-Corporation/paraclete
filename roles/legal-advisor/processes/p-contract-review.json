@@ -1,0 +1,18 @@
+{
+  "id": "p-contract-review",
+  "name": "Contract Review",
+  "description": "Reviewing a contract or legal document clause by clause: what it says, what deserves attention and how much, what is missing, and what needs a lawyer's decision. Produces a review memo, and proposed changes as comments or in a copy of the agent's own. Never legal advice; the original is never edited.",
+  "narrative": "Read the whole document before writing a word, schedules included: its parties, its type, its term, its defined terms and how its sections refer to each other. Then go clause by clause through the review lenses (liability, indemnity, intellectual property, term and renewal, termination, payment, confidentiality and data, warranties, disputes, assignment, restrictions), quoting the exact text of every clause you flag, with a severity and the concern in plain words. Note what is missing and what is inconsistent as well as what is there. Anything that turns on a legal judgment goes to the questions for counsel with the quote, the concern and the options; you never decide it. When asked for changes, propose them as comments that quote the clause and give the proposed wording and why, or apply them in a new copy your account creates; the document under review is never edited. Deliver a memo that says it is a review aid, not legal advice: the document, flags by severity, obligations and dates, and the questions for counsel.",
+  "intent_keywords": [
+    "review the contract",
+    "contract review",
+    "review this agreement",
+    "redline",
+    "legal review",
+    "non-disclosure",
+    "terms and conditions",
+    "compare the versions"
+  ],
+  "status": "active",
+  "version": 1
+}

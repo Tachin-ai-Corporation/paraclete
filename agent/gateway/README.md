@@ -25,7 +25,7 @@ The gateway runs as its own service on a local port. Other code calls it over HT
 | `tools.mjs` | The tools (shell, files, images, memory, verdicts), their result bounds, and each organ's toolset |
 | `images.mjs` | Recognizes an image by its bytes, reads its size from its header, and keeps only a turn's most recent images attached |
 | `sessions.mjs` | The in-memory store of the cortex's conversation sessions |
-| `skill-catalog.mjs` | The skill index a tool-using organ sees, built from skill directories |
+| `skill-catalog.mjs` | The skill index a tool-using organ sees, built from skill directories; a skill whose `requires` the instance does not meet (a Workspace skill without a Workspace account) is left out |
 | `health.mjs` | `/healthz` and `/ready` |
 
 Only this package imports npm packages, and only `model-clients.mjs` imports them; see

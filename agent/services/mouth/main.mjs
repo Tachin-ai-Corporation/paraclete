@@ -5,9 +5,9 @@
 // is the brain's. Started by systemd (paraclete-mouth.service); importing this module starts nothing.
 //
 // Health: after every poll the service rewrites <data root>/services/mouth/health.json with when it
-// last polled, last succeeded and last delivered. The control service reads it: a beat_at older
-// than a minute means a hung loop, a fresh beat_at with a stale last_ok_at means the mouth cannot
-// read its work queue.
+// last polled, last succeeded and last delivered, and, with a Workspace account, how Google Chat
+// answered its posts (`gchat`). The control service reads it: a beat_at older than a minute means a
+// hung loop, a fresh beat_at with a stale last_ok_at means the mouth cannot read its work queue.
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -16,6 +16,7 @@ import { createServiceRuntime } from '../service-runtime.mjs';
 import { initChannel } from '../../providers/channel.mjs';
 import { createVertexText } from '../../providers/vertex-text.mjs';
 import { createDwdTokenSource } from '../../auth/dwd-token.mjs';
+import { CHAT_SEND } from '../../auth/workspace-scopes.mjs';
 import { appendTurn } from '../../context/thread-ledger.mjs';
 import { createOutbound } from './outbound.mjs';
 import { createVoice } from './voice.mjs';
@@ -23,11 +24,11 @@ import { voicingTail } from './voicing-context.mjs';
 import { createDelivery } from './delivery.mjs';
 import { createStatusUpdates, parseStatusPrompts } from './status-updates.mjs';
 
-/** The mouth is the one service that posts to Chat, so it alone holds the send scope. */
-export const CHAT_SEND_SCOPES = Object.freeze([
-  'https://www.googleapis.com/auth/chat.messages',
-  'https://www.googleapis.com/auth/chat.spaces.readonly',
-]);
+/**
+ * The mouth is the one service that posts to Chat, so it alone holds the send scope. The scopes
+ * themselves are agent/auth/workspace-scopes.mjs's.
+ */
+export const CHAT_SEND_SCOPES = CHAT_SEND;
 
 /** How often the mouth polls for pending deliveries when the contracts don't say. */
 const DEFAULT_POLL_INTERVAL_MS = 5_000; // default; callers pass the contracts value
@@ -155,11 +156,14 @@ export function createMouth(runtime, deps = {}) {
     failed: 0,
     status_notes: 0,
     status_notes_error: null,
+    // How Google Chat answered the mouth's posts in this run; the System tab shows it beside the ears'.
+    gchat: getChatToken ? outbound.chatStatus() : null,
   };
   let polls = 0;
 
   function beat() {
     health.beat_at = iso();
+    if (getChatToken) health.gchat = outbound.chatStatus();
     try {
       writeJsonFile(healthFile, health);
     } catch (err) {

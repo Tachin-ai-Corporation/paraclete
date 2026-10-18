@@ -12,6 +12,7 @@ instance.
 | `query.mjs` | Reads Firestore. Read-only |
 | `trigger.mjs` | Runs a responsibility now, as the dashboard's "run now" does |
 | `say.mjs` | Sends the agent a chat message from your account and follows the conversation |
+| `smoke.mjs` | Runs the instance's role through one request in its area that changes nothing, and says PASS or FAIL |
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
 
@@ -32,6 +33,7 @@ dashboard's service account; the project's owner can. Each reads your instance f
 | `node dev/query.mjs <collection> [--where <field><op><value> ...] [--order <field> [desc]] [--limit N]` | Prints matching documents as JSON. `<collection>` may be a subcollection path such as `work/<id>/history`; `--doc <id>` reads one document. `--help` lists the operators and value types |
 | `node dev/trigger.mjs <responsibility-id> [--timeout <seconds>]` | Writes the trigger document the control service writes for "run now", then waits for the brain to mark it fired, skipped or error. One still unclaimed when the wait runs out is withdrawn, so it cannot fire later |
 | `node dev/say.mjs "<text>" [--thread <id>] [--wait <seconds>]` | Writes a dashboard message from your account (thread `dev-<yyyymmdd>` unless `--thread`), then prints the intake, the mission and the agent's replies as they arrive, for up to 180 seconds |
+| `node dev/smoke.mjs [--role <id>] [--doc <link>] [--request "<text>" [--expect <regex>]] [--wait <seconds>]` | Reads the role the VM runs (`/etc/paraclete/instance.json`, over IAP SSH; `--role` names one instead), sends a request in that role's area that changes nothing, as `say` sends one, in a thread of its own (`smoke-<role>-<time>`), and follows it for up to 900 seconds. PASS when the mission completes, its result is delivered and the answer matches what a correct one must (`--expect`, with `--request`); FAIL, with the reason, when it fails, asks a question, raises an approval gate or runs out of time. The requests: generic, a short research answer; the technical roles, a read-only check in their area (Cloud Run, IAM, BigQuery, a repository, the test tools, a web page); a Workspace role, today's events on its own calendar, or with `--doc` a summary of that Google Doc (its Workspace account must be set up first). The check after a move between roles with `install/install.sh --role` ([install/README.md](../install/README.md)). Exits 0 on PASS, 1 on FAIL |
 
 Every command takes `--help`. Exit codes: 0 done, 1 failed or found a problem, 2 a usage mistake.
 

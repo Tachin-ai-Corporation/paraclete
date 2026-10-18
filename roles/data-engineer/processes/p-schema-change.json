@@ -1,0 +1,16 @@
+{
+  "id": "p-schema-change",
+  "name": "Schema Change",
+  "description": "Changing a BigQuery table's schema without breaking what reads it: save the current schema and copy the table, find its dependents, change it in place where BigQuery allows or rebuild it behind approval, then read it back and run its dependents.",
+  "narrative": "A schema change is safe when you know who reads the table and how to undo the change. Read the current schema, the row count and the last change, and save the schema to a file. Find what depends on the table: views in the project's datasets, and anything outside BigQuery the person knows of, such as reports or scheduled jobs. Write down the way back before changing anything. BigQuery changes a schema in place only to add nullable columns or relax required ones; anything else (a rename, a new type, a dropped column) means rebuilding the table, which starts with a copy of it and waits for approval, because people read it. Apply the change, read the schema back, run the dependent views and confirm the row count is unchanged. Report the schema before and after, what was checked, and where the copy is, so the old table can come back if something downstream breaks.",
+  "intent_keywords": [
+    "schema change",
+    "change the schema",
+    "add a column",
+    "rename the column",
+    "drop the column",
+    "change the column type"
+  ],
+  "status": "active",
+  "version": 1
+}

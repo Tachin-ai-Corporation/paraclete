@@ -124,6 +124,25 @@ test('skills come from the base, the generic role, the chosen role and the agent
   assert.match(skills.find((s) => s.id === 'broken').problem, /skill\.json is not valid JSON/);
 });
 
+test('a skill that needs a Workspace account is marked unavailable on an instance without one', () => {
+  const runtime = controlRuntime();
+  const { paths } = runtime;
+  skill(paths.skills, 'workspace-calendar', { requires: ['workspace'], organs: ['motor'] });
+  skill(paths.skills, 'files', { organs: ['motor'] });
+
+  const without = readSkills({ paths, instance: runtime.instance });
+  const calendar = without.skills.find((s) => s.id === 'workspace-calendar');
+  assert.deepEqual(calendar.requires, ['workspace']);
+  assert.equal(calendar.unavailable, 'needs a Workspace account');
+  const files = without.skills.find((s) => s.id === 'files');
+  assert.deepEqual(files.requires, []);
+  assert.equal('unavailable' in files, false);
+
+  const workspace = { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com' };
+  const withAccount = readSkills({ paths, instance: { ...runtime.instance, workspace } });
+  assert.equal('unavailable' in withAccount.skills.find((s) => s.id === 'workspace-calendar'), false);
+});
+
 test('the configuration view carries the instance, settings and contracts, never the token itself', () => {
   const runtime = controlRuntime();
   const view = readConfig({ contracts: runtime.contracts, instance: runtime.instance, settings: { claude_enabled: false, effort: 'medium' }, release: null });

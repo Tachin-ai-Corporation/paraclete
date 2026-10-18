@@ -6,12 +6,12 @@ away again.
 | File | Runs where | Job |
 |---|---|---|
 | `install.sh` | Cloud Shell, as the project owner | Prepares the project and creates the agent's VM. Safe to re-run: re-running repairs |
-| `uninstall.sh` | Cloud Shell, as the project owner | Removes what `install.sh` created. Keeps the Firestore database and the bucket unless `--purge` |
+| `uninstall.sh` | Cloud Shell, as the project owner | Removes what `install.sh` created. Keeps the Firestore database, the bucket and the agent's image repository unless `--purge` |
 | `bootstrap.sh` | The VM, as root, at every boot | Installs a release onto `/opt/paraclete`, prepares the data root, starts the services |
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -30,10 +30,10 @@ install/install.sh --project your-gcp-project --role generic --name Paraclete --
 | Flag | Default | Notes |
 |---|---|---|
 | `--project <id>` | gcloud's configured project | |
-| `--role <id>` | `generic` | One of `roles/<id>/role.json` |
-| `--name <name>` | `Paraclete` | Up to 40 letters, digits, spaces and `. _ ' -` |
-| `--region <region>` | `us-central1` | Firestore, the bucket and the VM |
-| `--zone <zone>` | `<region>-a` | Must be in the region |
+| `--role <id>` | The existing VM's role, else `generic` | One of `roles/<id>/role.json`. Another role than the VM's moves the instance to it (below) |
+| `--name <name>` | The existing VM's agent name, else `Paraclete` | Up to 40 letters, digits, spaces and `. _ ' -` |
+| `--region <region>` | The existing VM's region, else `us-central1` | Firestore, the bucket, the dashboard and the VM |
+| `--zone <zone>` | The existing VM's zone, else `<region>-a` | Must be in the region |
 | `--ref <tag, branch or commit>` | The newest release tag, else the default branch | Resolved with `git ls-remote` to the full commit the VM installs |
 | `--repo <owner>/<name>` | This clone's `origin` | A fork must be public |
 | `--yes` | | Asks nothing: takes the defaults and skips the confirmation |
@@ -42,10 +42,15 @@ install/install.sh --project your-gcp-project --role generic --name Paraclete --
 The steps, each printed as `[n/9]`:
 
 1. **check**: gcloud logged in; the caller can do what an owner does (`testIamPermissions`); billing on;
-   the project inside an organization; the role exists; the ref resolves and has `install/bootstrap.sh`.
+   the project inside an organization; the role exists, and what `generic`'s and its `role.json` ask for
+   is well formed (`lib/role-access.mjs`: short API names, single-resource grants of the two kinds below,
+   and no `gcp_roles` entry that acts as any service account or writes to any image repository); the
+   ref resolves and has `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
    secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it); plus chat, gmail, calendar-json, docs, sheets, slides, people and
-   admin for a Workspace role. Only the ones that are off. Then the **model check**: the contracts'
+   admin for a Workspace role; plus the `apis` of `generic`'s and the role's `role.json` (short names,
+   `bigquery` for `bigquery.googleapis.com`). Only the ones that are off, each once. None is ever turned
+   off, also on a move to another role. Then the **model check**: the contracts'
    cortex model (`vertex.models.cortex`, at `vertex.location`; Gemini 4 is served from the global
    endpoint only) is asked for one word through Vertex AI's `generateContent`, as you. A failure is
    tried again for about a minute (6 tries, 12 seconds apart: a just-enabled API takes a moment), then
@@ -53,7 +58,22 @@ The steps, each printed as `[n/9]`:
    (Model Garden, or an organization policy), or the API still turning on. A dry run skips it.
 3. **accounts**: `paraclete-agent@` with the `gcp_roles` of `generic` and of the role;
    `paraclete-dashboard@` with what the dashboard needs; on a Workspace role `paraclete-dwd@`, which
-   `paraclete-agent@` alone may sign as.
+   `paraclete-agent@` alone may sign as (`roles/iam.serviceAccountTokenCreator` on that account) and
+   whose client ID `paraclete-dashboard@` may read for its Workspace setup
+   (`roles/iam.serviceAccountViewer` on that account only). Then the `resource_roles` of `generic` and
+   of the role, each on one resource, granted to `paraclete-agent@`:
+   - `on: agent-account`: on `paraclete-agent@` itself (`gcloud iam service-accounts
+     add-iam-policy-binding`), so the agent may act as itself and as no other account;
+   - `on: agent-repository`: on `agent-images`, an Artifact Registry Docker repository in the region,
+     created here the first time a role asks for it (`gcloud artifacts repositories create agent-images
+     --repository-format=docker`), where the agent's builds push.
+
+   Each is made only when missing. Never on the project: a role whose `gcp_roles` names act-as or image
+   push is refused in step 1, and when the agent's account holds one of those on the project (left by
+   an older role definition, or granted by hand), it is taken back here, saying so
+   (`remove-iam-policy-binding --condition=None`). Project-wide, act-as would reach
+   `paraclete-dashboard@`, whose signature the VM's control service obeys, and image push the
+   dashboard's `paraclete` repository.
 4. **firestore**: the `(default)` database in Native mode, in the region, with delete protection; the
    indexes and TTL policies in `firestore.indexes.json`.
 5. **bucket**: `gs://<project>-paraclete` with uniform access, public access prevention, and a lifecycle
@@ -103,9 +123,45 @@ The steps, each printed as `[n/9]`:
    first boot takes about 8 to 12, most of it installing the role's packages (the file toolchain
    below).
 
-Re-running with another `--ref` moves an existing instance: the dashboard is built and deployed at that
-commit at once, and the VM installs it at its next boot, or at once through `upgrade.sh`; the installer
-prints both commands. Re-running with the same commit builds and deploys nothing. To watch the agent:
+Re-running repairs: on a project whose VM exists, the role, the agent's name and the region default to
+the ones the VM was installed with (its metadata), so a bare re-run never renames the agent, moves it to
+`generic` or deploys a second dashboard in another region. Re-running with another `--ref` moves an
+existing instance: the dashboard is built and deployed at that commit at once, and the VM installs it at
+its next boot, or at once through `upgrade.sh`; the installer prints both commands. Re-running with the
+same commit builds and deploys nothing.
+
+### Moving an instance to another role (a developer path)
+
+Changing an instance's role is not a product feature (build plan section 14): an instance has the role
+it was installed with. A developer checking several roles on one dev project moves it instead:
+
+```
+install/install.sh --role <id> --ref <branch> --yes
+```
+
+Pass the `--ref` the instance runs (a bare run installs the newest release). What happens:
+
+| Where | When | What |
+|---|---|---|
+| The VM's metadata | This run | `paraclete-role` names the new role |
+| The agent's account | This run, step 3 | The new role's `gcp_roles` are granted. The `gcp_roles` the previous role declared that neither `generic` nor the new role declares are taken back (`remove-iam-policy-binding --condition=None`), so the agent keeps least privilege. Any other grant the account holds stays. IAM cannot tell the installer's grant from the same role granted by hand, so one the previous role declared goes either way. When this clone has no `role.json` for the previous role, nothing is taken back and the run says so |
+| Single-resource grants | This run, step 3 | The new role's `resource_roles` are granted (and `agent-images` created when it asks for it). The previous role's that neither `generic` nor the new role declares are taken back: the binding on `paraclete-agent@` itself (`gcloud iam service-accounts remove-iam-policy-binding`), and the agent's binding on `agent-images` (`gcloud artifacts repositories remove-iam-policy-binding`). The repository and its images stay: they are the agent's builds, and `uninstall.sh --purge` deletes them |
+| APIs | This run, step 2 | The new role's `apis` are turned on. None is turned off: the previous role's stay on |
+| The Workspace APIs and `paraclete-dwd@` | This run | Turned on and created when the new role is a Workspace role; left as they are when the previous one was |
+| The dashboard | This run | Deployed again with `PARACLETE_ROLE` (and `PARACLETE_WORKSPACE_ROLE`) of the new role |
+| The VM | Its next bootstrap: `gcloud compute instances reset`, or `upgrade.sh --ref <commit>` without a reboot (the run prints both) | `bootstrap.sh` sees the installed release was staged for another role and installs the same commit again for the new one: its `setup` packages, its skills and their launchers, its organ prompts, playbooks and default responsibilities come in; the previous role's package and launchers go |
+| What stays | | The data root: working memory, Core Memory and Deep Truths, missions and files; the agent's own responsibilities and playbooks (in Firestore); its own skills |
+
+Caveats: the agent's working memory was seeded by the previous role and is not reseeded
+(`roles/<id>/memory.md` seeds only an empty memory); an agent-written override of one of the previous
+role's default responsibilities is ignored from then on (its default is gone); the previous role's
+Debian, npm and pip packages stay installed; and a Workspace account recorded for a Workspace role
+stays in `/etc/paraclete/workspace.json` after a move to a role without one: the instance record leaves
+it out while the role has no Workspace account (`vm/instance-record.mjs` reads the role's `workspace`
+flag from the release it installs), and a move back to a Workspace role brings it back. To check a role
+after a move: `node dev/smoke.mjs` ([dev/README.md](../dev/README.md)).
+
+To watch the agent:
 
 ```
 gcloud compute ssh paraclete --zone=<zone> --project=<project> --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f
@@ -116,17 +172,27 @@ To remove it:
 ```
 install/uninstall.sh                   # names exactly what it will delete, then asks
 install/uninstall.sh --dry-run
-install/uninstall.sh --purge           # also the Firestore database and the bucket: asks you to type the project id
+install/uninstall.sh --purge           # also the Firestore database, the bucket and agent-images: asks you to type the project id
 ```
 
 It removes the VM, the firewall rules (and the network, when the installer made it), the dashboard's
 Cloud Run service and its image repository (which holds only the dashboard's images; the grants on the
 two go with them), the Firestore indexes and TTL policies, and the service accounts with every project
-grant they hold (the dashboard's `roles/logging.logWriter` among them). The dashboard's users records
+grant they hold (the dashboard's `roles/logging.logWriter` among them); a grant on an account itself,
+such as the agent's act-as on its own account, goes with the account. The dashboard's users records
 are Firestore data: they stay unless `--purge`.
 
-`uninstall.sh` takes `--project`, `--region` (default: the VM's region, else `us-central1`), `--purge`,
-`--yes` (which never skips typing the project id for `--purge`) and `--dry-run`. Enabled APIs stay on.
+The agent's own image repository, `agent-images` (made for a role that asks for it, such as the DevOps
+Engineer), holds the agent's builds, so it is listed under what stays and deleted, with every image in
+it, only with `--purge`. Kept, it first loses the accounts' grants on it, as the bucket does, so no
+binding outlives its account. A grant an admin made by hand to `paraclete-agent@` on another resource
+(act-as on a runtime account, for one) is not found: it stays, naming a deleted account, until removed
+by hand.
+
+`uninstall.sh` takes `--project`, `--region` (default: the VM's region, else `us-central1`; the dashboard
+and `agent-images` are looked for there), `--purge`, `--yes` (which never skips typing the project id for
+`--purge`) and `--dry-run`. Its steps: check, vm, network, dashboard, images, firestore, bucket,
+accounts. Enabled APIs stay on.
 
 ## The contract between the pieces
 
@@ -142,7 +208,7 @@ are Firestore data: they stay unless `--purge`.
 | `paraclete-role` | The role id, e.g. `generic` |
 | `paraclete-agent-name` | The agent's display name |
 | `paraclete-bucket` | The instance's bucket, `<project>-paraclete` |
-| `paraclete-workspace-account`, `paraclete-workspace-signer` | Workspace roles only: the agent's Google account and the delegation signer service account. Never written by `install.sh`: the account exists only after the dashboard's Workspace setup (build plan phase 8), which records them |
+| `paraclete-workspace-account`, `paraclete-workspace-signer` | Workspace roles only: the agent's Google account and the delegation signer service account. Never written by `install.sh`: the account exists only after the dashboard's Workspace setup, which records it in `/etc/paraclete/workspace.json` instead (below). When set by hand, these keys win over that file |
 | `paraclete-dashboard-url` | The dashboard's Cloud Run URL, once step 6 has deployed it |
 | `startup-script` | A short stub: at every boot, read `paraclete-repo` and `paraclete-ref` from metadata, download `install/bootstrap.sh` at that commit, and run it as root in the transient unit `paraclete-bootstrap` (its output goes to the journal) |
 
@@ -161,6 +227,7 @@ and moves `PARACLETE_REPO`, `PARACLETE_RELEASE` and `PARACLETE_COMMIT`.
 | `PARACLETE_BUCKET` | `<project>-paraclete` |
 | `PARACLETE_REPO`, `PARACLETE_RELEASE`, `PARACLETE_COMMIT` | As `paraclete-repo`, `paraclete-release` and `paraclete-ref` above: what the image was built from |
 | `PARACLETE_AGENT_NAME`, `PARACLETE_ROLE` | As `paraclete-agent-name` and `paraclete-role` |
+| `PARACLETE_WORKSPACE_ROLE` | `true` when the role's `role.json` sets `workspace`, else `false` |
 
 `PARACLETE_IAP_AUDIENCE` is never set: it only overrides the audience the dashboard derives from the
 project number, region and service. The image is tagged with the same commit, which is how
@@ -202,8 +269,29 @@ A full install, before anything is stopped, installs what is missing of:
 
 1. `ca-certificates curl git jq unzip`, and Node.js 24 from NodeSource;
 2. the `setup.apt` packages of `roles/generic/role.json` and of the instance's role
-   (`vm/role-packages.mjs` reads them from the release being installed; a role with `pip` or `npm`
-   packages is refused).
+   (`vm/role-packages.mjs` reads them from the release being installed);
+3. their `setup.npm` packages, installed globally as root: `npm install --global --no-fund --no-audit`,
+   into npm's global root (`/usr/lib/node_modules`, commands in `/usr/bin`), which the services can run
+   and cannot change;
+4. their `setup.pip` packages, installed for the `paraclete` user only:
+   `python3 -m pip install --user --break-system-packages`, run as that user (`runuser`), into its home
+   under the data root (`/var/lib/paraclete/home/.local`).
+
+npm and pip packages are pinned to exact versions, `name@1.2.3` and `name==1.2.3`; `vm/role-packages.mjs`
+refuses a range, a tag, an unpinned name, anything that is not a package name, and one package pinned
+at two versions by the generic role and the instance's. A run lists what is installed
+(`npm ls --global --depth=0 --json`, `pip list --user --format=json`) and installs only the pins that are
+missing or at another version, so a second run installs nothing. Why pip installs per user: pip as root
+writes `/usr/local`, which Debian's Python reads ahead of the libraries apt installed, so a pinned
+package or one of its dependencies could shadow a library apt or the system's own tools rely on (Debian
+marks its Python externally managed for this; `--break-system-packages` is the override, and here its
+reach is that one user). A user install is seen only by the `paraclete` user's Python, the agent's own,
+and is no more than the agent could install itself; inside it, a pin can still shadow a library the
+generic role's Python tools import (`python3-docx` needs `lxml`, for one), so a new pin is checked with
+the files skill's conversions before it ships. Its commands land in
+`~/.local/bin`, which is not on the services' `PATH`, so a skill runs a pip package as
+`python3 -m <module>`. A pin that cannot be read or installed fails a full install like an apt package
+(readiness reports it); on the installed commit it is a warning, and the next run tries again.
 
 `apt-get install` runs with `--no-install-recommends`, so a role names every package its tools need:
 only those and what they depend on land on the VM, and a Debian point release cannot add to them
@@ -233,6 +321,7 @@ run before anything is stopped: the running release is not touched.
 | `/opt/paraclete/release.json` | `root:root 0644` | `{ "version", "ref", "commit", "repo", "installed_at", "metadata": { "repo", "ref" } }`. `version` is the release tag, else the version prefix of the commit's message, else null; `ref` is what was asked for; `metadata` holds `paraclete-repo` and `paraclete-ref` as they were when this release was installed |
 | `/etc/paraclete/instance.json` | `root:root 0644` | The instance record (`config/instance.mjs`), from the metadata above, with `release` and `source_repo` naming what is installed. The record an install replaced stays in `instance.json.prev`, for a rollback, until the next install |
 | `/etc/paraclete/gateway-token` | `root:paraclete 0640` | A random token, created once, kept across upgrades |
+| `/etc/paraclete/workspace.json` | `root:root 0644` | Not written by the bootstrap: the control service's `set_workspace_account` writes it when an admin saves the agent's Workspace account in the dashboard (`{ account, signer, recorded_at, recorded_by }`). Every run merges it into `instance.json` while the metadata sets no `paraclete-workspace-account` and the installed role is flagged `workspace` (its `roles/<role>/role.json` in the release being installed), so the account survives upgrades and reboots; one that cannot be used is left out with a warning. For a role without a Workspace account it is left out of the record and left in place, so a move back restores the account |
 | `/var/lib/paraclete/` | `paraclete:paraclete 0750` | The data root: `memory/`, `missions/`, `workspace/`, `files/`, `skills/`, `services/`, `home/` (the `paraclete` user's home) |
 | `/etc/systemd/system/paraclete-*.service` | `root:root 0644` | Copied from `agent/services/*/`, enabled and started, the gateway first |
 

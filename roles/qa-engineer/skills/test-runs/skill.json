@@ -1,0 +1,8 @@
+{
+  "id": "test-runs",
+  "name": "Test Runs and Reports",
+  "version": 1,
+  "when_to_use": "Running a project's tests and reporting the results as evidence: whole suites, single failing tests, repeated runs to find flaky ones, coverage, a comparison with the last baseline, and defect reports someone else can reproduce.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

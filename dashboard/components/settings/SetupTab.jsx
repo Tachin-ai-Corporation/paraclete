@@ -4,15 +4,21 @@
 // record (GET /api/agent), the VM's own report (the `status` command), the server's counts (GET
 // /api/setup) and the agent's address (GET /api/me, passed in). The Drive item also holds Test Drive
 // (the `drive_check` command, run only when an admin asks: it writes a small file to the output folder)
-// and the output folder setting (DriveCard.jsx); its state follows the check's result. Every user sees
-// it; the advice names the admin when only an admin can act.
+// and the output folder setting (DriveCard.jsx); its state follows the check's result. The Workspace
+// item follows GET /api/workspace (read by SettingsView.jsx and passed in) and links to the Workspace
+// tab. Every user sees it; the advice names the admin when only an admin can act.
 import { usePoll } from '@/lib/client/use-poll.js';
 import { useCommand } from '@/lib/client/use-command.js';
 import { DriveCard } from './DriveCard.jsx';
 import { setupChecklist, STATES } from './setup-checklist.js';
 import styles from './Settings.module.css';
 
-export function SetupTab({ me }) {
+/**
+ * @param {object} props
+ * @param {object} props.me         GET /api/me
+ * @param {{data: object|null, error: Error|null}} [props.workspace]  GET /api/workspace, polled by SettingsView
+ */
+export function SetupTab({ me, workspace = null }) {
   const isAdmin = me.user.role === 'admin';
   const { data: agent, error: agentError } = usePoll('/api/agent', 30_000);
   const { data: setup, error: setupError } = usePoll('/api/setup', 0);
@@ -25,6 +31,8 @@ export function SetupTab({ me }) {
     setup,
     agentAccount: me.dashboard?.agentAccount,
     drive: { result: driveCheck.result, error: driveCheck.result ? null : driveCheck.error, running: driveCheck.running },
+    workspace: workspace?.data ?? null,
+    workspaceError: workspace?.data ? null : workspace?.error?.message ?? null,
     isAdmin,
   });
 
@@ -57,6 +65,7 @@ export function SetupTab({ me }) {
                 <h3>{item.title}</h3>
                 {item.detail && <p>{item.detail}</p>}
                 {item.action && <p className={styles.checkAction}>{item.action}</p>}
+                {item.href && <p className={styles.checkAction}><a className="btn btn-sm" href={item.href}>{item.linkLabel}</a></p>}
                 {item.key === 'drive' && <DriveCard address={item.address} isAdmin={isAdmin} check={driveCheck} />}
               </div>
             </li>

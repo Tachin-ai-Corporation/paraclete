@@ -6,7 +6,17 @@
 // drop `_processed` and the poller would never see it), the person gets a receipt, and the approvals
 // poller resumes or fails the paused missions at once. The brain is the only resolver of chat replies;
 // the dashboard resolves its own buttons. Called by intake.mjs.
+//
+// Who may approve. The dashboard's users list is the authority, in Chat as in the dashboard. A
+// dashboard message comes from a dashboard user by construction (IAP and the users record). Anyone in
+// the organization who can reach the agent's Workspace account may ask it things in Google Chat, but
+// an approval from Chat counts only when the ears matched its sender to a dashboard user
+// (source_meta.sender_email, agent/services/ears/chat-identity.mjs) and that user's record still
+// holds a dashboard role; anyone else is told how to approve and nothing is resolved. A Chat reply
+// resolves only gates whose mission came from the same Chat space (its own thread first); never a
+// gate raised in the dashboard or in another space.
 
+import { isDashboardUser } from '../../storage/dashboard-users.mjs';
 import { COLLECTIONS } from '../../storage/collections.mjs';
 import { firestoreEncode } from '../../storage/firestore.mjs';
 import { approvalResolution, scopeApprovalsToConversation } from '../../work/approvals.mjs';
@@ -15,6 +25,29 @@ import { addressMeta } from './envelope-store.mjs';
 
 export const APPROVE_PATTERN = /^(approve|approved|lgtm|go ahead|proceed|yes|ship it|better|land it)\b/i;
 export const REJECT_PATTERN = /^(reject|rejected|deny|denied|no(?:\s|$)|stop|needs?\s*changes?|worse|revert|not yet)\b/i;
+
+/** The roles a dashboard user record holds (dashboard/lib/server/users.mjs); a record with any other is no user. */
+
+/** What a Chat sender who is not a known dashboard user hears instead of a receipt. */
+export const NOT_AUTHORIZED_REPLY = 'I can only take an approval in Chat from someone I know uses my dashboard, '
+  + 'so nothing was approved or rejected. If you use the dashboard, decide it there under Approvals; once you '
+  + 'have sent me a direct message here, I will recognize you in Chat too.';
+
+/**
+ * The pending approvals a Chat reply may resolve: those whose mission came from the reply's own
+ * space, its own thread first. A gate whose mission could not be read is left out: its space is
+ * unknown.
+ *
+ * @param {object[]} pending   from livePending(), each with `_address`
+ * @param {object}   address   the reply's Address
+ * @returns {object[]}
+ */
+export function chatScopedApprovals(pending, address) {
+  const space = address?.space || '';
+  if (!space) return [];
+  const inSpace = pending.filter((a) => a._address?.channel === 'gchat' && a._address?.space === space);
+  return scopeApprovalsToConversation(inSpace, { thread: address?.thread || '' });
+}
 
 /**
  * Reads an approval reply out of a message: the person's own line (after any "User:" framing),
@@ -67,7 +100,10 @@ export function listApprovals(pending) {
  * @returns {{handle: Function}}
  */
 export function createApprovalReplies({ db, store, approvals, addressFor, log = () => {} }) {
-  /** Pending approvals whose mission is still paused at its gate, oldest first. */
+  /**
+   * Pending approvals whose mission is still paused at its gate, oldest first, each with `_address`:
+   * where its mission came from (null when the mission could not be read).
+   */
   async function livePending() {
     const pending = await db.query('', COLLECTIONS.approvals, [
       { field: 'status', op: 'EQUAL', value: { stringValue: 'pending' } },
@@ -78,9 +114,24 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
       // A gate whose mission moved on (cancelled, resolved some other way) is not offered. One that
       // cannot be read is kept: a reply is never stranded by a failed read.
       if (env && env.status && env.status !== 'awaiting_approval') continue;
-      live.push(a);
+      const address = env?.source_meta?.address;
+      live.push({ ...a, _address: address && typeof address === 'object' ? address : null });
     }
     return live.sort((x, y) => String(x.requestedAt || '').localeCompare(String(y.requestedAt || '')));
+  }
+
+  /**
+   * Who is approving: the dashboard user's email, or null when a Chat sender is not known to be one.
+   * The users record is read now, so a user removed since the ears matched them no longer counts. An
+   * outage throws, and the intake is tried again; it never reads as "not a user".
+   */
+  async function approverOf(intake) {
+    const meta = intake.source_meta || {};
+    if (intake.source !== 'gchat') return toStr(meta.sender).trim() || `${intake.source || 'chat'} reply`;
+    const email = toStr(meta.sender_email).trim().toLowerCase();
+    if (!email || !email.includes('@') || email.includes('/')) return null;
+    const user = await db.read(`${COLLECTIONS.users}/${email}`, { strict: true });
+    return isDashboardUser(user) ? email : null;
   }
 
   async function reply(intake, { parentId = null, title, output }) {
@@ -115,24 +166,36 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
    * Handles a message if it is an approval reply with pending approvals to resolve.
    *
    * @param {object} intake
-   * @returns {Promise<'approved'|'rejected'|'disambiguation'|null>} null when it is not one, and
-   *   classification goes on as usual ("yes" with nothing pending is an ordinary message)
+   * @returns {Promise<'approved'|'rejected'|'disambiguation'|'not_authorized'|null>} null when it is
+   *   not one, and classification goes on as usual ("yes" with nothing pending is an ordinary message)
    */
   async function handle(intake) {
     const parsed = parseApprovalReply(intake.source_meta?.raw_text || intake.text);
     if (!parsed) return null;
     let pending;
     try {
-      pending = scopeApprovalsToConversation(await livePending(), {
-        thread: intake.source_meta?.address?.thread || '',
-        channel: intake.source || '',
-      });
+      const live = await livePending();
+      pending = intake.source === 'gchat'
+        ? chatScopedApprovals(live, intake.source_meta?.address)
+        : scopeApprovalsToConversation(live, {
+          thread: intake.source_meta?.address?.thread || '',
+          channel: intake.source || '',
+        });
     } catch (e) {
       log('WARN', `approval reply check could not read the approvals (${e.message}); classifying the message instead`);
       return null;
     }
     if (pending.length === 0) return null;
     log('INFO', `approval reply: "${parsed.userText.substring(0, 60)}" ${parsed.decision}, ${pending.length} pending in this conversation`);
+
+    const resolvedBy = await approverOf(intake);
+    if (!resolvedBy) {
+      log('WARN', `approval reply from ${toStr(intake.source_meta?.sender) || 'an unknown sender'} not taken: not a known dashboard user`);
+      await reply(intake, { title: 'Approval not taken', output: NOT_AUTHORIZED_REPLY });
+      await db.patch(`${COLLECTIONS.intake}/${intake.id}`, ['status', 'resolution', 'resolved_at'],
+        firestoreEncode({ status: 'resolved_approval', resolution: 'not_authorized', resolved_at: store.iso() }));
+      return 'not_authorized';
+    }
 
     const targets = chooseTargets(pending, parsed);
     if (!targets) {
@@ -146,7 +209,6 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
     }
 
     const reason = parsed.decision === 'rejected' && parsed.userText.length > 20 ? parsed.userText : undefined;
-    const resolvedBy = toStr(intake.source_meta?.sender).trim() || `${intake.source || 'chat'} reply`;
     for (const a of targets) {
       const fields = approvalResolution({ decision: parsed.decision, resolvedBy, reason, now: store.iso() });
       try {

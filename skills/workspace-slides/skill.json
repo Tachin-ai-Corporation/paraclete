@@ -1,0 +1,9 @@
+{
+  "id": "workspace-slides",
+  "name": "Google Slides",
+  "version": 1,
+  "when_to_use": "Reading Google Slides presentations slide by slide with their speaker notes, and building new presentations from an outline. A presentation someone shared with you is read, never changed.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["slides-get", "slides-create"],
+  "requires": ["workspace"]
+}

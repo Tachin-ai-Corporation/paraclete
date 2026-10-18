@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_comment": "No scheduled work ships with this role. A monthly cost report or a daily spike check needs the billing export's location and a grant on its dataset, which exist only after a billing admin sets them up, so at install it would fail every time. Once the export is reachable, people ask the agent to take one on, and it creates it as its own responsibility (responsibility-manage, the work-management skill) with the export's table named.",
+  "responsibilities": []
+}

@@ -20,3 +20,4 @@ digested into the prompt.
 | `core-memory-rank.mjs` | Ranks Core Memory entries by value and matched search terms, for recall and `core-memory-read` |
 | `context-maintenance.mjs` | The lesson step after a mission that worked in a project or followed a process |
 | `history.mjs` | Appends status changes to an envelope's timeline |
+| `skill-requirements.mjs` | What a skill may require of its instance (`requires: ["workspace"]`) and whether this instance has it: the gateway's skill index leaves out a skill that cannot work here, and control's `skills` view says why |

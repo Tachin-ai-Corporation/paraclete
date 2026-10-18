@@ -1,0 +1,17 @@
+{
+  "id": "p-design-system",
+  "name": "Design System",
+  "description": "Creating or documenting a design system: palette with every pair's contrast checked, type scale, spacing, components and their states, as tokens and a guide people can follow.",
+  "narrative": "Start from what exists: the organization's current materials, any brand guide, the decks and documents people consider on-brand. Write down what they already agree on before proposing anything new. Then define the system in this order: a palette with each color's purpose and every text pair checked for contrast, a type scale with a steady ratio in fonts available where it will be used, one spacing scale, one radius and depth, and, for an interface, the components with all their states. Give every choice its reason. Write the values once as tokens (CSS and JSON) and build the guide from them: an overview showing the system in use, then exact values in tables and do and don't pairs for the rules people get wrong. A system the organization did not already have is a proposal until a person approves it; say so.",
+  "intent_keywords": [
+    "design system",
+    "brand guide",
+    "style guide",
+    "brand guidelines",
+    "color palette",
+    "design tokens",
+    "type scale"
+  ],
+  "status": "active",
+  "version": 1
+}

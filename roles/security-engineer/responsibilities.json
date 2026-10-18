@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "responsibilities": [
+    {
+      "id": "r-security-review",
+      "name": "Weekly Security Review",
+      "schedule": "0 6 * * 1",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 4320,
+      "processRef": "p-security-audit",
+      "instruction": "Review this project's security posture, read-only, and report what changed since the last review: project access, who can act as each service account, user-managed keys and their age, anything open to everyone or to the internet, bucket protections, and the access changes of the past seven days. Change nothing. Follow the iam-audit skill.",
+      "success_criteria": "Each of the iam-audit skill's checks 1 to 8 ran against this project, or the report names the ones that could not run and why. Raw evidence is saved for each check that ran. Every finding has a severity the evidence supports, the resource, the raw lines, the risk, and a remediation with its undo. What changed since the previous review leads the report, or the report says this is the first. Nothing was changed.",
+      "context": {
+        "purpose": "Access drifts: grants are added for a task and never removed, keys are created and forgotten, a bucket or service is opened for a test and stays open. A weekly read-only review catches drift while it is small, and its saved evidence makes next week's comparison exact.",
+        "process": [
+          "STEP 1 - SCOPE: `gcloud config get-value project` is the project. Make a dated directory for this review's evidence (the iam-audit skill says where).",
+          "STEP 2 - COLLECT: run the iam-audit skill's checks 1 to 8, saving each raw answer. Run check 9 when the Recommender API answers. A check that fails for want of an API or access is noted with the error, not retried in a loop.",
+          "STEP 3 - COMPARE: find the previous run of this review with `work-log-read --hours 200 --status complete` (its title is this responsibility's name) and read its output with `work-output-read <id>`; compare members and roles, keys, public bindings and open firewall rules.",
+          "STEP 4 - FINDINGS: rate each by its evidence, check it against accepted exceptions in the project's context or memory, and write its remediation with its undo.",
+          "STEP 5 - REPORT: what changed since last week first; then findings from Critical down; then what could not be checked and why; then the inventory next week's review compares against: each member with its project roles, each user-managed key with its account, shortened id and creation date, each public binding and each firewall rule open to the internet. State that nothing was changed."
+        ],
+        "prior_learnings": "The instance's own accounts and firewall rules (paraclete-*) are expected; list them, and flag only a basic role on one of them. A public website or service is often intended: report it as public and ask, rather than rating it Critical. Without the Cloud Asset API, the per-bucket and per-service checks find public access instead; say which way it was found."
+      }
+    }
+  ]
+}

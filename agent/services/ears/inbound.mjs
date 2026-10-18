@@ -4,10 +4,12 @@
 // the ears' poll loops in main.mjs.
 //
 // An inbound message, whatever its channel:
-//   { channel: 'dashboard'|'gchat', id, text, rawText, timestamp, sender, senderName,
+//   { channel: 'dashboard'|'gchat', id, text, rawText, timestamp, sender, senderName, senderEmail?,
 //     address, attachments: [{ name, size, gcsPath }], conversation? }
 // `text` is what the brain classifies (a Chat message carries its chat framing); `rawText` is the
-// person's own message; `address` is the immutable Address the reply goes to.
+// person's own message; `sender` is the dashboard user's email or the Chat user id ('users/<id>');
+// `senderEmail` is set on a Chat message whose sender is a known dashboard user; `address` is the
+// immutable Address the reply goes to.
 //
 // The order is the point. The intake is written before the message is marked consumed, and the
 // drop rules remember a message only once its intake exists, so a failed write leaves the message

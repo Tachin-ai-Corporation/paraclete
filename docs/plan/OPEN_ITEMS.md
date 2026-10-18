@@ -153,11 +153,42 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
 - **Platform version on envelopes.** `platform_version` is declared on envelopes but nothing stamps it.
   Stamp it from `<install root>/release.json` once releases exist.
 
-## For phase 8 (roles)
+## Found while building roles, Workspace and Chat (phase 8)
 
-- **The Workspace account on the VM.** `install.sh` never writes the Workspace metadata keys: the agent's
-  Google account exists only after the setup wizard. The wizard records it through a signed control
-  command that writes it where `bootstrap.sh` keeps it across upgrades (a file under `/etc/paraclete`
-  the bootstrap merges into `instance.json`), then restarts ears and mouth.
-- **Role setup packages.** `bootstrap.sh` refuses a role whose `setup` lists `pip` or `npm` packages;
-  add support when a role first needs them.
+- **Who a scheduled briefing is for.** A responsibility has no addressee, so the executive assistant's
+  daily briefing reaches the dashboard as a notice every user sees, never one person's thread or Chat
+  space. Give a responsibility an optional delivery address, set when a person asks for it.
+- **Stopping work from Chat.** Anyone in the organization who reaches the agent in Chat can add to or
+  stop a mission, as a dashboard member can. Decide whether a stop from Chat is limited to the person
+  who asked or to dashboard users.
+- **Dashboard users in group spaces.** A dashboard user is recognised in a group space only after they
+  have written to the agent in a direct message once. The `chat.memberships.readonly` scope would let
+  the ears match them without that step.
+- **Cloud Run admin is still project-wide for the devops role.** Act-as and image pushes are on its
+  own account and `agent-images` only, so it cannot run anything as the dashboard's account or sign
+  commands; but IAM still lets it delete, reconfigure, re-route or replace the dashboard's `paraclete`
+  service with a revision of its own image running as `paraclete-agent@`. Only the skills forbid it.
+  Make IAM enforce it, after checking on a dev project: (a) a conditional grant excluding
+  `.../services/paraclete` (confirm the resource types and name forms Cloud Run evaluates, and that
+  list, deploy and traffic still work), or (b) an IAM deny policy on a tag the installer binds to the
+  dashboard's service. Either way, install.sh and uninstall.sh must learn conditional bindings (they
+  read policies without conditions and remove with `--condition=None`).
+- **A default runtime account for deployed services.** A service the agent deploys runs as
+  `paraclete-agent@` by default and carries all its access; only the gcloud skill keeps public ones off
+  it. A third resource kind (`runtime-account`: an empty account with act-as for the agent) would let
+  IAM enforce least privilege for deployed code.
+- **Workspace files in a shared drive.** The Workspace skills edit in place only files the agent's
+  account owns; a file it created in a shared drive has no owner, so it cannot be edited later. A mark
+  set at creation (`appProperties`) could prove it made the file. There is no share command for files
+  in the agent's My Drive yet.
+- **Shared helpers across skills.** Some skills import helpers from another skill's command
+  (`drive-get`, `drive-put`, `docs-create`); move them into `agent/files/`.
+- **A role move leaves things behind.** The old role's apt, npm and pip packages stay installed, and the
+  working memory is not reseeded for the new role.
+- **To check live:** the Chat behaviors Google documents loosely (client-assigned ids and `requestId`
+  under user authentication, a mention posted as a user, `lastActiveTime` on thread replies,
+  `externalUserAllowed` on a direct message); Drive's Markdown import for docs-create; Meet links;
+  the Docs, Sheets and Slides probes in `workspace_check` (a 404 counted as working); npm installs of
+  the pinned firebase-tools and lighthouse under Node 24; Lighthouse with Debian's Chromium inside the
+  services' sandbox; `gcloud builds submit` as the agent with source staged in the bucket.
+

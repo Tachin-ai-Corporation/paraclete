@@ -155,7 +155,7 @@ export function createStatusUpdates({
       if (outbound.lastSpokenAt(addr) > since) continue;
       const kind = due === 0 ? 'ack' : 'update';
       try {
-        if (await outbound.send(addr, await compose(kind, mission))) {
+        if (await outbound.send(addr, await compose(kind, mission), { key: `status:${mission.id}:${due}` })) {
           sent += 1;
           log('INFO', 'status note sent', { mission: mission.id, kind, step: due });
         } else {

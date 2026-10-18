@@ -1,0 +1,8 @@
+{
+  "id": "site-gcloud",
+  "name": "gcloud for a Website: backends and logs",
+  "version": 1,
+  "when_to_use": "Reading the Google Cloud side of a website with gcloud, read-only: which project and account you work as, the Cloud Run services a site's rewrites send traffic to, their state, revisions and logs, and an access token for Firebase's REST APIs.",
+  "organs": ["motor"],
+  "commands": []
+}

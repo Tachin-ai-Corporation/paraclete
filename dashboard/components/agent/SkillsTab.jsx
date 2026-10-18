@@ -35,6 +35,7 @@ function Skill({ skill }) {
         {skill.id !== skill.name && <code className="muted">{skill.id}</code>}
         {skill.version !== '' && skill.version != null && <span className="badge badge-plain">{`v${skill.version}`}</span>}
         {skill.problem && <span className="badge badge-warn">{skill.problem}</span>}
+        {skill.unavailable && <span className="badge badge-neutral" title="The agent's tools leave this skill out until it is available">{skill.unavailable}</span>}
       </div>
       {skill.when_to_use && <p>{skill.when_to_use}</p>}
       <dl className={styles.facts}>

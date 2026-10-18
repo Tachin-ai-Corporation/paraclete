@@ -1,0 +1,8 @@
+{
+  "id": "iam-audit",
+  "name": "IAM and Exposure Audit",
+  "version": 1,
+  "when_to_use": "Auditing a Google Cloud project's security posture, read-only: who holds which roles, who can act as which service account, user-managed keys and their age, what is open to the internet or to everyone, bucket protections, organization policies in force, and recent IAM changes. Findings carry raw evidence, a severity the evidence supports, and a remediation with its undo, which a person runs.",
+  "organs": ["motor", "cerebellum"],
+  "commands": []
+}

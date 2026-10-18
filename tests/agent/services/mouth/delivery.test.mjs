@@ -50,6 +50,8 @@ describe('pure helpers', () => {
     assert.deepEqual(mentionsFor(envelope({ source_meta: {}, status: 'blocked' }), CHAT), ['all']);
     assert.deepEqual(mentionsFor(envelope({ source_meta: {} }), CHAT), []);
     assert.deepEqual(mentionsFor(envelope(), DASH), []);
+    assert.deepEqual(mentionsFor(envelope(), { channel: 'gchat', space: 'spaces/D', thread: null }), [],
+      'a direct message mentions no one: the one person there hears it anyway');
   });
 
   test('attachments come from the exported files', () => {
@@ -134,7 +136,10 @@ describe('the delivery pass', () => {
     assert.deepEqual(await t.delivery.pass(), { delivered: 2, failed: 0, waiting: 0 });
     assert.deepEqual(t.sent.map((s) => s.text), ['voiced: Got it.', 'voiced: Final answer.']);
     assert.deepEqual(t.sent[0].addr, DASH);
-    assert.deepEqual(t.sent[0].opts, { mentions: [], attachments: [{ name: 'a.pdf', size: 3, gcsPath: 'files/out/w-2/a.pdf' }] });
+    assert.deepEqual(t.sent[0].opts, {
+      mentions: [], attachments: [{ name: 'a.pdf', size: 3, gcsPath: 'files/out/w-2/a.pdf' }],
+      key: `delivery:w-ack:${contentDigest({ status: 'complete', output: 'Got it.' })}`,
+    }, 'keyed by the envelope and what it says, so a delivery retried after a crash posts once');
     assert.deepEqual(t.voiceCalls[0], {
       rawText: 'Got it.', question: 'Write the report', contextHint: 'This is a quick acknowledgment: keep it very short.',
       convoTail: 'tail for th-1 / w-ack',

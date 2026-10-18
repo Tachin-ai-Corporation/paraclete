@@ -1,0 +1,15 @@
+{
+  "id": "p-meeting-brief",
+  "name": "Meeting Brief",
+  "description": "Preparing someone for a meeting: its purpose and expected decisions, who attends, what its documents and recent mail say, and the questions worth asking. Read-only: it reads and summarizes, and answers or changes nothing.",
+  "narrative": "A meeting brief answers one question: what does the person need to walk in prepared? Start from the event itself: time, organizer, guests, description and the documents attached or linked. Gather the related material you can see: those documents, read as copies; recent mail on the subject; notes from the last meeting in the same series; what memory holds about the people and the work. Summarize, don't paste: the purpose and the decisions expected, a few lines on what each document says, the open questions, and two or three questions worth asking. Name every source. Keep private detail out unless it matters to the meeting. The brief reads and summarizes only: no reply to anyone, no answer to the invitation, no edit to a document.",
+  "intent_keywords": [
+    "meeting brief",
+    "prepare me for",
+    "prep for the meeting",
+    "before my meeting",
+    "background for the meeting"
+  ],
+  "status": "active",
+  "version": 1
+}

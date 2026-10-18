@@ -1,0 +1,8 @@
+{
+  "id": "bigquery",
+  "name": "BigQuery with bq",
+  "version": 1,
+  "when_to_use": "Working in BigQuery with the bq CLI: finding datasets and tables, reading schemas, running queries with a dry run and a byte cap first, loading data through a staging table, exporting to Cloud Storage, changing a schema safely, and checking a load's quality.",
+  "organs": ["motor"],
+  "commands": []
+}

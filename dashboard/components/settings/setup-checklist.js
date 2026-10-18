@@ -1,12 +1,13 @@
 // dashboard/components/settings/setup-checklist.js: what this instance needs, as data for the Setup tab.
 // Pure: it takes what the views already fetched (the agent's install record from GET /api/agent, the
-// `status` command's result, GET /api/setup, the agent's service-account address from GET /api/me, and
-// the `drive_check` command's result once someone ran Test Drive) and says, per item, whether it is
-// done and what to do.
+// `status` command's result, GET /api/setup, the agent's service-account address from GET /api/me,
+// the `drive_check` command's result once someone ran Test Drive, and GET /api/workspace) and says, per
+// item, whether it is done and what to do.
 // Admins and members see the same states; only the advice differs, since only admins can act.
 
 import { shortCommit, unhealthyServices } from './service-health.js';
 import { driveCheckView } from './drive-settings.js';
+import { accountSummary } from './workspace/workspace-wizard.js';
 
 /** How each state reads, and the badge it wears. */
 export const STATES = Object.freeze({
@@ -97,15 +98,15 @@ function usersItem(setup, isAdmin) {
 
 /**
  * Drive: how to share with the agent, until Test Drive has run; then what the check found. The address
- * to share with is the identity the check reports (a Workspace role's own account), else the agent's
- * service account.
+ * to share with is the identity the check reports, else the Workspace account the VM recorded, else
+ * the agent's service account.
  */
-function driveItem(agentAccount, drive, isAdmin) {
+function driveItem(agentAccount, drive, workspaceAccount, isAdmin) {
   const result = drive?.result || null;
   const item = {
     key: 'drive',
     title: 'Share Drive files with the agent',
-    address: result?.identity?.email || agentAccount || '',
+    address: result?.identity?.email || workspaceAccount || agentAccount || '',
   };
   if (drive?.running && !result) return { ...item, state: 'checking', detail: 'Testing Drive…' };
   if (drive?.error && !result) {
@@ -134,11 +135,27 @@ function claudeItem(setup) {
   return { ...item, state: 'later', detail: 'Off: the agent runs on Gemini. Turning Claude on arrives in a later release.' };
 }
 
-function workspaceItem(setup) {
+/**
+ * The agent's Workspace account (GET /api/workspace): not needed on most roles; on a Workspace role,
+ * whether one is recorded and whether its last test passed, with a link to the Workspace tab.
+ */
+function workspaceItem(workspace, workspaceError, isAdmin) {
   const item = { key: 'workspace', title: 'A Google Workspace account for the agent' };
-  if (!setup) return { ...item, state: 'checking', detail: '' };
-  if (setup.workspace === 'not_needed') return { ...item, state: 'not_needed', detail: 'Not needed for this role.' };
-  return { ...item, state: 'later', detail: `Whether the ${setup.role} role needs one shows here in a later release.` };
+  if (!workspace) {
+    return workspaceError
+      ? { ...item, state: 'problem', detail: `Its state could not be read: ${workspaceError}` }
+      : { ...item, state: 'checking', detail: '' };
+  }
+  const summary = accountSummary(workspace);
+  if (summary.state === 'not_needed') return { ...item, state: 'not_needed', detail: summary.detail };
+  const link = { href: '#workspace', linkLabel: isAdmin ? 'Open Workspace settings' : 'See Workspace settings' };
+  if (summary.state === 'todo') {
+    return { ...item, ...link, state: 'todo', detail: summary.detail, action: askAdmin(isAdmin, 'Set it up under Workspace: create its user, grant domain-wide delegation, test, and save.') };
+  }
+  if (summary.state === 'problem') {
+    return { ...item, ...link, state: 'problem', detail: summary.detail, action: askAdmin(isAdmin, 'Workspace shows what to change for each one; then test again.') };
+  }
+  return { ...item, ...link, state: 'done', detail: summary.detail };
 }
 
 /**
@@ -151,19 +168,24 @@ function workspaceItem(setup) {
  * @param {object|null} o.setup        GET /api/setup
  * @param {string}  [o.agentAccount]   GET /api/me's dashboard.agentAccount
  * @param {{result?: object|null, error?: string|null, running?: boolean}} [o.drive]  the drive_check command
+ * @param {object|null} [o.workspace]       GET /api/workspace
+ * @param {string|null} [o.workspaceError]  why it could not be read
  * @param {boolean} o.isAdmin
  * @returns {{items: object[], required: {done: number, total: number}}}
  */
-export function setupChecklist({ agent = null, status = null, statusError = null, setup = null, agentAccount = '', drive = null, isAdmin = false }) {
+export function setupChecklist({
+  agent = null, status = null, statusError = null, setup = null, agentAccount = '', drive = null, workspace = null, workspaceError = null, isAdmin = false,
+}) {
   const items = [
     agentItem(agent),
     servicesItem(status, statusError, isAdmin),
     modelsItem(status, statusError, isAdmin),
     usersItem(setup, isAdmin),
-    driveItem(agentAccount, drive, isAdmin),
+    driveItem(agentAccount, drive, workspace?.account?.account || '', isAdmin),
     claudeItem(setup),
-    workspaceItem(setup),
+    workspaceItem(workspace, workspaceError, isAdmin),
   ];
-  const required = items.filter((item) => REQUIRED.includes(item.key));
+  // A role with a Workspace account cannot do its work without it.
+  const required = items.filter((item) => REQUIRED.includes(item.key) || (item.key === 'workspace' && workspace?.needed === true));
   return { items, required: { done: required.filter((item) => item.state === 'done').length, total: required.length } };
 }

@@ -1,8 +1,9 @@
 # install/lib/iam.sh: reads and changes IAM policies on the project, on a service account, on the
-# bucket, and on the dashboard's image repository, Cloud Run service and IAP resource. A policy is read
-# once into "<role>,<member>" lines; a grant is made only when that line is missing, so re-running
-# grants nothing twice, and grants are additive: nothing here removes a binding it did not name.
-# Removal is for uninstall.sh. Defines functions only. Sourced by install/install.sh and
+# bucket, on an image repository (the dashboard's, or the agent's own), and on the dashboard's Cloud Run
+# service and IAP resource. A policy is read once into "<role>,<member>" lines; a grant is made only
+# when that line is missing, so re-running grants nothing twice, and grants are additive: nothing here
+# removes a binding it did not name. The two revoke_ functions take back one named grant, for a move
+# to another role that no longer declares it. Defines functions only. Sourced by install/install.sh and
 # install/uninstall.sh. Needs run.sh.
 
 # The gcloud arguments that print a policy as "<role>,<member>" lines.
@@ -113,4 +114,19 @@ ensure_iap_role() {
   fi
   run_retry gcloud iap web add-iam-policy-binding --resource-type=cloud-run --service="$1" --region="$2" \
     --member="$5" --role="$6" --condition=None --project="$3" --quiet
+}
+
+# revoke_account_role <account email> <project> <policy> <member> <role>: takes back one grant on one
+# service account, when the policy holds it. Service account policies hold no conditions.
+revoke_account_role() {
+  has_binding "$3" "$5" "$4" || return 0
+  run_retry gcloud iam service-accounts remove-iam-policy-binding "$1" --project="$2" --member="$4" --role="$5" --quiet
+}
+
+# revoke_repository_role <repository> <location> <project> <policy> <member> <role>: takes back one
+# grant on one Artifact Registry repository, when the policy holds it. The repository stays.
+revoke_repository_role() {
+  has_binding "$4" "$6" "$5" || return 0
+  run_retry gcloud artifacts repositories remove-iam-policy-binding "$1" --location="$2" --project="$3" \
+    --member="$5" --role="$6" --quiet
 }

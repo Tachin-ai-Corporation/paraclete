@@ -10,7 +10,7 @@ for doing one kind of work, plus the commands that do it.
 ```
 skills/<id>/
   SKILL.md         agent-facing: when to use the skill and how, with exact command syntax
-  skill.json       { id, name, version, when_to_use, organs, commands }
+  skill.json       { id, name, version, when_to_use, organs, commands, requires? }
   <command>.mjs    a command only this skill governs: Node, `#!/usr/bin/env node`, exporting
                    main(argv, deps) like the commands in agent/cli/
 ```
@@ -23,6 +23,11 @@ documents and governs: either a file here, or a shared command in `agent/cli/<co
 gateway's skill index (`agent/gateway/skill-catalog.mjs`) reads `id`, `name`, `when_to_use` and
 `organs`, and shows each tool-using organ the path of every SKILL.md. Keep the first sentence of
 `when_to_use` short: it is the skill's one-line capability. `tests/content/` checks every package.
+
+`requires` (optional) names what the instance must have for the skill's commands to work. The one
+requirement is `workspace`: the agent's own Google Workspace account. On an instance without it the
+gateway leaves the skill out of the organs' index, and control's `skills` view marks it
+`unavailable`. The requirements are defined in `agent/context/skill-requirements.mjs`.
 
 ## What belongs here
 
@@ -54,3 +59,21 @@ A skill only one role needs goes in `roles/<id>/skills/`.
 | `system-shell` | motor | none | General command-line work and safe file edits |
 | `scripting` | motor | none | Bash and Python scripts |
 | `careful-operations` | motor | none | The method for unfamiliar or irreversible operations |
+
+## Workspace skills
+
+Every Workspace role gets these: they carry `"requires": ["workspace"]`, so they are installed on
+every instance but shown to the agent only when it has its own Workspace account. Each command acts
+as that account through domain-wide delegation, with only the scopes of the API it calls
+(`agent/auth/workspace-scopes.mjs`); the API clients are `agent/providers/workspace*.mjs`. The Drive
+rule holds in all of them: a file someone shared is read, commented on or copied into a new file,
+never edited, moved, renamed, trashed or deleted; the agent changes in place only files its own
+account owns, and the commands that do check ownership first.
+
+| Skill | Organs | Commands | For |
+|---|---|---|---|
+| `workspace-calendar` | motor, temporal-research | `cal-list`, `cal-get`, `cal-freebusy`, `cal-create`, `cal-update` (here) | Calendars, people's free and busy times, and events on the agent's own calendar; invitations only for the people a request names, and never an answer to one |
+| `workspace-gmail` | motor, temporal-research | `gmail-search`, `gmail-get` (here) | Searching and reading the agent's own mailbox, and attachments into the mission; read only |
+| `workspace-docs` | motor, temporal-research | `docs-get`, `docs-create`, `docs-comment`, `docs-replace` (here) | Docs as Markdown or text, comments, new Docs from Markdown, and in-place edits of the agent's own Docs |
+| `workspace-sheets` | motor, temporal-research | `sheets-get`, `sheets-create`, `sheets-append`, `sheets-update` (here) | Sheets read cell by cell, new Sheets from CSV, and value writes into the agent's own Sheets |
+| `workspace-slides` | motor, temporal-research | `slides-get`, `slides-create` (here) | Decks read slide by slide with their notes, and new decks from an outline |

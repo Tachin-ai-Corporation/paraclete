@@ -53,7 +53,7 @@ export function readGatewayToken(path, readText) {
  * @param {Function} [deps.ensureDir]       (path) => void; creates a data directory if it is missing
  * @param {object}   [deps.env]             the environment the agent's commands start from
  * @returns {Promise<{server: import('node:http').Server, claudeEnabled: boolean, models: object,
- *   settings: object, listen: Function, close: Function}>}
+ *   settings: object, skillCatalog: string, listen: Function, close: Function}>}
  */
 export async function buildGateway(runtime, deps = {}) {
   const {
@@ -101,6 +101,9 @@ export async function buildGateway(runtime, deps = {}) {
   });
 
   const settings = gatewaySettings(contracts);
+  // The instance record says whether there is a Workspace account: without one, the Workspace skills
+  // stay out of the catalog.
+  const skillCatalog = buildSkillCatalog(skillDirs, { instance });
   const server = createGatewayServer({
     token,
     clients,
@@ -108,7 +111,7 @@ export async function buildGateway(runtime, deps = {}) {
     tools,
     settings,
     sessions: createSessionStore(sessionLimits(contracts)),
-    skillCatalog: buildSkillCatalog(skillDirs),
+    skillCatalog,
     logger: log,
   });
   log('INFO', `models: claude ${claudeEnabled ? 'on' : 'off'}; cortex=${models.cortex} strong=${models.strong} fast=${models.fast} fallback=${models.fallback}`,
@@ -119,6 +122,7 @@ export async function buildGateway(runtime, deps = {}) {
     claudeEnabled,
     models,
     settings,
+    skillCatalog,
     /**
      * Listens on the contracts' loopback address and port.
      * @param {{port?: number, host?: string}} [at] overrides, for tests

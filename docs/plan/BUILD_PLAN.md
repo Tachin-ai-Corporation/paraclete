@@ -109,22 +109,24 @@ generic role is described in [roles/generic/README.md](../../roles/generic/READM
 
 ### Catalog
 
-The Workspace flags are proposals, to confirm when each role is built.
+A role with a Workspace account gets the Workspace skills (Calendar, Gmail read, Docs, Sheets, Slides),
+Google Chat as a channel, and Drive as its own account; the dashboard's setup wizard connects the
+account after install.
 
 | Role | Workspace | Adds to generic |
 |---|---|---|
 | Generic | no | Nothing; this is the base |
-| Executive Assistant | yes | Calendar, Gmail read, Docs, Sheets, Slides, calendar procedures; a daily briefing responsibility |
-| Project Manager | yes | Docs, Sheets, meeting procedures |
-| Finance Analyst | yes | Sheets, Gmail read, billing analysis; billing viewer access |
-| Legal Advisor | yes | Docs review and redlining, legal review method |
-| Designer | yes | Slides and Docs, design-system procedures, accessibility checks |
-| DevOps Engineer | no | gcloud, gsutil, docker, firebase; Cloud Run, Cloud Build and Artifact Registry roles |
-| Software Engineer | no | Coding, code review, pull requests on the organization's repositories |
-| QA Engineer | no | Test running and reporting |
-| Data Engineer | no | BigQuery operations; BigQuery roles |
-| Security Engineer | no | IAM audit; security reviewer role |
-| Web Master | no | Site audit, custom domains, coding, firebase, gcloud |
+| Executive Assistant | yes | Calendar management (own calendar; invitations only when asked, behind an approval); a daily briefing, off until a person asks for it |
+| Project Manager | yes | Meeting notes and status reports in Docs and Sheets |
+| Finance Analyst | yes | Billing analysis over the Cloud Billing export in BigQuery (a capped, read-only query command); BigQuery Job User, and Data Viewer on the export granted by a billing admin |
+| Legal Advisor | yes | Contract review and obligation tracking; redlines as Docs comments or a new copy, never edits to the reviewed document |
+| Designer | yes | Design-system procedures, presentation design, accessibility checks (a contrast checker) |
+| DevOps Engineer | no | gcloud, Cloud Build images (no Docker on the VM), Cloud Storage, Firebase Hosting; Cloud Run and Cloud Build roles, and Artifact Registry and act-as only on its own repository and account |
+| Software Engineer | no | Coding, code review, pull requests through the `gh` CLI with a token from Secrets |
+| QA Engineer | no | Test runs, regression runs and defect reports |
+| Data Engineer | no | BigQuery loads, queries and schema changes; BigQuery User and Data Editor |
+| Security Engineer | no | Read-only IAM and exposure audits; Security Reviewer, Cloud Asset Viewer, Org Policy Viewer |
+| Web Master | no | Site audit (Lighthouse), custom domains, Firebase Hosting, read-only gcloud |
 
 Role prompts hold domain rules only: devops "a deploy passes only on a live 2xx", legal "assist and
 escalate, never give legal advice", engineering "done means tested". The base prompt plus one role
@@ -319,7 +321,7 @@ done.
    `drive` skill with both identities.
    *Exit:* drop a PDF into chat and get a .docx back; read a Doc shared with the service account; write
    into a shared drive; the sharing-policy check reports correctly in a restricted organization.
-8. **Roles.** The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
+8. **Roles** (code done; the live check is next). The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
    Chat channel.
    *Exit:* `generic`, one Workspace role and one other role each install and pass a smoke mission.
 9. **Models and upgrades.** The Claude switch, the release workflow, release detection, the upgrade

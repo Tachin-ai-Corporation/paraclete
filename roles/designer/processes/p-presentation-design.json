@@ -1,0 +1,16 @@
+{
+  "id": "p-presentation-design",
+  "name": "Presentation Design",
+  "description": "Designing a presentation: the audience and the message first, an outline of one idea per slide approved before visual work, then layouts from the design system, speaker notes, a render of every slide, and the accessibility checks.",
+  "narrative": "A deck is a story told to an audience, so begin with who will watch it and the one thing they should leave with. Write the outline before any design: one idea per slide, each title stating its point, in the order of the argument. On a substantial deck, show the outline and get it approved, because changing structure after polish wastes the polish. Then build from the design system: a few layouts reused, consistent margins, text large enough to read from the back of a room, one accent for emphasis, charts whose titles say what they show. Speaker notes carry what the presenter adds. Render every slide and look at it, run the accessibility checks, fix and render again. The deck is a new file of your own; a deck someone shared is a source, never edited.",
+  "intent_keywords": [
+    "presentation",
+    "slide deck",
+    "slides for",
+    "pitch deck",
+    "make a deck",
+    "keynote"
+  ],
+  "status": "active",
+  "version": 1
+}

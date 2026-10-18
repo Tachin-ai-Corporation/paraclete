@@ -3,7 +3,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   AGENT_SENDER, initChannel, makeAddress, serializeAddress, parseAddress, toGChatMarkdown, chatMessageText,
-  chatMessagesUrl, dashboardMessagesUrl, dashboardMessageFields, discoverSpaces, resolveAgentUserId, deliverToAddress,
+  chatMessagesUrl, dashboardMessagesUrl, dashboardMessageFields, listSpaces, findDirectMessage, deliverToAddress,
+  agentMessageId, AGENT_MESSAGE_ID_PREFIX, ChatApiError,
 } from '../../../agent/providers/channel.mjs';
 import { COLLECTIONS } from '../../../agent/storage/collections.mjs';
 
@@ -77,6 +78,8 @@ describe('paths', () => {
     assert.equal(chatMessagesUrl(threaded), `${CHAT}/spaces/AAA/messages?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`);
     assert.equal(chatMessagesUrl(threaded, { replyInThread: false }), `${CHAT}/spaces/AAA/messages`);
     assert.equal(chatMessagesUrl(makeAddress('gchat', { space: 'AAA' })), `${CHAT}/spaces/AAA/messages`);
+    assert.equal(chatMessagesUrl(threaded, { messageId: 'client-paraclete-1', requestId: 'client-paraclete-1' }),
+      `${CHAT}/spaces/AAA/messages?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD&messageId=client-paraclete-1&requestId=client-paraclete-1`);
   });
 
   it('a dashboard message goes to the root messages collection', () => {
@@ -104,15 +107,40 @@ describe('paths', () => {
 });
 
 describe('deliverToAddress', () => {
-  it("posts to Chat with the agent's Workspace token, in the thread, with mentions", async () => {
+  it("posts to Chat with the agent's Workspace token, in the thread, with mentions, marked as the agent's own", async () => {
     const google = fakeFetch();
     initChannel({ firestoreUrl: FIRESTORE, collections: COLLECTIONS, fetch: google.fetch });
     const addr = makeAddress('gchat', { space: 'spaces/AAA', thread: 'spaces/AAA/threads/t1' });
-    assert.equal(await deliverToAddress(addr, '## Done', { token: 'dwd-token', mentions: ['u@example.com'] }), true);
+    const reports = [];
+    assert.equal(await deliverToAddress(addr, '## Done', {
+      token: 'dwd-token', mentions: ['u@example.com'], messageKey: 'delivery:w-1:abc', report: (r) => reports.push(r),
+    }), true);
     const [call] = google.calls;
-    assert.equal(call.url, chatMessagesUrl(addr));
+    const id = agentMessageId('delivery:w-1:abc');
+    assert.equal(call.url, chatMessagesUrl(addr, { messageId: id, requestId: id }), 'one key: one message id, and a repeated request returns it');
     assert.equal(call.init.headers.Authorization, 'Bearer dwd-token');
     assert.deepEqual(call.body, { text: '*Done*\n\n<users/u@example.com>', thread: { name: 'spaces/AAA/threads/t1' } });
+    assert.deepEqual(reports, [{ ok: true, status: 200, error: null }]);
+  });
+
+  it('a direct message is posted to the conversation; without a key the message still carries an agent id', async () => {
+    const google = fakeFetch();
+    initChannel({ firestoreUrl: FIRESTORE, collections: COLLECTIONS, fetch: google.fetch });
+    assert.equal(await deliverToAddress(makeAddress('gchat', { space: 'spaces/D' }), 'hi', { token: 't' }), true);
+    const url = new URL(google.calls[0].url);
+    assert.equal(url.pathname, '/v1/spaces/D/messages');
+    assert.equal(url.searchParams.get('messageReplyOption'), null);
+    assert.ok(url.searchParams.get('messageId').startsWith(AGENT_MESSAGE_ID_PREFIX));
+    assert.equal(url.searchParams.get('requestId'), null, 'nothing to repeat without a key');
+    assert.equal(google.calls[0].body.thread, undefined);
+  });
+
+  it('a keyed message Chat already has counts as delivered, never posted twice', async () => {
+    const google = fakeFetch(409, { error: { status: 'ALREADY_EXISTS' } });
+    initChannel({ firestoreUrl: FIRESTORE, collections: COLLECTIONS, fetch: google.fetch });
+    const addr = makeAddress('gchat', { space: 'spaces/AAA' });
+    assert.equal(await deliverToAddress(addr, 'x', { token: 't', messageKey: 'delivery:w-1:abc' }), true);
+    assert.equal(await deliverToAddress(addr, 'x', { token: 't' }), false, 'without a key a conflict is a failure');
   });
 
   it('drops a Chat address with no space, and reports a refused post', async () => {
@@ -145,13 +173,58 @@ describe('deliverToAddress', () => {
   });
 });
 
-describe('Chat discovery', () => {
-  it('lists visible spaces and resolves the agent user, empty on failure', async () => {
-    initChannel({ firestoreUrl: FIRESTORE, collections: COLLECTIONS, fetch: fakeFetch(200, { spaces: [{ name: 'spaces/A' }, {}], name: 'users/123' }).fetch });
-    assert.deepEqual(await discoverSpaces('t'), ['spaces/A']);
-    assert.equal(await resolveAgentUserId('t'), 'users/123');
-    initChannel({ firestoreUrl: FIRESTORE, collections: COLLECTIONS, fetch: fakeFetch(401).fetch });
-    assert.deepEqual(await discoverSpaces('t'), []);
-    assert.equal(await resolveAgentUserId('t'), null);
+describe('Chat as the agent\'s own user', () => {
+  /** A fetch that answers each call from a list of [status, body], in order, and records the calls. */
+  function scripted(answers) {
+    const calls = [];
+    const fetch = async (url, init = {}) => {
+      calls.push({ url, init });
+      const [status, body] = answers.shift();
+      return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
+    };
+    return { fetch, calls };
+  }
+
+  it('lists every space the account is in, across pages, with what the ears need of each', async () => {
+    const google = scripted([
+      [200, { spaces: [
+        { name: 'spaces/A', spaceType: 'SPACE', displayName: 'Team', lastActiveTime: '2026-10-17T11:00:00Z' },
+        { name: 'spaces/D', spaceType: 'DIRECT_MESSAGE', externalUserAllowed: false },
+        {},
+      ], nextPageToken: 'p2' }],
+      [200, { spaces: [{ name: 'spaces/X', type: 'ROOM', externalUserAllowed: true }, { name: 'spaces/O', type: 'DM' }] }],
+    ]);
+    assert.deepEqual(await listSpaces('dwd-token', { fetch: google.fetch }), [
+      { name: 'spaces/A', spaceType: 'SPACE', external: false, lastActiveTime: '2026-10-17T11:00:00Z', displayName: 'Team' },
+      { name: 'spaces/D', spaceType: 'DIRECT_MESSAGE', external: false, lastActiveTime: null, displayName: '' },
+      { name: 'spaces/X', spaceType: 'SPACE', external: true, lastActiveTime: null, displayName: '' },
+      { name: 'spaces/O', spaceType: 'DIRECT_MESSAGE', external: false, lastActiveTime: null, displayName: '' },
+    ]);
+    assert.equal(google.calls[0].url, `${CHAT}/spaces?pageSize=1000`);
+    assert.equal(google.calls[1].url, `${CHAT}/spaces?pageSize=1000&pageToken=p2`);
+    assert.equal(google.calls[0].init.headers.Authorization, 'Bearer dwd-token');
+  });
+
+  it('a listing that fails throws with the status and Google\'s reason, never an empty list', async () => {
+    const google = scripted([[429, { error: { code: 429, message: 'Quota exceeded for quota metric', status: 'RESOURCE_EXHAUSTED' } }]]);
+    await assert.rejects(listSpaces('t', { fetch: google.fetch }), (err) => err instanceof ChatApiError && err.status === 429
+      && /Quota exceeded/.test(err.message));
+  });
+
+  it('finds the direct message with a person by their email, and says when there is none', async () => {
+    const google = scripted([[200, { name: 'spaces/D', spaceType: 'DIRECT_MESSAGE' }], [404, { error: { status: 'NOT_FOUND' } }], [403, { error: { message: 'denied' } }]]);
+    assert.equal(await findDirectMessage('t', 'ana@example.com', { fetch: google.fetch }), 'spaces/D');
+    assert.equal(google.calls[0].url, `${CHAT}/spaces:findDirectMessage?name=users%2Fana%40example.com`);
+    assert.equal(await findDirectMessage('t', 'ben@example.com', { fetch: google.fetch }), null);
+    await assert.rejects(findDirectMessage('t', 'cy@example.com', { fetch: google.fetch }), /HTTP 403: denied/);
+  });
+
+  it("the agent's message ids are Chat custom ids: client-, lowercase, at most 63 characters, the same for the same key", () => {
+    const id = agentMessageId('delivery:w-1:abc');
+    assert.match(id, /^client-[a-z0-9-]{1,56}$/);
+    assert.ok(id.length <= 63);
+    assert.ok(id.startsWith(AGENT_MESSAGE_ID_PREFIX));
+    assert.equal(agentMessageId('delivery:w-1:abc'), id);
+    assert.notEqual(agentMessageId('delivery:w-1:abd'), id);
   });
 });

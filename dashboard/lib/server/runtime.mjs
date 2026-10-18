@@ -43,6 +43,9 @@ export function settingsFromEnv(env) {
     commit: env.PARACLETE_COMMIT || '',
     agentName: env.PARACLETE_AGENT_NAME || 'Paraclete',
     role: env.PARACLETE_ROLE || 'generic',
+    // The role's `workspace` flag from its role.json, which the image does not carry: the installer
+    // passes it. Only a role with it gets the Workspace setup.
+    workspaceRole: env.PARACLETE_WORKSPACE_ROLE === 'true',
     dashboardAccount: project ? `${DASHBOARD_ACCOUNT_ID}@${project}.iam.gserviceaccount.com` : '',
     agentAccount: project ? `paraclete-agent@${project}.iam.gserviceaccount.com` : '',
     // IAP on a Cloud Run service signs its header for this audience.

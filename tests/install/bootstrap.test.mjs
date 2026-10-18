@@ -310,16 +310,71 @@ describe("the role's packages", () => {
     assert.equal(new Set(apt).size, apt.length, 'each once');
   });
 
-  test('a missing role, a pip or npm list, or a name that is not a package stops the install', (t) => {
+  test('a missing role, an unpinned npm or pip package, or a name that is not a package stops the install', (t) => {
     const root = scratch(t);
     writeTree(root, {
       'roles/generic/role.json': JSON.stringify({ setup: { apt: ['git'] } }),
       'roles/py/role.json': JSON.stringify({ setup: { apt: [], pip: ['pandas'] } }),
-      'roles/evil/role.json': JSON.stringify({ setup: { apt: ['--allow-unauthenticated', 'ok'] } }),
+      'roles/js/role.json': JSON.stringify({ setup: { npm: ['firebase-tools@^15.0.0', 'lighthouse@latest', 'left-pad'] } }),
+      'roles/evil/role.json': JSON.stringify({ setup: { apt: ['--allow-unauthenticated', 'ok'], npm: ['--prefix=/etc'], pip: ['-e git+https://example.com/x'] } }),
     });
     assert.throws(() => rolePackagesCli.rolePackages(root, 'absent'), /role 'absent' is not in this release/);
-    assert.throws(() => rolePackagesCli.rolePackages(root, 'py'), /setup\.pip packages, which this bootstrap does not install/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'py', 'pip'), /setup\.pip "pandas" is not a pip package pinned to an exact version/);
+    for (const spec of ['firebase-tools@^15.0.0', 'lighthouse@latest', 'left-pad']) {
+      assert.throws(() => rolePackagesCli.rolePackages(root, 'js', 'npm'), new RegExp(`setup\\.npm "${spec.replace(/[.^$]/g, '\\$&')}" is not an npm package pinned`));
+    }
     assert.throws(() => rolePackagesCli.rolePackages(root, 'evil'), /"--allow-unauthenticated" is not a Debian package name/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'evil'), /"--prefix=\/etc" is not an npm package/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'evil'), /"-e git\+https:\/\/example\.com\/x" is not a pip package/);
+    assert.throws(() => rolePackagesCli.rolePackages(root, 'generic', 'brew'), /the kind must be one of apt, npm, pip/);
+  });
+
+  test('npm and pip packages are pinned exactly, generic first, once each', (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'roles/generic/role.json': JSON.stringify({ setup: { apt: ['git'], npm: ['left-pad@1.3.0'], pip: ['six==1.16.0'] } }),
+      'roles/web/role.json': JSON.stringify({ setup: { apt: [], npm: ['@scope/tool@2.0.0-rc.1', 'left-pad@1.3.0'], pip: ['PyYAML==6.0.1', 'Six==1.16.0'] } }),
+      'roles/clash/role.json': JSON.stringify({ setup: { npm: ['left-pad@1.2.0'], pip: ['six==1.15.0'] } }),
+    });
+    assert.deepEqual(rolePackagesCli.roleSetup(root, 'web'), {
+      apt: ['git'], npm: ['left-pad@1.3.0', '@scope/tool@2.0.0-rc.1'], pip: ['six==1.16.0', 'PyYAML==6.0.1'],
+    }, 'Six is six to pip, pinned already at that version');
+    assert.throws(() => rolePackagesCli.roleSetup(root, 'clash'), (err) =>
+      /setup\.npm pins left-pad@1\.2\.0, but left-pad@1\.3\.0 is pinned already/.test(err.message)
+      && /setup\.pip pins six==1\.15\.0, but six==1\.16\.0 is pinned already/.test(err.message));
+    assert.deepEqual(rolePackagesCli.parsePackage('npm', '@scope/tool@2.0.0-rc.1'), { name: '@scope/tool', version: '2.0.0-rc.1' });
+    assert.deepEqual(rolePackagesCli.parsePackage('pip', 'zope.interface==6.0.post1'), { name: 'zope.interface', version: '6.0.post1' });
+    for (const bad of ['tool@1.2', 'tool@v1.2.3', 'Tool@1.2.3', 'tool@1.2.3 && reboot']) assert.equal(rolePackagesCli.parsePackage('npm', bad), null, bad);
+    for (const bad of ['six>=1.16', 'six==1.*', 'six', 'six==1.16; rm -rf /']) assert.equal(rolePackagesCli.parsePackage('pip', bad), null, bad);
+  });
+
+  test('given what is installed, only the pins missing or at another version are printed', (t) => {
+    const root = scratch(t);
+    writeTree(root, {
+      'roles/generic/role.json': JSON.stringify({ setup: { apt: ['git'] } }),
+      'roles/web/role.json': JSON.stringify({ setup: { npm: ['firebase-tools@15.32.1', 'lighthouse@13.5.0', 'serve@14.2.4'], pip: ['PyYAML==6.0.1', 'six==1.16.0'] } }),
+      'npm-ls.json': JSON.stringify({ name: 'lib', dependencies: { npm: { version: '11.6.0' }, 'firebase-tools': { version: '15.32.1' }, lighthouse: { version: '13.4.0' } } }),
+      'pip-list.json': JSON.stringify([{ name: 'pyyaml', version: '6.0.1' }, { name: 'six', version: '1.15.0' }]),
+      'garbled.json': '{ not json',
+    });
+    const run = (args) => {
+      const stdout = sink();
+      const stderr = sink();
+      const code = rolePackagesCli.main([`--root=${root}`, '--role=web', ...args], { stdout, stderr });
+      return { code, out: stdout.text(), err: stderr.text() };
+    };
+    assert.deepEqual(run(['--kind=npm']), { code: 0, out: 'firebase-tools@15.32.1\nlighthouse@13.5.0\nserve@14.2.4\n', err: '' });
+    assert.equal(run(['--kind=npm', `--installed=${join(root, 'npm-ls.json')}`]).out, 'lighthouse@13.5.0\nserve@14.2.4\n');
+    assert.equal(run(['--kind=pip', `--installed=${join(root, 'pip-list.json')}`]).out, 'six==1.16.0\n', 'PyYAML is pyyaml to pip');
+    assert.equal(run(['--kind=npm', `--installed=${join(root, 'garbled.json')}`]).out, 'firebase-tools@15.32.1\nlighthouse@13.5.0\nserve@14.2.4\n',
+      'a listing that cannot be read counts as nothing installed');
+    assert.equal(run(['--kind=npm', `--installed=${join(root, 'absent.json')}`]).out.split('\n').length, 4);
+    assert.equal(run(['--kind=npm', '--installed=x']).code, 0);
+    const all = JSON.stringify({ dependencies: { 'firebase-tools': { version: '15.32.1' }, lighthouse: { version: '13.5.0' }, serve: { version: '14.2.4' } } });
+    writeFileSync(join(root, 'all.json'), all);
+    assert.equal(run(['--kind=npm', `--installed=${join(root, 'all.json')}`]).out, '', 'nothing when every pin is installed');
+    assert.equal(run(['--installed=x']).code, 2, 'apt packages are checked by dpkg, not a listing');
+    assert.equal(run(['--kind=brew']).code, 2);
   });
 });
 
@@ -520,6 +575,7 @@ installed_release_is_target && echo fast || echo full`);
     const recheck = (dir, { list = 'printf \'%s\\n\' git pandoc chromium', env = {} } = {}) => bashWithBootstrap(`${fakeApt(dir)}
 WORK_DIR='${dir}' ROLE=generic
 role_package_list() { ${list}; }
+pinned_package_list() { :; }
 recheck_role_packages
 echo "carried on"`, env);
 
@@ -548,9 +604,118 @@ echo "carried on"`, env);
     assert.deepEqual(aptCalls(whole), []);
   });
 
+  /** A release whose role pins npm and pip packages, read by the real role-packages.mjs; npm and pip
+   * stand-ins list what <dir>/npm.json and <dir>/pip.json say is installed, log installs to
+   * <dir>/installs, and exit with $PIN_STATUS. */
+  function pinnedRelease(t) {
+    const dir = scratch(t);
+    writeTree(dir, {
+      'release/install/vm/role-packages.mjs': readRepoFile('install/vm/role-packages.mjs'),
+      'release/roles/generic/role.json': JSON.stringify({ setup: { apt: ['git'], npm: [], pip: [] } }),
+      'release/roles/web/role.json': JSON.stringify({ setup: { apt: [], npm: ['firebase-tools@15.32.1', 'lighthouse@13.5.0'], pip: ['PyYAML==6.0.1'] } }),
+      'npm.json': JSON.stringify({ dependencies: { 'firebase-tools': { version: '15.32.1' }, lighthouse: { version: '13.4.0' } } }),
+      'pip.json': '[]',
+    });
+    const bash = (snippet, env = {}) => bashWithBootstrap(`
+WORK_DIR='${dir}' ROLE=web RELEASE_DIR='${dir}/release'
+pinned_package_list() {
+  local args=("--root=$RELEASE_DIR" "--role=$ROLE" "--kind=$2")
+  if [[ -n "\${3:-}" ]]; then args+=("--installed=$3"); fi
+  '${process.execPath}' "$RELEASE_DIR/install/vm/role-packages.mjs" "\${args[@]}"
+}
+npm_list_installed() { cat '${dir}/npm.json'; }
+pip_list_installed() { cat '${dir}/pip.json'; }
+npm_install_pinned() { printf 'npm %s\\n' "$*" >> '${dir}/installs'; return "\${PIN_STATUS:-0}"; }
+pip_install_pinned() { printf 'pip %s\\n' "$*" >> '${dir}/installs'; return "\${PIN_STATUS:-0}"; }
+${snippet}`, env);
+    const installs = () => (existsSync(join(dir, 'installs')) ? readFileSync(join(dir, 'installs'), 'utf8').trim().split('\n') : []);
+    return { dir, bash, installs };
+  }
+
+  test('pinned npm and pip packages: only those missing or at another version are installed', (t) => {
+    const { dir, bash, installs } = pinnedRelease(t);
+    let r = bash(`ensure_pinned "$RELEASE_DIR" npm && ensure_pinned "$RELEASE_DIR" pip && echo done`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(installs(), ['npm lighthouse@13.5.0', 'pip PyYAML==6.0.1']);
+    assert.match(r.stdout, /installing npm packages: lighthouse@13\.5\.0/);
+
+    writeFileSync(join(dir, 'npm.json'), JSON.stringify({ dependencies: { 'firebase-tools': { version: '15.32.1' }, lighthouse: { version: '13.5.0' } } }));
+    writeFileSync(join(dir, 'pip.json'), JSON.stringify([{ name: 'pyyaml', version: '6.0.1' }]));
+    rmSync(join(dir, 'installs'));
+    r = bash(`ensure_pinned "$RELEASE_DIR" npm && ensure_pinned "$RELEASE_DIR" pip && echo done`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(installs(), [], 'nothing at all when every pin is installed');
+
+    r = bash(`ROLE=generic; ensure_pinned "$RELEASE_DIR" npm && echo done`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stdout.trim(), 'done', 'a role with no pins lists nothing installed');
+  });
+
+  test('a pin that cannot be installed stops a full install, and is a warning on the installed commit', (t) => {
+    const { dir, bash, installs } = pinnedRelease(t);
+    const full = bash(`node_step() { :; }
+ensure_packages() { :; }
+install_role_packages
+echo "carried on"`, { PIN_STATUS: '1' });
+    assert.equal(full.status, 1);
+    assert.doesNotMatch(full.stdout, /carried on/);
+    assert.match(full.stderr, /paraclete-bootstrap: error: the npm packages lighthouse@13\.5\.0 of role web could not be installed/);
+    assert.deepEqual(installs(), ['npm lighthouse@13.5.0']);
+
+    const fast = bash(`${fakeApt(dir)}
+role_package_list() { echo git; }
+recheck_role_packages
+echo "carried on"`, { PIN_STATUS: '1' });
+    assert.equal(fast.status, 0, fast.stderr);
+    assert.match(fast.stdout, /carried on/);
+    assert.match(fast.stderr, /warning: the npm packages lighthouse@13\.5\.0 of role web could not be installed; the services start without them/);
+    assert.match(fast.stderr, /warning: the pip packages PyYAML==6\.0\.1 of role web could not be installed; the services start without them/);
+    assert.deepEqual(aptCalls(dir), [], 'the Debian packages were all there');
+
+    const unreadable = bash(`ROLE=absent; ensure_pinned "$RELEASE_DIR" npm || echo "failed: $PINNED_FAILURE"`);
+    assert.match(unreadable.stdout, /failed: the npm packages of role absent cannot be read: role-packages: cannot read the role's packages/);
+  });
+
+  test('bootstrap.sh installs npm pins globally as root, and pip pins for the paraclete user only', () => {
+    const script = readRepoFile('install/bootstrap.sh');
+    assert.match(script, /npm install --global --no-fund --no-audit "\$@"/);
+    assert.match(script, /runuser -u "\$SERVICE_USER" -- env HOME="\$DATA_ROOT\/home" python3 -m pip/);
+    assert.match(script, /install --user --break-system-packages --no-cache-dir --no-warn-script-location "\$@"/);
+    assert.doesNotMatch(script, /pip install (?!--user)/, 'never a system-wide pip install');
+    assert.match(script, /for kind in npm pip; do\n {4}ensure_pinned "\$RELEASE_DIR" "\$kind" \|\| die "\$PINNED_FAILURE"/, 'a full install stops on a pin it cannot install');
+  });
+
   test('bootstrap.sh refuses to run as anyone but root', { skip: process.getuid?.() === 0 && 'running as root' }, () => {
     const r = spawnSync('bash', ['install/bootstrap.sh'], { cwd: repoRoot, encoding: 'utf8' });
     assert.equal(r.status, 1);
     assert.match(r.stderr, /bootstrap\.sh runs as root/);
+  });
+});
+
+describe('moving an instance to another role', { skip: LINUX_ONLY }, () => {
+  /** A release root whose roles/ holds these role packages. */
+  function rolesTree(t, roles) {
+    const root = scratch(t);
+    for (const role of roles) writeTree(root, { [`roles/${role}/role.json`]: '{}' });
+    return root;
+  }
+  const staged = (root, role) => bashWithBootstrap(`ROLE='${role}'
+staged_for_role '${root}' && echo same || echo other`).stdout.trim();
+
+  test('a release staged for generic and the role is this role\'s; one with another role, a missing one, or one more, is not', (t) => {
+    assert.equal(staged(rolesTree(t, ['generic', 'devops-engineer']), 'devops-engineer'), 'same');
+    assert.equal(staged(rolesTree(t, ['generic']), 'generic'), 'same');
+    assert.equal(staged(rolesTree(t, ['generic', 'designer']), 'devops-engineer'), 'other', 'staged for the old role');
+    assert.equal(staged(rolesTree(t, ['generic', 'designer']), 'generic'), 'other', 'back to generic drops the old role');
+    assert.equal(staged(rolesTree(t, ['generic']), 'designer'), 'other');
+    assert.equal(staged(rolesTree(t, ['generic', 'designer', 'devops-engineer']), 'designer'), 'other');
+  });
+
+  test('the installed commit staged for another role is a full install of the same commit, never the fast path', () => {
+    const script = readRepoFile('install/bootstrap.sh');
+    const check = script.slice(script.indexOf('installed_release_is_target() {'), script.indexOf('hand_off() {'));
+    assert.match(check, /if ! staged_for_role "\$INSTALL_ROOT"; then\n\s+warn "the installed release was installed for another role than \$\{ROLE\}; installing it again for \$\{ROLE\}"\n\s+return 1/);
+    assert.match(script, /manifest\.mjs" stage \\\n\s+"--source=\$RELEASE_DIR" "--dest=\$STAGE_ROOT" "--role=\$ROLE"/,
+      'the new stage holds only the role the metadata names');
   });
 });

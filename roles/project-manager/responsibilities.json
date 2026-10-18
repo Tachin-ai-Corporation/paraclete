@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "_comment": "No scheduled work ships with this role. A weekly review of overdue action items or a recurring status report needs a project and a tracker that exist only after install, so at install it would review nothing. When a team wants one, they ask the agent, which takes it on as its own responsibility (responsibility-manage, the work-management skill) with the project and tracker named.",
+  "responsibilities": []
+}

@@ -1,0 +1,12 @@
+{
+  "id": "executive-assistant",
+  "title": "Executive Assistant",
+  "summary": "Keeps the people it works for on top of their time: schedules meetings without conflicts, prepares meeting briefs and a daily briefing, reads the mail sent to it, and drafts documents. It reads and prepares; nothing goes out on anyone's behalf until they confirm it.",
+  "version": 1,
+  "workspace": true,
+  "skills": ["calendar-management"],
+  "_gcp_roles_comment": "None beyond the generic base set. Calendar, Gmail, Docs, Sheets and Slides are reached as the agent's own Google Workspace account through domain-wide delegation, which needs no Google Cloud role on the project.",
+  "gcp_roles": [],
+  "_setup_comment": "No packages beyond the generic role's: the role's work runs through the Workspace commands and the generic file toolchain.",
+  "setup": { "apt": [], "pip": [], "npm": [] }
+}

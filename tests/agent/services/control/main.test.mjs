@@ -94,14 +94,15 @@ test('main starts polling and exits cleanly on SIGTERM', async () => {
   assert.equal(timers.pending.length, 0);
 });
 
-test('the unit runs as root, sandboxed so that it can write nothing on disk', () => {
+test('the unit runs as root, sandboxed so that it can write on disk only /etc/paraclete', () => {
   const unit = readFileSync(new URL('../../../../agent/services/control/paraclete-control.service', import.meta.url), 'utf8');
   assert.match(unit, /^ExecStart=\/usr\/bin\/node \/opt\/paraclete\/agent\/services\/control\/main\.mjs$/m);
   assert.match(unit, /^User=root$/m);
-  for (const line of ['ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes', 'NoNewPrivileges=yes', 'Restart=always']) {
+  for (const line of ['ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes', 'NoNewPrivileges=yes', 'Restart=always',
+    'ReadOnlyPaths=/opt/paraclete', 'ReadWritePaths=/etc/paraclete']) {
     assert.match(unit, new RegExp(`^${line}$`, 'm'), line);
   }
-  assert.doesNotMatch(unit, /^ReadWritePaths=/m);
+  assert.equal(unit.match(/^ReadWritePaths=/gm).length, 1, 'set_workspace_account writes in /etc/paraclete; nothing else is writable');
   assert.doesNotMatch(unit, /^KillMode=/m, 'an upgrade survives control restarts by running in its own unit, not by KillMode');
 });
 

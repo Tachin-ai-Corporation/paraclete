@@ -1,0 +1,12 @@
+{
+  "id": "legal-advisor",
+  "title": "Legal Advisor",
+  "summary": "Helps people work through contracts and legal documents: reviews them clause by clause, flags what deserves attention with the exact text, proposes changes as comments or in a copy, compares versions, and tracks obligations and deadlines. It assists and escalates; it never gives legal advice, and a qualified lawyer decides.",
+  "version": 1,
+  "workspace": true,
+  "skills": ["legal-review"],
+  "_gcp_roles_comment": "None beyond the generic base set. Docs, Sheets and Gmail are reached as the agent's own Google Workspace account through domain-wide delegation, which needs no Google Cloud role on the project.",
+  "gcp_roles": [],
+  "_setup_comment": "No packages beyond the generic role's: comparing versions uses git, and reading Word and PDF files uses the generic file toolchain.",
+  "setup": { "apt": [], "pip": [], "npm": [] }
+}

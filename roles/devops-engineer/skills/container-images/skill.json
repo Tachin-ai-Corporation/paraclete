@@ -1,0 +1,8 @@
+{
+  "id": "container-images",
+  "name": "Container Images: Dockerfile, Cloud Build, Artifact Registry",
+  "version": 1,
+  "when_to_use": "Building a container image from a Dockerfile and pushing it to Artifact Registry, with Cloud Build, since this machine runs no Docker: writing or checking the Dockerfile, submitting the build as the agent's own account, following it, and getting the image's digest for a deploy.",
+  "organs": ["motor"],
+  "commands": []
+}
