@@ -315,7 +315,7 @@ done.
 6. **Dashboard** (done and checked live, but for adding and removing a real colleague). IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
    approvals, work views, memory, settings, and the setup checklist.
    *Exit:* add and remove a user; chat with the agent; approve a gated mission.
-7. **Files and Drive** (code done; the live check is next). The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
+7. **Files and Drive** (done and checked live, but for a restricted organization's sharing policy). The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
    `drive` skill with both identities.
    *Exit:* drop a PDF into chat and get a .docx back; read a Doc shared with the service account; write
    into a shared drive; the sharing-policy check reports correctly in a restricted organization.

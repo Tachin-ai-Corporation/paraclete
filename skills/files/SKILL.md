@@ -27,7 +27,9 @@ Your mission id is the last part of the mission tree's path: the tree named in y
    what needs converting with `file-convert`.
 4. **Make** the deliverable: `file-make docx --from md --in report.md --out report.docx`.
 5. **Check** it before anyone sees it: read it back with `file-read`, or render a page
-   (`file-convert report.pdf png --pages 1`) and look at it with the viewImage tool.
+   (`file-convert report.pdf png --pages 1 --out <mission tree>/missions/<mission id>/renders`) and
+   look at it with the viewImage tool. Keep those renders there, not in `/tmp`, and do not delete
+   them: the verifier looks at the same images after your step. The folder is never committed.
 6. **Share** it: `file-share --mission <mission id> report.docx`. In your answer, name each file you
    shared. A file you did not share does not reach the person.
 

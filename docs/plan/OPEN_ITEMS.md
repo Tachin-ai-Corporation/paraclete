@@ -132,13 +132,17 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
   build `missions/<id>/missions/<id>/inbox/`; drive-get and drive-export should use the files package's.
   `drive-put` keeps its own copy of the credential-path check that `agent/storage/file-store.mjs` has.
 - **Reply attachments** are capped at 20 by a constant (`MAX_ATTACHMENTS` in the brain's completion).
-- **Images to Gemini, live.** Vertex marks images inside a function response as Preview: confirm
-  `gemini-4-argon` and `gemini-3.8-flash` accept and read them (else set
-  `vertex.gemini_tool_image_placement` to `user-part`), that Claude on Vertex takes a tool_result image,
-  and that three images at the size cap fit the request limits.
-- **Drive, live.** Whether `about`, `drives.list` and `files.export` accept the unused
-  `supportsAllDrives` (the provider leaves it off them), and a shared drive's root id as the output
-  folder.
+- **Images, live.** `gemini-4-argon` accepts images inside a function response and reads them (it
+  compared a rendered .docx with its source PDF and fixed a duplicated title). Still to check: that
+  Claude on Vertex takes a tool_result image, and that three images at the size cap fit the request
+  limits.
+- **The output folder's name.** Set to a shared drive's root, the Drive check calls the folder
+  "Drive" (the root folder's own name); show the shared drive's name instead.
+- **A restricted organization.** The Drive check's advice for an organization that blocks sharing
+  outside its domain is untested live: the dev organization allows sharing with the service account.
+- **Renders for the verifier.** The motor rendered its check images to `/tmp` and deleted them; the
+  verifier then asked for the same paths and found nothing. The files skill now says to keep renders
+  in the mission's own `missions/<id>/renders/`; confirm the next live run does.
 
 ## For phase 9 (models and upgrades)
 

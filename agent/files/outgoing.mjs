@@ -76,9 +76,17 @@ export async function recordOutgoing(db, { missionId, files, source, createdBy, 
   const at = new Date(now()).toISOString();
   for (const file of files || []) {
     const id = outgoingFileId(missionId, file.name);
-    const record = outgoingRecord({ missionId, file, source, createdBy, at, drive });
+    const path = `${COLLECTIONS.files}/${id}`;
+    let record = outgoingRecord({ missionId, file, source, createdBy, at, drive });
+    // The artifact export runs at the end and re-uploads a file the agent may already have shared on
+    // purpose. The object is the same; what the agent recorded about sharing it (that it was shared,
+    // and its Drive copy) stays.
+    if (source === 'artifact' && typeof db.read === 'function') {
+      const existing = await db.read(path).catch(() => null);
+      if (existing?.source === 'file-share') record = { ...record, source: 'file-share', drive: existing.drive ?? null };
+    }
     try {
-      const ok = await db.write(`${COLLECTIONS.files}/${id}`, record, { strict });
+      const ok = await db.write(path, record, { strict });
       if (!ok) throw new Error('the write was refused');
       written.push({ id, record });
     } catch (err) {

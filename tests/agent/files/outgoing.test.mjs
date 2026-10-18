@@ -47,6 +47,19 @@ test('records are written, re-sharing a name overwrites its record, and listing 
   assert.equal(rows[0].created_at, '2026-10-18T09:00:00.000Z');
 });
 
+test('the artifact export of a file the agent shared keeps it marked shared, with its Drive copy', async () => {
+  const drive = { file_id: 'drive-file-1', link: 'https://drive.google.com/file/d/drive-file-1/view', folder_id: 'folder-1' };
+  await recordOutgoing(db, { missionId: 'w-1', files: [upload('summary.docx')], source: 'file-share', createdBy: 'agent@example.com', drive, now: () => NOW });
+  await recordOutgoing(db, { missionId: 'w-1', files: [upload('summary.docx', { size: 12 }), upload('notes.md')], source: 'artifact', createdBy: 'agent@example.com', now: () => NOW + 60_000 });
+  const shared = await db.read('files/out-w-1-summary_docx');
+  assert.equal(shared.source, 'file-share');
+  assert.deepEqual(shared.drive, drive);
+  assert.equal(shared.size, 12, 'the latest upload of the object wins');
+  const exported = await db.read('files/out-w-1-notes_md');
+  assert.equal(exported.source, 'artifact');
+  assert.equal(exported.drive, null);
+});
+
 test('a failed write is logged and the rest are written, unless strict', async () => {
   const logs = [];
   const flaky = { write: async (path, data, opts) => (path.endsWith('a_pdf') ? (opts.strict ? Promise.reject(new Error('unavailable')) : null) : db.write(path, data, opts)) };
