@@ -83,9 +83,10 @@ export function saveDecision(check, account) {
 /**
  * The state of the steps before Save, for their markers: 'done', 'problem' or 'todo'. The delegation
  * is done once a check of this address found every scope granted (`missing_scopes: []`), and a
- * problem when it found some missing or the client ID cannot be read. The Chat app record has no
- * state of its own in Google that the dashboard can read, so its step follows Chat in the check: done
- * when Chat answered, a problem when it did not with every scope granted.
+ * problem when it found some missing or the client ID cannot be read. Chat's step has no state of
+ * its own in Google that the dashboard can read, so it follows Chat in the check: done when Chat
+ * listed the account's spaces, still to do while Chat waits on a first message to the agent
+ * (`pending`), a problem when Chat failed with every scope granted.
  *
  * @param {object} o
  * @param {string|null} o.account   the checked address typed, or null
@@ -101,8 +102,8 @@ export function stepStates({ account, setup, check }) {
   else if (missing?.length || setup?.client_id_error) delegation = 'problem';
   const chatEntry = (Array.isArray(checked?.apis) ? checked.apis : []).find((entry) => entry?.api === 'chat');
   let chat = 'todo';
-  if (chatEntry?.ok === true) chat = 'done';
-  else if (chatEntry && delegation === 'done') chat = 'problem';
+  if (chatEntry?.ok === true && !chatEntry.pending) chat = 'done';
+  else if (chatEntry && !chatEntry.ok && delegation === 'done') chat = 'problem';
   return {
     user: account ? 'done' : 'todo',
     delegation,
@@ -124,6 +125,9 @@ export function accountSummary(workspace) {
   if (!account) return { state: 'todo', detail: 'The agent has no Google Workspace account yet, so Chat and the Workspace skills are off.', failing: [] };
   const check = workspace.last_check?.account === account ? workspace.last_check : null;
   if (!check) return { state: 'done', detail: `The agent is ${account}. It has not been tested since it was saved.`, failing: [] };
+  if (check.ready && check.apis?.some((entry) => entry.pending)) {
+    return { state: 'done', detail: `The agent is ${account}, and every Workspace API answered. Chat starts once someone sends the agent a first message.`, failing: [] };
+  }
   if (check.ready) return { state: 'done', detail: `The agent is ${account}, and every Workspace API answered.`, failing: [] };
   const failing = failedApis(check).map((entry) => entry.name);
   return { state: 'problem', detail: `The agent is ${account}, but ${listNames(failing)} did not answer at the last test.`, failing };

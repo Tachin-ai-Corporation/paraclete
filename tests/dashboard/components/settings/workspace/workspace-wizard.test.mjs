@@ -67,6 +67,12 @@ test('the steps follow the address, the delegation the test found, Chat, and the
     'Chat refused with every scope granted: the Chat app record is the likely cause');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ failing: ['chat'], missing: ['https://www.googleapis.com/auth/chat.messages'] }) }).chat, 'todo',
     'with a scope missing, the delegation is the problem, not the Chat app record');
+  const waiting = check();
+  waiting.apis.find((entry) => entry.api === 'chat').pending = true;
+  assert.deepEqual(stepStates({ account: ACCOUNT, setup: {}, check: waiting }), { user: 'done', delegation: 'done', chat: 'todo', test: 'done' },
+    'Chat waiting for a first message leaves its step to do, and the test passed');
+  assert.match(accountSummary({ needed: true, account: { account: ACCOUNT }, last_check: waiting }).detail, /Chat starts once someone sends the agent a first message/);
+  assert.equal(accountSummary({ needed: true, account: { account: ACCOUNT }, last_check: waiting }).state, 'done');
   assert.equal(stepStates({ account: ACCOUNT, setup: { client_id_error: 'denied' }, check: null }).delegation, 'problem');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ account: 'other@example.com' }) }).test, 'todo', 'a test of another address does not count');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: { ...check({ failing: ['chat'] }), missing_scopes: null } }).delegation, 'todo',

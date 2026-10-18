@@ -89,9 +89,9 @@ test('connect waits for the Workspace account instead of failing, says why, then
   assert.ok(t.logs.some(([, m]) => /learned from its first message/.test(m)), 'an unknown agent id is said once');
 });
 
-test('the first listing starts every space now: only later messages that mention the agent come in', async () => {
+test('the first listing starts every space an hour back: older messages stay out, later mentions come in', async () => {
   const t = inbox({ messages: { 'spaces/A': [
-    msg(1, -5),
+    msg(1, -65),
     msg(2, 1, { text: 'chatter without a mention' }),
     posted(3, 2, { text: '@Paraclete my own echo' }),
     msg(4, 3, { sender: { name: 'users/2', type: 'HUMAN' } }),
@@ -115,6 +115,22 @@ test('the first listing starts every space now: only later messages that mention
   assert.equal(got[0].conversation.turns.length, 3, 'the thread before it, the agent included');
   assert.equal(t.chat.calls[0].auth, 'Bearer chat-token');
   assert.equal(t.store.state.listedAt, new Date(NOW).toISOString());
+});
+
+test("a new account's first direct message, sent before Chat would list it, is read; one from before the hour is not", async () => {
+  // Google Chat lists no spaces for a user nobody has written to, so the message that brings the
+  // agent's account into Chat is always older than the first listing that succeeds.
+  const t = inbox({
+    spaces: [dm('spaces/D')],
+    messages: { 'spaces/D': [
+      msg(1, -90, { name: 'spaces/D/messages/1', text: 'an old note', thread: { name: 'spaces/D/threads/a' } }),
+      msg(2, -20, { name: 'spaces/D/messages/2', text: 'hello!', thread: { name: 'spaces/D/threads/b' } }),
+    ] },
+  });
+  await t.box.connect();
+  const got = await t.box.poll();
+  assert.deepEqual(got.map((m) => m.rawText), ['hello!']);
+  assert.deepEqual(got[0].address, { channel: 'gchat', space: 'spaces/D', thread: null }, 'answered in the direct message');
 });
 
 test('a direct message takes in every message, with no mention, and is answered in the conversation itself', async () => {
@@ -199,7 +215,7 @@ test('the cursor compares instants, not strings', async () => {
 });
 
 test('reading stops at the page that reaches the cursor', async () => {
-  const many = Array.from({ length: 60 }, (_, i) => msg(i, -60 + i, { text: 'old chatter' }));
+  const many = Array.from({ length: 60 }, (_, i) => msg(i, -180 + i, { text: 'old chatter' }));
   const t = inbox({ messages: { 'spaces/A': [...many, msg(100, 1)] } });
   await t.box.connect();
   assert.equal((await t.box.poll()).length, 1);
@@ -235,7 +251,7 @@ test('messages from several spaces come back oldest first, and a failing space i
 });
 
 test('only a space whose newest message is past its cursor is read, and every space every five minutes', async () => {
-  const lastActive = { 'spaces/A': T(-10), 'spaces/B': T(-10) };
+  const lastActive = { 'spaces/A': T(-70), 'spaces/B': T(-70) };
   const t = inbox({
     spaces: () => Object.entries(lastActive).map(([name, at]) => space(name, { lastActiveTime: at })),
     messages: { 'spaces/A': [], 'spaces/B': [] },

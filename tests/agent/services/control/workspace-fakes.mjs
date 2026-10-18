@@ -19,6 +19,8 @@ const googleError = (status, message, extra = {}) => json({ error: { code: statu
 /** What each API answers when nothing else is scripted: Docs, Sheets and Slides know no such file. */
 const DEFAULT_ANSWERS = {
   chat: () => json({ spaces: [] }),
+  // The account's direct message with itself, which the check looks up when Chat refuses the listing.
+  chatSelf: () => googleError(404, "The specified direct message doesn't exist.", { status: 'NOT_FOUND' }),
   drive: () => json({ user: { emailAddress: ACCOUNT } }),
   docs: () => googleError(404, 'Requested entity was not found.', { status: 'NOT_FOUND' }),
   sheets: () => googleError(404, 'Requested entity was not found.', { status: 'NOT_FOUND' }),
@@ -28,6 +30,7 @@ const DEFAULT_ANSWERS = {
 };
 
 const API_HOSTS = [
+  ['chatSelf', /^https:\/\/chat\.googleapis\.com\/v1\/spaces:findDirectMessage/],
   ['chat', /^https:\/\/chat\.googleapis\.com\/v1\/spaces/],
   ['drive', /^https:\/\/www\.googleapis\.com\/drive\/v3\/about/],
   ['docs', /^https:\/\/docs\.googleapis\.com\/v1\/documents\//],

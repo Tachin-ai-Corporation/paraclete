@@ -280,7 +280,10 @@ API's scopes (`agent/auth/workspace-scopes.mjs`). Then one read-only call per AP
 `spaces.list`, Drive `about.get`, Docs `documents.get`, Sheets `spreadsheets.get`, Slides
 `presentations.get`, Calendar `calendarList.list` and Gmail `users.getProfile`. Docs, Sheets and
 Slides are asked for a file id that cannot exist: their "not found" proves the API is on and took the
-token. Nothing in Google is written.
+token. Google Chat refuses to list the spaces of a user nobody has written to yet; when it refuses,
+the check looks up the account's direct message with itself (`spaces.findDirectMessage`), and "not
+found" there means Chat took the token: Chat is `ok` and `pending`, with a `note` saying to send the
+agent a first message. Nothing in Google is written.
 Result:
 ```
 { account,                        lowercased
@@ -289,13 +292,14 @@ Result:
   checked_at,
   ready:          boolean,        every API answered
   missing_scopes: [string] | null, scopes the Admin console's grant lacks; null when the cause was elsewhere
-  apis: [{ api: "chat"|"drive"|"docs"|"sheets"|"slides"|"calendar"|"gmail", name, scopes, ok, error, fix }] }
+  apis: [{ api: "chat"|"drive"|"docs"|"sheets"|"slides"|"calendar"|"gmail", name, scopes, ok, error, fix,
+           pending?: true, note?: string }] }   pending and note: Chat only, for an account nobody has written to
 ```
 `error` is Google's answer, `fix` the one thing to change, both null when `ok`. When the whole scope
 list is refused, each scope is asked for alone, so `fix` names the missing ones; when all are refused,
 `fix` says the Admin console has no grant for the signer's client ID (none, or one made for another
-client ID). A user Google does not know, or a suspended one, an API off in the project, a Chat app not
-configured, Gmail off for the user, and a signer that does not exist or that the agent may not sign as
+client ID). A user Google does not know, or a suspended one, an API off in the project, a Chat app
+record missing from the project, Gmail off for the user, and a signer that does not exist or that the agent may not sign as
 each get their own `fix`. An address that is not a Workspace user's (not an address, a personal Gmail
 account, a service account) fails the command. The result is also written as `last_check` on
 [`config/workspace_account`](#the-workspace-account-record), with `checked_by`; a failure to write it is

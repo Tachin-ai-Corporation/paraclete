@@ -142,10 +142,30 @@ test('an API off in the project, a Chat app not configured and Gmail off for the
   assert.match(apis.drive.fix, /Run Test again in a minute/);
 });
 
-test("Chat's bare permission denied names the project's Chat app record first, then Chat for the user", async () => {
-  const google = fakeGoogle({ apis: { chat: answers.status(403, "Permission denied to perform the requested action on the specified resource, or the resource doesn't exist.") } });
+const CHAT_DENIED = "Permission denied to perform the requested action on the specified resource, or the resource doesn't exist.";
+
+test('an account nobody has written to in Chat: Chat took the token, works, and waits for a first message', async () => {
+  // Google Chat refuses to list the spaces of a user it has never seen, but answers "not found" for
+  // the user's direct message with itself.
+  const google = fakeGoogle({ apis: { chat: answers.status(403, CHAT_DENIED) } });
+  const result = await run(google);
+  const apis = byApi(result);
+  assert.equal(apis.chat.ok, true);
+  assert.equal(apis.chat.pending, true);
+  assert.equal(apis.chat.error, null);
+  assert.match(apis.chat.note, /Send the agent a direct message in Google Chat/);
+  assert.ok(apis.chat.note.includes(`chat.googleapis.com/hangouts-chat?project=${PROJECT}`), 'the Chat app record, should it stay this way');
+  assert.equal(result.ready, true, 'nothing is broken: the account can be saved without a warning');
+  const self = google.calls.find((c) => c.api === 'chatSelf');
+  assert.ok(self.url.endsWith(`?name=${encodeURIComponent(`users/${ACCOUNT}`)}`), "the lookup is of the account's own direct message");
+  assert.equal(apis.drive.pending, undefined, 'only Chat can wait');
+});
+
+test("Chat's bare permission denied, when Chat refuses the token too, names the project's Chat app record first, then Chat for the user", async () => {
+  const google = fakeGoogle({ apis: { chat: answers.status(403, CHAT_DENIED), chatSelf: answers.status(403, CHAT_DENIED) } });
   const apis = byApi(await run(google));
   assert.equal(apis.chat.ok, false);
+  assert.equal(apis.chat.pending, undefined);
   assert.ok(apis.chat.fix.includes(`chat.googleapis.com/hangouts-chat?project=${PROJECT}`));
   assert.ok(apis.chat.fix.indexOf('Chat app record') < apis.chat.fix.indexOf('organizational unit'), 'the project first, then the user');
   assert.equal(apis.drive.ok, true, 'the other APIs are unaffected');

@@ -9,9 +9,13 @@
 //
 // Per space, a cursor holds the newest message time read, and a short list of message names guards
 // against taking one in twice; both survive restarts through the state store (chat-state.mjs). The
-// first listing ever starts every space at "now" (ears.new_space_seed), so joining Chat never replays
-// history; a space that appears later starts a minute before the previous listing, so the message
-// that opened a new direct message, or the mention that added the agent to a space, is read.
+// first listing ever starts every space an hour back (ears.new_space_seed "now", less
+// FIRST_LISTING_LOOKBACK_MS), so joining Chat never replays history, but the message that brought the
+// agent's account into Chat is read: Google Chat lists no spaces for a user nobody has written to, so
+// for a new account that first message always comes before the first listing. A space that appears
+// later starts a minute before the previous listing, so the message that opened a new direct message,
+// or the mention that added the agent to a space, is read. A message read twice is still taken in
+// once: the intake write is create-only (intake.mjs).
 //
 // Who may talk to the agent here: anyone in the organization who can reach its account. A space that
 // admits people outside the organization (a direct message with one included) is not read at all, and
@@ -34,6 +38,8 @@ const PAGE_SIZE = 25;
 const SWEEP_MS = 300_000;
 /** A space that appears after the first listing starts this long before the previous listing. */
 const SEED_MARGIN_MS = 60_000;
+/** The first listing ever starts every space this long before it. */
+export const FIRST_LISTING_LOOKBACK_MS = 3_600_000;
 /** The listing time is saved at least this often even when nothing else changed. */
 const LISTED_SAVE_MS = 60_000;
 const SEEN_LIMIT = 200;
@@ -130,7 +136,7 @@ export function createChatInbox({
     const listed = await listSpaces(token);
     const names = new Set(listed.map((s) => s.name));
     const seed = !seedFromNow ? ''
-      : new Date(listedAt ? Math.min(now(), instant(listedAt) - SEED_MARGIN_MS) : now()).toISOString();
+      : new Date(listedAt ? Math.min(now(), instant(listedAt) - SEED_MARGIN_MS) : now() - FIRST_LISTING_LOOKBACK_MS).toISOString();
     let changed = false;
     let newDirect = false;
     for (const space of listed) {

@@ -45,7 +45,8 @@ const text = (value) => (typeof value === 'string' && value ? value : null);
 
 /**
  * A check as the dashboard shows it. Admins see Google's error and the fix for each API; members see
- * which APIs work, nothing they could act on.
+ * which APIs work, nothing they could act on. Everyone sees whether an API waits on a first message
+ * (`pending`, Chat only) and its `note`, which asks anyone in the organization to write to the agent.
  *
  * @param {object|null} check  config/workspace_account's last_check
  * @param {boolean} admin
@@ -56,6 +57,8 @@ export function checkView(check, admin) {
     api: String(entry?.api ?? ''),
     name: String(entry?.name ?? entry?.api ?? ''),
     ok: entry?.ok === true,
+    pending: entry?.ok === true && entry?.pending === true,
+    note: entry?.ok === true ? text(entry?.note) : null,
     ...(admin ? { scopes: Array.isArray(entry?.scopes) ? entry.scopes.map(String) : [], error: text(entry?.error), fix: text(entry?.fix) } : {}),
   }));
   return {

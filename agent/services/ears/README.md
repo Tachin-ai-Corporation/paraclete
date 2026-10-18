@@ -37,8 +37,13 @@ Not here: classifying what came in (the brain), replying (the mouth), the Addres
   (the wizard's step 3 links to the page): an app name, a description, Interactive features off.
   Nobody sees it. The agent is still a person in Chat, not a Chat app: people find it the way they
   find a colleague.
+- A first message. Google Chat lists no spaces for a user nobody has written to: until someone sends
+  the agent a direct message or adds it to a space, every listing is refused with "permission
+  denied", whatever the project or signer. The wizard's step 3 asks the admin to send one; the
+  workspace check reports Chat as waiting for it, not failed.
 - While Chat refuses the account (401 or 403), the Chat loop waits twice as long after each refusal,
-  from 30 seconds up to five minutes, and logs the refusal once, not on every poll.
+  from 30 seconds up to five minutes, and logs the refusal once, not on every poll; a refusal it
+  shows in the health file says to send the agent a first message.
 - Give the agent's Workspace user the agent's name as its name (or the start of it: "Paraclete" or
   "Paraclete Agent" for an agent called Paraclete). Until the agent has posted its first message,
   the ears recognize a mention of it by that name.
@@ -57,8 +62,10 @@ message is not read again.
 
 To add the agent to a space, add its address as you would a person's. A direct message, or a space
 the agent joins, is found within one poll; the message that opened it (or the mention that added the
-agent) is read. When Chat first comes online on an instance, nothing older is replayed
-(`ears.new_space_seed: "now"`): a message sent before then has to be sent again.
+agent) is read. When Chat first comes online on an instance, it reads the hour before and nothing
+older (`ears.new_space_seed: "now"`, less an hour): the first message that brought the agent's
+account into Chat is answered, old history is not replayed, and a message sent longer ago has to be
+sent again.
 
 The agent never reads a space that admits people outside the organization, a direct message with an
 outside person included, so its answers never reach anyone the dashboard could not admit. To keep

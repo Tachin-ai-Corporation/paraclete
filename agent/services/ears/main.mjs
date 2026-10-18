@@ -46,6 +46,8 @@ const CHAT_RATE_LIMIT_MS = 60_000;
  * doubles from CHAT_RETRY_MS up to this.
  */
 const CHAT_REFUSED_MAX_MS = 300_000;
+/** Google Chat refuses to list the spaces of a user nobody has written to: what the health file adds to a 403. */
+const CHAT_UNKNOWN_HINT = 'Google Chat answers this until someone first writes to the account: send the agent a direct message in Google Chat.';
 /** Dashboard user records read at most, for matching Chat senders. */
 const USERS_READ_LIMIT = 500;
 
@@ -254,7 +256,7 @@ export function createEars(runtime, deps = {}) {
     } catch (err) {
       rateLimited = err.status === 429;
       refused = err.status === 401 || err.status === 403;
-      health.gchat.last_error = err.message;
+      health.gchat.last_error = err.status === 403 ? `${err.message} ${CHAT_UNKNOWN_HINT}` : err.message;
       if (err.message !== chatError) log('ERROR', 'Chat poll failed', { error: err.message });
       chatError = err.message;
     }

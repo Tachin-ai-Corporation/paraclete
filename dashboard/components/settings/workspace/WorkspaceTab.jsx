@@ -7,8 +7,9 @@
 //      enter its address;
 //   2. grant domain-wide delegation: the signer's client ID and the scope list, each with a copy
 //      button, and a link to the Admin console's page for them (GET /api/workspace/setup);
-//   3. configure the project's Chat app record, which Google Chat requires even of a user's token
-//      (a link to the Cloud console page; agent/auth/workspace-scopes.mjs chatAppPage);
+//   3. set up Google Chat: the project's Chat app record, which Google requires even of a user's
+//      token (a link to the Cloud console page; agent/auth/workspace-scopes.mjs chatAppPage), and a
+//      first direct message to the agent, before which Chat lists no conversations for a new user;
 //   4. Test: the workspace_check command, which runs on the VM as the agent and reports each API with
 //      the one thing to change when it failed;
 //   5. Save: the set_workspace_account command, once a test of that address passed (or, after a
@@ -42,7 +43,16 @@ function External({ href, children }) {
   return <a className="btn btn-sm" href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
 }
 
-/** What one check found, API by API. Admins see Google's error and the fix; members only the outcome. */
+/** An API's outcome: it works, it waits on a first message (Chat), or it failed. */
+function ApiBadge({ entry }) {
+  if (entry.ok && entry.pending) return <span className="badge badge-warn">Waiting for a first message</span>;
+  return <span className={`badge ${entry.ok ? 'badge-ok' : 'badge-danger'}`}>{entry.ok ? 'Works' : 'Failed'}</span>;
+}
+
+/**
+ * What one check found, API by API. Admins see Google's error and the fix; members the outcome, and
+ * the note of an API that waits on a first message, which anyone can act on.
+ */
 function CheckResults({ check, isAdmin }) {
   if (!check) return null;
   return (
@@ -59,12 +69,13 @@ function CheckResults({ check, isAdmin }) {
               <tr key={entry.api}>
                 <td className={settingsStyles.nowrap}>{entry.name}</td>
                 <td className={settingsStyles.nowrap}>
-                  <span className={`badge ${entry.ok ? 'badge-ok' : 'badge-danger'}`}>{entry.ok ? 'Works' : 'Failed'}</span>
+                  <ApiBadge entry={entry} />
                 </td>
-                {isAdmin && (
+                {(isAdmin || entry.note) && (
                   <td>
-                    {entry.fix && <p>{entry.fix}</p>}
-                    {entry.error && <p className={`muted ${settingsStyles.small}`}>Google said: {entry.error}</p>}
+                    {entry.note && <p>{entry.note}</p>}
+                    {isAdmin && entry.fix && <p>{entry.fix}</p>}
+                    {isAdmin && entry.error && <p className={`muted ${settingsStyles.small}`}>Google said: {entry.error}</p>}
                   </td>
                 )}
               </tr>
@@ -231,13 +242,18 @@ function Wizard({ workspace, setup, setupError, check, save, onSave, onCancel, b
         {links.delegation && <External href={links.delegation}>Open domain-wide delegation</External>}
       </Step>
 
-      <Step number={3} title="Configure the Google Chat API" state={states.chat}>
+      <Step number={3} title="Set up Google Chat" state={states.chat}>
         <p>
           Google requires a Chat app record of this Google Cloud project before Chat answers the agent. In the Cloud console,
           open the Chat API's Configuration page, enter an app name and a description, turn Interactive features
           off, and Save. Nobody sees this record: the agent is a person in Chat, not an app.
         </p>
         {links.chat_app && <External href={links.chat_app}>Open the Chat API configuration</External>}
+        <p>
+          Then send the agent a direct message in Google Chat, from your own account. Chat lists a new user's
+          conversations only once someone has written to it; the agent reads messages from up to an hour before it
+          first comes online, so this first one is answered too.
+        </p>
       </Step>
 
       <Step number={4} title="Test" state={states.test}>

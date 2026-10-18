@@ -11,6 +11,10 @@
 //
 // Docs, Sheets and Slides have no call that reads without naming a file, so the check asks each for a
 // file id that cannot exist: Google answering "not found" proves the API is on and took the token.
+// Google Chat refuses to list the spaces of a user nobody has written to yet, so when the listing is
+// refused the check looks up the account's direct message with itself: "not found" there means Chat
+// took the token, and Chat counts as working but `pending`, with a `note` saying to send the agent a
+// first message.
 // Delegation answers only "not authorized" for a request with any scope the grant lacks, so when the
 // whole list is refused each scope is asked for alone, to name exactly the ones missing.
 
@@ -25,6 +29,8 @@ export const PROBE_FILE_ID = '1paracleteWorkspaceCheckNoSuchFile0000000000';
 export const DELEGATION_PAGE = 'https://admin.google.com/ac/owl/domainwidedelegation';
 
 const IAM_API = 'https://iam.googleapis.com/v1';
+/** Chat's lookup of a direct message by the other person; the check asks for the account's own. */
+const CHAT_SELF_URL = 'https://chat.googleapis.com/v1/spaces:findDirectMessage?name=';
 const CALL_TIMEOUT_MS = 15_000;
 const MAX_ERROR_CHARS = 300;
 
@@ -164,6 +170,29 @@ export function apiFix(api, e, { account, project }) {
 }
 
 /**
+ * Whether Chat took the token of an account it refused to list spaces for. Google Chat knows a
+ * Workspace user only once someone has written to it or added it to a space; until then spaces.list
+ * answers that user 403, while a lookup of the account's direct message with itself answers 404:
+ * the token was taken, there is just nothing to list yet.
+ */
+async function chatTookToken({ token, account, fetch }) {
+  try {
+    const response = await fetch(`${CHAT_SELF_URL}${encodeURIComponent(`users/${account}`)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    });
+    return response.ok || response.status === 404;
+  } catch {
+    return false;
+  }
+}
+
+/** What the check says of Chat for an account nobody has written to yet. */
+export function chatPendingNote({ account, project }) {
+  return `Chat took the agent's token but has no conversations for ${account} yet: Google Chat lists a user's spaces only once someone has written to it. Send the agent a direct message in Google Chat; it reads messages from up to an hour before it first comes online. If Chat still shows this after someone has written to it, check the project's Chat app record: ${chatAppPage(project)}.`;
+}
+
+/**
  * The signer's OAuth client ID, the number an admin enters in the Admin console, as IAM reports it.
  * Best effort: null when IAM does not answer.
  */
@@ -263,6 +292,12 @@ export async function checkWorkspace({ account: value, project, fetch, getVmAcce
     }
     if (response.ok || (api.notFoundIsOk && response.status === 404)) {
       entry.ok = true;
+      continue;
+    }
+    if (api.api === 'chat' && response.status === 403 && await chatTookToken({ token: minted.token, account, fetch })) {
+      entry.ok = true;
+      entry.pending = true;
+      entry.note = chatPendingNote(context);
       continue;
     }
     const e = googleError(response.status, await response.text().catch(() => ''));

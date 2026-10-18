@@ -69,7 +69,7 @@ test('the state on a Workspace role: none yet, then the account the VM recorded 
   assert.ok(calendar.error);
 
   const forMember = await readWorkspace(dash.runtime, member);
-  assert.deepEqual(forMember.last_check.apis.find((a) => a.api === 'calendar'), { api: 'calendar', name: 'Google Calendar', ok: false });
+  assert.deepEqual(forMember.last_check.apis.find((a) => a.api === 'calendar'), { api: 'calendar', name: 'Google Calendar', ok: false, pending: false, note: null });
   assert.ok(!('fix' in forMember.last_check.apis[0]) && !('missing_scopes' in forMember.last_check), 'members see the state, not what to change');
 
   // A removal leaves who removed it, and no account.
@@ -80,6 +80,25 @@ test('the state on a Workspace role: none yet, then the account the VM recorded 
   assert.equal(removed.account, null);
   assert.deepEqual(removed.removed, { recorded_at: '2026-10-18T10:00:00.000Z', recorded_by: 'admin@example.com' });
   assert.equal(removed.last_check.account, 'agent@example.com', 'the last check stays');
+});
+
+test('Chat waiting for a first message: everyone sees it and the note, which anyone can act on', async (t) => {
+  const dash = await startDashboard({ env: WORKSPACE_ENV });
+  t.after(dash.stop);
+  const denied = () => new Response(JSON.stringify({ error: { code: 403, message: 'Permission denied' } }), { status: 403 });
+  const result = await checkWorkspace({
+    account: 'agent@example.com', project: 'your-gcp-project', fetch: fakeGoogle({ apis: { chat: denied } }).fetch,
+    getVmAccessToken: async () => 'vm', now: () => new Date('2026-10-18T09:05:00.000Z'),
+  });
+  await control.writeLastCheck(dash.runtime.db, dash.runtime.collections, { ...result, checked_by: 'admin@example.com' });
+  for (const user of [admin, member]) {
+    const view = await readWorkspace(dash.runtime, user);
+    const chat = view.last_check.apis.find((a) => a.api === 'chat');
+    assert.equal(view.last_check.ready, true);
+    assert.equal(chat.ok, true);
+    assert.equal(chat.pending, true);
+    assert.match(chat.note, /Send the agent a direct message in Google Chat/);
+  }
 });
 
 test('a Firestore outage is an error, never "no account yet"', async (t) => {
