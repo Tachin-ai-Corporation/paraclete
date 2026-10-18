@@ -171,7 +171,8 @@ function parseArgs(argv) {
 
 /** The instance record the VM runs with, read over IAP SSH. */
 async function vmInstance(ctx) {
-  const result = await ctx.ssh('cat /etc/paraclete/instance.json');
+  // /etc/paraclete is root and the agent's only (bootstrap.sh); the developer's SSH user reads it with sudo.
+  const result = await ctx.ssh('sudo -n cat /etc/paraclete/instance.json');
   let record = null;
   try { record = JSON.parse(result.stdout); } catch { /* reported below */ }
   if (result.code !== 0 || !record || typeof record.role !== 'string') {

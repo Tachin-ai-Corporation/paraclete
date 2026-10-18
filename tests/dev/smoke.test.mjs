@@ -113,7 +113,7 @@ test('a whole run: the role from the VM, the message sent like say, the result f
   assert.match(out, /the brain made it work\/w-1/);
   assert.match(out, /HTTP\/2 was RFC 7540/);
   assert.match(out, /^PASS: role generic, a short research answer: the mission completed and its result was delivered\.$/m);
-  assert.deepEqual(exec.callsTo('gcloud')[0].args, expectedSsh('cat /etc/paraclete/instance.json'));
+  assert.deepEqual(exec.callsTo('gcloud')[0].args, expectedSsh('sudo -n cat /etc/paraclete/instance.json'));
   assertNoShell(exec.calls);
 });
 
