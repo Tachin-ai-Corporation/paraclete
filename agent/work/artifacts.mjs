@@ -28,10 +28,12 @@ const MISSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
  * merged onto whatever is already there. Pure.
  *
  * It ignores three kinds of file that are never artifacts:
- * - source material downloaded to be read, not produced: office documents, archives and, by default,
- *   images, since a downloaded scan is an input that would bloat every future clone. For a project
- *   whose own images are the deliverable (opts.keepAssets, e.g. a website) the image globs are left
- *   out so its images commit; archives and office documents stay excluded regardless;
+ * - archives and, by default, images, which are usually material brought in to be read and would
+ *   bloat every future clone. For a project whose own images are the deliverable (opts.keepAssets,
+ *   e.g. a website) the image globs are left out so its images commit; archives stay excluded
+ *   regardless. Office documents and PDFs are NOT excluded: they are what the agent makes, and a made
+ *   file is committed and handed back as a download. What the agent fetches to read lands in the
+ *   mission's inbox (missions/<id>/inbox/), which the bookkeeping rule below already excludes;
  * - mission bookkeeping the brain writes into the tree (MISSION.md and missions/), plus tool caches
  *   and merge leftovers (.firebase/, node_modules/, *.orig, *.rej);
  * - the agent's own identity and memory files and the shared tree, so even a mis-targeted
@@ -53,9 +55,8 @@ export function renderWorkspaceExcludes(existing = '', opts = {}) {
     : ['*.png', '*.jpg', '*.jpeg', '*.gif', '*.webp'];
   const block = [
     WORKSPACE_EXCLUDE_MARKER,
-    '# Downloaded to be read: publish deliverables through the artifact store; do not commit raw',
-    '# source material.',
-    '*.pdf', '*.docx', '*.xlsx', '*.pptx',
+    '# Material brought in to be read: fetched files land in missions/<id>/inbox/ (excluded below);',
+    '# archives and images elsewhere are not committed either. Documents the agent makes are.',
     ...mediaLines,
     '*.zip', '*.gz', '*.tar',
     '# Tool caches, dependency trees and merge leftovers: never a project artifact. Matched at any',

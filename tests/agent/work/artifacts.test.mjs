@@ -47,10 +47,19 @@ describe('renderWorkspaceExcludes', () => {
     }
   });
 
-  test('ignores downloaded source material by default', () => {
+  test('ignores archives and images by default, and the inbox where fetched files land', () => {
     const { content } = renderWorkspaceExcludes('');
-    for (const pattern of ['*.pdf', '*.docx', '*.png', '*.zip']) {
+    for (const pattern of ['*.png', '*.zip', '/missions/']) {
       assert.ok(lines(content).includes(pattern), `expected ${pattern} in excludes`);
+    }
+  });
+
+  test('commits the documents the agent makes: office files and PDFs are never excluded', () => {
+    for (const opts of [{}, { keepAssets: true }]) {
+      const { content } = renderWorkspaceExcludes('', opts);
+      for (const pattern of ['*.pdf', '*.docx', '*.xlsx', '*.pptx']) {
+        assert.ok(!lines(content).includes(pattern), `${pattern} must not be excluded: a made document is a deliverable`);
+      }
     }
   });
 
@@ -95,9 +104,9 @@ describe('renderWorkspaceExcludes for a project with committed assets (keepAsset
     for (const pattern of IMAGE_GLOBS) assert.ok(!lines(content).includes(pattern), `${pattern} must not be excluded`);
   });
 
-  test('still excludes archives and office documents', () => {
+  test('still excludes archives', () => {
     const { content } = renderWorkspaceExcludes('', { keepAssets: true });
-    for (const pattern of ['*.pdf', '*.docx', '*.xlsx', '*.pptx', '*.zip', '*.gz', '*.tar']) {
+    for (const pattern of ['*.zip', '*.gz', '*.tar']) {
       assert.ok(lines(content).includes(pattern), `expected ${pattern} still excluded`);
     }
   });

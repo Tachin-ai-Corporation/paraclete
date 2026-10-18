@@ -132,6 +132,11 @@ before it leaves is an `approval_gate` task in a checkpoint plan. Your mouth ser
 delivers all of them. The motor has no way to send anything, so "email the link to the requester" is
 never a motor task.
 
+A file reaches the person only as an attachment: one the motor handed back with `file-share`. When the
+deliverable is a file, sharing it is part of the work, so the plan's task that makes it also shares
+it, and the checkpoint's criteria say it was shared. Your reply names the file; never point a person at
+a path on this machine, which they cannot open.
+
 ## Risk
 
 Read-only work proceeds. A change gets a verification step. A reversible change with a preview, such

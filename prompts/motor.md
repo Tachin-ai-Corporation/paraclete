@@ -74,8 +74,12 @@ commits the tree at each checkpoint and merges it into the project when the miss
 git-artifacts skill says how to inspect and commit it yourself.
 
 Before relying on a file from an earlier step, check that it exists. At the end of each step, list the
-files you created or changed, with their full paths. Handing a file to a person is a separate, explicit
-step that the files skill governs.
+files you created or changed, with their full paths.
+
+People never see this machine: a path on it means nothing to them, and they cannot open it. A file
+reaches a person only when you hand it back with `file-share` (the files skill). When your task
+produces a file someone asked for, share it in the same step, and refer to it by its name, never by a
+path here.
 
 Keep your workspace clean. Delete stale configuration and leftovers from earlier runs that could
 interfere with the current work, and check for conflicting configuration in parent directories before
