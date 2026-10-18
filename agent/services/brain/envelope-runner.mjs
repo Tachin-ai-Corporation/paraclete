@@ -257,7 +257,11 @@ export function createEnvelopeRunner(deps) {
     const meta = env.source_meta || {};
     const ci = meta.paused_checkpoint_index;
     const ti = meta.paused_task_index;
-    const saved = Array.isArray(meta.paused_all_results) ? meta.paused_all_results : [];
+    const saved = Array.isArray(meta.paused_all_results) ? [...meta.paused_all_results] : [];
+    // The gate itself is a step of the plan: its row says who approved it. Without it, the task
+    // after the gate and the verifier saw no approval anywhere, and a mission that was approved,
+    // and acted on, was judged as never approved and asked again.
+    if (Number.isInteger(ci) && Number.isInteger(ti)) saved.push(await approvalRow(meta.paused_approval_id, ci, ti));
     let checkpoints = meta.paused_checkpoints;
     if ((!Array.isArray(checkpoints) || checkpoints.length === 0) && Array.isArray(env._cp_spine) && env._cp_spine.length) {
       checkpoints = rebuildFromSpine(env._cp_spine).checkpoints;
@@ -272,6 +276,32 @@ export function createEnvelopeRunner(deps) {
     }
     log('INFO', `approval resume of ${env.id}: continuing at CP${ci + 1} task ${ti + 2}, the task after the approved gate`);
     return resumeFromProgress(env, { checkpointIndex: ci, taskIndex: ti + 1, allResults: saved, checkpoints }, mem, 'approval');
+  }
+
+  /**
+   * The approved gate as a result row at the gate's own step, which the checkpoint keeps as evidence
+   * when it resumes after it: the tasks after the gate and the verifier read who approved, when and
+   * why. An approval document that cannot be read still makes a row: the mission only resumes once
+   * its gate was approved.
+   */
+  async function approvalRow(approvalId, ci, ti) {
+    let approval = null;
+    try {
+      approval = await store.firestoreRead(COLLECTIONS.approvals, approvalId);
+    } catch (e) {
+      log('WARN', `approval resume: approval ${approvalId} could not be read (${e.message}); recording the gate without its details`);
+    }
+    const by = approval?.resolvedBy ? ` by ${approval.resolvedBy}` : '';
+    const at = approval?.resolvedAt ? ` at ${approval.resolvedAt}` : '';
+    const reason = approval?.reason ? ` Their reason: "${toStr(approval.reason).substring(0, 300)}".` : '';
+    return {
+      step: `${ci + 1}.${ti + 1}`,
+      agent: 'approval',
+      task: toStr(approval?.title || 'Approval gate').substring(0, 200),
+      result: `[APPROVED] A person approved this gate${by}${at} (approval ${approvalId}).${reason} The steps after it are approved to run as planned; do not ask for this approval again.`,
+      success: true,
+      approval_id: approvalId,
+    };
   }
 
   /** Runs the rest of a plan from saved progress, then lets the cortex decide on the results. */

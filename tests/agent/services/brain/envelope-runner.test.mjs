@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import { loadContracts } from '../../../../config/contracts.mjs';
 import { resumeContext } from '../../../../agent/services/brain/envelope-runner.mjs';
+import { approvalResolution } from '../../../../agent/work/approvals.mjs';
+import { firestoreEncode } from '../../../../agent/storage/firestore.mjs';
 import { startBrain, writeIntake, drainRunner, organScript, toolLog, verdict, START } from './harness.mjs';
 
 const at = new Date(START).toISOString();
@@ -110,6 +112,36 @@ test('an approval gate that could not be written is retried later from the saved
     m = await t.read(`${COLLECTIONS.work}/w-1`);
     assert.equal(m.status, 'awaiting_approval', 'the second attempt raised the gate from the saved plan');
     assert.equal(decides(t).length, 1, 'no new plan was made for the retry');
+  } finally {
+    await t.stop();
+  }
+});
+
+test('after an approval, the task after the gate and the verifier see who approved it', async () => {
+  const gated = { action: 'checkpoint_plan', checkpoints: [{ instruction: 'Ship', accept_criteria: 'shipped, with approval', tasks: [
+    { agent: 'motor', task: 'Approve shipping', step_type: 'approval_gate' }, { agent: 'motor', task: 'Ship it' },
+  ] }] };
+  const t = await startBrain({ respond: organScript({ decisions: [gated] }) });
+  try {
+    await t.brain.init();
+    await t.db.write(`${COLLECTIONS.work}/w-1`, missionDoc('w-1', 'queued'));
+    await drainRunner(t.brain, 1);
+    assert.equal((await t.read(`${COLLECTIONS.work}/w-1`)).status, 'awaiting_approval');
+    const [gate] = await t.docs(COLLECTIONS.approvals);
+
+    // Decided the way the dashboard decides: only the fields approvalResolution() returns.
+    const fields = approvalResolution({ decision: 'approved', resolvedBy: 'admin@example.com', reason: 'go ahead', now: '2026-10-17T12:05:00.000Z' });
+    await t.db.patch(`${COLLECTIONS.approvals}/${gate.id}`, Object.keys(fields), firestoreEncode(fields), { strict: true });
+    await t.brain.parts.approvals.checkPending();
+    await drainRunner(t.brain, 1);
+
+    const approved = /\[APPROVED\] A person approved this gate by admin@example\.com at 2026-10-17T12:05:00\.000Z \(approval apr-[^)]+\)\. Their reason: "go ahead"/;
+    const ship = t.gateway.of('motor').find((turn) => turn.user.includes('Ship it'));
+    assert.ok(ship, 'the task after the gate ran');
+    assert.match(ship.user, approved, 'the task after the gate is told it was approved');
+    const judged = t.gateway.of('cerebellum').at(-1);
+    assert.match(judged.user, approved, 'the verifier sees the approval as evidence');
+    assert.equal((await t.read(`${COLLECTIONS.work}/w-1`)).status, 'complete');
   } finally {
     await t.stop();
   }
