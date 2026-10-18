@@ -50,11 +50,13 @@ errors, the answer delivered with a Markdown file in `files/out/<mission>/`. Con
   required, as the code does;
 - `dev/status`, `dev/logs`, `dev/query` and `dev/say` over IAP SSH and Firestore from Windows.
 
+Upgrades, checked live on 2026-10-18: `dev/deploy.mjs` over an IAP SSH session from Windows; the signed
+`upgrade` command through control's transient unit; and a reboot after an upgrade, which kept the
+upgraded release ("chosen by the installed release") while the VM's metadata still named the older
+one.
+
 Still to check on a dev instance:
 
-- **Upgrades.** Through control's transient unit (needs a signed command: phase 6), through
-  `dev/deploy.mjs` over an SSH session (a dropped IAP connection kills `upgrade.sh`; switch to
-  `systemd-run` if it happens), and a reboot after an upgrade keeping the upgraded release.
 - **Index builds after install.** The installer starts the index builds and moves on; for the first
   minute or two after the first boot the brain logs `The query requires an index ... currently
   building` every three seconds, with the full error. Either wait for the indexes in step 4 or have the
@@ -105,11 +107,16 @@ The dashboard works around each of these today; each names where the fix belongs
 - **The gate on the mission page.** A gate is a step of the plan with no task envelope, so the plan
   shows "Task 1, Task 3". Show the gate as its own row, with who decided it.
 
-**To confirm on a dev instance** (unverified against the real APIs): `roles/iap.admin` granted on the
-Cloud Run IAP resource rather than the project; whether a service's IAP grants outlive deleting it
-(uninstall does not remove them); Secret Manager's `labels.paraclete=agent` list filter; an
-organization's domain restriction refusing an outside email at `setIamPolicy` (the dashboard passes
-Google's message on).
+**Checked live on 2026-10-18:** IAP sign-in in Chrome (the header's audience is
+`/projects/<number>/locations/<region>/services/<service>`, as derived); `roles/iap.admin` granted on
+the Cloud Run IAP resource, which lets the dashboard read and write its grants; an unknown address
+refused by IAP with Google's reason shown and no record written; Secret Manager's
+`labels.paraclete=agent` list filter; signed commands run, and an unsigned one refused; chat, presence,
+the work and mission pages, approvals and the badge, the agent's brain view, System and Setup.
+
+**Still to confirm on a dev instance:** adding and then removing a real colleague; whether a service's
+IAP grants outlive deleting it (uninstall does not remove them); an organization's domain restriction
+refusing an outside email at `setIamPolicy`; creating, rotating and deleting a secret.
 
 ## For phase 7 (files and Drive)
 

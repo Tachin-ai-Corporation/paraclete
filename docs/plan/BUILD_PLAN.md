@@ -305,7 +305,7 @@ done.
    `uninstall.sh`, and the `dev/` scripts.
    *Exit:* a dev instance installed from a branch runs a full mission on `gemini-4-argon` with no
    fallbacks, and the cortex runs on Gemini without errors.
-6. **Dashboard** (code done; the live check is next). IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
+6. **Dashboard** (done and checked live, but for adding and removing a real colleague). IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
    approvals, work views, memory, settings, and the setup checklist.
    *Exit:* add and remove a user; chat with the agent; approve a gated mission.
 7. **Files and Drive.** The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
