@@ -83,6 +83,11 @@ describe('toolsets and steps', () => {
     assert.equal(tooled.maxSteps, 30);
   });
 
+  it('the organs that execute, research and verify can view images; no other organ can', () => {
+    const viewers = organs.ids.filter((id) => organs.get(id).toolset.includes('viewImage') || organs.get(id, { exec: true }).toolset.includes('viewImage'));
+    assert.deepEqual(viewers, ['motor', 'cerebellum', 'temporal-research']);
+  });
+
   it('exec changes nothing for the other organs', () => {
     assert.deepEqual(organs.get('motor', { exec: true }).toolset, [...OPEN_TOOLSET]);
     assert.deepEqual(organs.get('cortex', { exec: true }).toolset, []);

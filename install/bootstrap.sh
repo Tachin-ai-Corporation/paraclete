@@ -17,7 +17,10 @@
 #   3. else the metadata's paraclete-ref from paraclete-repo, labelled paraclete-release.
 # A commit is installed by that commit's own bootstrap: this script hands over to the installed copy
 # when the commit it would act on is not the one it came from. Run twice with the same commit, the
-# second run only checks that the services run and writes readiness again.
+# second run only puts back a role package that went missing, checks that the services run and writes
+# readiness again. The role's packages include the file toolchain (LibreOffice, Chromium, pandoc and
+# the rest, roles/generic/role.json), so a first boot and any upgrade that adds a package spend a few
+# minutes in apt-get; the running services keep running meanwhile.
 
 set -Eeuo pipefail
 
@@ -32,6 +35,9 @@ readonly TOKEN_FILE=/etc/paraclete/gateway-token
 readonly UNIT_DIR=/etc/systemd/system
 readonly SERVICE_USER=paraclete
 readonly BASE_PACKAGES=(ca-certificates curl git jq unzip)
+# dpkg's journal: numbered files here mean a dpkg run was cut off, and apt-get refuses to run until
+# `dpkg --configure -a` finishes it.
+readonly DPKG_UPDATES_DIR=/var/lib/dpkg/updates
 readonly NODE=/usr/bin/node
 readonly NODE_MAJOR=24
 readonly METADATA_URL=http://metadata.google.internal/computeMetadata/v1
@@ -250,15 +256,37 @@ package_installed() {  # package_installed <name>
   [[ "$status" == 'install ok installed' ]]
 }
 
-ensure_packages() {  # ensure_packages <name...>: installs the ones missing, and nothing when none is
-  local missing=() package
+dpkg_was_interrupted() {
+  compgen -G "${DPKG_UPDATES_DIR}/[0-9]*" > /dev/null
+}
+
+# Installing the toolchain takes minutes, so a reset during a first boot, or an upgrade stopped at its
+# time limit, can cut dpkg off halfway; the next run finishes that before it installs anything.
+finish_interrupted_dpkg() {
+  dpkg_was_interrupted || return 0
+  warn "an earlier package install was cut off; finishing it first"
+  DEBIAN_FRONTEND=noninteractive dpkg --force-confdef --force-confold --configure -a
+}
+
+missing_packages() {  # missing_packages <name...>: the ones not installed, one per line
+  local package
   for package in "$@"; do
-    [[ -z "$package" ]] || package_installed "$package" || missing+=("$package")
+    [[ -z "$package" ]] || package_installed "$package" || printf '%s\n' "$package"
   done
+}
+
+# Installs the packages missing, and nothing when none is. Without their recommendations: a role names
+# every package its tools need (install/README.md), so what lands on the VM is the list and nothing a
+# Debian point release adds to it, and none of the desktop pieces the toolchain's recommendations would
+# bring along (Chromium's setuid sandbox, Ghostscript, X utilities).
+ensure_packages() {  # ensure_packages <name...>
+  local missing=()
+  mapfile -t missing < <(missing_packages "$@")
   (( ${#missing[@]} > 0 )) || return 0
   log "installing packages: ${missing[*]}"
+  finish_interrupted_dpkg
   apt_get update
-  apt_get install -y "${missing[@]}"
+  apt_get install -y --no-install-recommends "${missing[@]}"
 }
 
 ensure_node() {
@@ -302,12 +330,37 @@ node_step() {  # node_step <what failed> <node arguments...>: runs a release hel
   cat "$errors" >&2
 }
 
+# A full install (every new commit, upgrades included) installs the packages the release's own role.json
+# names before anything is stopped, so a release that adds packages gets them, and one whose packages
+# cannot be installed stops here with the running release untouched.
 install_role_packages() {
   local list="$WORK_DIR/role-packages" packages=()
   node_step "the packages of role ${ROLE} cannot be read" \
     "$RELEASE_DIR/install/vm/role-packages.mjs" "--root=$RELEASE_DIR" "--role=$ROLE" > "$list"
   mapfile -t packages < "$list"
   ensure_packages "${packages[@]}"
+}
+
+role_package_list() {  # role_package_list <release root>: the role's packages, one per line, as that release reads them
+  "$NODE" "$1/install/vm/role-packages.mjs" "--root=$1" "--role=$ROLE"
+}
+
+# The fast path (the commit is installed whole) puts back a role package that went missing since, such
+# as one removed by hand. It never stops the run: the services ran without it before this run and still
+# can, so a package that cannot be read or installed is a warning, and the next run tries again.
+recheck_role_packages() {
+  local list="$WORK_DIR/role-packages" packages=() missing=()
+  if ! role_package_list "$INSTALL_ROOT" > "$list" 2>"$WORK_DIR/step-errors"; then
+    warn "the packages of role ${ROLE} cannot be read, so they were not checked: $(head -c 500 "$WORK_DIR/step-errors" | tr '\n' ' ')"
+    return 0
+  fi
+  mapfile -t packages < "$list"
+  mapfile -t missing < <(missing_packages "${packages[@]}")
+  (( ${#missing[@]} > 0 )) || return 0
+  warn "the role's packages ${missing[*]} are not installed; installing them"
+  if ! ensure_packages "${missing[@]}"; then
+    warn "could not install ${missing[*]}; the services start without them, and the next boot or upgrade tries again"
+  fi
 }
 
 stage_release() {  # builds the release in STAGE_ROOT: its files, npm packages and launchers
@@ -583,6 +636,7 @@ restart_installed() {  # after a switch that failed before the swap: the untouch
 full_install() {
   log "installing ${TARGET_RELEASE} (${TARGET_COMMIT}) from ${TARGET_REPO}"
   STEP=packages
+  finish_interrupted_dpkg
   ensure_packages "${BASE_PACKAGES[@]}"
   ensure_node
   STEP=download
@@ -613,6 +667,8 @@ full_install() {
 
 fast_path() {
   log "${TARGET_RELEASE} (${TARGET_COMMIT}) is installed; checking that it runs"
+  STEP=role-packages
+  recheck_role_packages
   STEP=prepare
   prepare_host "$INSTALL_ROOT"
   build_instance_record "$INSTALL_ROOT" "$WORK_DIR/instance.json"

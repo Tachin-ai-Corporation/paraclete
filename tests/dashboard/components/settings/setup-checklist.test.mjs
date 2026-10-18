@@ -84,3 +84,37 @@ test('Claude on, and a role whose Workspace needs are not known yet', () => {
   assert.equal(items.workspace.state, 'later');
   assert.match(items.workspace.detail, /project-manager role/);
 });
+
+test('the Drive item follows Test Drive: checking, what it found, or why it did not finish', () => {
+  const drive = (d, isAdmin = true) => byKey(setupChecklist({ agentAccount: AGENT_ACCOUNT, drive: d, isAdmin })).drive;
+  const before = drive(null);
+  assert.equal(before.state, 'info');
+  assert.match(before.detail, /Test Drive checks/);
+  assert.equal(before.address, AGENT_ACCOUNT);
+  assert.equal(drive({ result: null, error: null, running: true }).state, 'checking');
+
+  const found = {
+    identity: { kind: 'workspace', email: 'agent@example.com' },
+    reachable: true,
+    error: null,
+    shared_with_me: { count: 3, capped: false, sample: [] },
+    shared_drives: [],
+    output_folder: null,
+    advice: [],
+  };
+  const ok = drive({ result: found, error: null, running: false });
+  assert.equal(ok.state, 'done');
+  assert.equal(ok.detail, 'It reaches Drive as its Google Workspace account, agent@example.com. 3 files and folders are shared with it.');
+  assert.equal(ok.address, 'agent@example.com', 'share with the identity the agent actually uses');
+
+  const blocked = drive({ result: { ...found, output_folder: { id: 'f', name: 'Out', drive_id: null, writable: false, error: 'no storage' } } });
+  assert.equal(blocked.state, 'problem');
+  assert.match(blocked.detail, /cannot be written to: no storage/);
+  assert.equal(drive({ result: { ...found, reachable: false, error: 'scope missing' } }).state, 'problem');
+
+  const failed = drive({ result: null, error: 'the agent has not answered yet', running: false }, false);
+  assert.equal(failed.state, 'problem');
+  assert.match(failed.detail, /did not finish: the agent has not answered yet/);
+  assert.match(failed.action, /^Ask a dashboard admin: run Test Drive again/);
+  assert.deepEqual(setupChecklist({ drive: { result: { ...found, reachable: false } } }).required, { done: 0, total: 3 }, 'Drive is not a required step');
+});

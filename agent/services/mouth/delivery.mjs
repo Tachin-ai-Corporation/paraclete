@@ -93,7 +93,9 @@ export function mentionsFor(env, addr) {
 }
 
 /**
- * The outgoing files a delivery carries, as the dashboard shows them.
+ * The outgoing files a delivery carries, as the dashboard shows them. The brain's completion sets
+ * `context.attachments_export` from the mission's outgoing `files` records (what file-share and the
+ * artifact export sent); the mouth only reads it.
  *
  * @param {object} env
  * @returns {Array<{name: string, size: number, gcsPath: string}>}

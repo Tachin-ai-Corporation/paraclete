@@ -1,106 +1,60 @@
 // agent/storage/file-store.mjs: where files going out to people, and coming in from them, live in
 // the instance's bucket. A mission's outgoing files sit at <prefix>out/<missionId>/<name>, where the
-// dashboard lists them as downloads; uploaded files sit at <prefix>in/<uploadId>/<name>. This module
-// names objects and moves bytes. Which files a mission hands back is decided by its callers
-// (artifacts.mjs and the files skill), and the dashboard signs its own upload URLs.
+// dashboard lists them as downloads; uploaded files sit at <prefix>in/<uploadId>/<name> (the names are
+// file-names.mjs's). This module moves bytes, and refuses to send a credential or an oversized file
+// whatever the caller asks. Which files a mission hands back is decided by its callers (artifacts.mjs
+// and the files skill's file-share), which also write the files' records (agent/files/outgoing.mjs);
+// the dashboard signs its own upload URLs.
 
-import { STORAGE_HOST } from './hosts.mjs';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
+import { STORAGE_HOST } from './hosts.mjs';
+import { contentTypeFor, idSegment, outgoingObjectName, sanitizeFileName } from './file-names.mjs';
 import { getAccessToken as getVmAccessToken } from '../auth/metadata-token.mjs';
+
+// The naming helpers live in file-names.mjs, free of file system access, so the dashboard can import
+// them; they are re-exported here for the agent's callers.
+export { CONTENT_TYPES, contentTypeFor, incomingObjectName, outgoingObjectName, sanitizeFileName } from './file-names.mjs';
 
 const DEFAULT_PREFIX = 'files/'; // default; callers pass the contracts value
 const DEFAULT_MAX_BYTES = 20 * 1024 * 1024; // default; callers pass the contracts value
 const UPLOAD_TIMEOUT_MS = 120_000;
-const MAX_NAME_LENGTH = 200;
-
-const CONTENT_TYPES = {
-  '.txt': 'text/plain', '.md': 'text/markdown', '.html': 'text/html',
-  '.css': 'text/css', '.csv': 'text/csv', '.json': 'application/json',
-  '.js': 'text/javascript', '.mjs': 'text/javascript', '.ts': 'text/plain',
-  '.py': 'text/x-python', '.sh': 'text/x-shellscript',
-  '.yaml': 'text/yaml', '.yml': 'text/yaml',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.webp': 'image/webp',
-  '.pdf': 'application/pdf', '.zip': 'application/zip',
-  '.gz': 'application/gzip', '.tar': 'application/x-tar',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-};
 
 /**
- * The content type a download is served with, from the file's extension.
+ * Credentials are never shared, whatever the caller asks. Checked on the resolved path: the
+ * instance's own configuration and gateway token, keys, SSH and git credentials, .env files.
  *
- * @param {string} name
- * @returns {string}
+ * @param {string} absPath
+ * @returns {boolean}
  */
-export function contentTypeFor(name) {
-  return CONTENT_TYPES[extname(String(name)).toLowerCase()] || 'application/octet-stream';
-}
-
-/**
- * A file name that is safe as the last segment of an object name: no directory part, no control
- * characters, at most 200 characters with the extension kept, never empty, '.' or '..'.
- *
- * @param {string} name
- * @returns {string}
- */
-export function sanitizeFileName(name) {
-  const last = String(name ?? '').split(/[\\/]/).pop();
-  let clean = last.replace(/[\u0000-\u001f\u007f]/g, '').trim();
-  if (!clean || clean === '.' || clean === '..') clean = 'file';
-  if (clean.length > MAX_NAME_LENGTH) {
-    const ext = extname(clean).slice(0, 20);
-    clean = clean.slice(0, MAX_NAME_LENGTH - ext.length) + ext;
-  }
-  return clean;
-}
-
-/** An id as one path segment: anything but letters, digits, '_' and '-' becomes '_'. */
-function idSegment(id, what) {
-  const segment = String(id ?? '').replace(/[^A-Za-z0-9_-]/g, '_');
-  if (!segment) throw new Error(`file-store: ${what} is required`);
-  return segment;
-}
-
-function normalizePrefix(prefix) {
-  if (!prefix) return '';
-  return prefix.endsWith('/') ? prefix : `${prefix}/`;
-}
-
-/**
- * Object name of a mission's outgoing file: <prefix>out/<missionId>/<name>.
- *
- * @param {string} prefix - e.g. 'files/'
- * @param {string} missionId
- * @param {string} name
- */
-export function outgoingObjectName(prefix, missionId, name) {
-  return `${normalizePrefix(prefix)}out/${idSegment(missionId, 'missionId')}/${sanitizeFileName(name)}`;
-}
-
-/**
- * Object name of an uploaded file: <prefix>in/<uploadId>/<name>.
- *
- * @param {string} prefix - e.g. 'files/'
- * @param {string} uploadId
- * @param {string} name
- */
-export function incomingObjectName(prefix, uploadId, name) {
-  return `${normalizePrefix(prefix)}in/${idSegment(uploadId, 'uploadId')}/${sanitizeFileName(name)}`;
-}
-
-/** Credentials are never shared, whatever the caller asks. Checked on the resolved path. */
-function isCredentialPath(absPath) {
+export function isCredentialPath(absPath) {
   const path = absPath.replace(/\\/g, '/').toLowerCase();
   const name = path.split('/').pop();
-  return path.endsWith('/.gateway-token')
+  return path.startsWith('/etc/paraclete/')
+    || name === 'gateway-token' || name === '.gateway-token'
     || path.includes('/keys/')
+    || path.includes('/.ssh/')
     || name.endsWith('-key.json')
-    || name.endsWith('.pem')
+    || name.endsWith('.pem') || name.endsWith('.key')
+    || name === '.git-credentials' || name === '.netrc'
     || name === '.env' || name.startsWith('.env.')
     || (name.includes('credentials') && name.endsWith('.json'));
+}
+
+/** A size in words: bytes, KB or MB. */
+function sizeText(bytes) {
+  if (bytes >= 1048576) return `${(bytes / 1048576).toFixed(1).replace(/\.0$/, '')} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1).replace(/\.0$/, '')} KB`;
+  return `${bytes} bytes`;
+}
+
+/** A file the store will not send, and why. The message is agent-facing. */
+export class ShareRefused extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ShareRefused';
+  }
 }
 
 /** `report.md` taken: `report-2.md`, then `report-3.md`. */
@@ -124,7 +78,7 @@ function uniqueName(name, used) {
  * @param {Function} [options.fetch]          fetch implementation (injectable for tests)
  * @param {Function} [options.logger]         (level, message)
  * @param {string}   [options.storageHost]    Cloud Storage API origin; defaults to production
- * @returns {{uploadOutgoing: Function}}
+ * @returns {{uploadOne: Function, uploadOutgoing: Function}}
  */
 export function createFileStore({
   bucket,
@@ -140,13 +94,77 @@ export function createFileStore({
   const log = logger;
 
   /**
+   * Checks one local file before it goes: it must exist, be a regular file, not be a credential, and
+   * fit the size cap.
+   *
+   * @returns {{abs: string, size: number} | {refused: 'missing'|'credential'|'directory'|'not_file'|'too_large', abs?: string, size?: number}}
+   */
+  function inspect(raw) {
+    if (!existsSync(raw)) return { refused: 'missing' };
+    const abs = realpathSync(raw);
+    if (isCredentialPath(abs)) return { refused: 'credential', abs };
+    const st = statSync(abs);
+    if (st.isDirectory()) return { refused: 'directory', abs };
+    if (!st.isFile()) return { refused: 'not_file', abs };
+    if (st.size > maxBytes) return { refused: 'too_large', abs, size: st.size };
+    return { abs, size: st.size };
+  }
+
+  async function put(token, objectName, contentType, bytes) {
+    const url = `${gcsHost}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
+      body: bytes,
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 160)}`);
+    }
+    await resp.json();
+  }
+
+  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+
+  /**
+   * Uploads one local file as a mission's download, under its own name or the one given. A file of
+   * the same name for the same mission is replaced: the latest wins.
+   *
+   * @param {string} missionId
+   * @param {string} path
+   * @param {{name?: string}} [opts]
+   * @returns {Promise<{name: string, size: number, gcsPath: string, contentType: string, sha256: string}>}
+   * @throws {ShareRefused} for a file that may not go; Error for a failed upload
+   */
+  async function uploadOne(missionId, path, { name } = {}) {
+    idSegment(missionId, 'missionId');
+    const file = inspect(path);
+    const reasons = {
+      missing: `${path} does not exist`,
+      credential: `${path} is a credential or the instance's own configuration, which is never shared`,
+      directory: `${path} is a directory: share its files one by one, or zip it first`,
+      not_file: `${path} is not a regular file`,
+      too_large: `${path} is ${sizeText(file.size || 0)}, more than the ${sizeText(maxBytes)} a shared file may be (files.max_mb)`,
+    };
+    if (file.refused) throw new ShareRefused(reasons[file.refused]);
+    const bytes = readFileSync(file.abs);
+    const fileName = sanitizeFileName(name || file.abs);
+    const objectName = outgoingObjectName(prefix, missionId, fileName);
+    const contentType = contentTypeFor(fileName);
+    await put(await getAccessToken(), objectName, contentType, bytes);
+    log('INFO', `uploadOne: uploaded ${fileName} (${bytes.length} B) to gs://${bucket}/${objectName}`);
+    return { name: fileName, size: bytes.length, gcsPath: objectName, contentType, sha256: sha256(bytes) };
+  }
+
+  /**
    * Uploads local files as a mission's downloads. Best effort, file by file: a missing file, a
    * directory, a credential, an oversized file or a failed upload is logged and skipped, and the
    * rest still go. Two files with the same name in one call get distinct names.
    *
    * @param {string} missionId
    * @param {string[]} absPaths - absolute paths of local files
-   * @returns {Promise<Array<{name: string, size: number, gcsPath: string, contentType: string}>>}
+   * @returns {Promise<Array<{name: string, size: number, gcsPath: string, contentType: string, sha256: string}>>}
    */
   async function uploadOutgoing(missionId, absPaths) {
     idSegment(missionId, 'missionId');
@@ -160,32 +178,21 @@ export function createFileStore({
     const used = new Set();
     for (const raw of absPaths || []) {
       try {
-        if (!existsSync(raw)) { log('WARN', `uploadOutgoing: missing ${raw}`); continue; }
-        const abs = realpathSync(raw);
-        if (isCredentialPath(abs)) { log('WARN', `uploadOutgoing: denied credential path ${raw}`); continue; }
-        const st = statSync(abs);
-        if (st.isDirectory()) { log('WARN', `uploadOutgoing: skipping directory ${raw}`); continue; }
-        if (st.size > maxBytes) { log('WARN', `uploadOutgoing: ${raw} exceeds ${maxBytes} bytes, skipping`); continue; }
+        const file = inspect(raw);
+        if (file.refused === 'missing') { log('WARN', `uploadOutgoing: missing ${raw}`); continue; }
+        if (file.refused === 'credential') { log('WARN', `uploadOutgoing: denied credential path ${raw}`); continue; }
+        if (file.refused === 'directory' || file.refused === 'not_file') { log('WARN', `uploadOutgoing: skipping directory or special file ${raw}`); continue; }
+        if (file.refused === 'too_large') { log('WARN', `uploadOutgoing: ${raw} exceeds ${maxBytes} bytes, skipping`); continue; }
 
-        const name = uniqueName(sanitizeFileName(abs), used);
+        const bytes = readFileSync(file.abs);
+        const name = uniqueName(sanitizeFileName(file.abs), used);
         const objectName = outgoingObjectName(prefix, missionId, name);
         const contentType = contentTypeFor(name);
-        const url = `${gcsHost}/upload/storage/v1/b/${bucket}/o?uploadType=media&name=${encodeURIComponent(objectName)}`;
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': contentType },
-          body: readFileSync(abs),
-          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-        });
-        if (!resp.ok) {
-          const errText = await resp.text().catch(() => '');
-          throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 160)}`);
-        }
-        await resp.json();
+        await put(token, objectName, contentType, bytes);
 
         used.add(name);
-        log('INFO', `uploadOutgoing: uploaded ${name} (${st.size} B) to gs://${bucket}/${objectName}`);
-        results.push({ name, size: st.size, gcsPath: objectName, contentType });
+        log('INFO', `uploadOutgoing: uploaded ${name} (${bytes.length} B) to gs://${bucket}/${objectName}`);
+        results.push({ name, size: bytes.length, gcsPath: objectName, contentType, sha256: sha256(bytes) });
       } catch (err) {
         log('ERROR', `uploadOutgoing: failed ${raw}: ${err.message}`);
       }
@@ -193,5 +200,5 @@ export function createFileStore({
     return results;
   }
 
-  return { uploadOutgoing };
+  return { uploadOne, uploadOutgoing };
 }

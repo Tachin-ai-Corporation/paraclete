@@ -387,6 +387,8 @@ export function createCheckpointExecutor(deps = {}) {
       instruction: t.text + (known ? `\n\n${known}\n${RESOURCE_PRECEDENCE}` : ''),
       accept_criteria: t.criteria,
       _missionId: envelope.id,
+      // The files a person shared with the request, each with the command that fetches it.
+      _sharedFiles: envelope.context?.inbound_files || null,
       _projectContext: projectContext,
       _sourceText: envelope.source_text || null,
       _requester: requesterOf(envelope),

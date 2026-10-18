@@ -18,8 +18,10 @@ These are tools of the cerebellum's turn, not shell commands.
   with no verdict and the checkpoint fails for asking. When the evidence is not enough, say so in a
   `report_fail` (see "When the evidence is not enough").
 
-You can also read files with `readFile`, for example a committed file in the mission's working tree.
-You run no commands and change nothing.
+You can also read files with `readFile`, for example a committed file in the mission's working tree,
+and look at an image with `viewImage` (PNG, JPEG or WebP), for example a rendered page or chart. You
+run no commands and change nothing, so you cannot render an image yourself: when the work must be
+seen and no image of it exists, fail it and recommend rendering one.
 
 ## Procedure
 

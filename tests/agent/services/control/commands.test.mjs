@@ -1,8 +1,9 @@
 // Tests for agent/services/control/commands.mjs: the command set is closed and matches the README;
 // restart_service names only allowlisted services, restarts control only after recording the command,
 // and waits for a restarted gateway; set_model, run_responsibility and upgrade reach their modules with
-// the command's id and requester. Run through the real queue against fake Firestore, systemd and
-// gateway, the way the service runs them.
+// the command's id and requester; drive_check runs on the Drive client it is given and reads the output
+// folder from the settings. Run through the real queue against fake Firestore, systemd, gateway and
+// Drive, the way the service runs them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -14,12 +15,13 @@ import { fakeDb, fakeSystemd, fakeGatewayFetch, controlRuntime, GATEWAY_TOKEN } 
 const NOW = new Date('2026-10-17T12:00:00.000Z');
 const SETTINGS = { readyTimeoutMs: 3_000, upgradeMaxSeconds: 900 };
 
-function harness({ systemd = fakeSystemd(), gateway = fakeGatewayFetch(), exists, role } = {}) {
+function harness({ systemd = fakeSystemd(), gateway = fakeGatewayFetch(), exists, role, createDrive } = {}) {
   const db = fakeDb();
   const runtime = controlRuntime({ db, fetch: gateway.fetch, role });
   let clock = NOW.getTime();
   const handlers = createHandlers({
-    runtime, systemd, settings: SETTINGS, now: () => new Date(clock), sleep: async (ms) => { clock += ms; }, ...(exists ? { exists } : {}),
+    runtime, systemd, settings: SETTINGS, now: () => new Date(clock), sleep: async (ms) => { clock += ms; },
+    ...(exists ? { exists } : {}), ...(createDrive ? { createDrive } : {}),
   });
   const queue = createCommandQueue({ db, collections: runtime.collections, handlers, verifyCommand: async () => ({}), now: () => NOW });
   /** Sends one command through the queue and returns its document afterwards. */
@@ -173,4 +175,23 @@ test('the read-only views answer through the queue', async () => {
     const doc = await send(type, {});
     assert.equal(doc.status, 'done', `${type}: ${doc.error}`);
   }
+});
+
+test('drive_check runs as the Drive client it is given and records the check on the command', async () => {
+  const used = [];
+  const drive = {
+    identity: () => ({ kind: 'service_account', email: 'paraclete-agent@your-gcp-project.iam.gserviceaccount.com' }),
+    about: async () => { used.push('about'); return {}; },
+    find: async (o) => { used.push(['find', o]); return { files: [], capped: false, incomplete: false }; },
+    listSharedDrives: async () => { used.push('drives'); return [{ id: '0AExampleSharedDrv9PVA', name: 'Team', canAddChildren: true }]; },
+  };
+  const { send, db } = harness({ createDrive: () => drive });
+  db.set('config/settings', { claude_enabled: false });
+  const doc = await send('drive_check', {});
+  assert.equal(doc.status, 'done', doc.error);
+  assert.deepEqual(used, ['about', ['find', { sharedWithMe: true, limit: 100 }], 'drives']);
+  assert.equal(doc.result.reachable, true);
+  assert.deepEqual(doc.result.shared_drives, [{ id: '0AExampleSharedDrv9PVA', name: 'Team', can_add_files: true }]);
+  assert.equal(doc.result.output_folder, null);
+  assert.ok(doc.result.advice.length > 0);
 });

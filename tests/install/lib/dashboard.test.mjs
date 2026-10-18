@@ -1,15 +1,16 @@
 // Tests for install/lib/dashboard.mjs: the names it reads from names.sh, the exact gcloud arguments of
 // the dashboard's build and deploy, the environment file (any agent name survives it), the comparison
-// that decides whether a deploy would change anything, the commit a deployed service runs, and the
-// command line install.sh calls it through.
+// that decides whether a deploy would change anything, the commit a deployed service runs, the
+// bucket's CORS setting for uploads (the origins, the file, the comparison), and the command line
+// install.sh calls it through.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
-  BUILD_CONFIG_PATH, IMAGE_NAME, NAMES, SERVICE_SETTINGS, buildArgs, buildConfigUrl, cli, dashboardAccount, deployArgs,
-  deployedCommit, deployedEnv, describeArgs, envFileText, iapServiceAgent, imagePath, parseService, parseShellNames,
-  serviceDrift, serviceEnv, tagsArgs,
+  BUILD_CONFIG_PATH, IMAGE_NAME, NAMES, SERVICE_SETTINGS, UPLOAD_CORS, buildArgs, buildConfigUrl, cli, corsConfig, corsDrift,
+  dashboardAccount, dashboardOrigins, deployArgs, deployedCommit, deployedEnv, describeArgs, envFileText, iapServiceAgent,
+  imagePath, parseBucket, parseService, parseShellNames, serviceDrift, serviceEnv, serviceUrl, tagsArgs,
 } from '../../../install/lib/dashboard.mjs';
 import { repoRoot } from '../harness.mjs';
 
@@ -161,4 +162,68 @@ test('the command line install.sh uses: argument lists one per line, the drift f
   const bad = spawnSync(process.execPath, [script, 'image', `project=${PROJECT}`], { encoding: 'utf8' });
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /missing region/);
+});
+
+const DETERMINISTIC = 'https://paraclete-123456789012.us-central1.run.app';
+const OLDER = 'https://paraclete-abcdefghij-uc.a.run.app';
+
+test("the dashboard's origins: its deterministic URL, and every URL the service reports, each once", () => {
+  const where = { projectNumber: INPUTS.projectNumber, region: REGION };
+  assert.equal(serviceUrl(where), DETERMINISTIC);
+  assert.throws(() => serviceUrl({ region: REGION }), /missing projectNumber/);
+  assert.deepEqual(dashboardOrigins(null, where), [DETERMINISTIC], 'no service yet: the URL it will have');
+  assert.deepEqual(dashboardOrigins(goodService(), where), [DETERMINISTIC]);
+  const both = goodService();
+  both.status = { url: `${OLDER}/`, address: { url: OLDER } };
+  both.metadata.annotations['run.googleapis.com/urls'] = JSON.stringify([DETERMINISTIC, OLDER.toUpperCase()]);
+  assert.deepEqual(dashboardOrigins(both, where), [OLDER, DETERMINISTIC].sort());
+  const odd = goodService();
+  odd.status = { url: 'http://insecure.example.com' };
+  odd.metadata.annotations['run.googleapis.com/urls'] = 'not json';
+  assert.deepEqual(dashboardOrigins(odd, where), [DETERMINISTIC], 'only https origins, and an unreadable annotation adds nothing');
+});
+
+test('the CORS file: those origins may PUT, GET and HEAD with Content-Type, and read Content-Type and ETag, for an hour', () => {
+  assert.deepEqual(corsConfig([DETERMINISTIC]), [{
+    origin: [DETERMINISTIC], method: ['GET', 'HEAD', 'PUT'], responseHeader: ['Content-Type', 'ETag'], maxAgeSeconds: 3600,
+  }]);
+  assert.deepEqual(UPLOAD_CORS, { methods: ['GET', 'HEAD', 'PUT'], headers: ['Content-Type', 'ETag'], maxAgeSeconds: 3600 });
+  assert.throws(() => corsConfig([]), /at least one origin/);
+});
+
+test("a bucket's CORS setting is compared however gcloud spells and orders it", () => {
+  const wanted = [OLDER, DETERMINISTIC];
+  assert.equal(corsDrift(null, wanted), 'none set');
+  assert.equal(corsDrift({ name: 'b' }, wanted), 'none set');
+  assert.equal(corsDrift({ cors_config: [] }, wanted), 'none set');
+  assert.equal(corsDrift({ cors_config: corsConfig(wanted) }, wanted), '');
+  assert.equal(corsDrift({ cors: corsConfig(wanted) }, wanted), '', 'the raw API spelling');
+  const respelled = [{ max_age_seconds: 3600, response_header: ['etag', 'content-type'], method: ['put', 'GET', 'HEAD'], origin: [DETERMINISTIC, OLDER] }];
+  assert.equal(corsDrift({ cors_config: respelled }, wanted), '');
+  assert.equal(corsDrift({ cors_config: corsConfig([DETERMINISTIC]) }, wanted), 'different', 'an origin missing');
+  assert.equal(corsDrift({ cors_config: [{ ...corsConfig(wanted)[0], maxAgeSeconds: 60 }] }, wanted), 'different');
+  assert.equal(corsDrift({ cors_config: [...corsConfig(wanted), { origin: ['*'], method: ['GET'] }] }, wanted), 'different', 'a rule of its own');
+  assert.equal(parseBucket('[1]'), null);
+  assert.equal(parseBucket(''), null);
+  assert.deepEqual(parseBucket('{"name":"b"}'), { name: 'b' });
+});
+
+test('the CORS commands on the command line: origins and the bucket from stdin, the file from origins=a,b', () => {
+  const where = [`projectNumber=${INPUTS.projectNumber}`, `region=${REGION}`];
+  assert.equal(cli(['origins', ...where], ''), DETERMINISTIC);
+  const both = goodService();
+  both.status.url = OLDER;
+  assert.equal(cli(['origins', ...where], JSON.stringify(both)), [OLDER, DETERMINISTIC].sort().join(','));
+  const origins = `origins=${OLDER},${DETERMINISTIC}`;
+  assert.deepEqual(JSON.parse(cli(['cors-file', origins])), corsConfig([OLDER, DETERMINISTIC]));
+  assert.equal(cli(['cors-drift', origins], ''), 'none set');
+  assert.equal(cli(['cors-drift', origins], JSON.stringify({ cors_config: corsConfig([DETERMINISTIC, OLDER]) })), '');
+  assert.throws(() => cli(['cors-file', 'origins=']), /at least one origin/);
+
+  const script = join(repoRoot, 'install', 'lib', 'dashboard.mjs');
+  const piped = spawnSync(process.execPath, [script, 'cors-drift', origins], { input: JSON.stringify({ cors_config: [] }), encoding: 'utf8' });
+  assert.equal(piped.status, 0, piped.stderr);
+  assert.equal(piped.stdout, 'none set\n');
+  const read = spawnSync(process.execPath, [script, 'origins', ...where], { input: '', encoding: 'utf8' });
+  assert.equal(read.stdout, `${DETERMINISTIC}\n`);
 });

@@ -9,7 +9,7 @@ import {
   capResult, sniffBinary, splitCommandLine, checkMemoryCommand, memoryFileTarget, isWithinRoots,
   createToolRegistry, DEFAULT_TOOL_LIMITS, OPEN_TOOLSET, CEREBELLUM_TOOLSET, MEMORY_TOOLSET,
 } from '../../../agent/gateway/tools.mjs';
-import { quiet } from './fakes.mjs';
+import { quiet, pngHeader, jpegHeader, webpHeader } from './fakes.mjs';
 
 const BUDGET = DEFAULT_TOOL_LIMITS.outputChars;
 const BIN = '/opt/paraclete/bin';
@@ -63,19 +63,37 @@ describe('capResult: bounded, and honest about it', () => {
 });
 
 describe('sniffBinary: refuse bytes, name the route', () => {
-  const cases = [
+  const documents = [
     ['PDF', Buffer.from('%PDF-1.7\n%\xE2\xE3\xCF\xD3', 'latin1'), /PDF/],
     ['OOXML/zip', Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]), /OOXML|ZIP/],
-    ['PNG', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]), /PNG/],
-    ['JPEG', Buffer.from([0xff, 0xd8, 0xff, 0xe0]), /JPEG/],
   ];
-  for (const [name, buf, kind] of cases) {
+  for (const [name, buf, kind] of documents) {
     it(`flags ${name} and points at the files skill`, () => {
       const hit = sniffBinary(buf);
       assert.match(hit.kind, kind);
       assert.match(hit.route, /files skill/);
     });
   }
+
+  const images = [
+    ['PNG', pngHeader(2, 2)],
+    ['JPEG', jpegHeader(2, 2)],
+    ['WebP', webpHeader('VP8L', 2, 2)],
+  ];
+  for (const [name, buf] of images) {
+    it(`flags a ${name} image and points at viewImage, not OCR`, () => {
+      const hit = sniffBinary(buf);
+      assert.equal(hit.kind, `${name} image`);
+      assert.match(hit.route, /viewImage tool/);
+      assert.doesNotMatch(hit.route, /OCR/);
+    });
+  }
+
+  it('flags a GIF and routes it through a PNG conversion to viewImage', () => {
+    const hit = sniffBinary(Buffer.from('GIF89a\x02\x00\x02\x00', 'latin1'));
+    assert.equal(hit.kind, 'GIF image');
+    assert.match(hit.route, /files skill \(`file-convert <path> png`\), then look at the PNG with the viewImage tool/);
+  });
 
   it('flags gzip and says to decompress it', () => {
     assert.match(sniffBinary(Buffer.from([0x1f, 0x8b, 0x08, 0x00])).route, /gunzip/);
@@ -186,6 +204,17 @@ describe('readFile, writeFile and listDir', () => {
     assert.match(pdf.error, /files skill/);
   });
 
+  it('refuses an image and routes it to viewImage; a GIF through a conversion of that very path', async () => {
+    const { tools } = registry();
+    writeFileSync(join(dir, 'chart.png'), pngHeader(2, 2));
+    const png = await tools.readFile.execute({ path: 'chart.png' });
+    assert.match(png.error, /^ERROR: chart\.png is PNG image, not text/);
+    assert.match(png.error, /Do this instead: Look at it with the viewImage tool/);
+    writeFileSync(join(dir, 'spinner.gif'), Buffer.from('GIF89a\x02\x00\x02\x00', 'latin1'));
+    const gif = await tools.readFile.execute({ path: 'spinner.gif' });
+    assert.match(gif.error, /\(`file-convert spinner\.gif png`\), then look at the PNG with the viewImage tool/);
+  });
+
   it('lists the skills that exist when a skill path is wrong', async () => {
     const skills = join(dir, 'skills');
     mkdirSync(join(skills, 'files'), { recursive: true });
@@ -227,6 +256,90 @@ describe('readFile, writeFile and listDir', () => {
   });
 });
 
+describe('viewImage: an image for the model, or a refusal with a route', () => {
+  // A real 1x1 PNG, decodable end to end.
+  const PNG_1X1 = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+  let images;
+  before(() => {
+    images = join(dir, 'images');
+    mkdirSync(images, { recursive: true });
+  });
+  const put = (name, bytes) => { writeFileSync(join(images, name), bytes); return join(images, name); };
+
+  it('returns the text for the log and the image, base64, for the model', async () => {
+    const path = put('dot.png', PNG_1X1);
+    const r = await registry().tools.viewImage.execute({ path });
+    assert.equal(r.error, undefined, r.error);
+    assert.equal(r.result, `Viewing ${path}: PNG, 1x1 px, ${PNG_1X1.length} bytes. The image is attached to this result.`);
+    assert.deepEqual(r.images, [{ mimeType: 'image/png', data: PNG_1X1.toString('base64'), name: path }]);
+    assert.ok(!r.result.includes(r.images[0].data), 'the text never carries the pixels');
+  });
+
+  it('takes JPEG and WebP, and a workspace-relative path', async () => {
+    put('photo.jpg', jpegHeader(640, 480));
+    put('shot.webp', webpHeader('VP8X', 1200, 800));
+    const jpeg = await registry().tools.viewImage.execute({ path: 'images/photo.jpg' });
+    assert.equal(jpeg.images[0].mimeType, 'image/jpeg');
+    assert.match(jpeg.result, /JPEG, 640x480 px/);
+    const webp = await registry().tools.viewImage.execute({ path: 'images/shot.webp' });
+    assert.equal(webp.images[0].mimeType, 'image/webp');
+    assert.equal(webp.images[0].name, 'images/shot.webp', 'named as the organ gave it');
+  });
+
+  it('checks the type by its bytes, not its name', async () => {
+    const path = put('actually-a-pdf.png', Buffer.from('%PDF-1.7 rest'));
+    const r = await registry().tools.viewImage.execute({ path });
+    assert.equal(r.images, undefined);
+    assert.match(r.error, /is PDF, not an image\. Render the page or slide you need to PNG with the files skill \(`file-convert .*actually-a-pdf\.png png`\)/);
+  });
+
+  it('refuses a GIF, a document, text and unknown bytes, each with its route', async () => {
+    const { tools } = registry();
+    const gif = await tools.viewImage.execute({ path: put('anim.gif', Buffer.from('GIF89a\x02\x00\x02\x00', 'latin1')) });
+    assert.match(gif.error, /is a GIF image, which not every model can view\. Convert it to PNG with the files skill/);
+    const deck = await tools.viewImage.execute({ path: put('deck.pptx', Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])) });
+    assert.match(deck.error, /is ZIP\/OOXML .*not an image\. Render the page or slide/);
+    const text = await tools.viewImage.execute({ path: put('notes.md', '# notes\n') });
+    assert.match(text.error, /is text, not an image: read it with readFile/);
+    const tiff = await tools.viewImage.execute({ path: put('scan.tif', Buffer.from([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00, 0x00, 0x00])) });
+    assert.match(tiff.error, /is not a PNG, JPEG or WebP image: its first bytes match none of them\. .*file-convert .*scan\.tif png/);
+  });
+
+  it('refuses an image over the byte limit without reading it, and names the smaller-copy route', async () => {
+    const path = put('big.png', Buffer.concat([pngHeader(100, 100), Buffer.alloc(2_000)]));
+    const r = await registry({ limits: { imageMaxBytes: 1_000 } }).tools.viewImage.execute({ path });
+    assert.match(r.error, /is 2,033 bytes; viewImage takes images up to 1,000 bytes \(0 MB\), the most a model accepts in one image/);
+    assert.match(r.error, /Make a smaller copy with the files skill \(`file-convert .*big\.png jpg`/);
+  });
+
+  it('refuses an image wider or taller than the side limit', async () => {
+    const path = put('panorama.png', pngHeader(9000, 1000));
+    const r = await registry().tools.viewImage.execute({ path });
+    assert.match(r.error, /is 9000x1000 px; viewImage takes images up to 8000 px on a side/);
+    const ok = await registry({ limits: { imageMaxSide: 9000 } }).tools.viewImage.execute({ path });
+    assert.equal(ok.error, undefined, 'the limit comes from the limits passed in');
+  });
+
+  it('refuses a damaged header, a missing file and a directory', async () => {
+    const { tools } = registry();
+    const cut = await tools.viewImage.execute({ path: put('cut.png', pngHeader(10, 10).subarray(0, 20)) });
+    assert.match(cut.error, /starts like a PNG image, but its header is damaged or cut off/);
+    assert.match((await tools.viewImage.execute({ path: join(images, 'nope.png') })).error, /^ERROR: ENOENT/);
+    assert.match((await tools.viewImage.execute({ path: images })).error, /is a directory, not an image file/);
+  });
+
+  it('tells the model the limits, the conversions and the retention in its description', () => {
+    const { description, schema } = registry().tools.viewImage;
+    assert.match(description, /PNG, JPEG or WebP, up to 3\.75 MB and 8000 px on a side/);
+    assert.match(description, /`file-convert <path> png`/);
+    assert.match(description, /`file-convert <path> jpg`/);
+    assert.match(description, /most recently stay attached/);
+    assert.deepEqual(schema.required, ['path']);
+    assert.equal(DEFAULT_TOOL_LIMITS.imageMaxBytes, 3_750_000);
+    assert.equal(Math.ceil(DEFAULT_TOOL_LIMITS.imageMaxBytes / 3) * 4, 5_000_000, 'base64 of the limit is within Claude-on-Vertex\'s 5 MB');
+  });
+});
+
 describe('toolsets', () => {
   it('select() returns the named tools, nothing for an empty list, and fails on an unknown name', () => {
     const reg = registry({ binDir: BIN, memory: { home: dir, files: MEMORY_FILES, ...MEMORY_POLICY } });
@@ -245,6 +358,12 @@ describe('toolsets', () => {
 
   it('the memory toolset holds no shell and no general writer', () => {
     assert.deepEqual([...MEMORY_TOOLSET], ['readFile', 'listDir', 'memoryCommand', 'writeMemoryFile']);
+  });
+
+  it('the executing organs and the verifier can view images; memory cannot', () => {
+    assert.ok(OPEN_TOOLSET.includes('viewImage'));
+    assert.deepEqual([...CEREBELLUM_TOOLSET], ['readFile', 'viewImage', 'report_pass', 'report_fail']);
+    assert.equal(MEMORY_TOOLSET.includes('viewImage'), false);
   });
 
   it('without a memory configuration the memory tools are not registered', () => {

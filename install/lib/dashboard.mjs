@@ -13,6 +13,10 @@
 //
 // The deploy: Cloud Run runs that image as the dashboard's account, with IAP in front and no
 // unauthenticated access, and with the environment dashboard/README.md defines.
+//
+// The uploads: the browser PUTs a file straight into the instance's bucket through a signed URL, so the
+// bucket's CORS setting must let the dashboard's origins do that. This file builds that setting and
+// tells whether a bucket already has it; install.sh applies it in step 6.
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -219,20 +223,138 @@ export function serviceDrift(service, { project, region, commit, env }) {
   return changes;
 }
 
-/** A described service from gcloud's JSON, or null for nothing or anything unreadable. */
-export function parseService(text) {
+/** An object from gcloud's JSON, or null for nothing or anything unreadable. */
+function parseObject(text) {
   try {
-    const service = JSON.parse(String(text || '').trim() || 'null');
-    return service && typeof service === 'object' ? service : null;
+    const value = JSON.parse(String(text || '').trim() || 'null');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
   } catch {
     return null;
   }
 }
 
+/** A described service from gcloud's JSON, or null for nothing or anything unreadable. */
+export function parseService(text) {
+  return parseObject(text);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// The bucket's CORS setting, for uploads from the dashboard.
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * What the browser may do in the bucket from the dashboard's origins. It PUTs an upload's bytes to a V4
+ * signed URL (dashboard/lib/server/signed-urls.mjs), sending the Content-Type that URL was signed with,
+ * and reads Content-Type and ETag from the answer; GET and HEAD let it read back what it sent. Cloud
+ * Storage keeps one list for the headers a request may send and the ones an answer may show. A browser
+ * remembers a preflight answer for an hour. A header the dashboard starts signing goes in `headers`.
+ */
+export const UPLOAD_CORS = Object.freeze({
+  methods: Object.freeze(['GET', 'HEAD', 'PUT']),
+  headers: Object.freeze(['Content-Type', 'ETag']),
+  maxAgeSeconds: 3600,
+});
+
+/** The annotation in which Cloud Run lists every URL of a service, as a JSON array. */
+const URLS_ANNOTATION = 'run.googleapis.com/urls';
+
+/** The service's deterministic URL, https://<service>-<project number>.<region>.run.app, which it has from its first deploy. */
+export function serviceUrl({ projectNumber, region }) {
+  need({ projectNumber, region }, ['projectNumber', 'region']);
+  return `https://${NAMES.SERVICE_NAME}-${projectNumber}.${region}.run.app`;
+}
+
+/** The https origin of a URL, lowercase, or null. */
+function httpsOrigin(url) {
+  try {
+    const parsed = new URL(String(url));
+    return parsed.protocol === 'https:' ? parsed.origin.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Every origin the dashboard answers at, sorted and each once: its deterministic URL, and every URL the
+ * described service reports (`status.url`, which may be the older `<service>-<hash>-<region code>.a.run.app`
+ * form, `status.address.url`, and the URLs annotation). With no service described (none deployed yet,
+ * or a dry run before the first deploy), the deterministic URL alone.
+ *
+ * @param {object|null} service  `gcloud run services describe --format=json`
+ * @param {{projectNumber: string, region: string}} o
+ * @returns {string[]}
+ */
+export function dashboardOrigins(service, { projectNumber, region }) {
+  const urls = [serviceUrl({ projectNumber, region }), service?.status?.url, service?.status?.address?.url];
+  try {
+    const listed = JSON.parse(service?.metadata?.annotations?.[URLS_ANNOTATION] || '[]');
+    if (Array.isArray(listed)) urls.push(...listed);
+  } catch {
+    // An unreadable annotation adds nothing; the other URLs still count.
+  }
+  return [...new Set(urls.filter(Boolean).map(httpsOrigin).filter(Boolean))].sort();
+}
+
+/**
+ * The file `gcloud storage buckets update --cors-file` reads: one rule, for these origins.
+ *
+ * @param {string[]} origins
+ */
+export function corsConfig(origins) {
+  if (!Array.isArray(origins) || origins.length === 0) throw new Error('install/lib/dashboard.mjs: CORS needs at least one origin');
+  return [{
+    origin: [...origins],
+    method: [...UPLOAD_CORS.methods],
+    responseHeader: [...UPLOAD_CORS.headers],
+    maxAgeSeconds: UPLOAD_CORS.maxAgeSeconds,
+  }];
+}
+
+/** A described bucket from `gcloud storage buckets describe --format=json`, or null. */
+export function parseBucket(text) {
+  return parseObject(text);
+}
+
+/** One CORS rule in a form that compares equal however gcloud spells and orders it. */
+function canonicalRule(rule) {
+  const list = (value, normalize) => [...new Set((Array.isArray(value) ? value : []).map((item) => normalize(String(item))))].sort();
+  return JSON.stringify({
+    origin: list(rule?.origin, (o) => o.toLowerCase()),
+    method: list(rule?.method, (m) => m.toUpperCase()),
+    responseHeader: list(rule?.responseHeader ?? rule?.response_header, (h) => h.toLowerCase()),
+    maxAgeSeconds: Number(rule?.maxAgeSeconds ?? rule?.max_age_seconds ?? 0),
+  });
+}
+
+/**
+ * What setting the CORS file for these origins would change on a described bucket: '' when it has
+ * exactly that rule already (however ordered or cased), 'none set' when it has none, 'different'
+ * otherwise. gcloud shows the setting as `cors_config`; the raw API calls it `cors`.
+ *
+ * @param {object|null} bucket
+ * @param {string[]} origins
+ * @returns {string}
+ */
+export function corsDrift(bucket, origins) {
+  const current = bucket?.cors_config ?? bucket?.cors ?? [];
+  if (!Array.isArray(current) || current.length === 0) return 'none set';
+  const wanted = corsConfig(origins).map(canonicalRule).sort();
+  const found = current.map(canonicalRule).sort();
+  return JSON.stringify(found) === JSON.stringify(wanted) ? '' : 'different';
+}
+
+/** origins=a,b on the command line, as a list. */
+function originList(value) {
+  return String(value || '').split(',').filter(Boolean);
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The command line install/install.sh uses: node install/lib/dashboard.mjs <command> [key=value]...
 // Argument lists print one per line (no argument holds a newline); `drift` reads the described
-// service on stdin and prints what would change, comma-separated, or nothing.
+// service on stdin and prints what would change, comma-separated, or nothing. `origins` reads the
+// described service (or nothing) on stdin and prints the dashboard's origins, comma-separated;
+// `cors-file` prints the CORS file for origins=a,b; `cors-drift` reads the described bucket (or
+// nothing) on stdin and prints what setting that file would change, or nothing.
 // ---------------------------------------------------------------------------------------------------
 
 const COMMANDS = {
@@ -245,7 +367,13 @@ const COMMANDS = {
   'describe-args': (o) => describeArgs(o).join('\n'),
   'deploy-args': (o) => deployArgs(o).join('\n'),
   drift: (o, stdin) => serviceDrift(parseService(stdin), { ...o, env: serviceEnv(o) }).join(', '),
+  origins: (o, stdin) => dashboardOrigins(parseService(stdin), o).join(','),
+  'cors-file': (o) => JSON.stringify(corsConfig(originList(o.origins))),
+  'cors-drift': (o, stdin) => corsDrift(parseBucket(stdin), originList(o.origins)),
 };
+
+/** The commands that read stdin. */
+const READS_STDIN = new Set(['drift', 'origins', 'cors-drift']);
 
 /**
  * Runs one command. Exported for the tests.
@@ -278,7 +406,7 @@ function isMain() {
 if (isMain()) {
   try {
     const argv = process.argv.slice(2);
-    const stdin = argv[0] === 'drift' ? readFileSync(0, 'utf8') : '';
+    const stdin = READS_STDIN.has(argv[0]) ? readFileSync(0, 'utf8') : '';
     const output = cli(argv, stdin);
     if (output) process.stdout.write(`${output}\n`);
   } catch (err) {

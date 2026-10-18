@@ -1,0 +1,40 @@
+/* dashboard/components/work/MissionFiles.module.css: the Files section of a mission's page, one row per
+   file with its type, name, facts and actions. */
+
+.block > h2 { margin-bottom: var(--space-3); }
+
+/* Rows run edge to edge inside the card. */
+ul.list { list-style: none; padding: 0; }
+
+.file {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.file:last-child { border-bottom: none; }
+
+.kind {
+  flex: 0 0 auto;
+  min-width: 44px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-align: center;
+}
+
+.text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.meta { color: var(--text-muted); font-size: 12.5px; }
+
+.actions { flex: 0 0 auto; display: flex; gap: var(--space-2); }
+
+@media (max-width: 760px) {
+  .file { flex-wrap: wrap; padding: var(--space-3); }
+  .actions { width: 100%; justify-content: flex-end; }
+}

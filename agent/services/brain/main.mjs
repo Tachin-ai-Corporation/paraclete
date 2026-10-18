@@ -24,6 +24,7 @@ import { createVertexText } from '../../providers/vertex-text.mjs';
 import { createNotifier } from '../../providers/notifications.mjs';
 import { createGitStore, createRemoteStore } from '../../storage/git-store.mjs';
 import { createFileStore } from '../../storage/file-store.mjs';
+import { listOutgoing } from '../../files/outgoing.mjs';
 import { assembleConversation } from '../../context/conversation-context.mjs';
 import { sweepThreadTurns } from '../../context/thread-ledger.mjs';
 import { createApprovalChecker } from '../../work/approvals.mjs';
@@ -254,6 +255,7 @@ export function buildBrain(runtime, deps = {}) {
 
   const completion = createCompletion({
     store, memory, projects, artifacts, fireEvent: responsibilities.fireEvent, addressFor, missionDir, usage,
+    outgoingFiles: (missionId) => listOutgoing(db, missionId),
     settings: { minDeliverableChars: settings.minDeliverableChars, learningsMaxEntries: settings.compaction.learnings_max_entries },
     log,
   });

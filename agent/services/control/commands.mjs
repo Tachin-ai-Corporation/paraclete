@@ -2,10 +2,12 @@
 // what each one does. There is no way to run an arbitrary program: each command checks its params
 // strictly and calls the module that does the work, and the only programs control ever starts are
 // systemctl, systemd-run and journalctl on allowlisted units (systemd.mjs) and the installer's upgrade
-// script (upgrade.mjs). The queue that claims and records commands is command-queue.mjs; the request
-// and result shapes are documented in README.md.
+// script (upgrade.mjs). The one command that writes outside Firestore, drive_check, creates and trashes
+// a single test file in the admin's Drive output folder (drive-check.mjs). The queue that claims and
+// records commands is command-queue.mjs; the request and result shapes are documented in README.md.
 
 import { readFileSync } from 'node:fs';
+import { createDriveClient } from '../../providers/drive.mjs';
 import { SERVICES, serviceUnit } from './systemd.mjs';
 import { detached, thenRun } from './command-queue.mjs';
 import { probeGateway, waitForGateway } from './gateway-probe.mjs';
@@ -13,11 +15,12 @@ import { readStatus, readSkills, readConfig, readWorkspace, readRelease } from '
 import { readSettingsView, readBrainConfig, setClaude } from './models.mjs';
 import { listResponsibilities, setResponsibilityEnabled, runResponsibility } from './responsibilities.mjs';
 import { startUpgrade, upgradeOutcome } from './upgrade.mjs';
+import { checkDrive } from './drive-check.mjs';
 
 /** Every command type, in the order README.md documents them. */
 export const COMMAND_TYPES = Object.freeze([
   'status', 'skills', 'config', 'workspace', 'brain_config', 'responsibilities',
-  'set_responsibility_enabled', 'run_responsibility', 'set_model', 'restart_service', 'upgrade',
+  'set_responsibility_enabled', 'run_responsibility', 'set_model', 'restart_service', 'upgrade', 'drive_check',
 ]);
 
 /**
@@ -31,10 +34,14 @@ export const COMMAND_TYPES = Object.freeze([
  * @param {Function} [o.exists]           (path) => boolean; whether the upgrade script is installed
  * @param {Function} [o.now]              () => Date
  * @param {Function} [o.sleep]            (ms) => Promise
+ * @param {Function} [o.createDrive]      () => a Drive client acting as the agent (createDriveClient)
  * @returns {Record<string, {run: Function, watch?: Function}>}
  */
-export function createHandlers({ runtime, systemd, settings, readText = (p) => readFileSync(p, 'utf8'), exists, now = () => new Date(), sleep }) {
+export function createHandlers({
+  runtime, systemd, settings, readText = (p) => readFileSync(p, 'utf8'), exists, now = () => new Date(), sleep, createDrive,
+}) {
   const { contracts, instance, paths, db, collections, subcollections, log, gatewayUrl, fetch } = runtime;
+  const driveClient = createDrive || (() => createDriveClient({ instance, getAccessToken: runtime.getAccessToken, fetch }));
   const nowIso = () => now().toISOString();
   const store = { db, collections, subcollections, contracts, paths, instance, readText, log, nowIso };
 
@@ -134,6 +141,9 @@ export function createHandlers({ runtime, systemd, settings, readText = (p) => r
         return detached();
       },
       watch: (record) => upgradeOutcome(record, { systemd }),
+    },
+    drive_check: {
+      run: () => checkDrive({ drive: driveClient(), db, now }),
     },
   };
 }

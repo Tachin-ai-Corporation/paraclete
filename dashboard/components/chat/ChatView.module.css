@@ -1,6 +1,6 @@
 /* The Chat page fills the viewport beside the sidebar: the conversation scrolls inside its own list,
    with the composer pinned below it and the notices panel to the right. On narrower screens the
-   notices drop below the conversation. */
+   notices drop below the conversation. Files dragged over the conversation show where they will go. */
 .chat {
   display: flex;
   height: 100vh;
@@ -9,11 +9,28 @@
 }
 
 .conversation {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+
+.drop {
+  position: absolute;
+  inset: var(--space-2);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  background: var(--bg-app);
+  opacity: 0.94;
+  color: var(--text-primary);
+  font-weight: 600;
+  pointer-events: none;
 }
 
 .header {

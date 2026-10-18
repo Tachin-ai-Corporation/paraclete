@@ -1,0 +1,8 @@
+{
+  "id": "drive",
+  "name": "Google Drive",
+  "version": 1,
+  "when_to_use": "Reading Google Drive files shared with the agent, and handing results back as new Drive files. Drive files are downloaded or exported into the mission's inbox and worked on there; a file in Drive is never edited, moved, renamed or deleted.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["drive-find", "drive-get", "drive-export", "drive-put"]
+}

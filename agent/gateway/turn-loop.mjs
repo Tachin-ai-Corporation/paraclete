@@ -8,14 +8,18 @@
 //   { role: 'user'|'assistant', content: string | Array<{type: 'text', text, tier?}> }
 //   { role: 'assistant', content: string|null,
 //     toolCalls: [{ id, name, args, provider, modelId, googleId?, thoughtSignature? }] }
-//   { role: 'tool', toolCallId, name, content }
+//   { role: 'tool', toolCallId, name, content, images?: [{ mimeType, data, name }] }
 // `id` is unique in the transcript and safe as a Claude tool_use id. `provider` and `modelId` name
 // the model that made the call. `googleId` and `thoughtSignature` are what Gemini returned with it,
-// sent back to that model as they came.
+// sent back to that model as they came. `images` are what a tool such as viewImage returned for the
+// model to look at (base64 `data`, a viewable `mimeType`, the `name` the organ gave): each provider's
+// step turns them into its own image part, and only the most recent `images.kept` stay attached
+// (retainImages() in images.mjs). Images never reach the tool log, the tool records or the response.
 
 import { buildToolLog, recordPolicy, DEFAULT_RECORD_POLICY, TERMINAL_TOOLS } from '../context/tool-record.mjs';
 import { parseModel, clientFor, PROVIDERS } from './model-clients.mjs';
 import { LoopGuard, DEFAULT_LOOP_GUARD } from './loop-guard.mjs';
+import { retainImages, isTranscriptImage } from './images.mjs';
 import { createGoogleStepper } from './google-step.mjs';
 import { createAnthropicStepper } from './anthropic-step.mjs';
 
@@ -33,12 +37,20 @@ export const DEFAULT_SETTINGS = Object.freeze({
     explicitCache: false,
     explicitCacheTtlSeconds: 3600,
   }),
+  images: Object.freeze({
+    // Images a turn keeps attached: every step resends the transcript, and each image with it.
+    kept: 3,
+    // Where a tool's image goes in a Gemini request (google-step.mjs): inside the function response
+    // ('function-response', documented for Gemini 3 and later) or as a part after it ('user-part').
+    geminiPlacement: 'function-response',
+  }),
   toolRecord: DEFAULT_RECORD_POLICY,
   loopGuard: Object.freeze({ ...DEFAULT_LOOP_GUARD, synthesize: true }),
   retry: Object.freeze({ maxRetries: 3, baseDelayMs: 2000 }),
 });
 
 const TTLS = new Set(['5m', '1h']);
+const GEMINI_PLACEMENTS = new Set(['function-response', 'user-part']);
 
 /**
  * A complete settings object: each valid value taken, anything missing or invalid left at its default.
@@ -57,6 +69,7 @@ export function resolveSettings(settings = {}) {
   const g = s.gemini || {};
   const lg = s.loopGuard || {};
   const r = s.retry || {};
+  const im = s.images || {};
   const guard = { synthesize: bool(lg.synthesize, d.loopGuard.synthesize) };
   for (const key of Object.keys(DEFAULT_LOOP_GUARD)) guard[key] = Number.isInteger(lg[key]) && lg[key] > 0 ? lg[key] : DEFAULT_LOOP_GUARD[key];
   return {
@@ -70,6 +83,10 @@ export function resolveSettings(settings = {}) {
     gemini: {
       explicitCache: bool(g.explicitCache, d.gemini.explicitCache),
       explicitCacheTtlSeconds: pos(g.explicitCacheTtlSeconds, d.gemini.explicitCacheTtlSeconds),
+    },
+    images: {
+      kept: Number.isInteger(im.kept) && im.kept > 0 ? im.kept : d.images.kept,
+      geminiPlacement: GEMINI_PLACEMENTS.has(im.geminiPlacement) ? im.geminiPlacement : d.images.geminiPlacement,
     },
     toolRecord: recordPolicy(s.toolRecord),
     loopGuard: guard,
@@ -183,6 +200,17 @@ function toolResultOf(execution) {
   return execution.error || JSON.stringify(execution);
 }
 
+// The images a tool returned for the model to see, in the transcript's shape. Anything else a tool
+// put under `images` is dropped: a provider rejects the whole request over one bad image part.
+function toolImagesOf(execution) {
+  if (!Array.isArray(execution?.images)) return [];
+  return execution.images.filter(isTranscriptImage).map((img) => ({
+    mimeType: img.mimeType,
+    data: img.data,
+    ...(img.name ? { name: String(img.name) } : {}),
+  }));
+}
+
 const SYNTHESIZE_PROMPT = '[SYNTHESIZE NOW] Stop calling tools: the results you need are already in the tool outputs above. Write your final answer to the task now, in prose, from what you have gathered.';
 const TOOL_LOG_START = '\n\n---\n[TOOL EXECUTION LOG]';
 
@@ -207,7 +235,8 @@ const TOOL_LOG_START = '\n\n---\n[TOOL EXECUTION LOG]';
  * @param {number}   [o.sessionCacheBoundary] frozen session messages before this turn's delta
  * @param {string}   [o.affinityKey]  session-affinity key for Claude calls
  * @param {object}   [o.settings]     see DEFAULT_SETTINGS; resolved with resolveSettings()
- * @param {object}   [o.resume]       a failed turn's err.turnState
+ * @param {object}   [o.resume]       a failed turn's err.turnState; its transcript keeps the images
+ *                                    still attached, so the fallback model sees what the failed one saw
  * @param {Function} [o.logger]       (level, msg) logger
  * @param {Function} [o.sleep]        (ms) => Promise, for retry backoff (injectable for tests)
  * @param {Function} [o.now]          clock in milliseconds
@@ -276,7 +305,7 @@ export async function runTurn({
       })
       : createGoogleStepper({
         client, modelId, systemText: sysBlocks.join('\n\n'), tools: toolSet, maxTokens, temperature, topP,
-        forceToolCall, gemini: cfg.gemini, callWithRetry, logger, now,
+        forceToolCall, gemini: cfg.gemini, toolImages: cfg.images.geminiPlacement, callWithRetry, logger, now,
       });
 
     while (step < maxSteps) {
@@ -310,18 +339,23 @@ export async function runTurn({
 
       const tool = toolSet?.[call.name];
       let result;
+      let images = [];
       if (tool) {
         try {
           logger('INFO', `running tool ${call.name} ${JSON.stringify(call.args).slice(0, 200)}`);
-          result = toolResultOf(await tool.execute(call.args));
+          const execution = await tool.execute(call.args);
+          result = toolResultOf(execution);
+          images = toolImagesOf(execution);
         } catch (err) {
           result = `ERROR: ${err.message}`;
         }
       } else {
         result = `ERROR: Tool "${call.name}" not found in registry`;
       }
+      // The tool log and the loop guard see the text; only the transcript carries the image.
       toolCalls.push({ id: call.id, toolName: call.name, args: call.args, result });
-      history.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result });
+      history.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result, ...(images.length ? { images } : {}) });
+      if (images.length) history.splice(0, history.length, ...retainImages(history, cfg.images.kept));
       step++;
 
       const verdict = guard.check(call.name, call.args, result);

@@ -7,7 +7,7 @@ import {
   cacheControl, toAnthropicMessages, applySessionBoundaryBreakpoint, anthropicSystem,
 } from '../../../agent/gateway/anthropic-step.mjs';
 import { runTurn } from '../../../agent/gateway/turn-loop.mjs';
-import { fakeAnthropic, claudeCalls, claudeText, lookupTool, quiet, noSleep } from './fakes.mjs';
+import { fakeAnthropic, claudeCalls, claudeText, lookupTool, imageTool, fakePixels, quiet, noSleep } from './fakes.mjs';
 
 const CLAUDE = 'vertex-anthropic/claude-opus-test';
 const caching = { anthropic: { promptCaching: true, messageBreakpoints: true } };
@@ -56,6 +56,32 @@ describe('the request after a tool call', () => {
       { type: 'text', text: 'stable', cache_control: { type: 'ephemeral', ttl: '1h' } },
       { type: 'text', text: 'memory' },
     ], 'the system breakpoint sits on the stable block only');
+  });
+
+  it('sends a tool image inside its tool_result as a base64 image block, intact under cache breakpoints', async () => {
+    const anthropic = fakeAnthropic([
+      claudeCalls([{ id: 'toolu_7', name: 'viewImage', input: { path: 'chart.png' } }]),
+      claudeText('The bars rise left to right.'),
+    ]);
+    await runTurn({
+      clients: { anthropic }, model: CLAUDE, systemBlocks: ['stable'],
+      messages: [{ role: 'user', content: tiered }], tools: { viewImage: imageTool() },
+      settings: caching, logger: quiet, sleep: noSleep,
+    });
+    const { params } = anthropic.requests[1];
+    assert.deepEqual(params.messages[2], {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_7',
+        content: [
+          { type: 'text', text: 'Viewing chart.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakePixels('chart.png') } },
+        ],
+      }],
+    });
+    assert.equal(keysIn(params).has('tier'), false);
+    assert.equal(keysIn(params.messages[2]).has('cache_control'), false, 'no breakpoint lands on the tool result');
   });
 
   it('strips tier hints when caching is off, and joins the system blocks', async () => {
@@ -116,6 +142,13 @@ describe('pieces', () => {
       { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'x', input: {} }] },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: '{"verdict":"PASS"}' }] },
     ]);
+  });
+
+  it('toAnthropicMessages leaves out an empty text block beside an image', () => {
+    const [msg] = toAnthropicMessages([
+      { role: 'tool', toolCallId: 'c1', name: 'shot', content: '', images: [{ mimeType: 'image/webp', data: 'UklG' }] },
+    ]);
+    assert.deepEqual(msg.content[0].content, [{ type: 'image', source: { type: 'base64', media_type: 'image/webp', data: 'UklG' } }]);
   });
 
   it('a session boundary on a string turn wraps it as one cached text block', () => {

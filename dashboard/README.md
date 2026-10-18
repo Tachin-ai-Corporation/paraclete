@@ -1,7 +1,7 @@
 # dashboard/
 
-The web dashboard: where people talk to the agent, follow and approve its work, download its files,
-and manage the instance. Next.js (App Router, JavaScript), deployed to Cloud Run behind Identity-Aware
+The web dashboard: where people talk to the agent and hand it files, follow and approve its work,
+download its files, and manage the instance. Next.js (App Router, JavaScript), deployed to Cloud Run behind Identity-Aware
 Proxy (IAP).
 
 **Installed:** not onto the VM. `install/install.sh` builds this directory into an image with Cloud
@@ -11,6 +11,7 @@ Build at the release being installed (`cloudbuild.yaml`, `Dockerfile`) and deplo
 
 - Pages, components and styles
 - Server routes that read and write Firestore and the bucket for the signed-in user
+- Signing the short-lived URLs through which the browser uploads and downloads files
 - IAP sign-in verification and dashboard user management
 - Signing the commands it sends the VM
 - Release detection and the upgrade button
@@ -44,7 +45,7 @@ Build at the release being installed (`cloudbuild.yaml`, `Dockerfile`) and deplo
    with `{ admin: true }`, refuses members.
 
 Admins manage users, settings, secrets and upgrades. Members chat, follow and approve missions, and
-download files. Adding or removing a user changes the IAP grant and the record together. The last
+upload and download files. Adding or removing a user changes the IAP grant and the record together. The last
 admin cannot be removed or made a member.
 
 ## Commands to the VM
@@ -71,12 +72,13 @@ The build's root is the repo for this reason (`next.config.mjs`).
 |---|---|---|
 | `users` | owns | One document per email, lowercase |
 | `threads` | creates one per user | Patches only its own fields; the agent writes `channel`, `last_turn_at`, `summary`, `summary_through_ts` |
-| `messages` | writes the user's messages; reads all | `{ text, timestamp (Firestore timestamp), processed: false, sender (email), sender_name, thread_id, attachments }` |
+| `messages` | writes the user's messages; reads all | `{ text, timestamp (Firestore timestamp), processed: false, sender (email), sender_name, thread_id, attachments: [{ name, size, gcsPath }] }`; `text` may be empty when files go alone |
+| `files` | writes `'in'` records when an upload completes; marks one used by the message that carries it; reads a mission's `'out'` records | An `'in'` record's id is its upload id and it is created only if absent; `created_by` is the uploader. Marking it used sets `message_id`, in the same commit as the message, only if the record is unchanged since it was read (an `updateTime` precondition). Never writes `'out'` records: the agent does |
 | `work`, `processes`, `projects`, `core_memory` | reads | |
 | `approvals` | reads; resolves | Patches only the fields `approvalResolution()` returns, only if the gate is unchanged since it was read (an `updateTime` precondition), so two people deciding at once cannot both win |
 | `commands` | writes signed commands | Never edits a command after writing it |
 | `responsibility_triggers` | reads | Follows a "run now" until the brain fires, skips or fails it |
-| `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` (field-masked); reads `claude_enabled` | `claude_enabled` is changed only through the `set_model` command |
+| `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` and `drive_output_folder`, `drive_output_folder_updated_at`, `drive_output_folder_updated_by` (each setting field-masked to its own three); reads `claude_enabled` | `claude_enabled` is changed only through the `set_model` command. `drive_output_folder` is a Drive folder id or null |
 | `agent/instance` | reads | Written by the VM's bootstrap |
 
 **Threads.** Each user's thread id is `user-` and the first 32 hex digits of the SHA-256 of their
@@ -91,6 +93,32 @@ with the etag). The installer grants the dashboard's account `roles/iap.admin` t
 **Secrets** are Secret Manager secrets named exactly as an admin types them (`[A-Za-z0-9_-]`), the
 name the agent's `secret-read` takes. The dashboard lists and changes only secrets labeled
 `paraclete=agent`, which it creates with access for the agent's account.
+
+## Files: uploads and downloads
+
+File bytes never pass through Cloud Run (whose requests stop at 32 MB). The browser talks to the
+instance's bucket directly, through Cloud Storage V4 signed URLs that the dashboard makes without a
+key (`lib/server/signed-urls.mjs`): it builds the canonical request itself and has IAM Credentials
+`signBlob` sign it as its own account, which holds Token Creator on itself. Each URL names one object
+and lasts `files.signed_url_minutes`.
+
+- **Upload** (any user), in three steps (`lib/server/uploads.mjs`): `POST /api/files/uploads
+  { name, size, content_type }` checks the size against `files.max_upload_mb` and answers an upload id
+  (`u-<ms>-<8 hex>`), the object `files/in/<id>/<name>` and a signed PUT URL with the exact
+  `Content-Type` to send; the browser PUTs the bytes there (the bucket's CORS setting, which the
+  installer sets, admits the dashboard's origins); `POST /api/files/uploads/:id/complete { gcs_path }`
+  checks the object arrived within the limit and writes the `'in'` record. A message then carries
+  completed uploads as `attachments`: only the sender's own, each once. The bucket's lifecycle rule
+  deletes uploads after `files.inbox_retention_days`.
+- **Download** (any user): `GET /api/files/download?path=` answers a redirect to a signed GET URL
+  that makes the bucket send the file as an attachment under its own name and type. Only the agent's
+  outgoing files (`files/out/<mission>/<name>`) and uploads (`files/in/<upload>/<name>`) qualify.
+- **A mission's files**: `GET /api/work/:id/files` lists its `'out'` records (one equality filter on
+  `mission_id`, no index needed), which the mission page shows with download and Drive links.
+
+Signed URLs always name `storage.googleapis.com`; `PARACLETE_STORAGE_HOST` redirects only the
+dashboard's own calls to the bucket (the existence and size checks), so against the fakes the browser's
+PUT and GET have nowhere to go.
 
 ## Running it locally
 

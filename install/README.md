@@ -11,7 +11,7 @@ away again.
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -58,7 +58,8 @@ The steps, each printed as `[n/9]`:
    indexes and TTL policies in `firestore.indexes.json`.
 5. **bucket**: `gs://<project>-paraclete` with uniform access, public access prevention, and a lifecycle
    rule deleting `files.prefix` + `in/` after `files.inbox_retention_days` (`config/contracts.json`);
-   object admin for both accounts on this bucket only.
+   object admin for both accounts on this bucket only. Its CORS setting, for uploads from the dashboard,
+   is made in step 6, once the dashboard's URLs are known.
 6. **dashboard**, from the release's own `dashboard/cloudbuild.yaml` (downloaded at the commit; a
    release without one predates the dashboard and installs without it):
    - the Artifact Registry Docker repository `paraclete` in the region, where `paraclete-dashboard@` alone
@@ -79,7 +80,18 @@ The steps, each printed as `[n/9]`:
      `roles/iap.admin`, so the dashboard adds and removes its users itself;
    - you, the first admin: `users/<your email, lowercase>` in Firestore,
      `{ email, role: 'admin', added_by: 'install.sh', added_at }`, written through the REST API with the
-     `currentDocument.exists=false` precondition. A record that exists is never rewritten.
+     `currentDocument.exists=false` precondition. A record that exists is never rewritten;
+   - uploads: the browser PUTs a file straight into the bucket through a V4 signed URL, so the bucket's
+     CORS setting lets the dashboard's origins do that. The origins are the service's deterministic URL
+     `https://paraclete-<project number>.<region>.run.app` (known before the first deploy, so a dry run
+     names it) and every URL the service reports (`status.url`, which may be the older
+     `paraclete-<hash>-<region code>.a.run.app` form, and the `run.googleapis.com/urls` annotation). One
+     rule: methods `PUT`, `GET`, `HEAD`; headers `Content-Type` and `ETag` (Cloud Storage uses the one
+     list both for the request headers it allows and for the answer headers it shows); max age 3600
+     seconds. It is compared with what the bucket has first and set with
+     `gcloud storage buckets update --cors-file` only when it differs, replacing the whole setting. Set
+     whenever a dashboard exists or this run deploys one. `uninstall.sh` leaves it: it goes with the
+     bucket.
 7. **network**: the `default` network, or a `paraclete` network when there is none; the firewall rule
    `paraclete-allow-iap-ssh` (tcp:22 from IAP's range to the tag `paraclete`, priority 1000) and
    `paraclete-deny-ingress` (deny everything else inbound to that tag, priority 65000, which outranks a
@@ -87,7 +99,9 @@ The steps, each printed as `[n/9]`:
 8. **vm**: `paraclete`, e2-standard-2, 50 GB pd-balanced, Debian 12, Shielded VM, running as
    `paraclete-agent@` with the cloud-platform and drive scopes, with the metadata below. A VM that already
    exists keeps its disk: only its metadata changes.
-9. **wait**: until `agent/instance` reports `ready` (or `failed`) for this commit, up to 20 minutes.
+9. **wait**: until `agent/instance` reports `ready` (or `failed`) for this commit, up to 20 minutes. A
+   first boot takes about 8 to 12, most of it installing the role's packages (the file toolchain
+   below).
 
 Re-running with another `--ref` moves an existing instance: the dashboard is built and deployed at that
 commit at once, and the VM installs it at its next boot, or at once through `upgrade.sh`; the installer
@@ -176,8 +190,39 @@ repository.
 
 A commit is installed by that commit's own `bootstrap.sh`: a run that finds the instance should stay on
 an installed upgrade hands over to the installed copy. When that commit is already installed whole, a run
-installs nothing: it re-checks the user, directories, instance record, token and units, starts what is
-not running (restarting everything when one of those changed), and writes readiness.
+installs nothing: it puts back any of the role's packages that went missing (a package that cannot be
+read or installed then is only a warning), re-checks the user, directories, instance record, token and
+units, starts what is not running (restarting everything when one of those changed), and writes
+readiness. Any other commit, an upgrade included, is a full install, which installs the packages that
+commit's role names: a release that adds a package gets it on upgrade.
+
+### Packages
+
+A full install, before anything is stopped, installs what is missing of:
+
+1. `ca-certificates curl git jq unzip`, and Node.js 24 from NodeSource;
+2. the `setup.apt` packages of `roles/generic/role.json` and of the instance's role
+   (`vm/role-packages.mjs` reads them from the release being installed; a role with `pip` or `npm`
+   packages is refused).
+
+`apt-get install` runs with `--no-install-recommends`, so a role names every package its tools need:
+only those and what they depend on land on the VM, and a Debian point release cannot add to them
+through a new recommendation. The generic role's list holds
+the file toolchain: pandoc, poppler-utils with poppler-data, qpdf, LibreOffice's `-nogui` Writer, Calc,
+Impress and Math (`soffice --headless`), chromium (`--headless=new --no-sandbox --disable-gpu`; the
+services run with `NoNewPrivileges`, so the setuid sandbox it would recommend could not work anyway),
+fonts-dejavu-core and fonts-liberation2, python3-docx, python3-openpyxl, python3-pypdf with python3-pil
+and python3-pycryptodome, imagemagick and file; and, named because they used to come only as
+recommendations, patch, python3-dev and build-essential. `roles/generic/README.md` lists them by use.
+
+The toolchain is about 300 MB to download and 1 GB on disk (of 50 GB), a few minutes of `apt-get` on an
+e2-standard-2: a first boot takes about 8 to 12 minutes in all, and an upgrade that adds the toolchain
+a few minutes more than one that adds nothing. The services keep running while an upgrade installs packages.
+`apt-get` waits up to 10 minutes for another apt or dpkg run to let go of its lock (a first boot's own
+daily apt job), and tries each download 3 times. A dpkg run that was cut off (a reset during a first
+boot, or an upgrade stopped at the contracts' `control.upgrade_max_seconds`) is finished with
+`dpkg --configure -a` before anything else is installed. A package that cannot be installed fails the
+run before anything is stopped: the running release is not touched.
 
 ### What `bootstrap.sh` produces
 
@@ -213,8 +258,9 @@ fields; anything else in the document stays): `{ status: 'ready', release, commi
 services are up, or `{ status: 'failed', release, commit, error, failed_at }`. `release` and `commit`
 name what the run installed or tried to install; a `ready` clears the last `error`. `install.sh` and
 `dev/` scripts wait on it. A first boot that fails before Node.js and the release are on the VM (reading
-the metadata, installing packages, downloading) cannot write it; its error is in the VM's journal and
-serial console.
+the metadata, installing the base packages or Node.js, downloading) cannot write it; its error is in the
+VM's journal and serial console. The role's packages come after the download, so a failure there is
+reported.
 
 ### `manifest.txt`
 

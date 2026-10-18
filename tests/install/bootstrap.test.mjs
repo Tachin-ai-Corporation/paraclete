@@ -295,6 +295,21 @@ describe("the role's packages", () => {
     assert.deepEqual(rolePackagesCli.rolePackages(root, 'writer'), ['git', 'jq', 'pandoc']);
   });
 
+  test("the generic role installs the file toolchain the files skill runs", () => {
+    const apt = JSON.parse(readRepoFile('roles/generic/role.json')).setup.apt;
+    const toolchain = ['pandoc', 'poppler-utils', 'qpdf', 'libreoffice-writer-nogui', 'libreoffice-calc-nogui',
+      'libreoffice-impress-nogui', 'chromium', 'fonts-dejavu-core', 'fonts-liberation2', 'fonts-crosextra-carlito',
+      'fonts-crosextra-caladea', 'python3-docx', 'python3-openpyxl',
+      'python3-pypdf', 'imagemagick', 'file'];
+    assert.deepEqual(toolchain.filter((name) => !apt.includes(name)), []);
+    assert.ok(!apt.includes('python3-pptx'), 'Debian has no python3-pptx');
+    // Installed without recommendations, so what those brought along is named.
+    for (const name of ['patch', 'python3-dev', 'build-essential', 'poppler-data', 'libreoffice-math-nogui', 'python3-pil']) {
+      assert.ok(apt.includes(name), name);
+    }
+    assert.equal(new Set(apt).size, apt.length, 'each once');
+  });
+
   test('a missing role, a pip or npm list, or a name that is not a package stops the install', (t) => {
     const root = scratch(t);
     writeTree(root, {
@@ -456,6 +471,81 @@ printf '%s|%s|%s|%s|%s' "$TARGET_COMMIT" "$TARGET_REPO" "$TARGET_RELEASE" "$TARG
     assert.equal(one.stdout.trim(), `${join(dir, 'one')}/paraclete-${COMMIT}`);
     assert.equal(bashWithBootstrap(`archive_top_directory '${join(dir, 'two')}'`).status, 1);
     assert.equal(bashWithBootstrap(`archive_top_directory '${join(dir, 'missing')}'`).status, 1);
+  });
+
+  /** apt-get and dpkg stand-ins: `git` is installed, apt-get and dpkg calls are logged to <dir>/apt, an
+   * install exits with $APT_STATUS, and dpkg was cut off when $DPKG_INTERRUPTED is 1. */
+  const fakeApt = (dir) => `
+package_installed() { [[ "$1" == git ]]; }
+apt_get() { printf '%s\\n' "$*" >> '${dir}/apt'; [[ "$1" == update ]] || return "\${APT_STATUS:-0}"; }
+dpkg_was_interrupted() { [[ "\${DPKG_INTERRUPTED:-0}" == 1 ]]; }
+dpkg() { printf 'dpkg %s\\n' "$*" >> '${dir}/apt'; }`;
+  const aptCalls = (dir) => (existsSync(join(dir, 'apt')) ? readFileSync(join(dir, 'apt'), 'utf8').trim().split('\n') : []);
+
+  test('packages are installed without recommended ones, and only those missing', (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${fakeApt(dir)}
+ensure_packages git pandoc '' chromium
+ensure_packages git`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(aptCalls(dir), ['update', 'install -y --no-install-recommends pandoc chromium'], 'nothing at all when every package is there');
+  });
+
+  test('a dpkg run that was cut off is finished before anything is installed', (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${fakeApt(dir)}
+ensure_packages pandoc`, { DPKG_INTERRUPTED: '1' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(aptCalls(dir), ['dpkg --force-confdef --force-confold --configure -a', 'update', 'install -y --no-install-recommends pandoc']);
+    assert.match(r.stderr, /an earlier package install was cut off; finishing it first/);
+
+    // dpkg_was_interrupted looks for numbered journal files, as apt-get does; dpkg's own tmp.i is not one.
+    assert.match(readRepoFile('install/bootstrap.sh'), /compgen -G "\$\{DPKG_UPDATES_DIR\}\/\[0-9\]\*"/);
+    const journal = scratch(t);
+    const cut = () => bashWithBootstrap(`compgen -G '${journal.replace(/\\/g, '/')}/[0-9]*' >/dev/null && echo cut || echo whole`).stdout.trim();
+    writeFileSync(join(journal, 'tmp.i'), '');
+    assert.equal(cut(), 'whole');
+    writeFileSync(join(journal, '0001'), '');
+    assert.equal(cut(), 'cut');
+  });
+
+  test('an upgrade to another commit is a full install, so packages its role adds are installed', () => {
+    const r = bashWithBootstrap(`INSTALLED_COMMIT='${OTHER}' INSTALLED_REPO='your-org/paraclete' TARGET_COMMIT='${COMMIT}' TARGET_REPO='your-org/paraclete'
+installed_release_is_target && echo fast || echo full`);
+    assert.equal(r.stdout.trim(), 'full');
+    assert.match(readRepoFile('install/bootstrap.sh'), /STEP=role-packages\n {2}install_role_packages\n/, 'the full install reads the new release\'s role packages');
+  });
+
+  test('a run on the installed commit puts back a role package that went missing, and only warns when it cannot', (t) => {
+    const recheck = (dir, { list = 'printf \'%s\\n\' git pandoc chromium', env = {} } = {}) => bashWithBootstrap(`${fakeApt(dir)}
+WORK_DIR='${dir}' ROLE=generic
+role_package_list() { ${list}; }
+recheck_role_packages
+echo "carried on"`, env);
+
+    const fixed = scratch(t);
+    let r = recheck(fixed);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(aptCalls(fixed), ['update', 'install -y --no-install-recommends pandoc chromium']);
+    assert.match(r.stderr, /the role's packages pandoc chromium are not installed; installing them/);
+
+    const failing = scratch(t);
+    r = recheck(failing, { env: { APT_STATUS: '100' } });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /carried on/);
+    assert.match(r.stderr, /could not install pandoc chromium; the services start without them/);
+
+    const unreadable = scratch(t);
+    r = recheck(unreadable, { list: 'echo "role-packages: no roles/generic/role.json" >&2; return 1' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /the packages of role generic cannot be read, so they were not checked: role-packages: no roles\/generic\/role\.json/);
+    assert.deepEqual(aptCalls(unreadable), []);
+
+    const whole = scratch(t);
+    r = recheck(whole, { list: 'echo git' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '');
+    assert.deepEqual(aptCalls(whole), []);
   });
 
   test('bootstrap.sh refuses to run as anyone but root', { skip: process.getuid?.() === 0 && 'running as root' }, () => {

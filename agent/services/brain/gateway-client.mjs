@@ -9,6 +9,7 @@
 
 import { completeToolLog, digestInstruction, recordPolicy, TOOL_RESULTS_COLLECTION } from '../../context/tool-record.mjs';
 import { toStr } from '../../providers/to-str.mjs';
+import { sharedFilesBlock } from '../../files/shared-files.mjs';
 
 /** Marks a gateway turn as the brain's own, not a person's chat turn. The gateway passes it through. */
 export const BRAIN_MARKER = '[BRAIN-ORCHESTRATED]';
@@ -65,15 +66,17 @@ export function renderTaskMessage(payload = {}, { missionDir } = {}) {
   const missionId = p._missionId || null;
   const dir = missionId && typeof missionDir === 'function' ? missionDir(missionId) : null;
   const memory = memoryText(p.memory_context);
+  const shared = sharedFilesBlock(p._sharedFiles, missionId);
   return [
     BRAIN_MARKER,
     dir ? [
       '',
       '## Mission Tree',
-      `This mission's working tree is \`${dir}/\`, a git checkout of its project's artifact repository.`,
+      `This mission's id is \`${missionId}\`. Its working tree is \`${dir}/\`, a git checkout of its project's artifact repository.`,
       'Write the files the work produces there, and refer to them by name in your answer; they are',
       'committed after each checkpoint passes. Notes from earlier steps are under missions/<mission id>/steps/ in it.',
     ].join('\n') : '',
+    shared ? `\n${shared}` : '',
     p._requester ? `\n## Requester\nThe person who asked for this work: ${p._requester}. Use this address when the work shares something with them.` : '',
     p._projectContext ? `\n## Project Context\n${p._projectContext}` : '',
     p._sourceText ? `\n## Original Request\n${p._sourceText}` : '',

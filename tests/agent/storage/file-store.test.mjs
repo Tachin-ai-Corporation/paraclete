@@ -1,6 +1,7 @@
 // Tests for agent/storage/file-store.mjs.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -8,8 +9,10 @@ import {
   contentTypeFor,
   createFileStore,
   incomingObjectName,
+  isCredentialPath,
   outgoingObjectName,
   sanitizeFileName,
+  ShareRefused,
 } from '../../../agent/storage/file-store.mjs';
 
 const scratch = mkdtempSync(join(tmpdir(), 'file-store-test-'));
@@ -94,6 +97,7 @@ test('uploads a mission file to its download path with its content type', async 
     size: 10,
     gcsPath: 'files/out/w-1/report.docx',
     contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    sha256: createHash('sha256').update('docx bytes').digest('hex'),
   }]);
   const [upload] = bucket.uploads;
   assert.match(upload.url, /^https:\/\/storage\.googleapis\.com\/upload\/storage\/v1\/b\/your-gcp-project-paraclete\/o\?uploadType=media&name=/);
@@ -155,4 +159,38 @@ test('without a token nothing is uploaded and nothing throws', async () => {
 test('a mission id is required', async () => {
   const { files } = store(fakeBucket());
   await assert.rejects(files.uploadOutgoing('', [file('y.md')]), /missionId is required/);
+});
+
+test('credentials and the instance configuration are recognized on the resolved path', () => {
+  for (const path of ['/etc/paraclete/instance.json', '/etc/paraclete/gateway-token', '/var/lib/x/.gateway-token', '/home/a/.ssh/id_ed25519',
+    '/w/keys/k.json', '/w/svc-key.json', '/w/server.pem', '/w/tls.key', '/home/a/.git-credentials', '/home/a/.netrc', '/w/.env', '/w/.env.local',
+    '/w/app-credentials.json', 'C:\\w\\.ssh\\id_rsa']) {
+    assert.equal(isCredentialPath(path), true, path);
+  }
+  for (const path of ['/w/report.pdf', '/w/keynote.pptx', '/w/environment.md', '/etc/hosts']) assert.equal(isCredentialPath(path), false, path);
+});
+
+test('uploadOne shares one file under its own name or the one given, with its checksum', async () => {
+  const bucket = fakeBucket();
+  const { files } = store(bucket);
+  const path = file('one/draft v2.md', '# Draft');
+  const result = await files.uploadOne('w-6', path, { name: 'Q3 report.md' });
+  assert.deepEqual(result, {
+    name: 'Q3 report.md', size: 7, gcsPath: 'files/out/w-6/Q3 report.md', contentType: 'text/markdown',
+    sha256: createHash('sha256').update('# Draft').digest('hex'),
+  });
+  assert.equal(new URL(bucket.uploads[0].url).searchParams.get('name'), 'files/out/w-6/Q3 report.md');
+  assert.equal((await files.uploadOne('w-6', path)).name, 'draft v2.md');
+});
+
+test('uploadOne refuses, with the reason, a file that may not go', async () => {
+  const bucket = fakeBucket();
+  const { files } = store(bucket, { maxBytes: 5 });
+  const refused = (re) => (err) => err instanceof ShareRefused && re.test(err.message);
+  await assert.rejects(files.uploadOne('w-7', join(scratch, 'absent.md')), refused(/does not exist/));
+  await assert.rejects(files.uploadOne('w-7', file('k/.env', 'A=1')), refused(/credential or the instance's own configuration/));
+  await assert.rejects(files.uploadOne('w-7', join(scratch, 'k')), refused(/is a directory/));
+  await assert.rejects(files.uploadOne('w-7', file('k/big.txt', 'more than five')), refused(/big\.txt is 14 bytes, more than the 5 bytes a shared file may be \(files.max_mb\)/));
+  await assert.rejects(store(fakeBucket({ fail: ['ok.md'] })).files.uploadOne('w-7', file('k/ok.md', 'ok')), /HTTP 403: forbidden/);
+  assert.equal(bucket.uploads.length, 0);
 });

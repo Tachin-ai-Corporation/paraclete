@@ -73,6 +73,52 @@ describe('toGoogleContents', () => {
     assert.deepEqual(call.parts, [{ functionCall: { name: 'a', args: {} }, thoughtSignature: SKIP_THOUGHT_SIGNATURE }]);
   });
 
+  describe('a tool result with an image', () => {
+    const history = [
+      { role: 'user', content: 'look at the chart' },
+      {
+        role: 'assistant', content: null,
+        toolCalls: [{ id: 'call_5', name: 'viewImage', args: { path: 'chart.png' }, provider: 'vertex-google', modelId: 'gemini-4-argon', googleId: 'call_5', thoughtSignature: 'sig' }],
+      },
+      {
+        role: 'tool', toolCallId: 'call_5', name: 'viewImage', content: 'Viewing chart.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.',
+        images: [{ mimeType: 'image/png', data: 'iVBORw0K', name: 'chart.png' }],
+      },
+    ];
+
+    it('goes inside the function response by default (multimodal function responses)', () => {
+      const contents = toGoogleContents(history, { modelId: 'gemini-4-argon' });
+      assert.deepEqual(contents[2], {
+        role: 'user',
+        parts: [{
+          functionResponse: {
+            id: 'call_5',
+            name: 'viewImage',
+            response: { result: 'Viewing chart.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.' },
+            parts: [{ inlineData: { mimeType: 'image/png', data: 'iVBORw0K' } }],
+          },
+        }],
+      });
+      assert.deepEqual(toGoogleContents(history, { modelId: 'gemini-4-argon', toolImages: 'function-response' }), contents);
+    });
+
+    it("goes after the function responses, in the same user turn, with 'user-part'", () => {
+      const contents = toGoogleContents(history, { modelId: 'gemini-4-argon', toolImages: 'user-part' });
+      assert.deepEqual(contents[2], {
+        role: 'user',
+        parts: [
+          { functionResponse: { id: 'call_5', name: 'viewImage', response: { result: 'Viewing chart.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.' } } },
+          { inlineData: { mimeType: 'image/png', data: 'iVBORw0K' } },
+        ],
+      });
+    });
+
+    it('a result without images keeps the plain shape: no parts key', () => {
+      const [, , response] = toGoogleContents([history[0], history[1], { ...history[2], images: undefined }]);
+      assert.equal('parts' in response.parts[0].functionResponse, false);
+    });
+  });
+
   it('echoes a signature only to the Gemini model that made the call', () => {
     const history = [{
       role: 'assistant', content: null,
@@ -139,5 +185,37 @@ describe('explicit context caching', () => {
     const client = fakeGoogle([geminiText('a')]);
     await stepper(client, big, false).call([{ role: 'user', content: 'q' }], 0);
     assert.equal(client.cacheCreates.length, 0);
+  });
+});
+
+describe('the stepper places tool images where toolImages says', () => {
+  const history = [
+    { role: 'user', content: 'q' },
+    { role: 'assistant', content: null, toolCalls: [{ id: 'call_1', name: 'viewImage', args: { path: 'a.png' }, provider: 'vertex-google' }] },
+    { role: 'tool', toolCallId: 'call_1', name: 'viewImage', content: 'Viewing a.png', images: [{ mimeType: 'image/jpeg', data: 'AAAA' }] },
+  ];
+  const run = async (toolImages) => {
+    const client = fakeGoogle([geminiText('a'), geminiText('b')]);
+    const s = createGoogleStepper({
+      client, modelId: 'gemini-4-argon', systemText: 'sys', maxTokens: 100, temperature: 0.3, topP: 0.9,
+      gemini: { explicitCache: false }, toolImages, callWithRetry: (fn) => fn(), logger: quiet, now: () => 0,
+    });
+    await s.call(history, 1);
+    await s.synthesize(history);
+    return client.requests.map((r) => r.contents[2].parts);
+  };
+
+  it('in the function response by default, on every step and on the loop synthesis', async () => {
+    for (const parts of await run(undefined)) {
+      assert.deepEqual(parts[0].functionResponse.parts, [{ inlineData: { mimeType: 'image/jpeg', data: 'AAAA' } }]);
+      assert.equal(parts.length, 1);
+    }
+  });
+
+  it("as a user part with 'user-part'", async () => {
+    for (const parts of await run('user-part')) {
+      assert.equal('parts' in parts[0].functionResponse, false);
+      assert.deepEqual(parts[1], { inlineData: { mimeType: 'image/jpeg', data: 'AAAA' } });
+    }
   });
 });

@@ -152,10 +152,13 @@ was shared, let the agent work on it locally, and hand back a standard file.
 | `file-convert <path> <format>` | Converts between the supported types |
 | `file-make <format> --from <md\|html\|csv\|json>` | Builds an output file from source the agent wrote |
 | `file-share <path> [--drive <folder>]` | Places the file in the mission outbox for download, and optionally uploads it to Drive |
-| `drive-find`, `drive-get`, `drive-export`, `drive-put`, `drive-update` | Search, read, export Google Docs, Sheets and Slides to Office formats or PDF, create, and replace content |
+| `drive-find`, `drive-get`, `drive-export`, `drive-put` | Search; download a file, or export a Google Doc, Sheet or Slides to an Office format, PDF or Markdown, into the mission's inbox; save a finished output as a new file |
 
-The VM bootstrap installs the toolchain: pandoc, LibreOffice headless, headless Chromium, and the
-Python libraries for PDF, Word, Excel and PowerPoint. Dashboard uploads go from the browser straight
+The VM bootstrap installs the toolchain, as the generic role's apt packages without recommended ones:
+pandoc, poppler-utils and qpdf for PDF, LibreOffice's headless Writer, Calc, Impress and Math, headless
+Chromium, ImageMagick, `file`, two font families, and the Python libraries for Word, Excel and PDF
+(python3-docx, python3-openpyxl, python3-pypdf; Debian has no python3-pptx, so a .pptx is read from its
+XML and written with pandoc). Dashboard uploads go from the browser straight
 to the bucket through a signed URL, so Cloud Run's 32 MB request limit doesn't apply. Inbox files
 expire through a bucket lifecycle rule.
 
@@ -165,8 +168,12 @@ expire through a bucket lifecycle rule.
 |---|---|---|
 | How people share | With `paraclete-agent@<project>.iam.gserviceaccount.com`, shown with a copy button in the dashboard | With the agent's Workspace address |
 | Read and export | Yes | Yes |
-| Edit files shared as editor | Yes | Yes |
 | Create new files | Only inside a shared drive the service account belongs to. Service accounts have no Drive storage of their own. | Yes, in its own My Drive |
+
+**Drive is a source and a destination, not a workspace.** An agent downloads what it needs into its
+mission's inbox on the VM, works on it there, and hands results back as new files: dashboard
+downloads, and optionally a new file in the output folder. It never edits, moves, renames, trashes or
+deletes a file someone shared with it. Editing documents in place may come later, for Workspace roles.
 
 The `drive` skill picks the identity itself: the agent's account when one is configured, the service
 account otherwise. Settings has an optional output shared drive and a Test Drive button. Some
@@ -308,7 +315,7 @@ done.
 6. **Dashboard** (done and checked live, but for adding and removing a real colleague). IAP trust, users and the two dashboard roles, the single-agent shell, per-user chat,
    approvals, work views, memory, settings, and the setup checklist.
    *Exit:* add and remove a user; chat with the agent; approve a gated mission.
-7. **Files and Drive.** The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
+7. **Files and Drive** (code done; the live check is next). The `files` skill and toolchain, signed-URL uploads, mission downloads, and the
    `drive` skill with both identities.
    *Exit:* drop a PDF into chat and get a .docx back; read a Doc shared with the service account; write
    into a shared drive; the sharing-policy check reports correctly in a restricted organization.

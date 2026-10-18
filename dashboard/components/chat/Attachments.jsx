@@ -1,7 +1,8 @@
 // dashboard/components/chat/Attachments.jsx: the files a message carries, as chips with the file's
-// type, name and size. A file the agent handed back (under files/out/) links to
-// /api/files/download, which streams it from the instance's bucket; any other file is listed
-// without a link.
+// type, name and size. A file the agent handed back (under files/out/) or a person uploaded (under
+// files/in/) links to /api/files/download, which redirects to a short-lived signed URL that downloads
+// it straight from the instance's bucket; any other file is listed without a link. While a message is
+// still being sent its files are not downloadable yet.
 
 import { formatBytes } from '@/lib/client/format.js';
 import styles from './Attachments.module.css';

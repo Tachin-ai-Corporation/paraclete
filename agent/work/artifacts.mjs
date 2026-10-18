@@ -9,6 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { recordOutgoing } from '../files/outgoing.mjs';
 import { COLLECTIONS } from '../storage/collections.mjs';
 import { firestoreEncode } from '../storage/firestore.mjs';
 import { allocateVersion, sanitizeRepoId } from '../storage/git-store.mjs';
@@ -164,7 +165,7 @@ function git(args, cwd, timeout = 10_000) {
  *
  * @param {object}   deps
  * @param {object}   deps.gitStore      a git store from createGitStore()
- * @param {object}   deps.db            a Firestore client from createClient(); records a project's latest manifest
+ * @param {object}   deps.db            a Firestore client from createClient(); records a project's latest manifest and the exported files' records
  * @param {Function} deps.getProjects   () => live map of project id to project
  * @param {object}   [deps.fileStore]   a file store from createFileStore(); without it, nothing is exported for download
  * @param {Function} [deps.logger]      (level, message)
@@ -364,7 +365,7 @@ export function createArtifactManager(deps) {
    * the envelope (`context.artifacts`) and the project (`context.artifacts`). A gated merge is parked
    * in `context.pending_merge`; a failed one is recorded in `context.merge_failed`. For a mission
    * that came from the dashboard, the changed files are also exported as downloads
-   * (`context.attachments_export`).
+   * (`context.attachments_export`), each with its `files` record (agent/files/outgoing.mjs).
    *
    * @param {object} envelope - the mission envelope (type 'M'); its context is updated in place
    * @returns {Promise<object|null>} the artifact manifest, or null when nothing was published
@@ -447,8 +448,13 @@ export function createArtifactManager(deps) {
           const attachments = await fileStore.uploadOutgoing(envelope.id, exportPaths);
           if (attachments.length > 0) {
             envelope.context = envelope.context || {};
-            envelope.context.attachments_export = attachments;
+            envelope.context.attachments_export = attachments.map(({ name, size, gcsPath, contentType }) => ({ name, size, gcsPath, contentType }));
             log('INFO', `Uploaded ${attachments.length} attachment(s) for dashboard delivery`);
+            // The same `files` records file-share writes, so the mission's downloads list every file
+            // that went out, whichever way it went.
+            await recordOutgoing(db, {
+              missionId: envelope.id, files: attachments, source: 'artifact', createdBy: author.email, log,
+            });
           }
         } catch (e) {
           log('WARN', `Dashboard attachments upload failed: ${e.message}`);

@@ -14,7 +14,7 @@ tool solves the problem, use it. Prefer clear, reversible steps, and check the s
 destructive change.
 
 Commands run in your workspace directory, which is also where a relative path in `readFile`,
-`writeFile` and `listDir` points. Each command has a time limit of a couple of minutes, and its output
+`writeFile`, `listDir` and `viewImage` points (`viewImage` shows you a PNG, JPEG or WebP image). Each command has a time limit of a couple of minutes, and its output
 is cut to a bounded size, with a notice when it was cut.
 
 ## Tools on the machine

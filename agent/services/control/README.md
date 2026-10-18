@@ -3,7 +3,7 @@
 The control service: the dashboard's bridge to the VM. The dashboard writes a command document to
 Firestore; control carries it out on the VM and writes the outcome back onto the same document. It
 reports status, skills, configuration and the agent's workspace; switches responsibilities and Claude;
-restarts services; and upgrades the instance.
+restarts services; upgrades the instance; and checks what the agent can reach in Google Drive.
 
 **Belongs here:** the command queue, the closed set of commands, the signature check, and the calls to
 systemd they need.
@@ -24,6 +24,7 @@ for a command (the dashboard decides; see [Trust](#trust)).
 | `responsibilities.mjs` | The responsibility list, the on/off switch, and "run now" |
 | `introspection.mjs` | The status, skills, configuration and workspace views |
 | `gateway-probe.mjs` | Asks the local gateway whether it is ready and which models it runs |
+| `drive-check.mjs` | The Drive check: what the agent's Drive identity can reach, whether the output folder takes new files, and advice in plain sentences |
 | `paraclete-control.service` | The systemd unit |
 
 ## Privilege
@@ -46,6 +47,8 @@ release need it. Every other service runs as the `paraclete` user. The privilege
   instance was installed from; a command cannot choose another.
 - The upgrade program is fixed: `<install root>/install/upgrade.sh`, which is installed code and
   read-only to the agent.
+- `drive_check` reaches Google Drive as the agent's own Drive identity, never with more access than
+  the agent has, and writes nothing there but its own test file, which it moves to the trash at once.
 
 **In the unit.** `ProtectSystem=strict` with nothing writable (control writes nothing on disk; its
 results go to Firestore), `ProtectHome`, `PrivateTmp`, `NoNewPrivileges`, and the kernel and cgroup
@@ -216,6 +219,34 @@ Result: `{ ref, kind, unit, exit_status, outcome, output }`, where `output` is t
 upgrade's log. Fails at once while `<install root>/install/upgrade.sh` is not installed. A unit
 systemd no longer knows (the VM restarted mid-upgrade) fails with an unknown outcome.
 
+### `drive_check`
+
+Params: none. The dashboard's Test Drive button; admins only, because it writes a test file.
+Runs as the agent's Drive identity (`agent/providers/drive.mjs`): its Workspace account when it has
+one, else the VM's service account.
+Result:
+```
+{ identity:       { kind: "service_account" | "workspace", email },
+  reachable:      boolean,             Drive answered the identity at all
+  error:          string | null,       why it did not, or why a later step failed
+  shared_with_me: { count, capped, sample: [{ id, name, mime_type, owner }] },
+  shared_drives:  [{ id, name, can_add_files }],
+  output_folder:  null | { id, name, drive_id, writable, error },
+  advice:         [string] }
+```
+`count` stops at 100 (`capped` then says there are more); `sample` names the newest five. `owner` is
+the owner's email, or null in a shared drive. `can_add_files` is the membership's `canAddChildren`.
+`output_folder` is null when `config/settings` sets no `drive_output_folder`. The writable test
+creates `paraclete-drive-check-<time>.txt` in the folder and moves it to the trash (a Content
+manager in a shared drive may trash files but not delete them); a test file that cannot be trashed
+leaves `writable: true` with `error` naming it. `drive_id` is null for a folder in someone's My
+Drive, where a service account can never create files.
+`advice` holds plain sentences for the person: nothing shared yet (how to share, with the address,
+and, for a service account, the organization-wide sharing block and its three ways out), Drive not
+reachable (the API off, the scope missing, the token refused), no output folder (optional), and an
+output folder that does not take new files. Empty when nothing needs doing. A Drive failure never
+fails the command; a Firestore failure reading the settings does.
+
 ## The admin settings document
 
 `config/settings` holds what a dashboard admin changes:
@@ -226,6 +257,8 @@ systemd no longer knows (the VM restarted mid-upgrade) fails with an unknown out
 | `claude_updated_at`, `claude_updated_by` | `set_model` | When and by whom it last changed |
 | `effort` | the dashboard | One of the contracts' effort levels; `effort.default` when absent |
 | `effort_updated_at`, `effort_updated_by` | the dashboard | When and by whom the effort last changed |
+| `drive_output_folder` | the dashboard | A Drive folder id, or null: where `drive-put` saves new files when not told a folder, and what `drive_check` tests |
+| `drive_output_folder_updated_at`, `drive_output_folder_updated_by` | the dashboard | When and by whom the output folder last changed |
 
 ## What the installer provides
 

@@ -34,6 +34,7 @@ this.
 | gateway | The service that runs an organ's turn against a model |
 | transcript | The gateway's provider-neutral record of a turn: messages, tool calls and their results. A fallback model continues it rather than starting over |
 | thought signature | An opaque token Gemini attaches to its function calls; it must travel back with the call in the next request |
+| viewImage | The gateway tool that shows an organ (motor, temporal-research or cerebellum) an image file as pixels: PNG, JPEG or WebP. A PDF page or slide is rendered to PNG with the files skill first. Only a turn's most recent images stay in its transcript |
 | session | The cortex's running conversation for one mission, kept by the gateway so each step sends only what is new |
 | fallback model | The model a turn continues on when its organ's model fails |
 | strong tier | The more capable model used for planning, executing and verifying |
@@ -79,6 +80,9 @@ this.
 | merge policy | How a mission's branch reaches its project's main branch: `auto` merges when the mission passes, `gated` waits for a person's approval |
 | outgoing file | A file the agent hands back, stored under `files/out/<mission>/` in the bucket and shown as a download on the mission |
 | incoming file | A file a person shared with the agent, stored under `files/in/<upload>/` in the bucket |
+| file record | A document in the `files` collection for one outgoing or incoming file: its mission, name, size, type, where it is stored, and the Drive copy if any. A mission's downloads and its final reply's attachments are its outgoing records |
+| mission inbox | `missions/<id>/inbox/` inside a mission's working tree: where `file-get`, `drive-get` and `drive-export` put what they fetch. Never committed |
+| output folder | An optional Drive folder, set in the dashboard, where the agent saves finished files as new Drive files. For the agent's service account it must be in a shared drive the account belongs to |
 
 ## Knowledge
 

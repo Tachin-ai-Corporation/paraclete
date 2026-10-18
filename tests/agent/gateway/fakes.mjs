@@ -120,6 +120,79 @@ export function lookupTool(calls = []) {
   };
 }
 
+/** The base64 a fake image tool returns for a path: distinct per path, never a real image. */
+export const fakePixels = (path) => Buffer.from(`pixels of ${path}`).toString('base64');
+
+/**
+ * A fake `viewImage`: returns a text result and one PNG for the path, the shape the real tool returns
+ * (agent/gateway/tools.mjs), without touching the disk. Records every path in `calls`.
+ */
+export function imageTool(calls = []) {
+  return {
+    name: 'viewImage',
+    description: 'Look at an image file.',
+    schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+    execute: async ({ path }) => {
+      calls.push(path);
+      return {
+        result: `Viewing ${path}: PNG, 2x2 px, 70 bytes. The image is attached to this result.`,
+        images: [{ mimeType: 'image/png', data: fakePixels(path), name: path }],
+      };
+    },
+  };
+}
+
+/** A PNG's signature and IHDR chunk: enough header for the size check, not a decodable image. */
+export function pngHeader(width, height) {
+  const ihdr = Buffer.alloc(25);
+  ihdr.writeUInt32BE(13, 0);
+  ihdr.write('IHDR', 4, 'latin1');
+  ihdr.writeUInt32BE(width, 8);
+  ihdr.writeUInt32BE(height, 12);
+  ihdr[16] = 8; // bit depth
+  ihdr[17] = 2; // truecolour
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), ihdr]);
+}
+
+/** A JPEG's start, a JFIF segment and a baseline frame header with the size. */
+export function jpegHeader(width, height) {
+  const app0 = Buffer.from([0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00]);
+  const sof = Buffer.alloc(19);
+  sof[0] = 0xff; sof[1] = 0xc0;
+  sof.writeUInt16BE(17, 2);
+  sof[4] = 8;
+  sof.writeUInt16BE(height, 5);
+  sof.writeUInt16BE(width, 7);
+  sof[9] = 3;
+  return Buffer.concat([Buffer.from([0xff, 0xd8]), app0, sof]);
+}
+
+/** A WebP's RIFF header and first chunk, in each of its three encodings. */
+export function webpHeader(encoding, width, height) {
+  const buf = Buffer.alloc(30);
+  buf.write('RIFF', 0, 'latin1');
+  buf.writeUInt32LE(22, 4);
+  buf.write('WEBP', 8, 'latin1');
+  if (encoding === 'VP8X') {
+    buf.write('VP8X', 12, 'latin1');
+    buf.writeUInt32LE(10, 16);
+    buf.writeUIntLE(width - 1, 24, 3);
+    buf.writeUIntLE(height - 1, 27, 3);
+  } else if (encoding === 'VP8L') {
+    buf.write('VP8L', 12, 'latin1');
+    buf.writeUInt32LE(10, 16);
+    buf[20] = 0x2f;
+    buf.writeUInt32LE(((width - 1) & 0x3fff) | (((height - 1) & 0x3fff) << 14), 21);
+  } else {
+    buf.write('VP8 ', 12, 'latin1');
+    buf.writeUInt32LE(10, 16);
+    buf[23] = 0x9d; buf[24] = 0x01; buf[25] = 0x2a;
+    buf.writeUInt16LE(width, 26);
+    buf.writeUInt16LE(height, 28);
+  }
+  return buf;
+}
+
 /** A tool that records its calls and returns a fixed result. */
 export function recordingTool(name, result, calls = []) {
   return {

@@ -1,10 +1,12 @@
 // dashboard/components/settings/setup-checklist.js: what this instance needs, as data for the Setup tab.
 // Pure: it takes what the views already fetched (the agent's install record from GET /api/agent, the
-// `status` command's result, GET /api/setup, and the agent's service-account address from GET /api/me)
-// and says, per item, whether it is done and what to do.
+// `status` command's result, GET /api/setup, the agent's service-account address from GET /api/me, and
+// the `drive_check` command's result once someone ran Test Drive) and says, per item, whether it is
+// done and what to do.
 // Admins and members see the same states; only the advice differs, since only admins can act.
 
 import { shortCommit, unhealthyServices } from './service-health.js';
+import { driveCheckView } from './drive-settings.js';
 
 /** How each state reads, and the badge it wears. */
 export const STATES = Object.freeze({
@@ -93,14 +95,36 @@ function usersItem(setup, isAdmin) {
   return { ...item, state: 'optional', detail: 'Only one user so far.', action: isAdmin ? 'Add colleagues under Users.' : '' };
 }
 
-function driveItem(agentAccount) {
-  return {
+/**
+ * Drive: how to share with the agent, until Test Drive has run; then what the check found. The address
+ * to share with is the identity the check reports (a Workspace role's own account), else the agent's
+ * service account.
+ */
+function driveItem(agentAccount, drive, isAdmin) {
+  const result = drive?.result || null;
+  const item = {
     key: 'drive',
     title: 'Share Drive files with the agent',
-    state: 'info',
-    detail: 'Share a Drive file or folder with the agent\'s address, as Viewer to let it read or as Editor to let it change, and the agent can open it. A check that sharing works arrives in a later release.',
-    address: agentAccount || '',
+    address: result?.identity?.email || agentAccount || '',
   };
+  if (drive?.running && !result) return { ...item, state: 'checking', detail: 'Testing Drive…' };
+  if (drive?.error && !result) {
+    return {
+      ...item,
+      state: 'problem',
+      detail: `The Drive test did not finish: ${drive.error}`,
+      action: askAdmin(isAdmin, 'Run Test Drive again; if it fails again, the control service\'s log under System says why.'),
+    };
+  }
+  const view = driveCheckView(result);
+  if (!view) {
+    return {
+      ...item,
+      state: 'info',
+      detail: 'Share a Drive file or folder with the agent\'s address, as Viewer to let it read or as Editor to let it change, and the agent can open it. Test Drive checks that the agent reaches Drive, and lists what is shared with it.',
+    };
+  }
+  return { ...item, state: view.ok ? 'done' : 'problem', detail: view.headline };
 }
 
 function claudeItem(setup) {
@@ -126,16 +150,17 @@ function workspaceItem(setup) {
  * @param {string|null} o.statusError  why the status command gave none
  * @param {object|null} o.setup        GET /api/setup
  * @param {string}  [o.agentAccount]   GET /api/me's dashboard.agentAccount
+ * @param {{result?: object|null, error?: string|null, running?: boolean}} [o.drive]  the drive_check command
  * @param {boolean} o.isAdmin
  * @returns {{items: object[], required: {done: number, total: number}}}
  */
-export function setupChecklist({ agent = null, status = null, statusError = null, setup = null, agentAccount = '', isAdmin = false }) {
+export function setupChecklist({ agent = null, status = null, statusError = null, setup = null, agentAccount = '', drive = null, isAdmin = false }) {
   const items = [
     agentItem(agent),
     servicesItem(status, statusError, isAdmin),
     modelsItem(status, statusError, isAdmin),
     usersItem(setup, isAdmin),
-    driveItem(agentAccount),
+    driveItem(agentAccount, drive, isAdmin),
     claudeItem(setup),
     workspaceItem(setup),
   ];

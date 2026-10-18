@@ -22,7 +22,7 @@ before(async () => {
 after(() => firestore.stop());
 beforeEach(() => firestore.reset());
 
-function setup({ artifacts = null, settings = {} } = {}) {
+function setup({ artifacts = null, settings = {}, outgoingFiles = null } = {}) {
   const store = createEnvelopeStore({ db, clock: () => NOW, defaultProjectId: () => 'general' });
   const calls = { lines: [], lessons: [], events: [], dependents: [], completions: [], promotions: [] };
   const memory = {
@@ -38,7 +38,7 @@ function setup({ artifacts = null, settings = {} } = {}) {
   const usage = { summary: () => ({ calls: 3, input: 30, output: 3, cached: 0, cacheWrites: 0 }), drop: () => {} };
   const completion = createCompletion({
     store, memory, projects, artifacts, fireEvent: async (type, ctx) => { calls.events.push([type, ctx]); },
-    addressFor, missionDir: missionDirIn(missionsRoot), usage, settings,
+    addressFor, missionDir: missionDirIn(missionsRoot), usage, outgoingFiles, settings,
   });
   return { store, calls, completion, missionsRoot };
 }
@@ -155,4 +155,51 @@ test('a failed publish degrades, it does not fail the completion', async () => {
   await store.save(env);
   assert.equal((await completion.completeEnvelope(env, { status: 'complete', output: 'ok' })).ok, true);
   assert.equal((await store.read('w-1')).context.artifact_status, 'degraded: push rejected');
+});
+
+test('the reply carries every file the mission handed back: its outgoing records, shared ones first', async () => {
+  const artifacts = {
+    publish: async (e) => {
+      e.context = { ...(e.context || {}), attachments_export: [{ name: 'export.md', size: 4, gcsPath: 'files/out/w-1/export.md', contentType: 'text/markdown' }] };
+      return null;
+    },
+    cleanupWorkspace: async () => {},
+  };
+  const asked = [];
+  const outgoingFiles = async (id) => {
+    asked.push(id);
+    return [
+      { id: 'out-w-1-export_md', direction: 'out', name: 'export.md', size: 5, gcs_path: 'files/out/w-1/export.md', source: 'artifact', created_at: '2026-10-17T11:59:00.000Z' },
+      { id: 'out-w-1-report_docx', direction: 'out', name: 'report.docx', size: 900, gcs_path: 'files/out/w-1/report.docx', source: 'file-share', created_at: '2026-10-17T11:58:00.000Z' },
+    ];
+  };
+  const { store, completion } = setup({ artifacts, outgoingFiles });
+  const env = mission();
+  await store.save(env);
+  await completion.completeEnvelope(env, { status: 'complete', output: 'Done.' });
+  assert.deepEqual(asked, ['w-1']);
+  assert.deepEqual((await store.read('w-1')).context.attachments_export, [
+    { name: 'report.docx', size: 900, gcsPath: 'files/out/w-1/report.docx' },
+    { name: 'export.md', size: 5, gcsPath: 'files/out/w-1/export.md' },
+  ]);
+});
+
+test('a mission that only shared files, with no project, still attaches them; a failed listing keeps what was exported', async () => {
+  const shared = setup({ outgoingFiles: async () => [{ name: 'chart.png', size: 3, gcs_path: 'files/out/w-1/chart.png', source: 'file-share' }] });
+  const env = mission({ project_id: null });
+  await shared.store.save(env);
+  await shared.completion.completeEnvelope(env, { status: 'needs_input', output: 'Is this chart right?' });
+  assert.deepEqual((await shared.store.read('w-1')).context.attachments_export, [{ name: 'chart.png', size: 3, gcsPath: 'files/out/w-1/chart.png' }]);
+
+  const logs = [];
+  const store = createEnvelopeStore({ db, clock: () => NOW, defaultProjectId: () => 'general' });
+  const completion = createCompletion({
+    store, memory: { writeMissionLine: async () => {}, recordLessons: async () => {} }, addressFor,
+    outgoingFiles: async () => { throw new Error('Firestore unavailable'); }, log: (level, msg) => logs.push(`${level} ${msg}`),
+  });
+  const kept = mission({ id: 'w-2', context: { attachments_export: [{ name: 'a.md', size: 1, gcsPath: 'files/out/w-2/a.md' }] } });
+  await store.save(kept);
+  assert.equal((await completion.completeEnvelope(kept, { status: 'complete', output: 'ok' })).ok, true);
+  assert.deepEqual((await store.read('w-2')).context.attachments_export, [{ name: 'a.md', size: 1, gcsPath: 'files/out/w-2/a.md' }]);
+  assert.ok(logs.some((l) => /WARN outgoing files of w-2 could not be listed/.test(l)));
 });

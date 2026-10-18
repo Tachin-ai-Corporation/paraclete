@@ -50,21 +50,43 @@ const allWork = () => db.query('', COLLECTIONS.work, [], { noOrderBy: true });
 
 test('chat framing is stripped, and shared files become a block the mission carries', () => {
   assert.equal(stripChatFraming('[Current message - respond to this]\nUser: please do it'), 'please do it');
-  assert.equal(filesBlock([{ name: 'a.pdf', size: 10, gcsPath: 'files/in/a.pdf' }, {}]), '## Files shared with this request\n- a.pdf (10 bytes): files/in/a.pdf');
+  const block = filesBlock([
+    { name: 'a.pdf', size: 10, gcsPath: 'files/in/u-1760000000000-1a2b3c4d/a.pdf' },
+    { name: "Q3 'final'.xlsx", gcsPath: "files/in/u-1760000000000-2b3c4d5e/Q3 'final'.xlsx" },
+    { name: 'lost.doc' },
+    {},
+  ], 'w-7');
+  assert.equal(block, [
+    '## Files shared with this request',
+    "They are stored with the request, not yet on this host. Fetch each into the mission's inbox with the command shown (the files skill), then read it with `file-read <the path file-get prints>`.",
+    '- a.pdf (10 bytes): `file-get --mission w-7 files/in/u-1760000000000-1a2b3c4d/a.pdf`',
+    "- Q3 'final'.xlsx: `file-get --mission w-7 'files/in/u-1760000000000-2b3c4d5e/Q3 '\\''final'\\''.xlsx'`",
+    '- lost.doc: no stored copy',
+  ].join('\n'));
+  assert.match(filesBlock([{ name: 'a.pdf', gcsPath: 'files/in/u-1-aaaaaaaa/a.pdf' }]), /file-get --mission <this mission's id> files\/in/);
   assert.equal(filesBlock([]), '');
 });
 
 test('a new mission is queued with what the classifier read, acknowledged, and the intake consumed', async () => {
   const { handlers } = setup();
-  const i = await intakeDoc(intake('Please write the quarterly report', { attachments: [{ name: 'q3.xlsx', size: 5, gcsPath: 'files/in/m1/q3.xlsx' }] }));
+  // The dashboard recorded the upload; the mission that takes it is noted on that record, and nothing else changes.
+  await db.write(`${COLLECTIONS.files}/u-1760000000000-1a2b3c4d`, { direction: 'in', mission_id: null, message_id: 'm1', name: 'q3.xlsx', gcs_path: 'files/in/u-1760000000000-1a2b3c4d/q3.xlsx' });
+  const i = await intakeDoc(intake('Please write the quarterly report', { attachments: [
+    { name: 'q3.xlsx', size: 5, gcsPath: 'files/in/u-1760000000000-1a2b3c4d/q3.xlsx' },
+    { name: 'old.pdf', size: 1, gcsPath: 'files/in/u-1760000000000-99999999/old.pdf' },
+  ] }));
   const m = await handlers.newMission(i, {
     instruction: 'Write the Q3 report', accept_criteria: 'covers Q3', context_summary: 'Finance asked.', project_id: 'nope', stakes: 'destructive_or_public', job_to_be_done: 'board prep',
   }, { memory: { recalled: 'Q2 was similar' }, conversation: '## Conversation', ackText: 'On it.', sourceText: 'Please write the quarterly report' });
   const saved = await db.read(`${COLLECTIONS.work}/${m.id}`);
   assert.deepEqual([saved.status, saved.instruction, saved.project_id, saved.stakes, saved.delivery_status], ['queued', 'Write the Q3 report', 'general', 'routine', 'internal'],
     'an unknown project goes to the default, an unknown stakes level to routine');
-  assert.match(saved.context_summary, /Finance asked\.\n\n## Files shared with this request\n- q3\.xlsx \(5 bytes\): files\/in\/m1\/q3\.xlsx/);
-  assert.deepEqual(saved.context, { inbound_files: [{ name: 'q3.xlsx', size: 5, gcsPath: 'files/in/m1/q3.xlsx' }] });
+  assert.match(saved.context_summary, /^Finance asked\.\n\n## Files shared with this request\n/);
+  assert.ok(saved.context_summary.includes(`- q3.xlsx (5 bytes): \`file-get --mission ${m.id} files/in/u-1760000000000-1a2b3c4d/q3.xlsx\``), 'the exact command, with this mission\'s id');
+  assert.equal(saved.context.inbound_files.length, 2);
+  const taken = await db.read(`${COLLECTIONS.files}/u-1760000000000-1a2b3c4d`);
+  assert.deepEqual([taken.mission_id, taken.message_id, taken.name], [m.id, 'm1', 'q3.xlsx'], 'a field-masked patch: the rest of the record survives');
+  assert.equal(await db.read(`${COLLECTIONS.files}/u-1760000000000-99999999`), null, 'no record is created for an upload the dashboard never recorded');
   assert.deepEqual(saved.memory_context, { recalled: 'Q2 was similar' });
   assert.equal(saved.source_meta.sender, 'person@example.com');
   assert.equal(saved.children.length, 1, 'the acknowledgment');
@@ -164,4 +186,27 @@ test('a respond is a mission complete on creation, delivered to the conversation
   assert.deepEqual(saved.delivery_address, { channel: 'dashboard', thread: 'th-1' });
   assert.deepEqual(calls.lines, [m.id]);
   assert.equal((await db.read(`${COLLECTIONS.intake}/i-dashboard-m1`)).consumed_by, m.id);
+});
+
+test('files shared with an answer reach the resumed mission with their fetch commands', async () => {
+  const { handlers, store } = setup();
+  await store.save(mission('w-ask', 'needs_input', { output: 'Which file?' }));
+  const files = [{ name: 'v2.docx', size: 3, gcsPath: 'files/in/u-1760000000000-abcdef12/v2.docx' }];
+  await handlers.attach(await intakeDoc(intake('This one', { attachments: files })), { attach_to: 'w-ask' });
+  const m = await store.read('w-ask');
+  assert.match(m.context_forward, /^This one\n\n## Files shared with this request\n/);
+  assert.ok(m.context_forward.includes('`file-get --mission w-ask files/in/u-1760000000000-abcdef12/v2.docx`'));
+
+  await store.save(mission('w-stuck', 'blocked', { blocker: 'Need the data' }));
+  await handlers.continueMission(await intakeDoc(intake('Here it is', { id: 'i-dashboard-m3', attachments: files })), { continue_mission: 'w-stuck', instruction: 'Use the data' });
+  assert.match((await store.read('w-stuck')).context_forward, /\[REVISED INSTRUCTION\] Use the data\n\n## Files shared with this request\n[\s\S]*file-get --mission w-stuck/);
+});
+
+test('files shared with an answer join the mission\'s shared files, once each', async () => {
+  const { handlers, store } = setup();
+  const first = { name: 'v1.docx', size: 1, gcsPath: 'files/in/u-1760000000000-11111111/v1.docx' };
+  const second = { name: 'v2.docx', size: 2, gcsPath: 'files/in/u-1760000000000-22222222/v2.docx' };
+  await store.save(mission('w-files', 'needs_input', { output: 'Which version?', context: { inbound_files: [first] } }));
+  await handlers.attach(await intakeDoc(intake('Both', { attachments: [first, second] })), { attach_to: 'w-files' });
+  assert.deepEqual((await store.read('w-files')).context.inbound_files, [first, second]);
 });

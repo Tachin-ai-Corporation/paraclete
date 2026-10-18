@@ -1,10 +1,14 @@
 // Tests for dashboard/lib/server/settings.mjs: the effort setting reads the way the brain reads it,
 // only admins change it, only known levels are stored, and the write touches nothing but its own
-// fields of config/settings, which the control service's Claude switch shares.
+// fields of config/settings, which the control service's Claude switch shares. The Drive output
+// folder follows the same rules: admins only, a folder id or nothing, its own fields only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startDashboard } from '../../harness.mjs';
-import { EFFORT_FIELDS, defaultEffort, readEffort, setEffort } from '../../../../dashboard/lib/server/settings.mjs';
+import {
+  DRIVE_FIELDS, EFFORT_FIELDS, defaultEffort, readDriveSettings, readEffort, setDriveOutputFolder, setEffort,
+} from '../../../../dashboard/lib/server/settings.mjs';
+import { route } from '../../../../dashboard/lib/server/http.mjs';
 import { StoreUnavailable } from '../../../../agent/storage/firestore.mjs';
 import { readAdminSettings } from '../../../../agent/services/service-runtime.mjs';
 import { adminEffort } from '../../../../agent/services/brain/settings.mjs';
@@ -119,4 +123,70 @@ test('an outage is an error, never the default', async (t) => {
   const runtime = { ...dash.runtime, db };
   await assert.rejects(readEffort(runtime), StoreUnavailable);
   await assert.rejects(setEffort(runtime, { effort: 'high', user: admin }), StoreUnavailable);
+});
+
+const FOLDER = '1AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+
+test('with nothing stored there is no Drive output folder', async (t) => {
+  const { runtime } = await dashboard(t);
+  assert.deepEqual(await readDriveSettings(runtime), { drive_output_folder: null, invalid: false, updated_at: null, updated_by: null });
+});
+
+test('an admin sets and clears the output folder; only its own fields of config/settings change', async (t) => {
+  const dash = await dashboard(t);
+  const { runtime } = dash;
+  await setEffort(runtime, { effort: 'high', user: admin, now: NOW });
+  await dash.seed({ 'config/settings': { ...(await dash.doc('config/settings')), claude_enabled: true } });
+
+  const view = await setDriveOutputFolder(runtime, { folder: FOLDER, user: admin, now: NOW });
+  assert.deepEqual(view, { drive_output_folder: FOLDER, invalid: false, updated_at: NOW.toISOString(), updated_by: 'admin@example.com' });
+  assert.deepEqual(await dash.doc('config/settings'), {
+    effort: 'high', effort_updated_at: NOW.toISOString(), effort_updated_by: 'admin@example.com', claude_enabled: true,
+    drive_output_folder: FOLDER, drive_output_folder_updated_at: NOW.toISOString(), drive_output_folder_updated_by: 'admin@example.com',
+  });
+  assert.deepEqual(DRIVE_FIELDS, ['drive_output_folder', 'drive_output_folder_updated_at', 'drive_output_folder_updated_by']);
+  // The write was field-masked to exactly those fields.
+  const patch = dash.firestore.requests.filter((r) => r.method === 'PATCH').pop();
+  assert.deepEqual(new URLSearchParams(patch.query).getAll('updateMask.fieldPaths'), DRIVE_FIELDS);
+
+  const later = new Date(NOW.getTime() + 60_000);
+  for (const cleared of [null, '', undefined]) {
+    const view2 = await setDriveOutputFolder(runtime, { folder: cleared, user: admin, now: later });
+    assert.deepEqual([view2.drive_output_folder, view2.updated_at], [null, later.toISOString()]);
+  }
+  assert.equal((await dash.doc('config/settings')).drive_output_folder, null);
+  assert.equal((await dash.doc('config/settings')).effort, 'high');
+});
+
+test('members cannot change the output folder, and only folder ids are stored', async (t) => {
+  const dash = await dashboard(t);
+  await assert.rejects(setDriveOutputFolder(dash.runtime, { folder: FOLDER, user: member }), (err) => err.status === 403);
+  for (const bad of ['https://drive.google.com/drive/folders/' + FOLDER, 'short', 'has space in it ok', 'a/b/c/d/e/f/g', 42, ['x'], { id: FOLDER }]) {
+    await assert.rejects(setDriveOutputFolder(dash.runtime, { folder: bad, user: admin }), (err) => err.status === 400, String(bad));
+  }
+  assert.equal(await dash.doc('config/settings'), null);
+});
+
+test('a stored value that is not a folder id reads as none, flagged for an admin to replace', async (t) => {
+  const dash = await dashboard(t);
+  await dash.seed({ 'config/settings': { drive_output_folder: 'not a folder' } });
+  const view = await readDriveSettings(dash.runtime);
+  assert.deepEqual([view.drive_output_folder, view.invalid], [null, true]);
+});
+
+test('the drive setting route: every user reads it, only admins change it', async (t) => {
+  const dash = await startDashboard({ env: { PARACLETE_DEV_USER: 'member@example.com' } });
+  t.after(dash.stop);
+  const { runtime } = dash;
+  await dash.seed({ 'users/member@example.com': { email: 'member@example.com', role: 'member' } });
+  const get = route(async () => readDriveSettings(runtime), { runtime: () => runtime });
+  const patch = route(async ({ request, user }) => setDriveOutputFolder(runtime, { folder: (await request.json()).drive_output_folder, user }), {
+    admin: true, runtime: () => runtime,
+  });
+  const read = await get(new Request('http://dashboard.example.com/api/settings/drive'));
+  assert.equal(read.status, 200);
+  assert.equal((await read.json()).drive_output_folder, null);
+  const refused = await patch(new Request('http://dashboard.example.com/api/settings/drive', { method: 'PATCH', body: JSON.stringify({ drive_output_folder: FOLDER }) }));
+  assert.equal(refused.status, 403);
+  assert.equal(await dash.doc('config/settings'), null);
 });

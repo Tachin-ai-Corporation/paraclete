@@ -179,12 +179,19 @@ function harness({ projects = {}, fileStore = true } = {}) {
   const store = memoryStore();
   const gitStore = createGitStore({ config: TEST_CONFIG, store, author: TEST_AUTHOR, logger: () => {} });
   const patches = [];
-  const db = { async patch(path, mask, fields) { patches.push({ path, mask, fields }); return {}; } };
+  const writes = [];
+  const db = {
+    async patch(path, mask, fields) { patches.push({ path, mask, fields }); return {}; },
+    async write(path, data) { writes.push({ path, data }); return {}; },
+  };
   const uploads = [];
   const files = {
     async uploadOutgoing(missionId, paths) {
       uploads.push({ missionId, paths });
-      return paths.map((p) => ({ name: p.split(/[\\/]/).pop(), size: 1, gcsPath: `files/out/${missionId}/x`, contentType: 'text/plain' }));
+      return paths.map((p) => {
+        const name = p.split(/[\\/]/).pop();
+        return { name, size: 1, gcsPath: `files/out/${missionId}/${name}`, contentType: 'text/plain', sha256: 'c'.repeat(64) };
+      });
     },
   };
   const dataRoot = env.newDir('data');
@@ -197,7 +204,7 @@ function harness({ projects = {}, fileStore = true } = {}) {
     logger: (level, msg) => logs.push(`${level} ${msg}`),
     config: { missionsRoot: join(dataRoot, 'missions'), workspaceDir: join(dataRoot, 'workspace'), author: TEST_AUTHOR },
   });
-  return { manager, gitStore, store, patches, uploads, dataRoot, logs };
+  return { manager, gitStore, store, patches, writes, uploads, dataRoot, logs };
 }
 
 describe('createArtifactManager', () => {
@@ -222,7 +229,7 @@ describe('createArtifactManager', () => {
 
   test('a mission works on its own branch, commits per checkpoint, and publishes into main', async () => {
     const projects = { 'Quarterly Report': { name: 'Quarterly report' } };
-    const { manager, gitStore, patches, uploads, dataRoot } = harness({ projects });
+    const { manager, gitStore, patches, writes, uploads, dataRoot } = harness({ projects });
     const missionId = 'w-1700000000000-abcd1234';
     const tree = join(dataRoot, 'missions', missionId);
 
@@ -254,6 +261,13 @@ describe('createArtifactManager', () => {
     assert.equal(uploads[0].missionId, missionId);
     assert.deepEqual(uploads[0].paths.map((p) => p.split(/[\\/]/).pop()).sort(), ['summary.md', 'table.csv']);
     assert.equal(envelope.context.attachments_export.length, 2);
+    assert.deepEqual(Object.keys(envelope.context.attachments_export[0]).sort(), ['contentType', 'gcsPath', 'name', 'size'], 'no checksum on the envelope');
+
+    // Every exported file gets the same `files` record file-share writes, sourced 'artifact'.
+    assert.deepEqual(writes.map((w) => w.path).sort(), [`files/out-${missionId}-summary_md`, `files/out-${missionId}-table_csv`]);
+    const record = writes.find((w) => w.path.endsWith('table_csv')).data;
+    assert.deepEqual([record.direction, record.mission_id, record.source, record.created_by, record.gcs_path, record.sha256],
+      ['out', missionId, 'artifact', TEST_AUTHOR.email, `files/out/${missionId}/table.csv`, 'c'.repeat(64)]);
 
     assert.equal(patches.length, 1);
     assert.equal(patches[0].path, 'projects/Quarterly Report');

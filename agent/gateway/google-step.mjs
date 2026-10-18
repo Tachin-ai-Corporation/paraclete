@@ -11,6 +11,16 @@
 //     placeholder Google documents (SKIP_THOUGHT_SIGNATURE);
 //   - call ids: gemini-4-argon returns `functionCall.id` (e.g. 'call_334802'); each functionResponse
 //     goes back with the same id, and the call keeps it in history.
+//
+// A tool result's images (viewImage) go back as inline data, in one of two places, by the
+// `images.geminiPlacement` setting (turn-loop.mjs):
+//   'function-response' (default)  inside the function response, as `functionResponse.parts`:
+//                                  Vertex AI's multimodal function responses, documented for Gemini 3
+//                                  and later with PNG, JPEG and WebP
+//                                  (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/multimodal/function-calling);
+//   'user-part'                    as inlineData parts after the function responses, in the same user
+//                                  turn: how models without multimodal function responses see an image.
+// No displayName or `$ref` is sent: each response carries one image, which its text names.
 
 import { createHash } from 'node:crypto';
 import { estimateTokens } from '../context/prompt-blocks.mjs';
@@ -89,9 +99,10 @@ export function toGoogleTools(tools) {
  * @param {Array<object>} messages
  * @param {object} [o]
  * @param {string} [o.modelId] the Gemini model the contents are for; omitted, every Gemini call counts as its own
+ * @param {string} [o.toolImages='function-response'] where a tool result's images go (see the header)
  * @returns {Array<{role: 'user'|'model', parts: Array<object>}>}
  */
-export function toGoogleContents(messages, { modelId } = {}) {
+export function toGoogleContents(messages, { modelId, toolImages = 'function-response' } = {}) {
   const calls = new Map();
   const result = [];
   for (let i = 0; i < messages.length; i++) {
@@ -120,6 +131,7 @@ export function toGoogleContents(messages, { modelId } = {}) {
     // N function calls need N function responses in one user turn: batch consecutive tool messages.
     if (msg.role === 'tool') {
       const parts = [];
+      const imageParts = [];
       let j = i;
       while (j < messages.length && messages[j].role === 'tool') {
         const tm = messages[j];
@@ -129,10 +141,15 @@ export function toGoogleContents(messages, { modelId } = {}) {
           response: tm.content !== null && typeof tm.content === 'object' ? tm.content : { result: tm.content },
         };
         if (call?.googleId) functionResponse.id = call.googleId;
+        const media = (tm.images || []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } }));
+        if (media.length > 0) {
+          if (toolImages === 'user-part') imageParts.push(...media);
+          else functionResponse.parts = media;
+        }
         parts.push({ functionResponse });
         j++;
       }
-      result.push({ role: 'user', parts });
+      result.push({ role: 'user', parts: [...parts, ...imageParts] });
       i = j - 1;
       continue;
     }
@@ -226,13 +243,14 @@ async function geminiCachedContent(ai, { modelId, systemText, googleTools, ttlSe
  * @param {number}   o.topP
  * @param {boolean}  [o.forceToolCall] constrain every step to a function call (the verifier)
  * @param {object}   o.gemini         { explicitCache, explicitCacheTtlSeconds }
+ * @param {string}   [o.toolImages]   where a tool result's images go: 'function-response' (default) or 'user-part'
  * @param {Function} o.callWithRetry  (fn, label) => fn's result, retried on rate limits
  * @param {Function} o.logger
  * @param {Function} o.now
  */
 export function createGoogleStepper({
   client, modelId, systemText, tools, maxTokens, temperature, topP, forceToolCall = false,
-  gemini, callWithRetry, logger, now,
+  gemini, toolImages, callWithRetry, logger, now,
 }) {
   const googleTools = toGoogleTools(tools);
   // An organ whose every valid answer is a function call (the verifier's report_pass / report_fail)
@@ -263,7 +281,7 @@ export function createGoogleStepper({
       }
       const params = {
         model: modelId,
-        contents: toGoogleContents(history, { modelId }),
+        contents: toGoogleContents(history, { modelId, toolImages }),
         config: {
           ...(cachedContentName ? { cachedContent: cachedContentName } : inlinePrefix()),
           ...(toolConfig ? { toolConfig } : {}),
@@ -280,7 +298,7 @@ export function createGoogleStepper({
     async synthesize(history) {
       const params = {
         model: modelId,
-        contents: toGoogleContents(history, { modelId }),
+        contents: toGoogleContents(history, { modelId, toolImages }),
         config: {
           ...(systemText ? { systemInstruction: systemText } : {}),
           temperature,

@@ -12,8 +12,17 @@
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter"
   ],
+  "_setup_comment": "Installed on every instance by install/bootstrap.sh with apt-get, without recommended packages, so the list names everything the tools need: patch, python3-dev and build-essential are what git and python3-pip used to bring along as recommendations. The rest is the file toolchain the files skill runs: pandoc; poppler-utils (pdftotext, pdfinfo, pdftoppm) with poppler-data, for PDFs in Chinese, Japanese or Korean; qpdf; LibreOffice without its desktop (soffice --headless) for Word, Excel and PowerPoint, with libreoffice-math-nogui so equations survive a conversion; chromium (--headless=new); two font families; the Python libraries for Word, Excel and PDF, with python3-pil for the images in them and python3-pycryptodome for encrypted PDFs; imagemagick (convert); and file.",
   "setup": {
-    "apt": ["git", "jq", "ripgrep", "tree", "zip", "unzip", "rsync", "python3-pip"],
+    "apt": [
+      "git", "jq", "ripgrep", "tree", "zip", "unzip", "rsync", "patch",
+      "python3-pip", "python3-dev", "build-essential",
+      "pandoc", "poppler-utils", "poppler-data", "qpdf",
+      "libreoffice-writer-nogui", "libreoffice-calc-nogui", "libreoffice-impress-nogui", "libreoffice-math-nogui",
+      "chromium", "fonts-dejavu-core", "fonts-liberation2", "fonts-crosextra-carlito", "fonts-crosextra-caladea",
+      "python3-docx", "python3-openpyxl", "python3-pypdf", "python3-pil", "python3-pycryptodome",
+      "imagemagick", "file"
+    ],
     "pip": [],
     "npm": []
   }

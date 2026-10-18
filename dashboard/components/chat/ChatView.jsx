@@ -3,9 +3,10 @@
 // own conversation with the agent: the messages (polled every few seconds while the tab is visible,
 // older ones loaded on demand), the missions the conversation started while they run, the composer,
 // and a side panel of the agent's notices that belong to no conversation. Everything is read through
-// /api/chat/*, which only ever serves the caller's own thread.
+// /api/chat/*, which only ever serves the caller's own thread. Files dropped anywhere on the
+// conversation join the composer's (use-uploads.js), and go with the next message.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '@/lib/client/api.js';
 import { usePoll } from '@/lib/client/use-poll.js';
 import { mergeMessages, pollSince, replyState } from './conversation.js';
@@ -13,6 +14,8 @@ import { MessageList } from './MessageList.jsx';
 import { Presence } from './Presence.jsx';
 import { Composer } from './Composer.jsx';
 import { Notices } from './Notices.jsx';
+import { useUploads } from './use-uploads.js';
+import { draggingFiles, filesOf } from './upload-list.js';
 import styles from './ChatView.module.css';
 
 const MESSAGES_POLL_MS = 3000;
@@ -59,10 +62,45 @@ export function ChatView({ agentName }) {
     }
   }, [oldest]);
 
-  const send = useCallback(async (text) => {
-    setPending({ id: 'sending', from: 'user', text, timestamp: new Date().toISOString(), attachments: [], pending: true });
+  const uploads = useUploads();
+  const addFiles = uploads.add;
+  // Drag events fire for every child the pointer crosses; the overlay stays until the drag has left
+  // the conversation itself.
+  const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+  const dropHandlers = {
+    onDragEnter(event) {
+      if (!draggingFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth.current += 1;
+      setDragging(true);
+    },
+    onDragOver(event) {
+      if (!draggingFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+    },
+    onDragLeave(event) {
+      if (!draggingFiles(event.dataTransfer)) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragging(false);
+    },
+    onDrop(event) {
+      if (!draggingFiles(event.dataTransfer)) return;
+      event.preventDefault();
+      dragDepth.current = 0;
+      setDragging(false);
+      addFiles(filesOf(event.dataTransfer.files));
+    },
+  };
+
+  const send = useCallback(async (text, attachments = []) => {
+    setPending({
+      id: 'sending', from: 'user', text, timestamp: new Date().toISOString(), pending: true,
+      attachments: attachments.map((file) => ({ ...file, downloadable: false })),
+    });
     try {
-      const { message } = await api('/api/chat/messages', { method: 'POST', body: { text } });
+      const { message } = await api('/api/chat/messages', { method: 'POST', body: { text, attachments } });
       setMessages((prev) => mergeMessages(prev, [message]));
       refreshPresence();
       return null;
@@ -78,7 +116,8 @@ export function ChatView({ agentName }) {
 
   return (
     <div className={styles.chat}>
-      <section className={styles.conversation} aria-label={`Conversation with ${agentName}`}>
+      <section className={styles.conversation} aria-label={`Conversation with ${agentName}`} {...dropHandlers}>
+        {dragging && <div className={styles.drop} aria-hidden="true">Drop files to send them to {agentName}</div>}
         <header className={styles.header}>
           <h1>Chat</h1>
           <span className="muted">Your conversation with {agentName}</span>
@@ -94,7 +133,7 @@ export function ChatView({ agentName }) {
           onLoadEarlier={loadEarlier}
         />
         <Presence missions={missions} />
-        <Composer agentName={agentName} onSend={send} />
+        <Composer agentName={agentName} onSend={send} uploads={uploads} />
       </section>
       <Notices agentName={agentName} />
     </div>

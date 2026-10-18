@@ -1,7 +1,8 @@
 // Tests for install/install.sh, run with bash against tests/install/fake-cloud.mjs (no Google Cloud,
 // no GitHub, no Vertex AI). A dry run's printed plan is checked step by step: the order, the APIs, the
 // accounts and their grants, Firestore, the bucket, the dashboard (its image repository, build,
-// service, sign-in grants and first admin), the network and the VM with its metadata. Then: a dry run
+// service, sign-in grants, first admin and the bucket's CORS setting for its uploads), the network and
+// the VM with its metadata. Then: a dry run
 // changes nothing; a real run followed by a re-run creates nothing twice; a new --ref rebuilds the
 // dashboard and moves the VM; each piece of the dashboard that already exists is left alone; the model
 // check retries and then stops with a reason; and each check in step 1 stops the install before
@@ -103,6 +104,18 @@ function dashboardEnv({ commit = COMMITS.release, release = RELEASE_TAG, name = 
 }
 
 const position = (commands, ...words) => commands.findIndex((command) => words.every((word, i) => command[i] === word));
+
+/** The dashboard's deterministic URL, the origin every install lets upload into the bucket. */
+const SERVICE_ORIGIN = `https://paraclete-${freshProject().projectNumber}.us-central1.run.app`;
+
+/** The bucket's CORS setting for uploads from these origins, as install.sh writes it. */
+const uploadCors = (origins) => [{
+  origin: origins, method: ['GET', 'HEAD', 'PUT'], responseHeader: ['Content-Type', 'ETag'], maxAgeSeconds: 3600,
+}];
+
+/** The commands that set the bucket's CORS setting. */
+const corsUpdates = (commands) => find(commands, 'gcloud', 'storage', 'buckets', 'update')
+  .filter((command) => flag(command, 'cors-file') !== undefined);
 
 test('install.sh, uninstall.sh and their library parse', { skip: needsBash }, () => {
   const scripts = ['install.sh', 'uninstall.sh',
@@ -349,6 +362,20 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.ok(order.every((i) => i > position(run.commands, 'gcloud', 'storage', 'buckets', 'create')));
     assert.ok(order.every((i) => i < position(run.commands, 'gcloud', 'compute', 'instances', 'create')));
+  });
+
+  test("lets the browser upload into the bucket from the dashboard's URL, once the service is planned", () => {
+    const [cors, ...more] = corsUpdates(run.commands);
+    assert.equal(more.length, 0);
+    assert.equal(cors[4], `gs://${BUCKET}`);
+    assert.match(flag(cors, 'cors-file'), /cors\.json$/);
+    assert.ok(cors.includes('--quiet'));
+    assert.deepEqual(JSON.parse(shownFile(run.stdout, 'cors.json')), uploadCors([SERVICE_ORIGIN]),
+      'before the first deploy, the deterministic URL is the one the service will have');
+    const at = run.commands.indexOf(cors);
+    assert.ok(at > position(run.commands, 'gcloud', 'run', 'deploy') && at > position(run.commands, 'curl'), 'after the service exists');
+    assert.ok(at < position(run.commands, 'gcloud', 'compute', 'firewall-rules', 'create'), 'within step 6');
+    assert.match(run.stdout, new RegExp(`gs://${BUCKET}: letting the dashboard upload from ${SERVICE_ORIGIN.replace(/\./g, '\\.')} \\(its CORS setting: none set\\)`));
   });
 
   test('uses the default network, opens SSH from IAP only, and denies everything else inbound', () => {
@@ -677,10 +704,19 @@ describe('a real run, then re-runs', { skip: needsBash, concurrency: false }, ()
     assert.match(first.stdout, new RegExp(`Dashboard: ${service.url.replace(/\./g, '\\.')} \\(sign in as ${OWNER}`));
   });
 
+  test("lets the browser upload into the bucket from the dashboard's URL", () => {
+    const state = box.state();
+    assert.equal(state.runServices.paraclete.url, SERVICE_ORIGIN);
+    assert.deepEqual(state.buckets[BUCKET].cors, uploadCors([SERVICE_ORIGIN]));
+    assert.equal(corsUpdates(first.commands).length, 1);
+  });
+
   test('a re-run creates nothing again and only repairs the bucket settings', async () => {
     const again = await box.run('install.sh', ['--yes']);
     assert.equal(again.status, 0, again.stderr);
     assert.deepEqual(writes(again.calls).map((call) => call.command), ['storage buckets update']);
+    assert.deepEqual(corsUpdates(again.commands), [], 'the CORS setting is compared first, and it is already right');
+    assert.match(again.stdout, new RegExp(`gs://${BUCKET} lets the dashboard upload from ${SERVICE_ORIGIN.replace(/\./g, '\\.')}`));
     assert.match(again.stdout, new RegExp(`the image ${IMAGE}:${COMMITS.release} exists`));
     assert.match(again.stdout, new RegExp(`paraclete already runs ${COMMITS.release}`));
     assert.match(again.stdout, new RegExp(`${OWNER} is a dashboard user already`));
@@ -735,7 +771,36 @@ describe('a dashboard that partly exists', { skip: needsBash, concurrency: true 
   test('all of it: step 6 plans nothing', async () => {
     const run = await plan(() => {});
     assert.deepEqual(dashboardCommands(run.commands), []);
+    assert.deepEqual(corsUpdates(run.commands), []);
     assert.deepEqual(writes(run.calls), []);
+  });
+
+  test("a bucket without the uploads' CORS setting, or with another one, gets it, and nothing else in step 6 changes", async () => {
+    for (const [change, why] of [
+      [(s) => { delete s.buckets[BUCKET].cors; }, 'none set'],
+      [(s) => { s.buckets[BUCKET].cors = uploadCors(['https://elsewhere.example.com']); }, 'different'],
+      [(s) => { s.buckets[BUCKET].cors[0].method = ['GET']; }, 'different'],
+    ]) {
+      const run = await plan(change);
+      assert.deepEqual(dashboardCommands(run.commands), []);
+      assert.equal(corsUpdates(run.commands).length, 1, why);
+      assert.deepEqual(JSON.parse(shownFile(run.stdout, 'cors.json')), uploadCors([SERVICE_ORIGIN]));
+      assert.match(run.stdout, new RegExp(`\\(its CORS setting: ${why}\\)`));
+    }
+    const reordered = await plan((s) => {
+      s.buckets[BUCKET].cors = [{ maxAgeSeconds: 3600, responseHeader: ['etag', 'content-type'], method: ['put', 'HEAD', 'GET'], origin: [SERVICE_ORIGIN] }];
+    });
+    assert.deepEqual(corsUpdates(reordered.commands), [], 'the same setting, spelled another way, is left alone');
+  });
+
+  test("a service that also answers at Cloud Run's older URL lets both upload", async () => {
+    const older = 'https://paraclete-abcdefghij-uc.a.run.app';
+    const run = await plan((s) => {
+      s.runServices.paraclete.url = older;
+      s.runServices.paraclete.urls = [SERVICE_ORIGIN, older];
+    });
+    assert.equal(corsUpdates(run.commands).length, 1);
+    assert.deepEqual(JSON.parse(shownFile(run.stdout, 'cors.json')), uploadCors([older, SERVICE_ORIGIN].sort()));
   });
 
   test('the repository without its grant: only the grant', async () => {
@@ -810,6 +875,7 @@ describe('a dashboard that partly exists', { skip: needsBash, concurrency: true 
     assert.equal(run.status, 0, run.stderr);
     assert.match(run.stdout, new RegExp(`${OLDER_TAG} has no dashboard/cloudbuild.yaml: it predates the dashboard`));
     assert.deepEqual(dashboardCommands(run.commands), []);
+    assert.deepEqual(corsUpdates(run.commands), [], 'no dashboard, so nothing uploads');
     assert.ok(find(run.commands, 'gcloud', 'compute', 'instances', 'create').length === 1, 'the agent still installs');
   });
 

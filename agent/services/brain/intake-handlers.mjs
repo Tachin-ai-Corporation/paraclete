@@ -3,10 +3,13 @@
 // continue resumes the mission it names when that mission is waiting on a person (a question, a
 // blocker), and otherwise starts a follow-up mission that carries the earlier one as context, because
 // a finished mission is never reopened and a running one is never written to from outside; a cancel
-// stops the mission it names. Every path consumes the intake. Called by intake.mjs.
+// stops the mission it names. Every path consumes the intake. Files shared with a message reach the
+// mission as a block naming the exact file-get command for each, and the mission that takes an upload
+// is noted on its `files` record. Called by intake.mjs.
 
+import { mergeSharedFiles, sharedFilesBlock, uploadIdOf } from '../../files/shared-files.mjs';
 import { COLLECTIONS } from '../../storage/collections.mjs';
-import { firestoreEncode } from '../../storage/firestore.mjs';
+import { firestoreEncode, StoreConflict } from '../../storage/firestore.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { addressMeta } from './envelope-store.mjs';
 
@@ -33,11 +36,16 @@ export function stripChatFraming(text) {
     .trim();
 }
 
-/** The files a person shared with a message, as a block a mission's context carries. */
-export function filesBlock(attachments) {
-  const files = (attachments || []).filter((a) => a && a.name);
-  if (files.length === 0) return '';
-  return `## Files shared with this request\n${files.map((a) => `- ${a.name}${a.size ? ` (${a.size} bytes)` : ''}: ${a.gcsPath || 'no stored copy'}`).join('\n')}`;
+/**
+ * The files a person shared with a message, as a block a mission's context carries: each with the
+ * exact command that brings it into the mission's inbox (agent/files/shared-files.mjs).
+ *
+ * @param {Array<{name: string, size?: number, gcsPath?: string}>} attachments
+ * @param {string} [missionId] the mission that takes them; without it the command names a placeholder
+ * @returns {string}
+ */
+export function filesBlock(attachments, missionId = null) {
+  return sharedFilesBlock(attachments, missionId);
 }
 
 /**
@@ -64,6 +72,28 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
   async function consume(intake, envelopeId) {
     await db.patch(`${COLLECTIONS.intake}/${intake.id}`, ['status', 'consumed_by', 'consumed_at'],
       firestoreEncode({ status: 'consumed', consumed_by: envelopeId, consumed_at: store.iso() }));
+  }
+
+  /**
+   * Notes on each uploaded file's `files` record the mission that took it. A field-masked patch, and
+   * only on a record that exists: the dashboard writes the rest of the record, and a file shared
+   * without one is left alone. Best effort: a mission never fails over its bookkeeping.
+   */
+  async function markTaken(attachments, missionId) {
+    for (const a of attachments || []) {
+      const uploadId = uploadIdOf(a?.gcsPath);
+      if (!uploadId) continue;
+      try {
+        await db.patch(`${COLLECTIONS.files}/${uploadId}`, ['mission_id'], firestoreEncode({ mission_id: missionId }), { precondition: { exists: true } });
+      } catch (e) {
+        if (!(e instanceof StoreConflict)) log('WARN', `upload ${uploadId} not marked as taken by ${missionId}: ${e.message}`);
+      }
+    }
+  }
+
+  /** A person's reply as a resumed mission reads it: their words, then any files they shared with it. */
+  function replyForward(intake, missionId) {
+    return [toStr(intake.text), filesBlock(intake.attachments, missionId)].filter(Boolean).join('\n\n');
   }
 
   async function ack(mission, intake, text, key) {
@@ -95,15 +125,16 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
    */
   async function newMission(intake, decision, { memory: mem = null, conversation = null, ackText = null, followUpOf = null, sourceText = null } = {}) {
     const instruction = toStr(decision.instruction) || stripChatFraming(intake.text);
+    // The id comes first: the files block names it in each file's fetch command.
+    const id = store.newId('w');
     const context = [
       toStr(decision.context_summary),
       followUpOf
         ? `This follows mission ${followUpOf.id} (${followUpOf.status}): ${toStr(followUpOf.title || followUpOf.instruction).substring(0, 160)}.${followUpOf.output ? ` Its outcome so far: ${toStr(followUpOf.output).substring(0, 600)}` : ''}`
         : '',
-      filesBlock(intake.attachments),
+      filesBlock(intake.attachments, id),
     ].filter(Boolean).join('\n\n');
     const at = store.iso();
-    const id = store.newId('w');
     const mission = {
       id,
       type: 'M',
@@ -140,6 +171,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
     };
     await store.save(mission);
     await store.writeHistory(id, null, 'queued', 'brain', `Created from intake ${intake.id}${followUpOf ? ` (follows ${followUpOf.id})` : ''}`);
+    await markTaken(intake.attachments, id);
     await ack(mission, intake, ackText, `ack-${id}`);
     await consume(intake, id);
     log('INFO', `mission ${id} queued from intake ${intake.id}`);
@@ -158,6 +190,10 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       if (!AWAITING_PERSON.includes(doc.status) || store.isClaimLive(doc)) return null;
       store.move(doc, 'active');
       doc.context_forward = contextForward;
+      // Files shared with the answer join the mission's shared files, so every later task can see them.
+      if (Array.isArray(intake.attachments) && intake.attachments.length) {
+        doc.context = { ...(doc.context || {}), inbound_files: mergeSharedFiles(doc.context?.inbound_files, intake.attachments) };
+      }
       if (conversation) doc.conversation_context = conversation;
       if (decision.project_id && projects?.get(decision.project_id)) doc.project_id = decision.project_id;
       // The earlier delivery (the question, the blocker) is done; the next one starts afresh.
@@ -169,6 +205,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       return doc;
     });
     if (!done) return null;
+    await markTaken(intake.attachments, target.id);
     await store.writeHistory(target.id, from, 'active', 'brain', `Resumed by a reply: ${toStr(intake.text).substring(0, 100)}`);
     log('INFO', `mission ${target.id} resumed from ${from} by intake ${intake.id}`);
     return done;
@@ -208,7 +245,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       return newMission(intake, decision, opts);
     }
     if (target.status === 'needs_input') {
-      const resumed = await resume(target, intake, decision, { conversation: opts.conversation, contextForward: toStr(intake.text) });
+      const resumed = await resume(target, intake, decision, { conversation: opts.conversation, contextForward: replyForward(intake, target.id) });
       if (resumed) {
         await ack(resumed, intake, opts.ackText, `ack-resume-${resumed.id}-${intake.id}`);
         await consume(intake, resumed.id);
@@ -233,8 +270,8 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
     }
     if (AWAITING_PERSON.includes(target.status)) {
       const contextForward = target.status === 'blocked'
-        ? [target.context_forward || '', `[UNBLOCKED] ${toStr(intake.text)}`, `[REVISED INSTRUCTION] ${toStr(decision.instruction || intake.text)}`].filter(Boolean).join('\n\n')
-        : toStr(intake.text);
+        ? [target.context_forward || '', `[UNBLOCKED] ${toStr(intake.text)}`, `[REVISED INSTRUCTION] ${toStr(decision.instruction || intake.text)}`, filesBlock(intake.attachments, target.id)].filter(Boolean).join('\n\n')
+        : replyForward(intake, target.id);
       const resumed = await resume(target, intake, decision, { conversation: opts.conversation, contextForward });
       if (resumed) {
         await ack(resumed, intake, opts.ackText, `ack-resume-${resumed.id}-${intake.id}`);

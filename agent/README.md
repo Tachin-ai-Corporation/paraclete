@@ -12,7 +12,8 @@ the same relative paths.
 | `work/` | Missions, checkpoints, approvals, scheduling and verification verdicts |
 | `context/` | What goes into a model call: memory windows, compaction, prompt blocks, tool records |
 | `storage/` | Firestore, the git artifact store and the file store |
-| `providers/` | Outside services: Vertex text calls, channels, notifications, JSON repair |
+| `files/` | Reading, converting and making files with the VM's toolchain, and fetching them from where they were shared |
+| `providers/` | Outside services: Vertex text calls, channels, notifications, Google Drive, JSON repair |
 | `auth/` | Tokens: the VM's metadata server and domain-wide delegation |
 | `cli/` | Commands the agent runs through its shell tool |
 
@@ -22,10 +23,11 @@ A package may import only the packages listed after it:
 
 | Package | May import |
 |---|---|
-| `services/` | `work`, `context`, `storage`, `providers`, `auth`, and `gateway` from `services/gateway/` only |
-| `cli/` | `work`, `context`, `storage`, `providers`, `auth` |
-| `work/` | `context`, `storage`, `providers`, `auth` |
+| `services/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, and `gateway` from `services/gateway/` only |
+| `cli/` | `work`, `context`, `files`, `storage`, `providers`, `auth` |
+| `work/` | `context`, `files`, `storage`, `providers`, `auth` |
 | `context/` | `storage`, `providers`, `auth` |
+| `files/` | `storage`, `providers`, `auth` |
 | `storage/` | `auth` |
 | `providers/` | `auth` |
 | `gateway/` | `context`, `providers`, `auth` |

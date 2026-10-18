@@ -15,3 +15,4 @@ channel clients (dashboard, Google Chat), notifications, and JSON repair for mod
 | `channel.mjs` | Channel addresses and delivery: the dashboard and Google Chat |
 | `notifications.mjs` | Acknowledgments and status notes written to the person who asked |
 | `to-str.mjs` | Turns any model output value into text |
+| `drive.mjs` | Google Drive as the agent's Drive identity (its service account, or its Workspace account): find, download, export, create new files, list shared drives, read Drive links, and Google's errors in plain words. It never edits, moves or deletes a file it did not just create |

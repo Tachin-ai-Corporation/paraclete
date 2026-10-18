@@ -10,6 +10,9 @@
 //     breakpoint placement, stripped before sending; tool_use and tool_result blocks pass through
 //     untouched (apiContentBlock). Rebuilding them as text parts dropped their payload, and every
 //     step after a tool call was rejected and fell back to another model.
+//
+// A tool result's images (viewImage) go inside its tool_result, as base64 image blocks after the
+// result's text.
 
 import { computeBreakpointLayout, estimateTokens, apiContentBlock, isTextOnly } from '../context/prompt-blocks.mjs';
 import { PROVIDERS } from './model-clients.mjs';
@@ -46,12 +49,16 @@ export function toAnthropicMessages(messages) {
     }
 
     if (msg.role === 'tool') {
+      const text = msg.content !== null && typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content ?? '');
+      const images = (msg.images || []).map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } }));
       return {
         role: 'user',
         content: [{
           type: 'tool_result',
           tool_use_id: msg.toolCallId,
-          content: msg.content !== null && typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content ?? ''),
+          // A tool result with images is a block list: its text (the API rejects an empty text block),
+          // then each image. Without images it stays a plain string.
+          content: images.length > 0 ? [...(text ? [{ type: 'text', text }] : []), ...images] : text,
         }],
       };
     }

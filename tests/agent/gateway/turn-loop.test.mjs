@@ -6,7 +6,7 @@ import { runTurn, runTurnWithFallback, resolveSettings, DEFAULT_SETTINGS } from 
 import { SKIP_THOUGHT_SIGNATURE } from '../../../agent/gateway/google-step.mjs';
 import {
   fakeGoogle, fakeAnthropic, geminiCalls, geminiText, claudeCalls, claudeText, providerError,
-  lookupTool, recordingTool, quiet, noSleep,
+  lookupTool, recordingTool, imageTool, fakePixels, quiet, noSleep,
 } from './fakes.mjs';
 
 const GEMINI = 'vertex-google/gemini-4-argon';
@@ -360,7 +360,135 @@ describe('the fallback continues the turn; tools never run twice', () => {
   });
 });
 
+describe('images: the model sees what viewImage returned; the log never carries pixels', () => {
+  const look = [{ role: 'user', content: 'Do the charts agree?' }];
+  const view = (path, id, signature) => geminiCalls([{ id, name: 'viewImage', args: { path }, ...(signature ? { signature } : {}) }]);
+  const inlineCount = (request) => JSON.stringify(request.contents).split('"inlineData"').length - 1;
+
+  it('a Gemini step gets the image in the function response; the tool log and records get the text', async () => {
+    const google = fakeGoogle([view('a.png', 'call_1', 'sig-1'), geminiText('Chart a rises.')]);
+    const out = await runTurn({ ...base, clients: { google }, model: GEMINI, messages: look, tools: { viewImage: imageTool() } });
+    assert.deepEqual(google.requests[1].contents[2].parts[0].functionResponse.parts, [{ inlineData: { mimeType: 'image/png', data: fakePixels('a.png') } }]);
+    assert.equal(out.toolCalls[0].result, 'Viewing a.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.');
+    assert.match(out.text, /\[TOOL\] viewImage\({"path":"a.png"}\) → Viewing a\.png: PNG/);
+    assert.equal(out.text.includes(fakePixels('a.png')), false, 'no base64 in the output');
+    assert.deepEqual(out.toolRecords, []);
+    assert.deepEqual(out.transcript[2].images, [{ mimeType: 'image/png', data: fakePixels('a.png'), name: 'a.png' }]);
+  });
+
+  it('keeps only the most recent images attached as the turn goes on', async () => {
+    const google = fakeGoogle([
+      view('a.png', 'call_1'), view('b.png', 'call_2'), view('c.png', 'call_3'), geminiText('Compared.'),
+    ]);
+    const paths = [];
+    const out = await runTurn({
+      ...base, clients: { google }, model: GEMINI, messages: look, tools: { viewImage: imageTool(paths) },
+      settings: { images: { kept: 2 } },
+    });
+    assert.deepEqual(paths, ['a.png', 'b.png', 'c.png']);
+    assert.deepEqual(google.requests.map(inlineCount), [0, 1, 2, 2], 'never more than two images in a request');
+    const last = google.requests[3].contents;
+    assert.deepEqual(last[2].parts[0].functionResponse, {
+      id: 'call_1',
+      name: 'viewImage',
+      response: { result: 'Viewing a.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.\n'
+        + '[the image of a.png is no longer attached: in one turn only the 2 most recent images viewed stay attached. Call viewImage again to look at it again.]' },
+    });
+    assert.equal(JSON.stringify(last).includes(fakePixels('a.png')), false);
+    assert.ok(JSON.stringify(last).includes(fakePixels('b.png')) && JSON.stringify(last).includes(fakePixels('c.png')));
+    assert.match(out.text, /viewImage\({"path":"a.png"}\) → Viewing a\.png: PNG, 2x2 px, 70 bytes\. The image is attached to this result\.\n/, 'the log keeps what the tool returned');
+  });
+
+  it("with images.geminiPlacement 'user-part', the image follows the function response in the same turn", async () => {
+    const google = fakeGoogle([view('a.png', 'call_1'), geminiText('ok')]);
+    await runTurn({
+      ...base, clients: { google }, model: GEMINI, messages: look, tools: { viewImage: imageTool() },
+      settings: { images: { geminiPlacement: 'user-part' } },
+    });
+    const { parts } = google.requests[1].contents[2];
+    assert.equal('parts' in parts[0].functionResponse, false);
+    assert.deepEqual(parts[1], { inlineData: { mimeType: 'image/png', data: fakePixels('a.png') } });
+  });
+
+  it('drops anything under `images` that no provider would take', async () => {
+    const odd = {
+      name: 'viewImage', description: 'd', schema: { type: 'object' },
+      execute: async () => ({ result: 'odd', images: [{ mimeType: 'image/gif', data: 'R0lG' }, { mimeType: 'image/png', data: 42 }, null] }),
+    };
+    const google = fakeGoogle([view('x', 'call_1'), geminiText('ok')]);
+    const out = await runTurn({ ...base, clients: { google }, model: GEMINI, messages: look, tools: { viewImage: odd } });
+    assert.equal(inlineCount(google.requests[1]), 0);
+    assert.equal('images' in out.transcript[2], false);
+  });
+
+  it('Gemini to Claude: the fallback sees the image the failed model saw, and the tool does not run again', async () => {
+    const google = fakeGoogle([view('a.png', 'call_334802', 'sig-1'), providerError()]);
+    const anthropic = fakeAnthropic([claudeText('Chart a rises.')]);
+    const paths = [];
+    const out = await runTurnWithFallback({
+      ...base, clients: { google, anthropic }, model: GEMINI, fallbackModel: CLAUDE,
+      messages: look, tools: { viewImage: imageTool(paths) },
+    });
+    assert.deepEqual(paths, ['a.png']);
+    const messages = anthropic.requests[0].params.messages;
+    assert.deepEqual(messages[1].content, [{ type: 'tool_use', id: 'call_334802', name: 'viewImage', input: { path: 'a.png' } }]);
+    assert.deepEqual(messages[2].content, [{
+      type: 'tool_result',
+      tool_use_id: 'call_334802',
+      content: [
+        { type: 'text', text: 'Viewing a.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.' },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: fakePixels('a.png') } },
+      ],
+    }]);
+    assert.equal(out.model, CLAUDE);
+    assert.equal(out.text.includes(fakePixels('a.png')), false);
+  });
+
+  it('Claude to Gemini: the image goes back in the function response, with the placeholder signature on the call', async () => {
+    const anthropic = fakeAnthropic([
+      claudeCalls([{ id: 'toolu_01', name: 'viewImage', input: { path: 'a.png' } }]),
+      providerError('overloaded'),
+    ]);
+    const google = fakeGoogle([geminiText('Chart a rises.')]);
+    await runTurnWithFallback({
+      ...base, clients: { google, anthropic }, model: CLAUDE, fallbackModel: GEMINI,
+      messages: look, tools: { viewImage: imageTool() },
+    });
+    const [, call, response] = google.requests[0].contents;
+    assert.equal(call.parts[0].thoughtSignature, SKIP_THOUGHT_SIGNATURE);
+    assert.deepEqual(response, {
+      role: 'user',
+      parts: [{
+        functionResponse: {
+          name: 'viewImage',
+          response: { result: 'Viewing a.png: PNG, 2x2 px, 70 bytes. The image is attached to this result.' },
+          parts: [{ inlineData: { mimeType: 'image/png', data: fakePixels('a.png') } }],
+        },
+      }],
+    });
+  });
+
+  it('a fallback continues under the same retention: it never receives more images than the turn keeps', async () => {
+    const google = fakeGoogle([view('a.png', 'call_1'), view('b.png', 'call_2'), providerError(), geminiText('done')]);
+    await runTurnWithFallback({
+      ...base, clients: { google }, model: GEMINI, fallbackModel: FLASH, messages: look,
+      tools: { viewImage: imageTool() }, settings: { images: { kept: 1 } },
+    });
+    const fallback = google.requests[3];
+    assert.equal(fallback.model, 'gemini-3.8-flash');
+    assert.equal(inlineCount(fallback), 1);
+    assert.ok(JSON.stringify(fallback.contents).includes(fakePixels('b.png')));
+  });
+});
+
 describe('resolveSettings', () => {
+  it('takes the image settings, and ignores invalid ones', () => {
+    assert.deepEqual(resolveSettings({}).images, { kept: 3, geminiPlacement: 'function-response' });
+    assert.deepEqual(resolveSettings({ images: { kept: 1, geminiPlacement: 'user-part' } }).images, { kept: 1, geminiPlacement: 'user-part' });
+    assert.deepEqual(resolveSettings({ images: { kept: 0, geminiPlacement: 'inline' } }).images,
+      { kept: 3, geminiPlacement: 'function-response' }, 'a turn always keeps the image it just viewed');
+  });
+
   it('fills defaults and keeps valid values', () => {
     const s = resolveSettings({
       anthropic: { promptCaching: true, cacheTtlMission: '5m' },

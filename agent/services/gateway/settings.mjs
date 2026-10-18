@@ -78,6 +78,7 @@ export function gatewaySettings(contracts) {
       explicitCacheTtlSeconds: v.gemini_explicit_cache_ttl_seconds,
     },
     toolRecord: contracts.tools.record,
+    images: { kept: contracts.tools.images_kept, geminiPlacement: v.gemini_tool_image_placement },
     loopGuard: {
       identicalNudge: g.identical_result_nudge_threshold,
       identicalTerminate: g.identical_result_terminate_threshold,
@@ -106,6 +107,8 @@ export function toolLimits(tools) {
     timeoutMs: tools.timeout_ms,
     maxBufferBytes: tools.max_buffer_bytes,
     binaryGuard: tools.binary_guard !== false,
+    imageMaxBytes: tools.image_max_bytes,
+    imageMaxSide: tools.image_max_side,
   };
 }
 

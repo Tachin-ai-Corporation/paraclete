@@ -46,11 +46,11 @@ A skill only one role needs goes in `roles/<id>/skills/`.
 | `git-artifacts` | motor | `work-status`, `work-diff`, `work-log`, `work-commit`, `work-sync`, `work-clone` (here); `git-store` | Mission working trees and the git artifact store |
 | `git-repos` | motor | none (plain `git`) | Outside git repositories |
 | `web-search` | temporal-research | `web-search`, `web-fetch` (here) | Grounded web search and reading pages |
+| `files` | motor | `file-get`, `file-read`, `file-convert`, `file-make`, `file-share` (here) | Taking files in from wherever they were shared, reading them as text, converting and making office files, PDFs and images, and handing results back as mission downloads |
+| `drive` | motor, temporal-research | `drive-find`, `drive-get`, `drive-export`, `drive-put` (here) | Google Drive as the agent's own identity: finding shared files, downloading or exporting them into the mission, and handing results back as new Drive files |
 | `secrets` | motor | `secret-read` (here) | Using a Secret Manager secret without revealing it |
 | `processes` | motor | `process-ops` | Process playbooks |
 | `telemetry` | motor | `brain-telemetry-read`, `agent-status` | Organ-turn telemetry and the instance's status |
 | `system-shell` | motor | none | General command-line work and safe file edits |
 | `scripting` | motor | none | Bash and Python scripts |
 | `careful-operations` | motor | none | The method for unfamiliar or irreversible operations |
-
-The `files` and `drive` skills arrive in build plan phase 7.

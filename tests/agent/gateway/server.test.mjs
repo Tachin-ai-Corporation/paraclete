@@ -161,7 +161,24 @@ describe('POST /v1/chat/completions', () => {
       await chat(url, { model: 'brain/motor', messages: [{ role: 'user', content: 'do it' }] });
     });
     assert.equal(google.requests[0].config.systemInstruction, 'You are the motor organ.');
-    assert.deepEqual(google.requests[0].config.tools[0].functionDeclarations.map((d) => d.name), ['runCommand', 'readFile', 'writeFile', 'listDir']);
+    assert.deepEqual(google.requests[0].config.tools[0].functionDeclarations.map((d) => d.name), ['runCommand', 'readFile', 'writeFile', 'listDir', 'viewImage']);
+  });
+
+  it('shows an image to the organ that viewed it, and answers with text only', async () => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+    writeFileSync(join(workspace, 'dot.png'), png);
+    const google = fakeGoogle([
+      geminiCalls([{ id: 'call_1', name: 'viewImage', args: { path: 'dot.png' } }]),
+      geminiCalls([{ id: 'call_2', name: 'report_pass', args: { reasoning: 'the dot is there', checks: [] } }]),
+    ]);
+    let raw;
+    await withGateway(parts({ google }), async (url) => {
+      raw = await (await chat(url, { model: 'brain/cerebellum', messages: [{ role: 'user', content: 'verify the dot' }] })).text();
+    });
+    assert.deepEqual(google.requests[0].config.tools[0].functionDeclarations.map((d) => d.name), ['readFile', 'viewImage', 'report_pass', 'report_fail']);
+    assert.deepEqual(google.requests[1].contents[2].parts[0].functionResponse.parts, [{ inlineData: { mimeType: 'image/png', data: png.toString('base64') } }]);
+    assert.equal(raw.includes(png.toString('base64')), false, 'no pixels in the response');
+    assert.match(JSON.parse(raw).choices[0].message.content, /\[TOOL\] viewImage\({"path":"dot.png"}\) → Viewing dot\.png: PNG, 1x1 px/);
   });
 
   it("leads with the organ's own prompt and adds the caller's system messages after it", async () => {
@@ -255,6 +272,9 @@ describe('POST /v1/chat/completions', () => {
       assert.equal(tool.status, 400);
       const nonText = await chat(url, { model: 'brain/motor', messages: [{ role: 'user', content: [{ type: 'tool_result', content: 'x' }] }] });
       assert.equal(nonText.status, 400);
+      // Images enter a turn only through a tool, so a cortex session never stores one.
+      const image = await chat(url, { model: 'cortex', messages: [{ role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }] }] });
+      assert.equal(image.status, 400);
     });
     assert.equal(google.requests.length, 0);
   });

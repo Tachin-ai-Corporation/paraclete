@@ -4,9 +4,12 @@
 // and publish its artifacts, save, then the records a finished mission leaves (the working-memory line,
 // the lessons, the responsibility's learnings) and the effects on other work (dependents, project
 // completion, event responsibilities, context promotion). Every step after the save is best effort:
-// none of them can undo a finished mission. Called by the actions and the runner.
+// none of them can undo a finished mission. The reply's attachments are the mission's outgoing files
+// (its 'out' records in `files`, whether file-share or the artifact export sent them), set on
+// `context.attachments_export` for the mouth. Called by the actions and the runner.
 
 import { join } from 'node:path';
+import { replyAttachments } from '../../files/outgoing.mjs';
 import { COLLECTIONS } from '../../storage/collections.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { composeDeliverable } from '../../work/deliverable.mjs';
@@ -31,13 +34,16 @@ export function completionEvent(status) {
  * @param {Function} deps.addressFor     (envelope) => the Address a reply goes to
  * @param {Function} [deps.missionDir]   (missionId) => the mission tree's path
  * @param {object}   [deps.usage]        token accounting: summary(missionId), drop(missionId)
+ * @param {Function} [deps.outgoingFiles] (missionId) => Promise<records>: the mission's 'out' records
+ *   (agent/files/outgoing.mjs listOutgoing, bound to the db); without it, a reply carries only what
+ *   the artifact export attached
  * @param {object}   [deps.settings]     { minDeliverableChars, learningsMaxEntries }
  * @param {Function} [deps.log]
  * @returns {{completeEnvelope: Function}}
  */
 export function createCompletion({
   store, memory, projects = null, artifacts = null, fireEvent = null, addressFor, missionDir = null,
-  usage = null, settings = {}, log = () => {},
+  usage = null, outgoingFiles = null, settings = {}, log = () => {},
 }) {
   const learningsMax = settings.learningsMaxEntries || 5; // default; callers pass the contracts value
 
@@ -117,6 +123,16 @@ export function createCompletion({
       } catch (e) {
         log('WARN', `artifact publishing failed: ${e.message}`);
         envelope.context = { ...(envelope.context || {}), artifact_status: `degraded: ${String(e.message).slice(0, 100)}` };
+      }
+    }
+
+    // Every file the mission handed back rides on its reply, the ones it shared on purpose first.
+    if (envelope.type === 'M' && typeof outgoingFiles === 'function') {
+      try {
+        const attachments = replyAttachments(await outgoingFiles(envelope.id), envelope.context?.attachments_export || []);
+        if (attachments.length > 0) envelope.context = { ...(envelope.context || {}), attachments_export: attachments };
+      } catch (e) {
+        log('WARN', `outgoing files of ${envelope.id} could not be listed; the reply carries only the exported ones: ${e.message}`);
       }
     }
 

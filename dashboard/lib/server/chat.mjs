@@ -2,7 +2,8 @@
 // one write, all for the signed-in user only:
 //   - the thread: one `threads/{id}` document per user, created the first time they send something;
 //   - the messages: the root `messages` collection, filtered by the thread's id, newest last, paged
-//     back in time; and sending one, in exactly the shape the ears read (dev/say.mjs writes the same);
+//     back in time; and sending one, in exactly the shape the ears read (dev/say.mjs writes the same),
+//     with the files the person uploaded (uploads.mjs) as its attachments;
 //   - presence: the missions this thread asked for that are not finished yet, from `work`;
 //   - notices: the agent's messages that belong to no thread (work nobody in particular asked for).
 //
@@ -17,11 +18,12 @@
 // intake-handlers.mjs (the missions a message becomes).
 
 import { createHash } from 'node:crypto';
-import { firestoreEncode } from '../../../agent/storage/firestore.mjs';
+import { firestoreEncode, StoreConflict } from '../../../agent/storage/firestore.mjs';
 import { ENVELOPE_STATUSES, TERMINAL_STATUSES } from '../../../agent/work/work-transitions.mjs';
 import { HttpError } from './errors.mjs';
 import { newDocId } from './commands.mjs';
 import { isDownloadablePath } from './files.mjs';
+import { claimUploads } from './uploads.mjs';
 
 /** The `sender` on every message the agent writes (AGENT_SENDER in agent/providers/channel.mjs). */
 export const AGENT_SENDER = 'agent';
@@ -93,7 +95,7 @@ function shapeThread(id, doc) {
   };
 }
 
-/** A message's files as the chat shows them; only the agent's outgoing files are downloadable. */
+/** A message's files as the chat shows them; the agent's outgoing files and uploads are downloadable. */
 function attachmentsOf(runtime, list) {
   if (!Array.isArray(list)) return [];
   return list
@@ -211,24 +213,32 @@ export async function listMessages(runtime, { user, before = null, since = null,
 }
 
 /**
+ * The files part of the ears' dedup key (dedupKey in agent/services/ears/inbound-gate.mjs): the
+ * attachments by object path, sorted. Two uploads of a file with the same name are different files.
+ */
+const filesKey = (attachments) => (attachments || []).map((a) => a?.gcsPath || a?.name || '').sort().join(',');
+
+/**
  * Why the ears would drop a message without reading it, or null when they would take it in. Pure.
  * The ears (agent/services/ears/inbound-gate.mjs) drop a person's message that reaches them within
- * `cooldown_ms` of that person's previous one, and the same text from them again within
- * `dedup_window_ms` (a double send); either is marked processed and never reaches the brain. Refused
- * here, the person learns it and keeps their text. The ears measure both by when each message was
- * sent, as this does.
+ * `cooldown_ms` of that person's previous one, and the same message from them again within
+ * `dedup_window_ms` (a double send): the same text with the same files, counted by object path.
+ * Either is marked processed and never reaches the brain. Refused here, the person learns it and keeps
+ * their text. The ears measure both by when each message was sent, as this does.
  *
  * @param {string}   text
- * @param {object[]} previous   the person's own earlier messages (shaped), any order
+ * @param {object[]} previous      the person's own earlier messages (shaped), any order
  * @param {number}   nowMs
- * @param {object}   ears       contracts.ears: cooldown_ms, dedup_window_ms
+ * @param {object}   ears          contracts.ears: cooldown_ms, dedup_window_ms
  * @param {string}   agentName
+ * @param {Array<{gcsPath: string}>} [attachments]  the files the new message carries
  * @returns {{status: number, message: string}|null}
  */
-export function earsWouldDrop(text, previous, nowMs, ears, agentName) {
+export function earsWouldDrop(text, previous, nowMs, ears, agentName, attachments = []) {
   const cooldownMs = Number(ears?.cooldown_ms) || 0;
   const dedupMs = Number(ears?.dedup_window_ms) || 0;
   const key = String(text).trim().toLowerCase();
+  const files = filesKey(attachments);
   const timed = previous
     .map((m) => ({ m, at: Date.parse(m.timestamp) }))
     .filter(({ at }) => Number.isFinite(at))
@@ -242,7 +252,7 @@ export function earsWouldDrop(text, previous, nowMs, ears, agentName) {
       message: `${agentName} takes in one message at a time from each person: send this again in ${wait} s`,
     };
   }
-  const repeat = timed.find(({ m, at }) => nowMs - at < dedupMs && m.attachments.length === 0 && m.text.trim().toLowerCase() === key);
+  const repeat = timed.find(({ m, at }) => nowMs - at < dedupMs && filesKey(m.attachments) === files && m.text.trim().toLowerCase() === key);
   if (repeat) {
     const seconds = Math.max(1, Math.round((nowMs - repeat.at) / 1000));
     const window = dedupMs < 120_000 ? `${Math.round(dedupMs / 1000)} s` : `${Math.round(dedupMs / 60_000)} min`;
@@ -257,33 +267,41 @@ export function earsWouldDrop(text, previous, nowMs, ears, agentName) {
 /**
  * Sends a message from the user into their thread, creating the thread on their first message. The
  * document is the one the ears read: `{ text, timestamp (a Firestore timestamp), processed: false,
- * sender, sender_name, thread_id, attachments: [] }`.
+ * sender, sender_name, thread_id, attachments: [{ name, size, gcsPath }] }`. The attachments are
+ * uploads the user completed (uploads.mjs claimUploads); a message may be files alone, with empty text.
+ * The message and the marks that use up its uploads are one atomic commit.
  *
  * @param {object} runtime
  * @param {object} o
  * @param {{email: string, name?: string}} o.user
  * @param {unknown} o.text
+ * @param {unknown} [o.attachments]  [{ gcsPath }, ...] from completed uploads
  * @param {Date}   [o.now]
  * @returns {Promise<{message: object}>}
  */
-export async function sendMessage(runtime, { user, text, now = new Date() }) {
-  if (typeof text !== 'string') throw new HttpError(400, 'the message must be text');
-  const body = text.trim();
-  if (!body) throw new HttpError(400, 'the message is empty');
+export async function sendMessage(runtime, { user, text, attachments, now = new Date() }) {
+  const withFiles = Array.isArray(attachments) && attachments.length > 0;
+  if (typeof text !== 'string' && !(withFiles && (text === undefined || text === null))) {
+    throw new HttpError(400, 'the message must be text');
+  }
+  const body = (text ?? '').trim();
+  if (!body && !withFiles) throw new HttpError(400, 'the message is empty');
   if (body.length > MAX_MESSAGE_CHARS) {
     throw new HttpError(400, `the message is ${body.length} characters long; the most is ${MAX_MESSAGE_CHARS}`);
   }
+
+  const id = newDocId();
+  const files = await claimUploads(runtime, { user, attachments, messageId: id, now });
 
   const threadId = threadIdFor(user.email);
   const recent = await runtime.db.query('', runtime.collections.messages, [
     { field: 'thread_id', op: 'EQUAL', value: { stringValue: threadId } },
   ], { orderBy: 'timestamp', orderDirection: 'DESCENDING', limit: RECENT_FOR_SEND, strict: true });
   const own = recent.filter((row) => row.sender === user.email).map((row) => shapeMessage(runtime, row));
-  const drop = earsWouldDrop(body, own, now.getTime(), runtime.contracts.ears, runtime.settings.agentName);
+  const drop = earsWouldDrop(body, own, now.getTime(), runtime.contracts.ears, runtime.settings.agentName, files.attachments);
   if (drop) throw new HttpError(drop.status, drop.message);
 
   await ensureThread(runtime, user, now);
-  const id = newDocId();
   const data = {
     text: body,
     timestamp: now,
@@ -291,9 +309,19 @@ export async function sendMessage(runtime, { user, text, now = new Date() }) {
     sender: user.email,
     sender_name: senderNameOf(user),
     thread_id: threadId,
-    attachments: [],
+    attachments: files.attachments,
   };
-  await runtime.db.commit([{ path: `${runtime.collections.messages}/${id}`, data, precondition: { exists: false } }]);
+  try {
+    await runtime.db.commit([
+      { path: `${runtime.collections.messages}/${id}`, data, precondition: { exists: false } },
+      ...files.writes,
+    ]);
+  } catch (err) {
+    if (err instanceof StoreConflict && files.writes.length) {
+      throw new HttpError(409, 'one of the files changed while the message was being sent (sent in another message, perhaps): send it again');
+    }
+    throw err;
+  }
 
   // The message is sent; a thread that misses its latest-activity time is not worth failing it for.
   const activity = { last_message_at: now };

@@ -14,5 +14,6 @@ reads and writes.
 | `collections.mjs` | The name of every Firestore collection and subcollection. Never write a collection name anywhere else |
 | `firestore.mjs` | The Firestore REST client and its value encoding. Strict callers fail closed on any store error |
 | `git-store.mjs` | The git artifact store: repositories as bundles in the bucket, one ref document per branch |
-| `file-store.mjs` | Outgoing and incoming files in the bucket: `files/out/<mission>/`, `files/in/<upload>/` |
+| `file-store.mjs` | Uploads outgoing files to the bucket as a mission's downloads (`files/out/<mission>/`), refusing credentials and oversized files |
+| `file-names.mjs` | The object names of outgoing and incoming files (`files/out/<mission>/`, `files/in/<upload>/`), safe file names and content types. No file system access, so the dashboard imports it too |
 | `entity-id.mjs` | An entity's id is its document path; helpers that keep stored ids honest |

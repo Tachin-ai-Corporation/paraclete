@@ -1,0 +1,8 @@
+{
+  "id": "files",
+  "name": "Files",
+  "version": 1,
+  "when_to_use": "Taking files in, reading them, converting them and handing finished files back. Fetch what a person shared (a chat upload, a link, a gs:// object, a git repository, a Drive link) into the mission's inbox; read PDF, Word, Excel, CSV, PowerPoint and HTML as text; convert between formats, render pages to PNG, merge or split PDFs; make Word, PDF, HTML, PowerPoint, Excel and CSV files from Markdown, HTML, CSV or JSON you wrote; and share a result as a download on the mission, optionally saved to Drive too.",
+  "organs": ["motor", "temporal-research"],
+  "commands": ["file-get", "file-read", "file-convert", "file-make", "file-share"]
+}

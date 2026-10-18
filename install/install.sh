@@ -2,11 +2,12 @@
 # install/install.sh: turns a Google Cloud project into a running paraclete. Run by the project's owner
 # in Cloud Shell, from a clone of the repo. Checks the project, enables the APIs and checks the agent's
 # model answers, creates the service accounts, Firestore, the bucket, the dashboard (built by Cloud
-# Build, on Cloud Run behind IAP, with the installer as its first admin), the network and the agent's
-# VM, then waits until the agent reports ready. Every create is "create if missing" and every grant is
-# additive, so re-running repairs, and re-running with another --ref moves the dashboard and the VM to
-# that commit. It never logs in to the VM: what happens on the VM is install/bootstrap.sh's job, and
-# the contract between the two is install/README.md.
+# Build, on Cloud Run behind IAP, with the installer as its first admin; the bucket's CORS setting lets
+# its pages upload into the bucket), the network and the agent's VM, then waits until the agent reports
+# ready. Every create is "create if missing" and every grant is additive, so re-running repairs, and
+# re-running with another --ref moves the dashboard and the VM to that commit. It never logs in to the
+# VM: what happens on the VM is install/bootstrap.sh's job, and the contract between the two is
+# install/README.md.
 # --dry-run prints every command that would change something and changes nothing.
 set -euo pipefail
 
@@ -33,8 +34,9 @@ STEP_TOTAL=9
 # The dashboard's build and deploy commands, written once for this script and dev/deploy.mjs.
 DASHBOARD_JS="$INSTALL_DIR/lib/dashboard.mjs"
 
-# How long step 9 waits for the agent's first boot (the toolchain install takes most of it), and how
-# often it looks.
+# How long step 9 waits for the agent's first boot, and how often it looks. A first boot takes about 8
+# to 12 minutes, most of it apt-get installing the role's packages and the file toolchain among them
+# (install/README.md, "Packages").
 WAIT_TIMEOUT_SECONDS=1200
 WAIT_POLL_SECONDS=10
 
@@ -620,7 +622,9 @@ lifecycle_json() {
 
 step_dashboard() {
   step 6 dashboard "the web dashboard on Cloud Run, behind Google sign-in"
+  local deploys=0
   if fetch_build_config; then
+    deploys=1
     DASHBOARD_IMAGE="$(dashboard_js image project="$PROJECT" region="$REGION")"
     IAP_AGENT="$(dashboard_js iap-agent projectNumber="$PROJECT_NUMBER")"
     DASHBOARD_ENV=(project="$PROJECT" projectNumber="$PROJECT_NUMBER" region="$REGION" bucket="$BUCKET"
@@ -635,6 +639,10 @@ step_dashboard() {
     --format='value(status.url)' 2>/dev/null || true)"
   if [[ -n "$DASHBOARD_URL" ]]; then
     note "the dashboard is at $DASHBOARD_URL"
+  fi
+  # A dashboard that exists, or that this run deploys, uploads into the bucket.
+  if ((deploys)) || [[ -n "$DASHBOARD_URL" ]]; then
+    ensure_upload_cors
   fi
 }
 
@@ -779,6 +787,27 @@ ensure_first_admin() {
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
     --data-binary "@$body_file" "$url?currentDocument.exists=false"
+}
+
+# The browser uploads files straight into the bucket through V4 signed URLs (dashboard/README.md), which
+# it may do only from origins the bucket's CORS setting names: every URL the service answers at, and its
+# deterministic https://<service>-<project number>.<region>.run.app, which a dry run before the first
+# deploy can name already. Set only when the bucket's setting differs; it replaces the whole setting.
+ensure_upload_cors() {
+  local cors_file="$WORK_DIR/cors.json" service origins bucket drift
+  gcloud_args describe-args project="$PROJECT" region="$REGION"
+  service="$(gcloud "${GCLOUD_ARGS[@]}" 2>/dev/null || true)"
+  origins="$(dashboard_js origins projectNumber="$PROJECT_NUMBER" region="$REGION" <<<"$service")"
+  bucket="$(gcloud storage buckets describe "gs://$BUCKET" --format=json 2>/dev/null || true)"
+  drift="$(dashboard_js cors-drift origins="$origins" <<<"$bucket")"
+  if [[ -z "$drift" ]]; then
+    note "gs://$BUCKET lets the dashboard upload from ${origins//,/ and }"
+    return 0
+  fi
+  note "gs://$BUCKET: letting the dashboard upload from ${origins//,/ and } (its CORS setting: $drift)"
+  dashboard_js cors-file origins="$origins" >"$cors_file"
+  show_file cors.json "$cors_file"
+  run gcloud storage buckets update "gs://$BUCKET" --cors-file="$cors_file" --quiet
 }
 
 # firestore_doc_state <document url>: "exists", "missing", or "unknown: <why>", read as you.

@@ -1,6 +1,7 @@
 // dashboard/components/chat/Message.jsx: one message in the conversation. The agent's text is
 // Markdown (components/ui/Markdown.jsx, which never renders raw HTML); the person's own is shown as
-// typed. Files the agent handed back follow as download chips.
+// typed, and a message that was files alone has no bubble. The message's files follow as download
+// chips: the agent's handed-back files and the person's uploads alike.
 
 import { Markdown } from '@/components/ui/Markdown.jsx';
 import { formatDate, timeAgo } from '@/lib/client/format.js';
@@ -34,9 +35,9 @@ export function Message({ message, agentName, grouped, note }) {
       )}
       {fromAgent ? (
         <Markdown className={styles.body}>{message.text}</Markdown>
-      ) : (
+      ) : message.text ? (
         <div className={styles.bubble} title={grouped ? formatDate(message.timestamp) : undefined}>{message.text}</div>
-      )}
+      ) : null}
       <Attachments files={message.attachments} />
       {note && <p className={styles.note} role="status">{note}</p>}
     </article>

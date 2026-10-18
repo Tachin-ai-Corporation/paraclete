@@ -118,15 +118,27 @@ the work and mission pages, approvals and the badge, the agent's brain view, Sys
 IAP grants outlive deleting it (uninstall does not remove them); an organization's domain restriction
 refusing an outside email at `setIamPolicy`; creating, rotating and deleting a secret.
 
-## For phase 7 (files and Drive)
+## Found while building files and Drive (phase 7)
 
-- **Download list.** `agent/storage/file-store.mjs` writes objects under `files/out/<mission>/` but no
-  Firestore records. The chat shows a message's attachments with a download link
-  (`/api/files/download`, streamed through the dashboard); the mission page needs either a bucket
-  listing or records in `files`. A re-export overwrites objects of the same name, so the latest
-  version wins. Phase 7 replaces the streamed download with signed URLs, and adds uploads.
-- **Drive wording.** Project and deploy-target context tells the agent to use "the drive skill"
-  rather than naming commands. Confirm the wording once the skill exists.
+- **CORS on an upgraded instance.** install.sh sets the bucket's CORS for the dashboard's origins; an
+  instance moved by `dev/deploy.mjs` or the upgrade button gets none until install.sh runs again. Have
+  the deploy path apply the same rule (`install/lib/dashboard.mjs corsConfig`).
+- **The upload size is checked when the upload completes.** The signed PUT does not cap the size; a
+  larger object is deleted at completion. Signing `x-goog-content-length-range` (and allowing it in
+  CORS) would refuse it at the bucket.
+- **Files from before phase 7.** Missions finished before the `files` records existed have objects in
+  the bucket but no records, so their Files section is empty.
+- **One mission-inbox path.** `agent/files/mission-paths.mjs` and `skills/drive/drive-get.mjs` each
+  build `missions/<id>/missions/<id>/inbox/`; drive-get and drive-export should use the files package's.
+  `drive-put` keeps its own copy of the credential-path check that `agent/storage/file-store.mjs` has.
+- **Reply attachments** are capped at 20 by a constant (`MAX_ATTACHMENTS` in the brain's completion).
+- **Images to Gemini, live.** Vertex marks images inside a function response as Preview: confirm
+  `gemini-4-argon` and `gemini-3.8-flash` accept and read them (else set
+  `vertex.gemini_tool_image_placement` to `user-part`), that Claude on Vertex takes a tool_result image,
+  and that three images at the size cap fit the request limits.
+- **Drive, live.** Whether `about`, `drives.list` and `files.export` accept the unused
+  `supportsAllDrives` (the provider leaves it off them), and a shared drive's root id as the output
+  folder.
 
 ## For phase 9 (models and upgrades)
 

@@ -22,7 +22,8 @@ The gateway runs as its own service on a local port. Other code calls it over HT
 | `loop-guard.mjs` | Detects a stuck tool loop and decides when to warn and when to stop |
 | `model-clients.mjs` | Builds the Vertex AI SDK clients; parses `<provider>/<model id>` strings |
 | `organs.mjs` | Each organ's job, toolset, sampling, step budget, prompt, and the model tier it runs on |
-| `tools.mjs` | The tools (shell, files, memory, verdicts), their result bounds, and each organ's toolset |
+| `tools.mjs` | The tools (shell, files, images, memory, verdicts), their result bounds, and each organ's toolset |
+| `images.mjs` | Recognizes an image by its bytes, reads its size from its header, and keeps only a turn's most recent images attached |
 | `sessions.mjs` | The in-memory store of the cortex's conversation sessions |
 | `skill-catalog.mjs` | The skill index a tool-using organ sees, built from skill directories |
 | `health.mjs` | `/healthz` and `/ready` |
@@ -121,6 +122,8 @@ it.
 | `anthropic.sessionAffinity` | `false` | Keeps one organ's calls on one Vertex backend so cache reads hit |
 | `anthropic.cacheTtlStable` / `cacheTtlMission` | `'1h'` / `'1h'` | Cache lifetimes for boot and mission tiers |
 | `gemini.explicitCache` / `explicitCacheTtlSeconds` | `false` / `3600` | Gemini explicit context caching of the system prompt and tools |
+| `images.kept` | `3` | How many of the images viewed in one turn stay attached to the transcript |
+| `images.geminiPlacement` | `'function-response'` | Where a tool's image goes in a Gemini request: inside the function response, or `'user-part'` after it (see Images) |
 | `toolRecord` | see `agent/context/tool-record.mjs` | When a tool result is stored by reference instead of inlined |
 | `loopGuard.*` | identical 2/3, duplicate 3/4, semantic 8/16, error 5/8, `synthesize: true` | When a stuck tool loop gets a warning, and when it is stopped |
 | `retry.maxRetries` / `retry.baseDelayMs` | `3` / `2000` | Retries of a transient model error before failing over |
@@ -128,5 +131,32 @@ it.
 | `maxBodyBytes` | 16 MB | The largest request the server accepts |
 
 Passed to the constructors instead: the organ models (`createOrganRegistry({ models: { cortex,
-strong, fast, fallback } })`), the step budget, tool limits (`createToolRegistry({ limits })`) and
-session limits (`createSessionStore()`).
+strong, fast, fallback } })`), the step budget, tool limits (`createToolRegistry({ limits })`,
+`imageMaxBytes` and `imageMaxSide` among them) and session limits (`createSessionStore()`).
+
+## Images
+
+The motor, temporal-research and the cerebellum can look at an image with the `viewImage` tool; the
+verifier needs it because a chart or a rendered slide is checked by looking at it.
+
+- **The tool.** `viewImage({ path })` takes a PNG, JPEG or WebP file, checked by its first bytes, up
+  to `imageMaxBytes` (3,750,000: Claude on Vertex AI takes 5 MB of base64 per image) and
+  `imageMaxSide` (8000 px, Claude's limit). Anything else is refused with a route through the files
+  skill: a PDF page or slide is rendered with `file-convert <path> png`, a GIF converted the same way,
+  a larger image copied smaller with `file-convert <path> jpg` or a resize. GIF is refused because
+  Gemini's function responses don't take it, and the transcript must suit every model a turn can
+  fall back to. `readFile` routes an image to `viewImage`.
+- **The transcript.** The tool returns `{ result, images }`. The text goes to the tool log and the
+  loop guard; the image goes on the tool message as `images: [{ mimeType, data, name }]` and nowhere
+  else. Nothing the gateway answers with (the content, the tool log, `tool_records`) carries pixels.
+- **Retention.** Every step resends the transcript, so only the `images.kept` most recent images stay
+  attached. An older one is taken off, and its tool message says so and how to view it again. A
+  fallback continues the same transcript, so it sees the images the failed model saw, never more.
+- **Gemini.** By default the image goes inside the function response, as
+  `functionResponse.parts: [{ inlineData: { mimeType, data } }]`: Vertex AI's multimodal function
+  responses, documented for Gemini 3 and later. `images.geminiPlacement: 'user-part'` sends it
+  instead as an `inlineData` part after the function responses in the same user turn.
+- **Claude.** The image goes inside the `tool_result`: `content: [{ type: 'text', text },
+  { type: 'image', source: { type: 'base64', media_type, data } }]`.
+- **Sessions.** Images never reach a cortex session: a request's messages may hold only text, and a
+  session stores only what the brain sent.

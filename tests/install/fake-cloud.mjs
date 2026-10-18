@@ -7,8 +7,8 @@
 // (exit 3), so a script change that adds one fails a test until the fake learns it. The dashboard's
 // pieces behave as the real ones do where the installer depends on it: Cloud Run reports CPU in
 // millicores, `run deploy --iap` grants IAP's service agent the invoker role (and fails while that
-// agent does not exist), a build pushes only into an existing repository, and a Firestore write with
-// the exists=false precondition never overwrites.
+// agent does not exist), a build pushes only into an existing repository, a Firestore write with
+// the exists=false precondition never overwrites, and a bucket shows its CORS setting as cors_config.
 import { spawnSync } from 'node:child_process';
 import { appendFileSync, readFileSync as readNativeFile, writeFileSync as writeNativeFile } from 'node:fs';
 
@@ -124,6 +124,7 @@ function repositoryOf(imagePath) {
 function knativeService(name, s) {
   const annotations = { 'run.googleapis.com/ingress': s.ingress || 'all' };
   if (s.iap) annotations['run.googleapis.com/iap-enabled'] = 'true';
+  if (s.urls) annotations['run.googleapis.com/urls'] = JSON.stringify(s.urls);
   return {
     apiVersion: 'serving.knative.dev/v1',
     kind: 'Service',
@@ -279,7 +280,12 @@ const GCLOUD = {
   },
   'storage buckets describe': {
     write: false,
-    run: ([url]) => (state.buckets[bucketOf(url)] ? out(bucketOf(url)) : fail('NOT_FOUND')),
+    run: ([url], f) => {
+      const bucket = state.buckets[bucketOf(url)] || fail('NOT_FOUND');
+      if (f.format !== 'json') return out(bucketOf(url));
+      // As gcloud storage shows a bucket: the CORS setting is cors_config, absent while there is none.
+      return out(JSON.stringify({ name: bucketOf(url), location: bucket.location, ...(bucket.cors ? { cors_config: bucket.cors } : {}) }));
+    },
   },
   'storage buckets create': {
     write: true,
@@ -303,6 +309,11 @@ const GCLOUD = {
       if (f['uniform-bucket-level-access']) bucket.uniformAccess = true;
       if (f['public-access-prevention']) bucket.publicAccessPrevention = true;
       if (f['lifecycle-file']) bucket.lifecycle = JSON.parse(readFileSync(f['lifecycle-file'], 'utf8'));
+      if (f['cors-file']) {
+        const cors = JSON.parse(readFileSync(f['cors-file'], 'utf8'));
+        if (!Array.isArray(cors)) fail('a CORS file is a JSON list of rules');
+        bucket.cors = cors;
+      }
       save();
       out('');
     },

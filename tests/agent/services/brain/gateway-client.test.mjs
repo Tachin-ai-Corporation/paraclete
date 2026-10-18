@@ -45,6 +45,18 @@ test('a task message leads with the stable sections and ends with the task', () 
   assert.doesNotMatch(text, /\[object Object\]/);
 });
 
+test('a task names its mission id and the files shared with the request, each with the command that fetches it', () => {
+  const text = renderTaskMessage({
+    instruction: 'Turn the PDF into a Word document', _missionId: 'w-1',
+    _sharedFiles: [{ name: 'q3 report.pdf', size: 2048, gcsPath: 'files/in/u-1760000000000-1a2b3c4d/q3 report.pdf' }],
+  }, { missionDir: (id) => `/var/lib/paraclete/missions/${id}` });
+  assert.match(text, /This mission's id is `w-1`\./);
+  assert.match(text, /## Files shared with this request/);
+  assert.match(text, /- q3 report\.pdf \(2048 bytes\): `file-get --mission w-1 'files\/in\/u-1760000000000-1a2b3c4d\/q3 report\.pdf'`/);
+  assert.ok(text.indexOf('## Files shared with this request') < text.indexOf('## Task'), 'before the task');
+  assert.doesNotMatch(renderTaskMessage({ instruction: 'x', _missionId: 'w-2', _sharedFiles: [] }, { missionDir: (id) => `/m/${id}` }), /Files shared/);
+});
+
 test('a recall task carries no mission sections', () => {
   const text = renderTaskMessage({ instruction: 'Recall', accept_criteria: 'a packet' });
   assert.equal(text, `${BRAIN_MARKER}\n\n## Task\nRecall\n\n## Acceptance Criteria\na packet`);

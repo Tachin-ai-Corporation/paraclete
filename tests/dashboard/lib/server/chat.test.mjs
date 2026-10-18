@@ -15,6 +15,9 @@ import { appendTurn, encodeResourceName, threadKeyFor } from '../../../../agent/
 import { createDashboardInbox } from '../../../../agent/services/ears/dashboard-inbox.mjs';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import { TERMINAL_STATUSES } from '../../../../agent/work/work-schema.mjs';
+import { dedupKey } from '../../../../agent/services/ears/inbound-gate.mjs';
+import { completeUpload, startUpload } from '../../../../dashboard/lib/server/uploads.mjs';
+import { startWithBucket } from './bucket-fakes.mjs';
 
 const ADA = { email: 'ada@example.com', role: 'member' };
 const ZOE = { email: 'zoe@example.com', role: 'admin' };
@@ -150,7 +153,7 @@ test('each user reads only their own thread, newest last, with the agent replies
   assert.equal(reply.timestamp, at(30).toISOString());
   assert.deepEqual(reply.attachments, [
     { name: 'report.docx', size: 2048, gcsPath: 'files/out/w-1/report.docx', downloadable: true },
-    { name: 'notes.md', size: 10, gcsPath: 'files/in/u-1/notes.md', downloadable: false },
+    { name: 'notes.md', size: 10, gcsPath: 'files/in/u-1/notes.md', downloadable: true },
   ]);
 
   assert.deepEqual((await listMessages(runtime, { user: ZOE })).messages.map((m) => m.text), ['Something private']);
@@ -247,8 +250,107 @@ test('earsWouldDrop reads the cooldown and the dedup window from the contracts v
   assert.equal(earsWouldDrop('hi', [said('hello', 0)], at(1).getTime(), ears, 'Paraclete').status, 429);
   assert.equal(earsWouldDrop('Hello', [said('hello', 0), said('later', 20)], at(29).getTime(), ears, 'Paraclete').status, 409);
   assert.equal(earsWouldDrop('hello', [said('hello', 0)], at(31).getTime(), ears, 'Paraclete'), null);
-  // A message that carried files is a different message to the ears.
-  assert.equal(earsWouldDrop('hello', [said('hello', 0, [{ gcsPath: 'files/in/u/a.pdf' }])], at(10).getTime(), ears, 'Paraclete'), null);
+  // A message that carried files is a different message to the ears, and so is one carrying other files.
+  const pdf = { gcsPath: 'files/in/u-1-0a1b2c3d/a.pdf' };
+  const csv = { gcsPath: 'files/in/u-2-0a1b2c3d/b.csv' };
+  assert.equal(earsWouldDrop('hello', [said('hello', 0, [pdf])], at(10).getTime(), ears, 'Paraclete'), null);
+  assert.equal(earsWouldDrop('hello', [said('hello', 0)], at(10).getTime(), ears, 'Paraclete', [pdf]), null);
+  assert.equal(earsWouldDrop('hello', [said('hello', 0, [pdf])], at(10).getTime(), ears, 'Paraclete', [csv]), null);
+  // The same text with the same files, in any order, is the ears' duplicate: their own dedup key agrees.
+  assert.equal(earsWouldDrop('Hello', [said('hello', 0, [pdf, csv])], at(10).getTime(), ears, 'Paraclete', [csv, pdf]).status, 409);
+  const msg = (attachments) => ({ sender: 'ada@example.com', address: { channel: 'dashboard', thread: 't' }, text: 'hello', attachments });
+  assert.equal(dedupKey(msg([pdf, csv])), dedupKey(msg([csv, pdf])));
+  assert.notEqual(dedupKey(msg([pdf])), dedupKey(msg([csv])));
+  assert.equal(earsWouldDrop('', [said('', 0, [pdf])], at(10).getTime(), ears, 'Paraclete', [pdf]).status, 409);
+});
+
+/** A dashboard on the bucket fake, and a completed upload by `user` of a file with `body`. */
+async function withUploads(t) {
+  const env = await startWithBucket(t);
+  async function upload(user, name, body) {
+    const started = await startUpload(env.runtime, { user, name, size: Buffer.byteLength(body), now: T0 });
+    await env.put(started.gcs_path, body, started.headers['Content-Type']);
+    return completeUpload(env.runtime, { user, id: started.upload_id, gcs_path: started.gcs_path, now: T0 });
+  }
+  return { ...env, upload };
+}
+
+test('a message carries the files its sender uploaded: stored as the ears read them, and each upload marked used by it', async (t) => {
+  const { runtime, dash, upload } = await withUploads(t);
+  const brief = await upload(ADA, 'brief.pdf', '%PDF-1.7 brief');
+  const data = await upload(ADA, 'Q3 data.csv', 'a,b\n1,2\n');
+
+  const { message } = await sendMessage(runtime, {
+    user: ADA, text: 'Turn these into a report', now: at(1),
+    // The browser's copy of name and size is ignored; the records say what the files are.
+    attachments: [{ ...brief, name: 'other.exe' }, { gcsPath: data.gcsPath }],
+  });
+  assert.deepEqual(message.attachments, [{ ...brief, downloadable: true }, { ...data, downloadable: true }]);
+  const stored = await dash.doc(`messages/${message.id}`);
+  assert.deepEqual(stored.attachments, [brief, data]);
+  for (const file of [brief, data]) {
+    const uploadId = file.gcsPath.split('/')[2];
+    assert.equal((await dash.doc(`files/${uploadId}`)).message_id, message.id);
+  }
+
+  const inbox = createDashboardInbox({ db: runtime.db, collections: COLLECTIONS });
+  const [inbound] = await inbox.poll();
+  assert.equal(inbound.text, 'Turn these into a report');
+  assert.deepEqual(inbound.attachments, [brief, data]);
+
+  // Sent once, an upload cannot ride on another message.
+  await assert.rejects(sendMessage(runtime, { user: ADA, text: 'again', attachments: [brief], now: at(10) }), (err) => err.status === 409);
+});
+
+test('a message may be files alone; only the sender\'s own completed uploads may go with it', async (t) => {
+  const { runtime, dash, upload } = await withUploads(t);
+  const mine = await upload(ADA, 'photo.png', 'PNG');
+  const zoes = await upload(ZOE, 'zoe.txt', 'private');
+
+  const { message } = await sendMessage(runtime, { user: ADA, text: null, attachments: [mine], now: at(1) });
+  assert.equal(message.text, '');
+  assert.deepEqual((await dash.doc(`messages/${message.id}`)).attachments, [mine]);
+  const inbox = createDashboardInbox({ db: runtime.db, collections: COLLECTIONS });
+  assert.deepEqual((await inbox.poll()).map((m) => [m.text, m.attachments.length]), [['', 1]], 'the ears take a files-only message in');
+
+  await assert.rejects(sendMessage(runtime, { user: ADA, text: 'look', attachments: [zoes], now: at(10) }), (err) => err.status === 403);
+  await assert.rejects(sendMessage(runtime, { user: ADA, text: '   ', attachments: [], now: at(20) }), (err) => err.status === 400 && /empty/.test(err.message));
+  await assert.rejects(sendMessage(runtime, { user: ADA, text: 42, attachments: [mine], now: at(30) }), (err) => err.status === 400);
+  await assert.rejects(sendMessage(runtime, { user: ADA, text: 'x', attachments: [{ gcsPath: 'files/out/w-1/report.docx' }], now: at(40) }), (err) => err.status === 400);
+  // Nothing was written for the refused sends, and Zoe's upload is still hers to send.
+  assert.equal((await listMessages(runtime, { user: ADA })).messages.length, 1);
+  assert.equal((await dash.doc(`files/${zoes.gcsPath.split('/')[2]}`)).message_id, null);
+});
+
+test('two sends racing for the same upload: one carries it, the other is refused and writes nothing', async (t) => {
+  const { runtime, upload } = await withUploads(t);
+  const file = await upload(ADA, 'once.pdf', '%PDF once');
+  // Both read the upload unused before either commits: the second commit's precondition fails.
+  const results = await Promise.allSettled([
+    sendMessage(runtime, { user: ADA, text: 'first', attachments: [file], now: at(1) }),
+    sendMessage(runtime, { user: ADA, text: 'second', attachments: [file], now: at(60) }),
+  ]);
+  assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
+  assert.equal(results.find((r) => r.status === 'rejected').reason.status, 409);
+  assert.equal((await listMessages(runtime, { user: ADA })).messages.length, 1);
+});
+
+test('an upload taken by someone else between the check and the send fails the whole send, and writes nothing', async (t) => {
+  const { runtime, dash, upload } = await withUploads(t);
+  const file = await upload(ADA, 'once.pdf', '%PDF once');
+  const record = `files/${file.gcsPath.split('/')[2]}`;
+  // The read of recent messages comes after the uploads were checked: a mission takes the file in then.
+  const db = {
+    ...runtime.db,
+    query: async (...args) => {
+      await dash.seed({ [record]: { ...(await dash.doc(record)), mission_id: 'w-1' } });
+      return runtime.db.query(...args);
+    },
+  };
+  await assert.rejects(sendMessage({ ...runtime, db }, { user: ADA, text: 'here', attachments: [file], now: at(1) }),
+    (err) => err.status === 409 && /changed/.test(err.message));
+  assert.equal((await listMessages(runtime, { user: ADA })).messages.length, 0);
+  assert.equal((await dash.doc(record)).message_id, null);
 });
 
 test("presence shows the unfinished missions this thread asked for, and nobody else's", async (t) => {

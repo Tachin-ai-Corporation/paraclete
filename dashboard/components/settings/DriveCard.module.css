@@ -1,0 +1,31 @@
+/* dashboard/components/settings/DriveCard.module.css: the Setup tab's Drive item: the address, Test
+   Drive with its findings, and the output folder form. The address and fact list reuse
+   Settings.module.css. */
+
+.card > * + * { margin-top: var(--space-3); }
+
+.part { max-width: 720px; }
+.part > * + * { margin-top: var(--space-2); }
+.part h4 { font-size: 13.5px; font-weight: 600; color: var(--text-primary); }
+
+.head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+
+.result {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.result > * + * { margin-top: var(--space-3); }
+
+.sample { padding-left: 1.2em; font-size: 13px; color: var(--text-secondary); }
+
+.advice ul { padding-left: 1.2em; font-size: 13.5px; color: var(--text-primary); }
+.advice h4 { margin-bottom: var(--space-1); }
+
+.folderForm { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
+.folderForm :global(.input) { flex: 1 1 280px; width: auto; }
+
+/* The checklist colors every paragraph in an item (Settings.module.css .checkItem p); these keep their own. */
+.card p:global(.error-text) { color: var(--danger); }
+.card p:global(.muted) { color: var(--text-muted); }

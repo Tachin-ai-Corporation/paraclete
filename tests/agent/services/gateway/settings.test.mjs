@@ -56,6 +56,7 @@ test('the contracts map onto every gateway setting, and the turn loop keeps each
   for (const key of ['verbatim_chars', 'digest_target_chars', 'digest_max_chars', 'store_ttl_days', 'arg_chars', 'terminal_arg_chars']) {
     assert.equal(resolved.toolRecord[key], contracts.tools.record[key], key);
   }
+  assert.deepEqual(resolved.images, { kept: contracts.tools.images_kept, geminiPlacement: contracts.vertex.gemini_tool_image_placement });
   assert.deepEqual(s.session, { enabled: contracts.session.enabled, excludedOrgans: contracts.session.excluded_organs });
   assert.equal(s.maxBodyBytes, g.max_body_bytes);
 });
@@ -83,6 +84,8 @@ test('tool and session limits come from the contracts', () => {
     timeoutMs: contracts.tools.timeout_ms,
     maxBufferBytes: contracts.tools.max_buffer_bytes,
     binaryGuard: true,
+    imageMaxBytes: contracts.tools.image_max_bytes,
+    imageMaxSide: contracts.tools.image_max_side,
   });
   assert.equal(toolLimits({ ...contracts.tools, binary_guard: false }).binaryGuard, false);
   assert.deepEqual(sessionLimits(contracts), {

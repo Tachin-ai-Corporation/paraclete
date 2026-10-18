@@ -6,12 +6,14 @@
 //
 // A tool result is context. Every result passes through capResult(), so no single call can flood an
 // organ's window, and a cut is always announced: a silent cut reads as "I saw everything" and
-// produces confident wrong answers.
+// produces confident wrong answers. viewImage is the one tool whose result also carries an image, as
+// `{ result, images }`: the text goes to the tool log, the image only to the model (turn-loop.mjs).
 
 import { exec as execCb, execFile as execFileCb } from 'node:child_process';
 import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, isAbsolute, resolve, relative, basename, delimiter } from 'node:path';
 import { getAccessToken as metadataAccessToken } from '../auth/metadata-token.mjs';
+import { sniffImage, imageDimensions } from './images.mjs';
 
 /** Result and process limits. Defaults; callers pass the contracts values. */
 export const DEFAULT_TOOL_LIMITS = Object.freeze({
@@ -21,6 +23,11 @@ export const DEFAULT_TOOL_LIMITS = Object.freeze({
   timeoutMs: 120_000,
   maxBufferBytes: 4 * 1024 * 1024,
   binaryGuard: true,
+  // Claude on Vertex AI takes an image of at most 5 MB base64-encoded, and 3,750,000 bytes encode to
+  // 5,000,000. Gemini's limit on inline data (7 MB) is looser; the transcript must suit both.
+  imageMaxBytes: 3_750_000,
+  // The longest side Claude accepts; a larger image is rejected, not scaled.
+  imageMaxSide: 8000,
 });
 
 /** Working-memory sizes. Defaults; callers pass the contracts values. */
@@ -31,11 +38,15 @@ export const DEFAULT_MEMORY_LIMITS = Object.freeze({
   hardCapChars: 8_000,
 });
 
-/** The tools of an organ that executes: a shell, files and directories. */
-export const OPEN_TOOLSET = Object.freeze(['runCommand', 'readFile', 'writeFile', 'listDir']);
+/** The tools of an organ that executes: a shell, files, directories, and eyes for images. */
+export const OPEN_TOOLSET = Object.freeze(['runCommand', 'readFile', 'writeFile', 'listDir', 'viewImage']);
 
-/** The verifier reads evidence and reports a verdict; it changes nothing. */
-export const CEREBELLUM_TOOLSET = Object.freeze(['readFile', 'report_pass', 'report_fail']);
+/**
+ * The verifier reads evidence and reports a verdict; it changes nothing. It views images because a
+ * visual deliverable (a chart, a rendered slide, a screenshot) is verified by looking at it, not by
+ * trusting the executor's description of it.
+ */
+export const CEREBELLUM_TOOLSET = Object.freeze(['readFile', 'viewImage', 'report_pass', 'report_fail']);
 
 /**
  * The memory boundary. Memory is a closed set: working memory, Core Memory and the Deep Truths. When
@@ -69,27 +80,29 @@ export function capResult(text, what = 'output', howToNarrow = DEFAULT_NARROWING
     + `You have NOT seen the whole result. ${howToNarrow} …]\n\n${tail}`;
 }
 
-// Magic bytes, most specific first. Each entry names a route that does work, so a refusal is a
-// signpost rather than a dead end.
+// Magic bytes, most specific first; images are recognized in images.mjs. Each entry names a route
+// that does work, so a refusal is a signpost rather than a dead end. `<path>` in a route is replaced
+// with the path the organ gave.
 const CONVERT = 'Use the files skill to convert it to text, then read the converted file.';
+const VIEW = 'Look at it with the viewImage tool, which shows you the image itself, as pixels.';
+const CONVERT_THEN_VIEW = 'Convert it to PNG with the files skill (`file-convert <path> png`), then look at the PNG with the viewImage tool.';
 const BINARY_TYPES = [
   { kind: 'PDF', magic: Buffer.from('%PDF'), route: CONVERT },
   { kind: 'ZIP/OOXML (docx, xlsx, pptx)', magic: Buffer.from([0x50, 0x4b, 0x03, 0x04]), route: CONVERT },
-  { kind: 'PNG image', magic: Buffer.from([0x89, 0x50, 0x4e, 0x47]), route: `${CONVERT} Images are read with OCR.` },
-  { kind: 'JPEG image', magic: Buffer.from([0xff, 0xd8, 0xff]), route: `${CONVERT} Images are read with OCR.` },
-  { kind: 'GIF image', magic: Buffer.from('GIF8'), route: `${CONVERT} Images are read with OCR.` },
   { kind: 'gzip archive', magic: Buffer.from([0x1f, 0x8b]), route: 'Decompress it first (gunzip), then read the extracted text.' },
 ];
 
 /**
- * Whether a buffer is not text: magic bytes first, then a control-character heuristic over the first
- * 4 KB for formats the table doesn't name.
+ * Whether a buffer is not text: an image or a known format by its magic bytes, then a
+ * control-character heuristic over the first 4 KB for formats the table doesn't name.
  *
  * @param {Buffer} buf
  * @returns {{kind: string, route: string}|null} null when the content is text
  */
 export function sniffBinary(buf) {
   if (!buf || buf.length === 0) return null;
+  const image = sniffImage(buf);
+  if (image) return { kind: `${image.kind} image`, route: image.viewable ? VIEW : CONVERT_THEN_VIEW };
   const head = buf.subarray(0, Math.min(buf.length, 4096));
   for (const t of BINARY_TYPES) {
     if (head.length >= t.magic.length && head.subarray(0, t.magic.length).equals(t.magic)) {
@@ -103,7 +116,7 @@ export function sniffBinary(buf) {
     else if (b < 9 || (b > 13 && b < 32)) ctrl++;
   }
   if (nul > 0 || ctrl / head.length > 0.1) {
-    return { kind: 'binary (non-text bytes)', route: `If it is a document or an image: ${CONVERT}` };
+    return { kind: 'binary (non-text bytes)', route: `If it is a document: ${CONVERT} If it is an image in another format: ${CONVERT_THEN_VIEW}` };
   }
   return null;
 }
@@ -351,7 +364,7 @@ export function createToolRegistry({
           const bin = sniffBinary(buf);
           if (bin) {
             return { error: `ERROR: ${path} is ${bin.kind}, not text: its bytes are unreadable as characters and would consume the whole context window.\n`
-              + `Do this instead: ${bin.route}\n`
+              + `Do this instead: ${bin.route.replaceAll('<path>', String(path))}\n`
               + 'This is a routing problem, not a dead end: the content IS reachable by the route above.' };
           }
         }
@@ -432,6 +445,7 @@ export function createToolRegistry({
     readFile,
     writeFile,
     listDir,
+    viewImage: imageTool({ resolvePath, limits, logger }),
     report_pass: reportPass,
     report_fail: reportFail,
   };
@@ -450,6 +464,80 @@ export function createToolRegistry({
       return Object.fromEntries(names.map((n) => [n, tools[n]]));
     },
   };
+}
+
+/**
+ * viewImage: reads an image file and returns it for the model to look at. It refuses, with a route,
+ * whatever a provider would reject: a type not every model takes, more bytes than a provider accepts
+ * in one image, too many pixels, a header that cannot be read. A provider that rejects an image
+ * rejects the whole request, and the fallback model would be sent the same transcript.
+ */
+function imageTool({ resolvePath, limits, logger }) {
+  const maxBytes = limits.imageMaxBytes;
+  const maxSide = limits.imageMaxSide;
+  const shrink = (p) => `Make a smaller copy with the files skill (\`file-convert ${p} jpg\`: a JPEG of a photo or a screenshot is usually several times smaller than a PNG; add \`--max-side 2000\` to shrink it as well, since a viewable image is at most ${maxSide} px on its longest side), then view the copy.`;
+  return {
+    name: 'viewImage',
+    description: 'Look at an image file. It is sent to you as pixels, so you see what a person would see: a chart, a screenshot, a photo, a rendered page or slide. '
+      + `Takes PNG, JPEG or WebP, up to ${megabytes(maxBytes)} and ${maxSide} px on a side. `
+      + 'A PDF page, a slide or a document is not an image: render it to PNG with the files skill first (`file-convert <path> png`), then view the PNG. Convert a GIF the same way. '
+      + 'For a larger image, view a smaller copy made with the files skill (`file-convert <path> jpg`, adding `--max-side 2000` to shrink it). '
+      + 'Only the images you viewed most recently stay attached as the turn goes on, so note what you see.',
+    schema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: 'Absolute or workspace-relative path of a PNG, JPEG or WebP file' } },
+      required: ['path'],
+    },
+    execute: async ({ path }) => {
+      const shown = String(path ?? '');
+      const tooLarge = (bytes) => `ERROR: ${shown} is ${bytes.toLocaleString('en-US')} bytes; viewImage takes images up to `
+        + `${maxBytes.toLocaleString('en-US')} bytes (${megabytes(maxBytes)}), the most a model accepts in one image. ${shrink(shown)}`;
+      let buf;
+      try {
+        const target = resolvePath(shown);
+        const stat = statSync(target);
+        if (stat.isDirectory()) return { error: `ERROR: ${shown} is a directory, not an image file. Give the path of one image file.` };
+        // Size first: an oversized file is refused without reading it into memory.
+        if (stat.size > maxBytes) return { error: tooLarge(stat.size) };
+        buf = readFileSync(target);
+      } catch (err) {
+        return { error: `ERROR: ${err.message}` };
+      }
+      if (buf.length > maxBytes) return { error: tooLarge(buf.length) };
+      const image = sniffImage(buf);
+      if (!image) return { error: notAnImage(shown, buf) };
+      if (!image.viewable) {
+        return { error: `ERROR: ${shown} is a ${image.kind} image, which not every model can view. Convert it to PNG with the files skill (\`file-convert ${shown} png\`), then view the PNG.` };
+      }
+      const dims = imageDimensions(buf, image.mimeType);
+      if (!dims) {
+        return { error: `ERROR: ${shown} starts like a ${image.kind} image, but its header is damaged or cut off, so a model would reject it. Re-create the image, or convert it with the files skill (\`file-convert ${shown} png\`) and view the result.` };
+      }
+      if (Math.max(dims.width, dims.height) > maxSide) {
+        return { error: `ERROR: ${shown} is ${dims.width}x${dims.height} px; viewImage takes images up to ${maxSide} px on a side. ${shrink(shown)}` };
+      }
+      logger('INFO', `viewImage → ${shown} ${image.kind} ${dims.width}x${dims.height} ${buf.length}b`);
+      return {
+        result: `Viewing ${shown}: ${image.kind}, ${dims.width}x${dims.height} px, ${buf.length} bytes. The image is attached to this result.`,
+        images: [{ mimeType: image.mimeType, data: buf.toString('base64'), name: shown }],
+      };
+    },
+  };
+}
+
+/** The refusal for a file that is not a known image, with the route that fits what it is. */
+function notAnImage(shown, buf) {
+  const bin = sniffBinary(buf);
+  if (!bin) return `ERROR: ${shown} is text, not an image: read it with readFile.`;
+  if (bin.kind === 'PDF' || bin.kind.startsWith('ZIP/OOXML')) {
+    return `ERROR: ${shown} is ${bin.kind}, not an image. Render the page or slide you need to PNG with the files skill (\`file-convert ${shown} png\`), then view the PNG.`;
+  }
+  return `ERROR: ${shown} is not a PNG, JPEG or WebP image: its first bytes match none of them. If it is an image in another format, convert it to PNG with the files skill (\`file-convert ${shown} png\`) and view the PNG.`;
+}
+
+/** Bytes as megabytes, for a person or a model to read: 3750000 is '3.75 MB'. */
+function megabytes(bytes) {
+  return `${(bytes / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 2 })} MB`;
 }
 
 function memoryTools({ memory, binDir, limits, cap, childEnv, execFailure, logger, now }) {

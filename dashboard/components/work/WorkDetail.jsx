@@ -17,6 +17,7 @@ import { ExpandableText, TurnOutput } from './ExpandableText.jsx';
 import { TaskList, VerdictCard, WorkPlan } from './WorkPlan.jsx';
 import { WorkHistory } from './WorkHistory.jsx';
 import { WorkFacts, WorkInternals } from './WorkInternals.jsx';
+import { MissionFiles } from './MissionFiles.jsx';
 import { OrganName, StatusBadge, TYPE_LABEL, requesterText } from './status.jsx';
 import styles from './WorkDetail.module.css';
 
@@ -294,6 +295,8 @@ export function WorkDetail({ id }) {
         )}
 
         <Result envelope={envelope} />
+
+        {envelope.type === 'M' && <MissionFiles id={id} settled={Boolean(envelope.settled)} />}
 
         {view.plan && (
           <section className={styles.block}>

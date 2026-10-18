@@ -7,7 +7,8 @@ Every test in the repo. `npm test` runs them all with Node's built-in test runne
 ## Layout
 
 Tests mirror the source tree. The tests for `agent/work/approvals.mjs` live in
-`tests/agent/work/approvals.test.mjs`; the dashboard's in `tests/dashboard/`.
+`tests/agent/work/approvals.test.mjs`; the dashboard's in `tests/dashboard/`; a skill's commands in
+`tests/skills/<skill>/` (the older skills' commands are still in `content/skill-commands.test.mjs`).
 
 | Path | Tests |
 |---|---|
@@ -23,5 +24,8 @@ Tests mirror the source tree. The tests for `agent/work/approvals.mjs` live in
 - Use `node:test` and `node:assert/strict`. No test framework to install.
 - Test behavior through a module's exports. When something is hard to test, that is a sign it should
   be split into a pure function.
+- The file toolchain (pandoc, LibreOffice, Chromium...) is only on the VM: tests inject a fake program
+  runner. `tests/agent/files/toolchain-smoke.test.mjs` runs the real tools, and is skipped unless
+  `PARACLETE_TOOLCHAIN_TESTS=1`.
 - A test that needs Google Cloud doesn't belong here. Live checks happen on a dev instance; see
   [DEVELOPING.md](../DEVELOPING.md) section 7.

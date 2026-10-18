@@ -26,7 +26,8 @@
     "anthropic_cache_message_breakpoints": true,
     "anthropic_session_affinity": true,
     "gemini_explicit_cache": false,
-    "gemini_explicit_cache_ttl_seconds": 3600
+    "gemini_explicit_cache_ttl_seconds": 3600,
+    "gemini_tool_image_placement": "function-response"
   },
 
   "gateway": {
@@ -58,6 +59,10 @@
     "timeout_ms": 120000,
     "max_buffer_bytes": 4194304,
     "binary_guard": true,
+    "_images_comment": "viewImage: an image the organ looks at is attached to the next model call. image_max_bytes is the largest file (Claude on Vertex allows 5 MB base64-encoded, which is 3.75 MB raw), image_max_side the longest side in pixels; images_kept is how many of the most recent images a turn keeps attached.",
+    "image_max_bytes": 3750000,
+    "image_max_side": 8000,
+    "images_kept": 3,
     "record": {
       "_comment": "What the tool log keeps of each result for everyone after the organ that ran it. Up to verbatim_chars is kept word for word; a larger result is stored in full in tool_results (expiring after store_ttl_days) and replaced in the log by a digest plus its reference. Never cut silently.",
       "verbatim_chars": 4000,
@@ -225,9 +230,13 @@
   },
 
   "files": {
-    "_comment": "Files going out to people and coming in from them, in the instance's bucket under prefix (out/ and in/).",
+    "_comment": "Files going out to people and coming in from them, in the instance's bucket under prefix (out/ and in/). max_mb caps a file the agent hands back; max_upload_mb caps one a person uploads from the dashboard (straight to the bucket through a signed URL, valid signed_url_minutes); fetch_max_mb caps what file-get downloads from a link. tool_timeout_seconds bounds one conversion (LibreOffice, pandoc, Chromium); it stays under the shell tool's tools.timeout_ms, which would otherwise stop the command first.",
     "prefix": "files/",
     "max_mb": 20,
+    "max_upload_mb": 100,
+    "fetch_max_mb": 100,
+    "signed_url_minutes": 15,
+    "tool_timeout_seconds": 110,
     "inbox_retention_days": 30
   },
 
