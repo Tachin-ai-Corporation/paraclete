@@ -216,12 +216,21 @@ Phase 9's own handoff items are done: the dashboard's build and deploy settings 
 `dashboard` block, which the installer and the upgrade button both read, and the brain stamps
 `platform_version` on every envelope it creates from `release.json`.
 
-- **To check live:** the Cloud Run v2 update of a service gcloud created (v2 may refuse system
-  annotations sent back as read); Vertex AI's wording when Anthropic's terms are not accepted (the
-  Test's fixes follow the expected wording); the newest Opus answering the Test with 16 output tokens
-  while it thinks, and a Claude tool turn with its thinking sent back; whether the newer Opus models
-  are served in `vertex.anthropic_location` (`us-east5`) or need `global`; the migrations running as
-  the `paraclete` user on the VM.
+Checked live (2026-10-19): the first two releases published through `dev/release.mjs` and the release
+workflow (`v2026.10.19.1.1`, `v2026.10.19.1.2`); the dev instance moved from the first to the second
+with the System tab's Install: the VM first (its migration step ran, with nothing to migrate), then
+Cloud Build, then the Cloud Run v2 update, which kept IAP, the service's size, its account and every
+environment value but the release and commit. The card reloaded onto the new dashboard by itself.
+The Claude Test ran from the VM: every candidate answered 404 in `us-east5`, the project having no
+Claude model enabled.
+
+- **Claude, deferred.** The owner chose to stay on Gemini for now and revisit Claude later, so turning
+  Claude on and off is not yet checked live. When it is: enable a Claude Opus model in Model Garden,
+  run the Test, turn Claude on, and check a tool turn on the newer Opus models (the gateway sends them
+  no temperature and sends their thinking back with the tool call, both untested against the real
+  API); Vertex AI's wording when Anthropic's terms are not accepted (the Test's fixes follow the
+  expected wording); whether the newer models are served in `vertex.anthropic_location` (`us-east5`)
+  or need `global`.
 - **GitHub's rate limit.** Unauthenticated GitHub allows 60 requests an hour per address, and Cloud Run
   shares its outbound addresses with other tenants. The release check fails gracefully and keeps the
   last answer; an optional GitHub token secret would lift the limit.

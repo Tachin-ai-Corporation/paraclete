@@ -335,7 +335,7 @@ done.
 8. **Roles** (done and checked live; Chat answers in spaces, not yet in direct messages). The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
    Chat channel.
    *Exit:* `generic`, one Workspace role and one other role each install and pass a smoke mission.
-9. **Models and upgrades** (code done; the live check is next). The Claude switch, the release workflow, release detection, the upgrade
+9. **Models and upgrades** (done; the upgrade checked live, Claude deferred: the agent runs on Gemini until it is revisited). The Claude switch, the release workflow, release detection, the upgrade
    button, and migrations.
    *Exit:* turn Claude on and off; upgrade a dev instance from one release to the next from the
    dashboard.
