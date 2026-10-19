@@ -17,10 +17,12 @@
 // or the mention that added the agent to a space, is read. A message read twice is still taken in
 // once: the intake write is create-only (intake.mjs).
 //
-// Who may talk to the agent here: anyone in the organization who can reach its account. A space that
-// admits people outside the organization (a direct message with one included) is not read at all, and
-// is counted in status().external. Which of the senders are dashboard users, who alone may approve
-// work from Chat, is the brain's check on source_meta.sender_email.
+// Who may talk to the agent here: anyone who can reach its account, in every space it is in. A space
+// that admits people outside the organization is read like any other (the owner's choice: people
+// work with the agent in such spaces); its outside members can ask the agent too and see its answers
+// there. Those spaces are counted in status().external, so the dashboard can say so. Which of the
+// senders are dashboard users, who alone may approve work from Chat, is the brain's check on
+// source_meta.sender_email.
 //
 // Chat API quota: one spaces.list per poll, and messages.list only for spaces whose newest message is
 // newer than their cursor (every space at least every five minutes). A 429 stops the round and the
@@ -155,7 +157,7 @@ export function createChatInbox({
     for (const space of listed) {
       if (!space.external || warnedExternal.has(space.name)) continue;
       warnedExternal.add(space.name);
-      log('INFO', 'Chat: not reading a space open to people outside the organization', { space: space.name, type: space.spaceType });
+      log('INFO', 'Chat: a space open to people outside the organization; its outside members see the agent\'s answers', { space: space.name, type: space.spaceType });
     }
     spaces = listed;
     listedAt = new Date(now()).toISOString();
@@ -305,7 +307,7 @@ export function createChatInbox({
     if (sweep) lastSweep = now();
     const messages = [];
     for (const space of spaces) {
-      if (space.external || !due(space, sweep)) continue;
+      if (!due(space, sweep)) continue;
       try {
         messages.push(...await pollSpace(space, token));
       } catch (err) {
@@ -341,13 +343,12 @@ export function createChatInbox({
 
   /** What the health file reports. */
   function status() {
-    const internal = spaces.filter((s) => !s.external);
     return {
       ready,
       tokenError,
-      spaces: internal.filter((s) => s.spaceType !== DIRECT_MESSAGE).length,
-      directMessages: internal.filter((s) => s.spaceType === DIRECT_MESSAGE).length,
-      external: spaces.length - internal.length,
+      spaces: spaces.filter((s) => s.spaceType !== DIRECT_MESSAGE).length,
+      directMessages: spaces.filter((s) => s.spaceType === DIRECT_MESSAGE).length,
+      external: spaces.filter((s) => s.external).length,
       errors: lastErrors,
       rateLimited,
       agentUserId,

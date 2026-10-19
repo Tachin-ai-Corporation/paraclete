@@ -97,7 +97,7 @@ test('Chat waiting for a first message: everyone sees it and the note, which any
     assert.equal(view.last_check.ready, true);
     assert.equal(chat.ok, true);
     assert.equal(chat.pending, true);
-    assert.match(chat.note, /Send the agent a direct message in Google Chat/);
+    assert.match(chat.note, /Add the agent to a space in Google Chat and @mention it/);
   }
 });
 

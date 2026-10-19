@@ -61,7 +61,7 @@ export function chatChannelView(ears, mouth = null) {
   const reads = [count(ears.spaces, 'space'), count(ears.direct_messages, 'direct message')].join(' and ');
   facts.push({ label: 'Reads', value: reads });
   if (Number(ears.external_spaces) > 0) {
-    facts.push({ label: 'Not read', value: `${count(ears.external_spaces, 'space')} open to people outside the organization` });
+    facts.push({ label: 'Open to outsiders', value: `${count(ears.external_spaces, 'space')} of them: people outside the organization see the agent's answers there` });
   }
   facts.push({ label: 'Dashboard users known in Chat', value: String(Number(ears.known_users) || 0) });
   if (ears.last_ok_at) facts.push({ label: 'Last read', value: ears.last_ok_at, at: ears.last_ok_at });

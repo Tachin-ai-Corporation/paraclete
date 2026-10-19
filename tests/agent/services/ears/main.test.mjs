@@ -153,7 +153,7 @@ test('with a Workspace account, Chat waits for its token, then takes in mentions
   const h = health(t.root);
   assert.deepEqual({ ...h.gchat, last_poll_at: undefined, last_ok_at: undefined }, {
     state: 'ready', account: WORKSPACE.account, last_poll_at: undefined, last_ok_at: undefined, last_error: null,
-    spaces: 1, direct_messages: 1, external_spaces: 1, known_users: 1, agent_user_id: null, rate_limited: false, taken_in: 2,
+    spaces: 2, direct_messages: 1, external_spaces: 1, known_users: 1, agent_user_id: null, rate_limited: false, taken_in: 2,
   });
   assert.equal(saved.at(-1).cursors['spaces/A'], at(1));
   assert.deepEqual(saved.at(-1).people, { 'users/1': 'ana@example.com' });

@@ -153,7 +153,7 @@ test('an account nobody has written to in Chat: Chat took the token, works, and 
   assert.equal(apis.chat.ok, true);
   assert.equal(apis.chat.pending, true);
   assert.equal(apis.chat.error, null);
-  assert.match(apis.chat.note, /Send the agent a direct message in Google Chat/);
+  assert.match(apis.chat.note, /Add the agent to a space in Google Chat and @mention it/);
   assert.ok(apis.chat.note.includes(`chat.googleapis.com/hangouts-chat?project=${PROJECT}`), 'the Chat app record, should it stay this way');
   assert.equal(result.ready, true, 'nothing is broken: the account can be saved without a warning');
   const self = google.calls.find((c) => c.api === 'chatSelf');

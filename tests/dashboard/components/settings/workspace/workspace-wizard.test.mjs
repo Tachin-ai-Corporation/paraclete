@@ -71,7 +71,7 @@ test('the steps follow the address, the delegation the test found, Chat, and the
   waiting.apis.find((entry) => entry.api === 'chat').pending = true;
   assert.deepEqual(stepStates({ account: ACCOUNT, setup: {}, check: waiting }), { user: 'done', delegation: 'done', chat: 'todo', test: 'done' },
     'Chat waiting for a first message leaves its step to do, and the test passed');
-  assert.match(accountSummary({ needed: true, account: { account: ACCOUNT }, last_check: waiting }).detail, /Chat starts once someone sends the agent a first message/);
+  assert.match(accountSummary({ needed: true, account: { account: ACCOUNT }, last_check: waiting }).detail, /Chat starts once someone adds the agent to a space and @mentions it/);
   assert.equal(accountSummary({ needed: true, account: { account: ACCOUNT }, last_check: waiting }).state, 'done');
   assert.equal(stepStates({ account: ACCOUNT, setup: { client_id_error: 'denied' }, check: null }).delegation, 'problem');
   assert.equal(stepStates({ account: ACCOUNT, setup: {}, check: check({ account: 'other@example.com' }) }).test, 'todo', 'a test of another address does not count');

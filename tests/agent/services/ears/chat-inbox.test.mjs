@@ -156,15 +156,21 @@ test('a direct message takes in every message, with no mention, and is answered 
   });
 });
 
-test('a space open to people outside the organization is never read, and is counted', async () => {
+test('a space open to people outside the organization is read like any other, and is counted', async () => {
   const t = inbox({
     spaces: [space('spaces/A'), space('spaces/X', { external: true }), dm('spaces/E', { external: true })],
-    messages: { 'spaces/A': [msg(1, 1)], 'spaces/X': [msg(2, 1, { name: 'spaces/X/messages/2' })], 'spaces/E': [] },
+    messages: {
+      'spaces/A': [msg(1, 1)],
+      'spaces/X': [msg(2, 2, { name: 'spaces/X/messages/2', thread: { name: 'spaces/X/threads/t2' } })],
+      'spaces/E': [msg(3, 3, { name: 'spaces/E/messages/3', text: 'a question from outside', thread: { name: 'spaces/E/threads/t3' } })],
+    },
   });
   await t.box.connect();
-  assert.deepEqual((await t.box.poll()).map((m) => m.id), ['spaces/A/messages/1']);
-  assert.ok(t.chat.calls.every((c) => c.url.includes('/spaces/A/')), 'no call reads an external space');
-  assert.equal(t.box.status().external, 2);
+  const got = await t.box.poll();
+  assert.deepEqual(got.map((m) => m.id), ['spaces/A/messages/1', 'spaces/X/messages/2', 'spaces/E/messages/3']);
+  assert.deepEqual(got[1].address, { channel: 'gchat', space: 'spaces/X', thread: 'spaces/X/threads/t2' }, 'answered in its thread');
+  assert.deepEqual({ spaces: t.box.status().spaces, directMessages: t.box.status().directMessages, external: t.box.status().external },
+    { spaces: 2, directMessages: 1, external: 2 });
   await t.box.poll();
   assert.equal(t.logs.filter(([, m]) => /outside the organization/.test(m)).length, 2, 'each is said once');
 });

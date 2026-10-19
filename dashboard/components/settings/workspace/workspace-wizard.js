@@ -126,7 +126,7 @@ export function accountSummary(workspace) {
   const check = workspace.last_check?.account === account ? workspace.last_check : null;
   if (!check) return { state: 'done', detail: `The agent is ${account}. It has not been tested since it was saved.`, failing: [] };
   if (check.ready && check.apis?.some((entry) => entry.pending)) {
-    return { state: 'done', detail: `The agent is ${account}, and every Workspace API answered. Chat starts once someone sends the agent a first message.`, failing: [] };
+    return { state: 'done', detail: `The agent is ${account}, and every Workspace API answered. Chat starts once someone adds the agent to a space and @mentions it.`, failing: [] };
   }
   if (check.ready) return { state: 'done', detail: `The agent is ${account}, and every Workspace API answered.`, failing: [] };
   const failing = failedApis(check).map((entry) => entry.name);

@@ -185,10 +185,35 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
   (`drive-get`, `drive-put`, `docs-create`); move them into `agent/files/`.
 - **A role move leaves things behind.** The old role's apt, npm and pip packages stay installed, and the
   working memory is not reseeded for the new role.
-- **To check live:** the Chat behaviors Google documents loosely (client-assigned ids and `requestId`
-  under user authentication, a mention posted as a user, `lastActiveTime` on thread replies,
-  `externalUserAllowed` on a direct message); Drive's Markdown import for docs-create; Meet links;
-  the Docs, Sheets and Slides probes in `workspace_check` (a 404 counted as working); npm installs of
-  the pinned firebase-tools and lighthouse under Node 24; Lighthouse with Debian's Chromium inside the
-  services' sandbox; `gcloud builds submit` as the agent with source staged in the bucket.
+- **To check live:** the Chat behaviors Google documents loosely (a mention posted as a user,
+  `lastActiveTime` on thread replies); Drive's Markdown import for docs-create; Meet links; npm
+  installs of the pinned firebase-tools and lighthouse under Node 24; Lighthouse with Debian's Chromium
+  inside the services' sandbox; `gcloud builds submit` as the agent with source staged in the bucket.
+
+## Phase 8's live check (2026-10-18)
+
+Checked on the dev instance: the devops-engineer and executive-assistant smoke missions pass (Cloud
+Run listed read-only; the agent's own calendar read as its Workspace account). The wizard's Test
+passes Drive, Docs, Sheets, Slides, Calendar and Gmail (the Docs, Sheets and Slides 404 probes hold).
+A Chat message posted by the mouth with its client-assigned id and `requestId` goes through under user
+authentication. Google Chat needed four things the code did not know, each found by swapping signers
+and accounts between this instance and an older deployment that works:
+
+- **A Chat app record in the project** (name, description, interactive features off). The wizard's
+  step 3 links to it; Google has no API for it. Messages the agent posts carry its name as a label.
+- **A first message.** Chat refuses `spaces.list` ("permission denied ... or the resource doesn't
+  exist") for a user nobody has written to, with any signer. The check now reports Chat as waiting
+  (`pending`), the ears back off and say why, and the first listing reads the hour before it, so the
+  message that brought the account into Chat is answered.
+- **Spaces, not direct messages.** An account that has never signed in reads a direct message but
+  every reply it posts there is refused; in a space the same post goes through. The wizard sends
+  admins to a space. Still open: whether one sign-in as the agent lets it answer direct messages, and
+  whether a refused direct-message answer should go to the person's dashboard chat instead (today
+  the delivery fails after its retries and the answer stays only in the work record).
+- **Spaces that admit outsiders.** The owner decided the agent reads them like any other space, as
+  the older deployment did: outside members can ask and see answers there; approvals still come only
+  from dashboard users. Their count shows on the System tab.
+
+Not yet checked live: the full loop in a space (a mention taken in and answered in its thread), and
+the generic role's smoke mission after a move back.
 

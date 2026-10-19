@@ -37,13 +37,13 @@ Not here: classifying what came in (the brain), replying (the mouth), the Addres
   (the wizard's step 3 links to the page): an app name, a description, Interactive features off.
   Nobody sees it. The agent is still a person in Chat, not a Chat app: people find it the way they
   find a colleague.
-- A first message. Google Chat lists no spaces for a user nobody has written to: until someone sends
-  the agent a direct message or adds it to a space, every listing is refused with "permission
-  denied", whatever the project or signer. The wizard's step 3 asks the admin to send one; the
-  workspace check reports Chat as waiting for it, not failed.
+- A first space. Google Chat lists no spaces for a user nobody has written to: until someone adds
+  the agent to a space (or writes to it), every listing is refused with "permission denied",
+  whatever the project or signer. The wizard's step 3 asks the admin to add the agent to a space and
+  @mention it; the workspace check reports Chat as waiting for that, not failed.
 - While Chat refuses the account (401 or 403), the Chat loop waits twice as long after each refusal,
   from 30 seconds up to five minutes, and logs the refusal once, not on every poll; a refusal it
-  shows in the health file says to send the agent a first message.
+  shows in the health file says to add the agent to a space.
 - Give the agent's Workspace user the agent's name as its name (or the start of it: "Paraclete" or
   "Paraclete Agent" for an agent called Paraclete). Until the agent has posted its first message,
   the ears recognize a mention of it by that name.
@@ -52,31 +52,36 @@ Not here: classifying what came in (the brain), replying (the mouth), the Addres
 
 | Where | What the agent reads | Where it answers |
 |---|---|---|
-| A direct message with the agent's address | Every message | In the same conversation |
-| A space or group chat the agent's account was added to | Messages that @mention the agent | In the thread of the message, mentioning the person who asked |
-| A space, group chat or direct message that admits people outside the organization | Nothing | Nowhere |
+| A space or group chat the agent's account was added to, also one that admits people outside the organization | Messages that @mention the agent | In the thread of the message, mentioning the person who asked |
+| A direct message with the agent's address | Every message | In the same conversation, once Chat lets the account post there (below) |
+
+**Direct messages.** Chat refuses every reply the agent posts in a direct message while its account
+has never signed in (seen live: the agent reads the message, and each post of its answer is refused
+with "permission denied"; posts in a space from the same account go through). An agent's account is
+a user nobody signs in as, so reach it in a space. The answer to a refused direct message is not
+lost from the record: the mouth marks the delivery failed, and the work stays in the dashboard.
 
 The agent reads a message's text. A file attached in Chat is not taken in: share it as a Drive link
 (the agent's account reads what is shared with it) or drop it into the dashboard's chat. An edited
 message is not read again.
 
-To add the agent to a space, add its address as you would a person's. A direct message, or a space
-the agent joins, is found within one poll; the message that opened it (or the mention that added the
-agent) is read. When Chat first comes online on an instance, it reads the hour before and nothing
+To add the agent to a space, add its address as you would a person's. A space the agent joins, or a
+direct message, is found within one poll; the mention that added the agent (or the message that
+opened the conversation) is read. When Chat first comes online on an instance, it reads the hour before and nothing
 older (`ears.new_space_seed: "now"`, less an hour): the first message that brought the agent's
 account into Chat is answered, old history is not replayed, and a message sent longer ago has to be
 sent again.
 
-The agent never reads a space that admits people outside the organization, a direct message with an
-outside person included, so its answers never reach anyone the dashboard could not admit. To keep
-people outside the organization from even trying, turn external chat off for the agent's account in
-the Admin console.
+A space that admits people outside the organization is read like any other: its outside members can
+ask the agent for work, and whatever the agent answers there reaches them. Approvals still come only
+from dashboard users. To keep the agent to the
+organization, turn external chat off for the agent's account in the Admin console.
 
 ### Who may do what
 
 The dashboard's users list is the authority, in Chat as in the dashboard.
 
-| | Anyone in the organization who can reach the agent in Chat | A dashboard user the agent recognizes in Chat |
+| | Anyone who can reach the agent in Chat (in a space that admits them, people outside the organization too) | A dashboard user the agent recognizes in Chat |
 |---|---|---|
 | Ask for work and questions, and add to or stop work in progress, as a dashboard member can | Yes | Yes |
 | Approve or reject a gate the agent raised in that space | No: the agent says how to approve, and nothing changes | Yes |
@@ -121,7 +126,7 @@ before it takes an approval ([approval-replies.mjs](../brain/approval-replies.mj
 
 The heartbeat, `<data root>/services/ears/health.json`, has a `gchat` block, which the dashboard's
 Settings, System shows: `state` (`off` without a Workspace account, `connecting` while the account's
-token fails, `ready`), `account`, `spaces`, `direct_messages`, `external_spaces` (not read),
+token fails, `ready`), `account`, `spaces`, `direct_messages`, `external_spaces` (how many of those admit people outside the organization),
 `known_users` (dashboard users recognized in Chat), `agent_user_id`, `rate_limited`, `last_poll_at`,
 `last_ok_at`, `last_error` and `taken_in`. The mouth's heartbeat adds how Chat answered its posts.
 
@@ -129,7 +134,8 @@ token fails, `ready`), `account`, `spaces`, `direct_messages`, `external_spaces`
 |---|---|---|
 | connecting, `Invalid email or User ID` or `invalid_grant` | The agent's Workspace user does not exist | Create it in the Admin console; the ears come online by themselves |
 | connecting, `unauthorized_client` | The delegation grant is missing, or lacks a Chat scope | Grant the full scope list to the signer's client ID (the setup wizard shows both) |
-| ready, 0 spaces and 0 direct messages | Nobody has written to the agent or added it yet | Send its address a direct message |
-| Not read: some spaces | Those spaces admit people outside the organization | Use an internal space, or a direct message |
+| ready, 0 spaces and 0 direct messages | Nobody has added the agent to a space yet | Add it to a space and @mention it |
+| `HTTP 403` listing the spaces, "until someone first writes to the account" | Chat does not know the account yet | Add it to a space and @mention it |
+| Open to outsiders: some spaces | Those spaces admit people outside the organization, who see the agent's answers there | Nothing, unless the agent should stay inside the organization |
 | rate limited | The project's Chat API quota is spent for this minute | Nothing; it reads again in a minute |
 | `Sending: ... permission` | The mouth cannot post: `chat.messages` is not granted | Add it to the delegation grant |

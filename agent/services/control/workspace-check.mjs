@@ -13,8 +13,8 @@
 // file id that cannot exist: Google answering "not found" proves the API is on and took the token.
 // Google Chat refuses to list the spaces of a user nobody has written to yet, so when the listing is
 // refused the check looks up the account's direct message with itself: "not found" there means Chat
-// took the token, and Chat counts as working but `pending`, with a `note` saying to send the agent a
-// first message.
+// took the token, and Chat counts as working but `pending`, with a `note` saying to add the agent to a
+// space and @mention it.
 // Delegation answers only "not authorized" for a request with any scope the grant lacks, so when the
 // whole list is refused each scope is asked for alone, to name exactly the ones missing.
 
@@ -189,7 +189,7 @@ async function chatTookToken({ token, account, fetch }) {
 
 /** What the check says of Chat for an account nobody has written to yet. */
 export function chatPendingNote({ account, project }) {
-  return `Chat took the agent's token but has no conversations for ${account} yet: Google Chat lists a user's spaces only once someone has written to it. Send the agent a direct message in Google Chat; it reads messages from up to an hour before it first comes online. If Chat still shows this after someone has written to it, check the project's Chat app record: ${chatAppPage(project)}.`;
+  return `Chat took the agent's token but has no conversations for ${account} yet: Google Chat lists a user's spaces only once someone has written to it. Add the agent to a space in Google Chat and @mention it; it reads messages from up to an hour before it first comes online. If Chat still shows this after that, check the project's Chat app record: ${chatAppPage(project)}.`;
 }
 
 /**

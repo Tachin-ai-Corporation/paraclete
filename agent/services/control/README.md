@@ -282,8 +282,8 @@ API's scopes (`agent/auth/workspace-scopes.mjs`). Then one read-only call per AP
 Slides are asked for a file id that cannot exist: their "not found" proves the API is on and took the
 token. Google Chat refuses to list the spaces of a user nobody has written to yet; when it refuses,
 the check looks up the account's direct message with itself (`spaces.findDirectMessage`), and "not
-found" there means Chat took the token: Chat is `ok` and `pending`, with a `note` saying to send the
-agent a first message. Nothing in Google is written.
+found" there means Chat took the token: Chat is `ok` and `pending`, with a `note` saying to add the
+agent to a space and @mention it. Nothing in Google is written.
 Result:
 ```
 { account,                        lowercased

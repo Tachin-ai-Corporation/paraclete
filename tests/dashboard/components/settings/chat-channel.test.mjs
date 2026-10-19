@@ -26,14 +26,14 @@ test("while the account's token fails, it is connecting, with Google's reason", 
   assert.deepEqual(view.facts, [{ label: 'Account', value: 'agent@example.com' }]);
 });
 
-test('ready: the account, what it reads, the spaces it leaves alone, and what the mouth sent', () => {
+test('ready: the account, what it reads, how many of those admit outsiders, and what the mouth sent', () => {
   const view = chatChannelView(ready({ external_spaces: 2 }), { sent: 5, refused: 0, last_sent_at: '2026-10-17T12:00:00Z', last_error: null });
   assert.deepEqual(view.badge, { level: 'ok', label: 'ready' });
   assert.equal(view.error, null);
   assert.deepEqual(view.facts, [
     { label: 'Account', value: 'agent@example.com' },
     { label: 'Reads', value: '3 spaces and 1 direct message' },
-    { label: 'Not read', value: '2 spaces open to people outside the organization' },
+    { label: 'Open to outsiders', value: "2 spaces of them: people outside the organization see the agent's answers there" },
     { label: 'Dashboard users known in Chat', value: '2' },
     { label: 'Last read', value: '2026-10-17T12:00:05Z', at: '2026-10-17T12:00:05Z' },
     { label: 'Messages taken in', value: '4' },

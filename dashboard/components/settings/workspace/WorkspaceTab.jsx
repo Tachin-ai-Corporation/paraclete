@@ -9,7 +9,7 @@
 //      button, and a link to the Admin console's page for them (GET /api/workspace/setup);
 //   3. set up Google Chat: the project's Chat app record, which Google requires even of a user's
 //      token (a link to the Cloud console page; agent/auth/workspace-scopes.mjs chatAppPage), and a
-//      first direct message to the agent, before which Chat lists no conversations for a new user;
+//      first space with a mention of the agent, before which Chat lists no conversations for a new user;
 //   4. Test: the workspace_check command, which runs on the VM as the agent and reports each API with
 //      the one thing to change when it failed;
 //   5. Save: the set_workspace_account command, once a test of that address passed (or, after a
@@ -250,9 +250,10 @@ function Wizard({ workspace, setup, setupError, check, save, onSave, onCancel, b
         </p>
         {links.chat_app && <External href={links.chat_app}>Open the Chat API configuration</External>}
         <p>
-          Then send the agent a direct message in Google Chat, from your own account. Chat lists a new user's
-          conversations only once someone has written to it; the agent reads messages from up to an hour before it
-          first comes online, so this first one is answered too.
+          Then, in Google Chat, add the agent to a space and @mention it. Chat lists a new user's conversations only
+          once someone has written to it; the agent reads messages from up to an hour before it first comes online, so
+          this first mention is answered too. Reach the agent in spaces: Chat refuses its replies in direct messages
+          while its account has never signed in.
         </p>
       </Step>
 

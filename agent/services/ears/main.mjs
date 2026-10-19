@@ -47,7 +47,7 @@ const CHAT_RATE_LIMIT_MS = 60_000;
  */
 const CHAT_REFUSED_MAX_MS = 300_000;
 /** Google Chat refuses to list the spaces of a user nobody has written to: what the health file adds to a 403. */
-const CHAT_UNKNOWN_HINT = 'Google Chat answers this until someone first writes to the account: send the agent a direct message in Google Chat.';
+const CHAT_UNKNOWN_HINT = 'Google Chat answers this until someone first writes to the account: add the agent to a space in Google Chat and @mention it.';
 /** Dashboard user records read at most, for matching Chat senders. */
 const USERS_READ_LIMIT = 500;
 
