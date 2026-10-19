@@ -33,6 +33,7 @@ import { createArtifactManager } from '../../work/artifacts.mjs';
 import { createCheckpointExecutor } from '../../work/checkpoint-executor.mjs';
 import { createProcessRegistry } from '../../work/process-registry.mjs';
 import { createProjectRegistry } from '../../work/projects.mjs';
+import { readPlatformVersion, stampPlatformVersion } from '../../work/platform-version.mjs';
 import { readInstalledProcesses, readInstalledResponsibilities } from '../../work/role-packages.mjs';
 import { adminEffort, brainSettings, organTemperature } from './settings.mjs';
 import { createGatewayClient, readGatewayToken, toolResultDigester } from './gateway-client.mjs';
@@ -97,12 +98,15 @@ function createUsageMeter(log) {
  * @returns {object} the brain
  */
 export function buildBrain(runtime, deps = {}) {
-  const { contracts, instance, log, db, collections, paths } = runtime;
+  const { contracts, instance, log, collections, paths } = runtime;
   const clock = deps.clock || Date.now;
   const iso = () => new Date(clock()).toISOString();
   const settings = brainSettings(contracts);
   const readText = deps.readText || ((path) => readFileSync(path, 'utf8'));
   const readOrNull = (path) => { try { return readText(path); } catch { return null; } };
+  // Every work envelope this brain creates carries the release it runs, read once, here.
+  const platformVersion = readPlatformVersion(paths.installRoot, { readText, log });
+  const db = stampPlatformVersion(runtime.db, { version: platformVersion, since: clock() });
   const token = deps.gatewayToken || readGatewayToken(instance.gateway_token_file, readText);
   const effort = { level: settings.effortDefault, checkedAt: -Infinity };
   const missionDir = missionDirIn(paths.data.missions);
@@ -427,7 +431,7 @@ export function buildBrain(runtime, deps = {}) {
   async function start() {
     if (running) return;
     running = true;
-    log('INFO', 'brain starting', { gateway: gateway.url, role: instance.role });
+    log('INFO', 'brain starting', { gateway: gateway.url, role: instance.role, release: platformVersion });
     if (!(await gateway.ping())) log('WARN', 'the gateway is not answering yet; organ turns will fail until it does');
     await init();
     responsibilities.start();

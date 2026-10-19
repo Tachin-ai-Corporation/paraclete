@@ -1,4 +1,5 @@
-// Tests for install/lib/dashboard.mjs: the names it reads from names.sh, the exact gcloud arguments of
+// Tests for install/lib/dashboard.mjs: the names it reads from names.sh and the values it reads from the
+// contracts' dashboard section, the exact gcloud arguments of
 // the dashboard's build and deploy, the environment file (any agent name survives it), the comparison
 // that decides whether a deploy would change anything, the commit a deployed service runs, the
 // bucket's CORS setting for uploads (the origins, the file, the comparison), and the command line
@@ -6,13 +7,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  BUILD_CONFIG_PATH, IMAGE_NAME, NAMES, SERVICE_SETTINGS, UPLOAD_CORS, buildArgs, buildConfigUrl, cli, corsConfig, corsDrift,
+  BUILD_CONFIG_PATH, BUILD_TIMEOUT_SECONDS, IMAGE_NAME, NAMES, SERVICE_SETTINGS, UPLOAD_CORS, buildArgs, buildConfigUrl, cli, corsConfig, corsDrift,
   dashboardAccount, dashboardOrigins, deployArgs, deployedCommit, deployedEnv, describeArgs, envFileText, iapServiceAgent,
   imagePath, parseBucket, parseService, parseShellNames, serviceDrift, serviceEnv, serviceUrl, tagsArgs,
 } from '../../../install/lib/dashboard.mjs';
 import { repoRoot } from '../harness.mjs';
+import { loadContracts } from '../../../config/contracts.mjs';
 
 const PROJECT = 'your-gcp-project';
 const REGION = 'us-central1';
@@ -66,11 +69,31 @@ test("the image, IAP's service agent, the build config and the dashboard's accou
   assert.throws(() => imagePath({ project: PROJECT }), /missing region/);
 });
 
+test("the image's name, the build config's path, the build's timeout and the service's size come from the contracts", () => {
+  const { dashboard } = loadContracts();
+  assert.equal(IMAGE_NAME, dashboard.image_name);
+  assert.equal(BUILD_CONFIG_PATH, 'dashboard/cloudbuild.json');
+  assert.equal(BUILD_CONFIG_PATH, dashboard.build_config_path);
+  assert.equal(BUILD_TIMEOUT_SECONDS, dashboard.build_timeout_seconds);
+  assert.deepEqual(SERVICE_SETTINGS, {
+    cpu: dashboard.service.cpu, memory: dashboard.service.memory, maxInstances: String(dashboard.service.max_instances), ingress: dashboard.service.ingress,
+  });
+});
+
+test("the build config holds the steps, the image and the options, and leaves the timeout to the contracts", () => {
+  const config = JSON.parse(readFileSync(join(repoRoot, BUILD_CONFIG_PATH), 'utf8'));
+  assert.deepEqual(Object.keys(config).sort(), ['images', 'options', 'steps']);
+  assert.deepEqual(config.images, ['${_IMAGE}:${_COMMIT}']);
+  assert.deepEqual(config.steps.map((step) => step.name), ['gcr.io/cloud-builders/docker']);
+  assert.deepEqual(config.steps[0].args, ['build', '-f', 'dashboard/Dockerfile', '-t', '${_IMAGE}:${_COMMIT}', '.']);
+  assert.equal(config.options.logging, 'CLOUD_LOGGING_ONLY', 'builds run as the dashboard, which logs to Cloud Logging only');
+});
+
 test('the build: the commit from GitHub, its own config, as the dashboard, in the region', () => {
-  assert.deepEqual(buildArgs({ repo: 'your-org/paraclete', commit: COMMIT, configFile: '/tmp/x/cloudbuild.yaml', project: PROJECT, region: REGION }), [
-    'builds', 'submit', 'https://github.com/your-org/paraclete', `--git-source-revision=${COMMIT}`, '--config=/tmp/x/cloudbuild.yaml',
+  assert.deepEqual(buildArgs({ repo: 'your-org/paraclete', commit: COMMIT, configFile: '/tmp/x/cloudbuild.json', project: PROJECT, region: REGION }), [
+    'builds', 'submit', 'https://github.com/your-org/paraclete', `--git-source-revision=${COMMIT}`, '--config=/tmp/x/cloudbuild.json',
     `--substitutions=_IMAGE=${IMAGE},_COMMIT=${COMMIT}`, `--service-account=projects/${PROJECT}/serviceAccounts/${ACCOUNT}`,
-    '--region=us-central1', `--project=${PROJECT}`, '--quiet',
+    '--timeout=1200s', '--region=us-central1', `--project=${PROJECT}`, '--quiet',
   ]);
   assert.deepEqual(tagsArgs({ project: PROJECT, region: REGION }),
     ['artifacts', 'docker', 'tags', 'list', IMAGE, `--project=${PROJECT}`, '--format=value(tag.basename())']);

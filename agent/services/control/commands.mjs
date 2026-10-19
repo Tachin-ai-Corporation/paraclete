@@ -5,8 +5,10 @@
 // script (upgrade.mjs). Two commands write outside Firestore: drive_check creates and trashes a single
 // test file in the admin's Drive output folder (drive-check.mjs), and set_workspace_account writes the
 // two files that hold the agent's Workspace account, /etc/paraclete/workspace.json and instance.json,
-// and no other (workspace-account.mjs). The queue that claims and records commands is
-// command-queue.mjs; the request and result shapes are documented in README.md.
+// and no other (workspace-account.mjs). claude_check sends each Claude model the contracts list one
+// short message on Vertex AI, as the agent, and writes nothing (claude-check.mjs). The queue that
+// claims and records commands is command-queue.mjs; the request and result shapes are documented in
+// README.md.
 
 import { readFileSync } from 'node:fs';
 import { createDriveClient } from '../../providers/drive.mjs';
@@ -15,6 +17,7 @@ import { detached, thenRun } from './command-queue.mjs';
 import { probeGateway, waitForGateway } from './gateway-probe.mjs';
 import { readStatus, readSkills, readConfig, readWorkspace, readRelease } from './introspection.mjs';
 import { readSettingsView, readBrainConfig, setClaude } from './models.mjs';
+import { checkClaude } from './claude-check.mjs';
 import { listResponsibilities, setResponsibilityEnabled, runResponsibility } from './responsibilities.mjs';
 import { startUpgrade, upgradeOutcome } from './upgrade.mjs';
 import { checkDrive } from './drive-check.mjs';
@@ -24,7 +27,7 @@ import { setWorkspaceAccount, writeLastCheck, INSTANCE_FILE } from './workspace-
 /** Every command type, in the order README.md documents them. */
 export const COMMAND_TYPES = Object.freeze([
   'status', 'skills', 'config', 'workspace', 'brain_config', 'responsibilities',
-  'set_responsibility_enabled', 'run_responsibility', 'set_model', 'restart_service', 'upgrade', 'drive_check',
+  'set_responsibility_enabled', 'run_responsibility', 'claude_check', 'set_model', 'restart_service', 'upgrade', 'drive_check',
   'workspace_check', 'set_workspace_account',
 ]);
 
@@ -124,9 +127,21 @@ export function createHandlers({
     run_responsibility: {
       run: (params, ctx) => runResponsibility({ ...store, id: params.id, commandId: ctx.id, actor: ctx.requestedBy }),
     },
+    claude_check: {
+      run: () => checkClaude({
+        candidates: contracts.vertex.models.claude_candidates,
+        project: instance.project,
+        location: contracts.vertex.anthropic_location,
+        fetch,
+        getAccessToken: runtime.getAccessToken,
+        now,
+      }),
+    },
     set_model: {
       run: (params, ctx) => setClaude({
-        enabled: params.claude_enabled, actor: ctx.requestedBy, db, contracts, systemd, gateway: gateway(), nowIso,
+        enabled: params.claude_enabled,
+        ...(Object.hasOwn(params, 'claude_model') ? { model: params.claude_model } : {}),
+        actor: ctx.requestedBy, db, contracts, systemd, gateway: gateway(), nowIso,
       }),
     },
     restart_service: {

@@ -2,20 +2,20 @@
 // dashboard/components/agent/ModelsPanel.jsx: what the brain runs on, from the `brain_config` command:
 // whether Claude is on, each model tier as the contracts set it beside what the running gateway
 // reports, where the models are served, the step budget of an organ turn, and the models the
-// services call directly. The Claude switch itself is not here; this shows its state.
+// services call directly. The Claude switch itself is in Settings, Models; this shows its state.
 //
-// With Claude on, the cortex and strong tiers move to the contracts' Claude model and the fallback to
-// its Claude fallback; the fast tier stays (organModels in agent/services/gateway/settings.mjs). The
-// gateway reads the switch when it starts, so a gateway that differs from the setting has not been
-// restarted since it changed.
+// With Claude on, the cortex and strong tiers move to the Claude model (the settings' `claude_model`:
+// the admin's tested choice, else the contracts' Claude model) and the fallback to its Claude fallback;
+// the fast tier stays (organModels in agent/services/gateway/settings.mjs). The gateway reads the switch
+// when it starts, so a gateway that differs from the setting has not been restarted since it changed.
 
 import { formatDate } from '@/lib/client/format.js';
 import { MODEL_TIERS } from './organs.js';
 import styles from './Agent.module.css';
 
-function expectedModels(tiers, claudeOn) {
+function expectedModels(tiers, claudeOn, claude) {
   if (!claudeOn) return { cortex: tiers.cortex, strong: tiers.strong, fast: tiers.fast, fallback: tiers.fallback };
-  return { cortex: tiers.claude, strong: tiers.claude, fast: tiers.fast, fallback: tiers.claude_fallback };
+  return { cortex: claude, strong: claude, fast: tiers.fast, fallback: tiers.claude_fallback };
 }
 
 function Gateway({ running }) {
@@ -48,7 +48,8 @@ function Gateway({ running }) {
 export function ModelsPanel({ config }) {
   const { settings = {}, tiers = {}, locations = {}, running = null, organ_max_steps: maxSteps, service_models: services = {} } = config;
   const claudeOn = settings.claude_enabled === true;
-  const expected = expectedModels(tiers, claudeOn);
+  const claude = settings.claude_model || tiers.claude;
+  const expected = expectedModels(tiers, claudeOn, claude);
   const runs = running?.models || null;
 
   return (
@@ -60,10 +61,10 @@ export function ModelsPanel({ config }) {
         </div>
         <p className="muted">
           {claudeOn
-            ? `The cortex and the strong tier run on ${tiers.claude}, falling back to ${tiers.claude_fallback}.`
-            : `Gemini runs every organ. Turned on, Claude (${tiers.claude}) runs the cortex and the strong tier.`}
+            ? `The cortex and the strong tier run on ${claude}, falling back to ${tiers.claude_fallback}.`
+            : `Gemini runs every organ. Turned on, Claude (${claude}) runs the cortex and the strong tier.`}
           {settings.claude_updated_by && ` Last switched by ${settings.claude_updated_by}, ${formatDate(settings.claude_updated_at)}.`}
-          {' '}Shown read-only here.
+          {' '}Shown read-only here; admins test and switch it in Settings, Models.
         </p>
       </div>
 

@@ -40,7 +40,7 @@ const PROJECT = 'your-gcp-project';
 const IMAGE = `us-central1-docker.pkg.dev/${PROJECT}/paraclete/dashboard`;
 const DASHBOARD = `paraclete-dashboard@${PROJECT}.iam.gserviceaccount.com`;
 const DASHBOARD_URL = 'https://paraclete-123456789012.us-central1.run.app';
-const CONFIG = "# the commit's own build config\nsteps: []\n";
+const CONFIG = '{ "steps": [] }\n';
 
 /** The dashboard's environment as the installer set it, at a commit. */
 const installedEnv = (commit, over = {}) => ({
@@ -136,7 +136,7 @@ test('a branch resolves on GitHub, the upgrader runs over IAP, and the deploy en
     ['remote', 'get-url', 'origin'],
     ['-c', 'credential.helper=', 'ls-remote', ORIGIN_URL, 'refs/heads/main', 'refs/tags/main', 'refs/tags/main^{}'],
     ['rev-parse', '--verify', '--quiet', 'refs/heads/main'],
-    ['show', `${MAIN}:dashboard/cloudbuild.yaml`],
+    ['show', `${MAIN}:dashboard/cloudbuild.json`],
   ]);
   assert.equal(exec.callsTo('git')[1].opts.env.GIT_TERMINAL_PROMPT, '0', 'GitHub is read anonymously, as the VM reads it');
   const ssh = exec.callsTo('gcloud').filter((c) => c.args[0] === 'compute');
@@ -170,7 +170,7 @@ test('after the VM is ready, the dashboard is built at the commit with its own c
   assert.deepEqual(deploy, deployArgs({ project: PROJECT, region: 'us-central1', commit: MAIN, envFile: flagOf(deploy, 'env-vars-file') }));
   assert.ok(deploy.includes('--iap') && deploy.includes('--no-allow-unauthenticated'));
 
-  assert.deepEqual(exec.seen.configs, [CONFIG], "the commit's own cloudbuild.yaml, from git show");
+  assert.deepEqual(exec.seen.configs, [CONFIG], "the commit's own cloudbuild.json, from git show");
   assert.deepEqual(exec.seen.envs, [installedEnv(MAIN, { PARACLETE_RELEASE: 'main' })], 'only the commit, release and repo move');
   assert.ok(exec.seen.files.every((file) => !existsSync(file)), 'the temporary files are gone');
   assert.match(deps.stdout.text, /BUILD step 0: docker build\nDONE\n/, "the build's output is streamed through");
@@ -234,13 +234,13 @@ test("a commit this clone lacks builds with the working tree's config; one from 
   let exec = instance({ show: { code: 128, stderr: `fatal: invalid object name '${MAIN}'.\n` } });
   let deps = devDeps({ firestore, exec });
   assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
-  assert.match(deps.stderr.text, /warning: this clone does not have aaaaaaaaaaaa \(git fetch gets it\); building with the working tree's dashboard\/cloudbuild\.yaml/);
-  assert.deepEqual(exec.seen.configs, [readFileSync(join(REPO_ROOT, 'dashboard', 'cloudbuild.yaml'), 'utf8')]);
+  assert.match(deps.stderr.text, /warning: this clone does not have aaaaaaaaaaaa \(git fetch gets it\); building with the working tree's dashboard\/cloudbuild\.json/);
+  assert.deepEqual(exec.seen.configs, [readFileSync(join(REPO_ROOT, 'dashboard', 'cloudbuild.json'), 'utf8')]);
 
-  exec = instance({ show: { code: 128, stderr: `fatal: path 'dashboard/cloudbuild.yaml' does not exist in '${MAIN}'\n` } });
+  exec = instance({ show: { code: 128, stderr: `fatal: path 'dashboard/cloudbuild.json' does not exist in '${MAIN}'\n` } });
   deps = devDeps({ firestore, exec });
   assert.equal(await main(['main', '--dashboard-only'], deps), 1);
-  assert.match(deps.stderr.text, /a{40} has no dashboard\/cloudbuild\.yaml: it predates the dashboard\. Deploy it with --vm-only\./);
+  assert.match(deps.stderr.text, /a{40} has no dashboard\/cloudbuild\.json: it is older than the first release\. Deploy it with --vm-only\./);
   assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags']);
 });
 

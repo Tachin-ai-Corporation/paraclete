@@ -144,15 +144,6 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
   verifier then asked for the same paths and found nothing. The files skill now says to keep renders
   in the mission's own `missions/<id>/renders/`; confirm the next live run does.
 
-## For phase 9 (models and upgrades)
-
-- **One way to build and deploy the dashboard.** `install/lib/dashboard.mjs` holds the build and deploy
-  arguments (Cloud Build in the region, as the dashboard's account; Cloud Run with 1 CPU, 1 GiB, at most
-  3 instances, IAP on). The upgrade button must do the same; move those settings into
-  `config/contracts.json`, which the dashboard may read.
-- **Platform version on envelopes.** `platform_version` is declared on envelopes but nothing stamps it.
-  Stamp it from `<install root>/release.json` once releases exist.
-
 ## Found while building roles, Workspace and Chat (phase 8)
 
 - **Who a scheduled briefing is for.** A responsibility has no addressee, so the executive assistant's
@@ -209,9 +200,8 @@ and accounts between this instance and an older deployment that works:
   message that brought the account into Chat is answered.
 - **Spaces, not direct messages.** An account that has never signed in reads a direct message but
   every reply it posts there is refused; in a space the same post goes through. The wizard sends
-  admins to a space. Still open: whether one sign-in as the agent lets it answer direct messages, and
-  whether a refused direct-message answer should go to the person's dashboard chat instead (today
-  the delivery fails after its retries and the answer stays only in the work record).
+  admins to a space. The owner decided people reach the agent in spaces; direct messages are not
+  pursued further.
 - **Spaces that admit outsiders.** The owner decided the agent reads them like any other space, as
   the older deployment did: outside members can ask and see answers there; approvals still come only
   from dashboard users. Their count shows on the System tab.
@@ -219,3 +209,30 @@ and accounts between this instance and an older deployment that works:
 Also seen: the generic smoke answer says it verified both RFCs at the IETF, yet tags both claims
 `[assumed]`. A claim the mission checked against a source should carry the bin for that.
 
+
+## Found while building models and upgrades (phase 9)
+
+Phase 9's own handoff items are done: the dashboard's build and deploy settings live in the contracts'
+`dashboard` block, which the installer and the upgrade button both read, and the brain stamps
+`platform_version` on every envelope it creates from `release.json`.
+
+- **To check live:** the Cloud Run v2 update of a service gcloud created (v2 may refuse system
+  annotations sent back as read); Vertex AI's wording when Anthropic's terms are not accepted (the
+  Test's fixes follow the expected wording); the newest Opus answering the Test with 16 output tokens
+  while it thinks, and a Claude tool turn with its thinking sent back; whether the newer Opus models
+  are served in `vertex.anthropic_location` (`us-east5`) or need `global`; the migrations running as
+  the `paraclete` user on the VM.
+- **GitHub's rate limit.** Unauthenticated GitHub allows 60 requests an hour per address, and Cloud Run
+  shares its outbound addresses with other tenants. The release check fails gracefully and keeps the
+  last answer; an optional GitHub token secret would lift the limit.
+- **A tag whose release never published.** A bare `install/install.sh` installs the newest version tag
+  (`install/lib/ref.sh`), not the newest published release, so a tag whose release workflow failed
+  would still be installed. `dev/release.mjs` tags only a commit CI passed, which makes this rare.
+  A tag ruleset that lets only maintainers push `v*` tags would close the other way in.
+- **A hung migration.** The services are stopped while migrations run, and only control's upgrade time
+  limit bounds that; a migration run at boot has none. A contracts key and a `timeout` around the run
+  would bound it.
+- **Instances installed from a branch** are offered no updates: the card cannot order a branch against
+  a release.
+- **The Claude Test's result is not kept.** It lives in the open tab, and the switch offers only the
+  newest model that answered; members see the setting, not the last test.

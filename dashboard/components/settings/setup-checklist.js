@@ -17,7 +17,6 @@ export const STATES = Object.freeze({
   checking: { label: 'Checking', badge: 'badge-info' },
   optional: { label: 'Optional', badge: 'badge-neutral' },
   info: { label: 'How to', badge: 'badge-info' },
-  later: { label: 'Later release', badge: 'badge-neutral' },
   not_needed: { label: 'Not needed', badge: 'badge-neutral' },
 });
 
@@ -128,11 +127,17 @@ function driveItem(agentAccount, drive, workspaceAccount, isAdmin) {
   return { ...item, state: view.ok ? 'done' : 'problem', detail: view.headline };
 }
 
-function claudeItem(setup) {
-  const item = { key: 'claude', title: 'Claude' };
-  if (!setup) return { ...item, state: 'checking', detail: '' };
-  if (setup.claude_enabled) return { ...item, state: 'done', detail: 'On: the cortex and the strong tier run on Claude.' };
-  return { ...item, state: 'later', detail: 'Off: the agent runs on Gemini. Turning Claude on arrives in a later release.' };
+/** Claude (optional): on or off, with a link to the Models tab, where an admin tests and switches it. */
+function claudeItem(setup, isAdmin) {
+  const item = { key: 'claude', title: 'Claude', href: '#models', linkLabel: isAdmin ? 'Open Models settings' : 'See Models settings' };
+  if (!setup) return { key: item.key, title: item.title, state: 'checking', detail: '' };
+  if (setup.claude_enabled) return { ...item, state: 'done', detail: 'On: the cortex and the strong tier run on Claude, with Gemini as the fallback.' };
+  return {
+    ...item,
+    state: 'optional',
+    detail: 'Off: the agent runs on Gemini.',
+    action: askAdmin(isAdmin, "Turn it on under Models: accept Anthropic's terms in Model Garden, test the Claude models, then switch it on."),
+  };
 }
 
 /**
@@ -182,7 +187,7 @@ export function setupChecklist({
     modelsItem(status, statusError, isAdmin),
     usersItem(setup, isAdmin),
     driveItem(agentAccount, drive, workspace?.account?.account || '', isAdmin),
-    claudeItem(setup),
+    claudeItem(setup, isAdmin),
     workspaceItem(workspace, workspaceError, isAdmin),
   ];
   // A role with a Workspace account cannot do its work without it.

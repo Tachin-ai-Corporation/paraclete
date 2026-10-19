@@ -29,8 +29,8 @@ function writeFileSync(path, text) {
   writeNativeFile(nativePath(path), text);
 }
 
-/** What raw.githubusercontent.com serves as dashboard/cloudbuild.yaml at any commit: this repo's own. */
-const CLOUDBUILD_YAML = readNativeFile(new URL('../../dashboard/cloudbuild.yaml', import.meta.url), 'utf8');
+/** What raw.githubusercontent.com serves as dashboard/cloudbuild.json at any commit: this repo's own. */
+const CLOUDBUILD_JSON = readNativeFile(new URL('../../dashboard/cloudbuild.json', import.meta.url), 'utf8');
 
 const [tool, ...args] = process.argv.slice(2);
 const statePath = process.env.FAKE_CLOUD_STATE;
@@ -503,7 +503,7 @@ const GCLOUD = {
       (state.images[substitutions._IMAGE] ||= []).push(substitutions._COMMIT);
       state.builds.push({
         source, revision: f['git-source-revision'], config, substitutions,
-        serviceAccount: f['service-account'], region: f.region,
+        serviceAccount: f['service-account'], region: f.region, timeout: f.timeout,
       });
       save();
       out(`DONE\n${substitutions._IMAGE}:${substitutions._COMMIT}`);
@@ -674,7 +674,7 @@ function curl() {
     if (!state.rawFiles.includes(path)) return fail('The requested URL returned error: 404', 22);
     const target = option('-o');
     // Git Bash hands a native program `/dev/null` as `nul`, which Node would create as a file.
-    if (target && !/^(\/dev\/null|nul)$/i.test(target)) writeFileSync(target, path.endsWith('/dashboard/cloudbuild.yaml') ? CLOUDBUILD_YAML : '');
+    if (target && !/^(\/dev\/null|nul)$/i.test(target)) writeFileSync(target, path.endsWith('/dashboard/cloudbuild.json') ? CLOUDBUILD_JSON : '');
     return out('');
   }
   if (url.startsWith('https://aiplatform.googleapis.com/') && url.endsWith(':generateContent')) {

@@ -1,0 +1,47 @@
+/* dashboard/components/settings/UpdateCard.module.css: the System tab's version card: an upgrade's
+   steps, and the newer releases with their notes. The section, facts and small print reuse
+   Settings.module.css; colors and spacing come only from the tokens in app/globals.css. */
+
+.card > * + * { margin-top: var(--space-4); }
+
+.progress {
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.progress > * + * { margin-top: var(--space-2); }
+.progress h3, .releases h3 { font-size: 13.5px; font-weight: 600; }
+
+.steps { list-style: none; display: grid; gap: var(--space-2); font-size: 13.5px; }
+.steps li { display: grid; grid-template-columns: 14px 1fr; gap: var(--space-2); align-items: start; }
+.mark {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+}
+.done .mark { background: var(--ok); border-color: var(--ok); }
+.active .mark { border-color: var(--text-link); background: var(--text-link); animation: pulse 1.6s ease-in-out infinite; }
+.waiting { color: var(--text-muted); }
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .active .mark { animation: none; }
+}
+
+.releases > * + * { margin-top: var(--space-3); }
+.release { padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.release > * + * { margin-top: var(--space-2); }
+.releaseHead { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.releaseHead > :last-child:not(:first-child) { margin-left: auto; }
+
+.notes { list-style: none; font-size: 13.5px; color: var(--text-secondary); max-width: 760px; }
+.notes li + li { margin-top: 2px; }
+.notes .heading { font-weight: 600; color: var(--text-primary); margin-top: var(--space-2); }
+.notes .item { padding-left: 1.1em; position: relative; }
+.notes .item::before { content: "•"; position: absolute; left: 0.2em; color: var(--text-muted); }
+.notes li { overflow-wrap: anywhere; }

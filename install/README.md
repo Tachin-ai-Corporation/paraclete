@@ -12,7 +12,7 @@ away again.
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
 | `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports |
-| `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the readiness document |
+| `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the data migrations (`migrate.mjs`), the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
 stay in the repo.
@@ -80,15 +80,17 @@ The steps, each printed as `[n/9]`:
    rule deleting `files.prefix` + `in/` after `files.inbox_retention_days` (`config/contracts.json`);
    object admin for both accounts on this bucket only. Its CORS setting, for uploads from the dashboard,
    is made in step 6, once the dashboard's URLs are known.
-6. **dashboard**, from the release's own `dashboard/cloudbuild.yaml` (downloaded at the commit; a
-   release without one predates the dashboard and installs without it):
+6. **dashboard**, from the release's own `dashboard/cloudbuild.json` (downloaded at the commit; a
+   commit from before the first release has none and installs without a dashboard). The image's name,
+   the build's timeout and the service's size are the contracts' `dashboard` section, which the
+   dashboard's own upgrade reads too:
    - the Artifact Registry Docker repository `paraclete` in the region, where `paraclete-dashboard@` alone
      may push (`roles/artifactregistry.writer` on that repository);
    - the image `<region>-docker.pkg.dev/<project>/paraclete/dashboard:<commit>`, built by Cloud Build
      from GitHub at the commit, as `paraclete-dashboard@` (the account its upgrade button builds as), in
      the region (`--region`: the build, its logs and its record stay beside the image, whatever your own
-     `builds/region` says, and an organization that forbids `global` is no obstacle). Skipped when the
-     repository already has that tag;
+     `builds/region` says, and an organization that forbids `global` is no obstacle), within
+     `dashboard.build_timeout_seconds`. Skipped when the repository already has that tag;
    - IAP's service agent (`service-<number>@gcp-sa-iap.iam.gserviceaccount.com`), asked for with
      `gcloud beta services identity create` while the service does not already let it in;
    - the Cloud Run service `paraclete`: that image, running as `paraclete-dashboard@`, `--iap`,
@@ -218,7 +220,8 @@ The project, zone and region come from the metadata server's own attributes.
 
 `dashboard/README.md` says what the dashboard does with each. `install.sh` sets them all at every deploy
 (`--env-vars-file`, which replaces the whole environment); `dev/deploy.mjs` keeps what the service has
-and moves `PARACLETE_REPO`, `PARACLETE_RELEASE` and `PARACLETE_COMMIT`.
+and moves `PARACLETE_REPO`, `PARACLETE_RELEASE` and `PARACLETE_COMMIT`; the dashboard's own upgrade
+keeps the rest of the service as it is and moves the image, `PARACLETE_RELEASE` and `PARACLETE_COMMIT`.
 
 | Variable | Value |
 |---|---|
@@ -332,8 +335,8 @@ run before anything is stopped: the running release is not touched.
 - **The validation gate.** Before anything is stopped, the staged release must pass
   `vm/check-release.mjs`, run with its own code and npm packages: its contracts load and validate, every
   service has its unit and its `main.mjs` loads with everything it imports, and every launcher's command
-  exists and loads. Its instance record must pass its own `validateInstance()`. A release that fails is
-  not installed, and the running one is not touched.
+  exists and loads. Its data migrations must pass a dry run (below). Its instance record must pass its
+  own `validateInstance()`. A release that fails is not installed, and the running one is not touched.
 - **Rollback.** If the swapped-in release's gateway is not ready within the contracts'
   `control.gateway_ready_timeout_ms`, or a service is not running a few seconds after it started, the
   previous release and instance record are put back and started, and the run reports `failed`.
@@ -350,6 +353,35 @@ name what the run installed or tried to install; a `ready` clears the last `erro
 the metadata, installing the base packages or Node.js, downloading) cannot write it; its error is in the
 VM's journal and serial console. The role's packages come after the download, so a failure there is
 reported.
+
+### Migrations
+
+A release may carry data migrations: `migrations/<version>-<slug>.mjs` at the repo root, installed with
+the release. Each changes data the release reads differently from the ones before it, in Firestore or
+under the data root; [migrations/README.md](../migrations/README.md) has the format and the rules for
+writing one. Firestore `config/migrations` records which ran on this instance:
+`{ applied: { <id>: { applied_at, release } } }`.
+
+| When | What `bootstrap.sh` runs, from the staged release | It |
+|---|---|---|
+| The validation gate, before anything is stopped | `vm/migrate.mjs --dry-run`, as root | Checks that every `.mjs` file in `migrations/` is named as a migration, that every one still to run loads and exports `description` and `migrate`, and that `config/migrations` can be read (a release that carries none reads nothing). Lists what will run; changes nothing |
+| The switch, after the services stop and before the swap | `vm/migrate.mjs`, as the `paraclete` user (`runuser`) | Runs every migration `config/migrations` does not record, oldest version first and by name within a version, and records each as soon as it succeeds |
+
+- **Only on a full install.** A run on the installed commit (the fast path) runs none. A first install
+  runs every migration the release carries: the project's Firestore may hold an older install's data.
+- **With the services' rights.** As the `paraclete` user, a migration reaches Firestore through the VM's
+  account and writes the data root as the services do, and cannot change installed code or
+  `/etc/paraclete`.
+- **Idempotent.** A recorded migration never runs again, but every migration is written to be safe to
+  run twice: one that succeeded and could not be recorded runs again at the next upgrade.
+- **Strict.** `config/migrations` is read strictly, and a migration's Firestore client is strict unless
+  it says otherwise: when Firestore cannot answer, the run fails rather than finding "nothing applied"
+  or an empty collection.
+- **A failure** stops the run at that migration: the ones before it stay recorded, it and the ones after
+  it are not. The swap does not happen, the installed release starts again, and the run reports
+  `failed` with the migration's reason (`the data migrations stopped: <id> failed: ...`). There is no
+  undoing a migration, so the release before must still read whatever it changed, after a failure here
+  as after a rollback; a fixed release runs it again.
 
 ### `manifest.txt`
 

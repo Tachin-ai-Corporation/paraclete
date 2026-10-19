@@ -15,6 +15,7 @@ the same relative paths.
 | `files/` | Reading, converting and making files with the VM's toolchain, and fetching them from where they were shared |
 | `providers/` | Outside services: Vertex text calls, channels, notifications, Google Drive, JSON repair |
 | `auth/` | Tokens: the VM's metadata server and domain-wide delegation |
+| `release/` | What a release is: versions, their order, and GitHub's release list |
 | `cli/` | Commands the agent runs through its shell tool |
 
 ## Dependency direction
@@ -23,15 +24,16 @@ A package may import only the packages listed after it:
 
 | Package | May import |
 |---|---|
-| `services/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, and `gateway` from `services/gateway/` only |
-| `cli/` | `work`, `context`, `files`, `storage`, `providers`, `auth` |
-| `work/` | `context`, `files`, `storage`, `providers`, `auth` |
+| `services/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, `release`, and `gateway` from `services/gateway/` only |
+| `cli/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, `release` |
+| `work/` | `context`, `files`, `storage`, `providers`, `auth`, `release` |
 | `context/` | `storage`, `providers`, `auth` |
 | `files/` | `storage`, `providers`, `auth` |
 | `storage/` | `auth` |
 | `providers/` | `auth` |
 | `gateway/` | `context`, `providers`, `auth` |
 | `auth/` | nothing in `agent/` |
+| `release/` | nothing in `agent/` |
 
 Nothing imports `services/` or `cli/`. Only the gateway service imports `gateway/`, to build and run it;
 the brain and everything else reach the gateway over its local HTTP port, never by import. `tests/repo/boundaries.test.mjs` enforces this table.

@@ -18,8 +18,10 @@ this.
 | first message | The first mention of the agent's new Workspace account in a Google Chat space it was added to. Until someone has written to a user, Chat refuses to list its conversations, so the agent can see none; the workspace check reports Chat as waiting for it, and the agent reads messages from up to an hour before Chat first answered, so this one is answered too. People reach the agent in spaces: Chat refuses its replies in direct messages while its account has never signed in |
 | agent-images | The Artifact Registry repository a role with `resource_roles` on `agent-repository` pushes its images to; the agent may write there and nowhere else in Artifact Registry |
 | role move | A developer re-running `install.sh --role <other>` on an existing instance. Not a product feature: the old role's own grants are revoked, its packages stay, memory stays |
-| release | A tag of this repo that instances can install or upgrade to |
-| upgrade | Moving an instance, dashboard and VM together, to a release or commit |
+| release | A version tag on main (`vYYYY.MM.DD.N.N`) published as a GitHub release with notes by `.github/workflows/release.yml`; instances install it or upgrade to it. `dev/release.mjs` cuts one |
+| upgrade | Moving an instance, VM first and then the dashboard, to a release or commit. From the dashboard: the System tab's Install, only forward |
+| migration | A release's idempotent data change (`migrations/<version>-<slug>.mjs`), run once per instance by the upgrade after the services stop and before the new release is swapped in; recorded in `config/migrations` |
+| Claude candidates | The Claude Opus models the contracts list (`vertex.models.claude_candidates`), newest first: the Models tab's Test tries each, and Claude is turned on with the newest that answered (`config/settings.claude_model`) |
 | dashboard | The web app where people use and manage an instance |
 | dashboard admin | A dashboard user who manages users, settings, secrets, models and upgrades |
 | dashboard member | A dashboard user who chats with the agent, follows and approves its work, and downloads its files |

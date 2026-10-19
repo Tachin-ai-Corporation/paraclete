@@ -3,11 +3,12 @@
 # root at every boot (the startup-script stub install.sh writes fetches it from paraclete-repo at
 # paraclete-ref) and for every upgrade (install/upgrade.sh fetches the target commit's own copy and
 # runs it with PARACLETE_REF set). It reads the VM metadata, downloads the release at an exact commit,
-# stages it in /opt/paraclete.next, checks it, swaps it into /opt/paraclete, starts the services
-# (the gateway first) and writes the readiness document agent/instance. It never edits an installed
-# release in place: a release that fails its checks is never swapped in, and one whose services do
-# not come up is swapped back out. The contract it keeps is install/README.md; the Node helpers it
-# runs from the release are in install/vm/. Everything it does is logged to stdout and stderr.
+# stages it in /opt/paraclete.next, checks it, stops the services, runs the release's data migrations,
+# swaps it into /opt/paraclete, starts the services (the gateway first) and writes the readiness
+# document agent/instance. It never edits an installed release in place: a release that fails its
+# checks or a migration is never swapped in, and one whose services do not come up is swapped back
+# out. The contract it keeps is install/README.md; the Node helpers it runs from the release are in
+# install/vm/. Everything it does is logged to stdout and stderr.
 #
 # Which commit it installs:
 #   1. PARACLETE_REF when set (an upgrade), from PARACLETE_REPO, labelled PARACLETE_RELEASE;
@@ -504,6 +505,10 @@ validate_release() {  # the gate: nothing is stopped or swapped unless the stage
   log "checking the staged release"
   node_step "release ${TARGET_COMMIT} failed its checks and was not installed" \
     "$STAGE_ROOT/install/vm/check-release.mjs" "--install-root=$INSTALL_ROOT"
+  # Its data migrations are well formed and, when it carries any, Firestore answers, so they will not
+  # fail for either reason once the services are stopped. Only checked and listed: nothing runs yet.
+  node_step "the data migrations of ${TARGET_COMMIT} cannot run, so it was not installed" \
+    "$STAGE_ROOT/install/vm/migrate.mjs" --dry-run "--project=$PROJECT" "--root=$STAGE_ROOT" "--data-root=$DATA_ROOT"
   build_instance_record "$STAGE_ROOT" "$WORK_DIR/instance.json"
 }
 
@@ -710,8 +715,29 @@ swap_release() {  # the staged release becomes the installed one; the installed 
   SWAPPED=1
 }
 
+migrate_as_agent() {  # migrate_as_agent <arguments...>: the staged release's migrate.mjs, as the paraclete user
+  runuser -u "$SERVICE_USER" -- "$NODE" "$STAGE_ROOT/install/vm/migrate.mjs" "$@"
+}
+
+# The staged release's data migrations that Firestore config/migrations does not record yet
+# (migrations/README.md), run while the services are stopped and before the swap, so the new release
+# starts on data it can read. They run as the paraclete user, with the services' own rights: Firestore
+# through the VM's account, and the data root, where what they write stays the services'. A failure
+# leaves the installed release in place, and the switch fails with the migration's reason.
+run_migrations() {
+  local errors="$WORK_DIR/migration-errors"
+  log "running the data migrations of ${TARGET_COMMIT}"
+  if ! migrate_as_agent "--project=$PROJECT" "--root=$STAGE_ROOT" "--data-root=$DATA_ROOT" 2>"$errors"; then
+    cat "$errors" >&2
+    SERVICE_FAILURE="the data migrations stopped: $(head -c 1500 "$errors" | sed 's/^migrate: //' | paste -sd ' ')"
+    return 1
+  fi
+  cat "$errors" >&2
+}
+
 switch_release() {  # from the services stopping to the new release running; returns 1 at the first failure
   stop_services || return 1
+  run_migrations || return 1
   swap_release || return 1
   install_instance_record "$WORK_DIR/instance.json" || { SERVICE_FAILURE="cannot write ${INSTANCE_FILE}"; return 1; }
   install_units || return 1

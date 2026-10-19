@@ -142,6 +142,26 @@ test('Claude on: the cortex and strong tier run Claude, with an Anthropic client
   });
 });
 
+test('Claude on with a chosen model: the cortex and strong tier run it; an unlisted choice runs the contracts model, logged once', async () => {
+  const m = contracts.vertex.models;
+  const newest = m.claude_candidates[0];
+  const chosen = await buildGateway(fakeRuntime({ settings: { claude_enabled: true, claude_model: newest } }).runtime, { createClients: fakeClients().create });
+  assert.deepEqual(chosen.models, { cortex: newest, strong: newest, fast: m.fast, fallback: m.claude_fallback });
+
+  const { runtime, lines } = fakeRuntime({ settings: { claude_enabled: true, claude_model: 'vertex-anthropic/claude-opus-1' } });
+  const unlisted = await buildGateway(runtime, { createClients: fakeClients().create });
+  assert.deepEqual(unlisted.models, { cortex: m.claude, strong: m.claude, fast: m.fast, fallback: m.claude_fallback });
+  const warnings = lines.filter((l) => l.level === 'WARN' && l.message.includes('claude_candidates'));
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].message, `the stored Claude model "vertex-anthropic/claude-opus-1" is not one of the contracts' claude_candidates; running ${m.claude} instead`);
+
+  // With Claude off the choice does not matter, and nothing is said about it.
+  const off = fakeRuntime({ settings: { claude_enabled: false, claude_model: 'vertex-anthropic/claude-opus-1' } });
+  const gemini = await buildGateway(off.runtime, { createClients: fakeClients().create });
+  assert.equal(gemini.models.cortex, m.cortex);
+  assert.equal(off.lines.some((l) => l.level === 'WARN'), false);
+});
+
 test('an unreadable settings document stops startup instead of guessing the models', async () => {
   const { runtime } = fakeRuntime({ readFails: true });
   const clients = fakeClients();

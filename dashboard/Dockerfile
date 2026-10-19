@@ -1,5 +1,5 @@
 # dashboard/Dockerfile: the dashboard's image. Built by Cloud Build from the repo root at a release
-# (dashboard/cloudbuild.yaml), so the dashboard can import the agent libraries it shares. Only what the
+# (dashboard/cloudbuild.json), so the dashboard can import the agent libraries it shares. Only what the
 # dashboard needs is copied in: its own code, config/ and the agent packages it imports.
 
 FROM node:24-slim AS build
@@ -11,6 +11,7 @@ COPY config config
 COPY agent/auth agent/auth
 COPY agent/storage agent/storage
 COPY agent/work agent/work
+COPY agent/release agent/release
 COPY dashboard dashboard
 RUN npm run build --prefix dashboard
 

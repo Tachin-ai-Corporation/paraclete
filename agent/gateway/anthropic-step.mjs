@@ -2,8 +2,14 @@
 // into Anthropic messages, places prompt-caching breakpoints, and calls the model by streaming. The
 // loop itself (tools, guards, fallback) is turn-loop.mjs; the Gemini side is google-step.mjs.
 //
-// Three rules here were each learned from a request the provider rejected:
-//   - send temperature only: Claude Opus rejects a request with both temperature and top_p;
+// Four rules here were each learned from a request the provider rejected, or one it will:
+//   - send temperature only, and only to a model listed as taking it (`temperatureModels`): Claude
+//     Opus rejects a request with both temperature and top_p, and the newer Opus models reject any
+//     sampling setting; leaving it out is valid for every model;
+//   - send a model's thinking back as it came: a model that thinks before a tool call returns
+//     thinking blocks, and the next request must carry them, unchanged and first, in that assistant
+//     message. They ride on the call in the transcript (`anthropicThinking`) and go back only to the
+//     model that wrote them;
 //   - stream: the SDK refuses a non-streaming request it expects to run past ten minutes, and
 //     stream().finalMessage() returns the same message create() would;
 //   - only API fields reach the provider. The brain's content parts carry a `tier` hint for
@@ -28,20 +34,41 @@ export function cacheControl(ttl) {
 }
 
 /**
+ * A thinking block as the API takes it back: only its own fields. Anything else is not one.
+ *
+ * @param {object} block
+ * @returns {object|null}
+ */
+export function thinkingBlock(block) {
+  if (block?.type === 'thinking' && typeof block.thinking === 'string' && typeof block.signature === 'string') {
+    return { type: 'thinking', thinking: block.thinking, signature: block.signature };
+  }
+  if (block?.type === 'redacted_thinking' && typeof block.data === 'string') return { type: 'redacted_thinking', data: block.data };
+  return null;
+}
+
+/**
  * The transcript as Anthropic messages (see turn-loop.mjs for the transcript format). Text parts keep
- * their `tier` hint for breakpoint placement; toApiMessages() or a breakpoint pass removes it.
+ * their `tier` hint for breakpoint placement; toApiMessages() or a breakpoint pass removes it. A tool
+ * call that carries the thinking of the model now called (`modelId`) gets it back first; another
+ * model's thinking stays out, since only the model that wrote a signature can check it.
  *
  * @param {Array<object>} messages
+ * @param {{modelId?: string}} [o]
  * @returns {Array<{role: 'user'|'assistant', content: string|Array<object>}>}
  */
-export function toAnthropicMessages(messages) {
+export function toAnthropicMessages(messages, { modelId } = {}) {
   return messages.filter((msg) => msg.role !== 'system').map((msg) => {
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
 
     if (msg.toolCalls && msg.toolCalls.length > 0) {
+      const own = msg.toolCalls.find((tc) => tc.provider === PROVIDERS.anthropic && modelId && tc.modelId === modelId
+        && Array.isArray(tc.anthropicThinking));
+      const thinking = own ? own.anthropicThinking.map(thinkingBlock).filter(Boolean) : [];
       return {
         role: 'assistant',
         content: [
+          ...thinking,
           ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
           ...msg.toolCalls.map((tc) => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args ?? {} })),
         ],
@@ -168,10 +195,12 @@ export function anthropicSystem(systemBlocks, anthropic) {
 }
 
 /**
- * One Claude response, read from plain data.
+ * One Claude response, read from plain data. `thinking` holds the response's thinking blocks, which
+ * the turn loop keeps on the tool call they came with; their text is never part of the answer.
  *
  * @param {object} response the final message
- * @returns {{text: string, calls: Array<{id: string, name: string, args: object}>, finishReason: string|undefined, usage: object}}
+ * @returns {{text: string, calls: Array<{anthropicId: string, name: string, args: object}>, thinking: Array<object>,
+ *   finishReason: string|undefined, usage: object}}
  */
 export function readAnthropicStep(response) {
   const content = response?.content || [];
@@ -179,6 +208,7 @@ export function readAnthropicStep(response) {
   const calls = content
     .filter((b) => b.type === 'tool_use')
     .map((b) => ({ anthropicId: b.id, name: b.name, args: b.input ?? {} }));
+  const thinking = content.map(thinkingBlock).filter(Boolean);
   const u = response?.usage || {};
   // Anthropic reports uncached input, cache reads and cache writes separately; the prompt the model
   // attended to is their sum, which matches Gemini's promptTokenCount.
@@ -187,6 +217,7 @@ export function readAnthropicStep(response) {
   return {
     text,
     calls,
+    thinking,
     finishReason: response?.stop_reason,
     usage: {
       input: (u.input_tokens || 0) + cacheRead + cacheWrite,
@@ -209,8 +240,9 @@ export function readAnthropicStep(response) {
  * @param {string[]} o.systemBlocks
  * @param {object}   [o.tools]
  * @param {number}   o.maxTokens
- * @param {number}   o.temperature
- * @param {object}   o.anthropic     { promptCaching, messageBreakpoints, sessionAffinity, cacheTtlStable, cacheTtlMission }
+ * @param {number}   o.temperature   sent only when `anthropic.temperatureModels` lists the model
+ * @param {object}   o.anthropic     { promptCaching, messageBreakpoints, sessionAffinity, cacheTtlStable, cacheTtlMission,
+ *                                   temperatureModels }
  * @param {number}   [o.sessionCacheBoundary] frozen messages before this turn's delta (0: none)
  * @param {string}   [o.affinityKey] keeps consecutive calls on one backend so cache reads hit
  * @param {Function} o.callWithRetry
@@ -229,12 +261,13 @@ export function createAnthropicStepper({
   const requestOptions = anthropic.sessionAffinity && affinityKey
     ? { headers: { 'X-Vertex-Ai-Session-Id': affinityKey } }
     : undefined;
+  const takesTemperature = Array.isArray(anthropic.temperatureModels) && anthropic.temperatureModels.includes(modelId);
 
   return {
     provider: PROVIDERS.anthropic,
 
     async call(history, step) {
-      const messages = toAnthropicMessages(history);
+      const messages = toAnthropicMessages(history, { modelId });
       if (anthropic.promptCaching && anthropic.messageBreakpoints) {
         if (sessionCacheBoundary > 0) {
           applySessionBoundaryBreakpoint(messages, sessionCacheBoundary, { ttlMission: anthropic.cacheTtlMission, logger });
@@ -252,7 +285,7 @@ export function createAnthropicStepper({
         ...(system !== undefined ? { system } : {}),
         messages,
         ...(anthropicTools ? { tools: anthropicTools } : {}),
-        temperature,
+        ...(takesTemperature ? { temperature } : {}),
       };
       logger('INFO', `calling Claude ${modelId} (step ${step})`);
       const response = await callWithRetry(async () => {

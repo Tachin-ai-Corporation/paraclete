@@ -1,7 +1,8 @@
 'use client';
 // dashboard/components/settings/SettingsView.jsx: the Settings page. Its tabs, the open one kept in the
 // URL hash: Users and Secrets for admins (a member sees a note instead), Workspace on a role with a
-// Google Workspace account (workspace/WorkspaceTab.jsx), System and Setup for everyone. Who is asking
+// Google Workspace account (workspace/WorkspaceTab.jsx), Models (Claude: ModelsTab.jsx; admins test and
+// switch it, members see its state), System and Setup for everyone. Who is asking
 // and what the dashboard was built from come from GET /api/me, read once; whether the role has a
 // Workspace account, and its state, from GET /api/workspace, which the Setup checklist shows too.
 import { usePoll } from '@/lib/client/use-poll.js';
@@ -12,12 +13,14 @@ import { SecretsTab } from './SecretsTab.jsx';
 import { SystemTab } from './SystemTab.jsx';
 import { SetupTab } from './SetupTab.jsx';
 import { WorkspaceTab } from './workspace/WorkspaceTab.jsx';
+import { ModelsTab } from './ModelsTab.jsx';
 import styles from './Settings.module.css';
 
 const TABS = [
   { key: 'users', label: 'Users' },
   { key: 'secrets', label: 'Secrets' },
   { key: 'workspace', label: 'Workspace', workspaceOnly: true },
+  { key: 'models', label: 'Models' },
   { key: 'system', label: 'System' },
   { key: 'setup', label: 'Setup' },
 ];
@@ -35,7 +38,7 @@ export function SettingsView() {
       <div className="page-header">
         <div>
           <h1>Settings</h1>
-          <p>Who can use this dashboard, the agent's secrets, how its system is running, and what setup is left.</p>
+          <p>Who can use this dashboard, the agent's secrets and models, how its system is running, and what setup is left.</p>
         </div>
       </div>
       <AsyncState loading={loading && !me} error={me ? null : error}>
@@ -62,6 +65,7 @@ function SettingsTabs({ me }) {
           {workspace.data && <WorkspaceTab workspace={workspace.data} refresh={workspace.refresh} isAdmin={isAdmin} />}
         </AsyncState>
       )}
+      {active === 'models' && <ModelsTab me={me} />}
       {active === 'system' && <SystemTab me={me} />}
       {active === 'setup' && <SetupTab me={me} workspace={workspace} />}
     </>

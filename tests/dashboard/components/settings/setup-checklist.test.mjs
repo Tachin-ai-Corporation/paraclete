@@ -20,10 +20,10 @@ const setupOf = (overrides = {}) => ({ users: { total: 1, admins: 1 }, role: 'ge
 const byKey = (list) => Object.fromEntries(list.items.map((item) => [item.key, item]));
 const NO_WORKSPACE = { needed: false, role: 'generic' };
 
-test('a healthy fresh instance: the required steps are done, the rest optional or for later', () => {
+test('a healthy fresh instance: the required steps are done, the rest optional or informational', () => {
   const list = setupChecklist({ agent: readyAgent, status: healthyStatus(), setup: setupOf(), agentAccount: AGENT_ACCOUNT, workspace: NO_WORKSPACE, isAdmin: true });
   assert.deepEqual(list.items.map((i) => [i.key, i.state]), [
-    ['agent', 'done'], ['services', 'done'], ['models', 'done'], ['users', 'optional'], ['drive', 'info'], ['claude', 'later'], ['workspace', 'not_needed'],
+    ['agent', 'done'], ['services', 'done'], ['models', 'done'], ['users', 'optional'], ['drive', 'info'], ['claude', 'optional'], ['workspace', 'not_needed'],
   ]);
   assert.deepEqual(list.required, { done: 3, total: 3 });
   const items = byKey(list);
@@ -82,6 +82,17 @@ test('a gateway that is down or missing a provider is a model problem', () => {
 test('Claude on', () => {
   const items = byKey(setupChecklist({ setup: setupOf({ claude_enabled: true, role: 'project-manager' }) }));
   assert.equal(items.claude.state, 'done');
+  assert.equal(items.claude.href, '#models');
+});
+
+test('Claude off is optional and points at the Models tab, naming the admin for a member', () => {
+  const admin = byKey(setupChecklist({ setup: setupOf(), isAdmin: true })).claude;
+  assert.deepEqual([admin.state, admin.href, admin.linkLabel], ['optional', '#models', 'Open Models settings']);
+  assert.match(admin.action, /^Turn it on under Models: accept Anthropic's terms in Model Garden, test the Claude models, then switch it on\.$/);
+  const member = byKey(setupChecklist({ setup: setupOf(), isAdmin: false })).claude;
+  assert.equal(member.linkLabel, 'See Models settings');
+  assert.match(member.action, /^Ask a dashboard admin: turn it on under Models/);
+  assert.equal(byKey(setupChecklist({})).claude.href, undefined, 'no link while the state is unknown');
 });
 
 test('a Workspace role: the account is required, links to its tab, and follows the record and the last test', () => {

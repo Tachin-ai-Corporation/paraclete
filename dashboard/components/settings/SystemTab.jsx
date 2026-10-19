@@ -3,13 +3,15 @@
 // reports it (the `status` command): each service's systemd state and heartbeat, the model gateway, the
 // installed release and the host, and the Google Chat channel as the ears and the mouth report it. The
 // dashboard's own build sits beside the agent's release, since one upgrade moves both. Every user can
-// look; admins can restart a service (`restart_service`).
+// look; admins can restart a service (`restart_service`). Above it, the version card (UpdateCard.jsx):
+// the newer releases and, for admins, installing one.
 import { useState } from 'react';
 import { useCommand } from '@/lib/client/use-command.js';
 import { formatBytes, formatDate, timeAgo } from '@/lib/client/format.js';
 import { AsyncState } from '@/components/ui/AsyncState.jsx';
 import { ConfirmButton } from './ConfirmButton.jsx';
 import { Notice } from './Notice.jsx';
+import { UpdateCard } from './UpdateCard.jsx';
 import { chatChannelView } from './chat-channel.js';
 import { compareBuilds, formatDuration, serviceHealth, SERVICE_ORDER, shortCommit } from './service-health.js';
 import styles from './Settings.module.css';
@@ -45,6 +47,7 @@ export function SystemTab({ me }) {
 
   return (
     <div>
+      <UpdateCard me={me} />
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
           <div>

@@ -2,8 +2,8 @@
 
 The control service: the dashboard's bridge to the VM. The dashboard writes a command document to
 Firestore; control carries it out on the VM and writes the outcome back onto the same document. It
-reports status, skills, configuration and the agent's workspace; switches responsibilities and Claude;
-restarts services; upgrades the instance; checks what the agent can reach in Google Drive; and, on a
+reports status, skills, configuration and the agent's workspace; switches responsibilities; tests which
+Claude models the project can use and switches Claude on or off; restarts services; upgrades the instance; checks what the agent can reach in Google Drive; and, on a
 role with a Google Workspace account, checks that account and records it on the VM.
 
 **Belongs here:** the command queue, the closed set of commands, the signature check, and the calls to
@@ -21,7 +21,8 @@ for a command (the dashboard decides; see [Trust](#trust)).
 | `commands.mjs` | The command set: checks each command's params and calls the module that does the work |
 | `systemd.mjs` | The allowlisted units and every `systemctl`, `systemd-run` and `journalctl` call |
 | `upgrade.mjs` | Checks a ref, starts the upgrade script in its own unit, reads how it ended |
-| `models.mjs` | The Claude switch in `config/settings`, and the model view |
+| `models.mjs` | The Claude switch and the Claude model in `config/settings`, and the model view |
+| `claude-check.mjs` | The Claude test: one short message to each Claude model the contracts list, on Vertex AI as the agent, and for every model that does not answer the one thing to do |
 | `responsibilities.mjs` | The responsibility list, the on/off switch, and "run now" |
 | `introspection.mjs` | The status, skills, configuration and workspace views |
 | `gateway-probe.mjs` | Asks the local gateway whether it is ready and which models it runs |
@@ -54,6 +55,8 @@ release need it. Every other service runs as the `paraclete` user. The privilege
   the agent has, and writes nothing there but its own test file, which it moves to the trash at once.
 - `workspace_check` acts only as the agent would: the VM's service account signs as
   `paraclete-dwd@<project>`, which it may already do, and the calls only read.
+- `claude_check` calls only the Claude models the contracts list, as the agent's own service account,
+  with one short message each; `set_model` stores a Claude model only when the contracts list it.
 - On disk, control writes two files and no other: `/etc/paraclete/workspace.json` and
   `/etc/paraclete/instance.json`, from `set_workspace_account`. The paths are constants in
   `workspace-account.mjs`, which refuses any other; the account is checked first (an address in an
@@ -171,9 +174,12 @@ catalog.
 ### `config`
 
 Params: none.
-Result: `{ instance, release, settings: { claude_enabled, effort, claude_updated_at,
-claude_updated_by }, contracts }`. `instance` is the instance record; it names the gateway token
-file, never its content.
+Result: `{ instance, release, settings: { claude_enabled, claude_model, claude_model_ignored, effort,
+claude_updated_at, claude_updated_by }, contracts }`. `instance` is the instance record; it names the
+gateway token file, never its content. `claude_model` is the Claude model the cortex and the strong
+tier run while Claude is on: the stored choice when the contracts' `vertex.models.claude_candidates`
+list it, else `vertex.models.claude`. `claude_model_ignored` is a stored choice they do not list (the
+gateway runs `claude` instead, and logs it once at startup), else null.
 
 ### `workspace`
 
@@ -190,8 +196,9 @@ Result:
 
 Params: none.
 Result: `{ settings, tiers, locations: { google, anthropic }, running, organ_max_steps,
-service_models: { utility, ears_preprocess, mouth } }`. `tiers` is the contracts' `vertex.models`;
-`running` is the gateway probe, whose `models` are what the gateway actually runs.
+service_models: { utility, ears_preprocess, mouth } }`. `settings` is `config`'s; `tiers` is the
+contracts' `vertex.models`, `claude_candidates` included; `running` is the gateway probe, whose
+`models` are what the gateway actually runs.
 
 ### `responsibilities`
 
@@ -217,13 +224,49 @@ Result: `{ id, name, trigger_id, message }`. Creates `responsibility_triggers/{c
 command_id }`. The brain's scheduler claims it and sets `status` to `fired`, `skipped` or `error`
 with `detail` and `fired_at`; follow it by `trigger_id`.
 
+### `claude_check`
+
+Params: none. The Test button of the dashboard's Settings, Models tab; admins only, because every
+test is a billed model call.
+Sends each Claude model in the contracts' `vertex.models.claude_candidates` (newest first) one short
+message with at most a few output tokens, all at once, on Vertex AI's Anthropic endpoint in
+`vertex.anthropic_location`: `POST https://<location>-aiplatform.googleapis.com/v1/projects/<project>/locations/<location>/publishers/anthropic/models/<model>:rawPredict`
+with `{ anthropic_version: "vertex-2023-10-16", messages, max_tokens }`, as the VM's service account.
+The request is made with `fetch`, never through the gateway. Nothing is written.
+Result:
+```
+{ checked_at,
+  project,
+  location,                       vertex.anthropic_location
+  models: [{ model,               vertex-anthropic/<id>, in the contracts' order
+             id,                  <id>
+             ok,                  the model answered
+             status,              the HTTP status, or null when Vertex AI could not be reached
+             error,               Google's message, null when ok
+             fix,                 the one thing to do, null when ok
+             model_garden }],     the model's Model Garden page in the project
+  best }                          the newest model that answered, or null
+```
+Each failure gets its own `fix`: Anthropic's terms not accepted (a 403 or 400 about terms, enabling the
+model or not being allowed to use it: accept them on the model's Model Garden page), a model not offered to the project in that
+region (404), no quota (429: the Quotas page), the Vertex AI API off, an organization policy that
+restricts models, the agent's account lacking Vertex AI User, and Vertex AI failing or not reachable.
+Only a VM that cannot get its own access token fails the command. A passing test says the project may
+call the model; it does not run a gateway turn.
+
 ### `set_model`
 
-Params: `{ claude_enabled: boolean }`.
-Result: `{ claude_enabled, expected_cortex, gateway }`. Writes `claude_enabled`,
-`claude_updated_at` and `claude_updated_by` in `config/settings` (nothing else in it), restarts the
-gateway, and waits for it to be ready on the expected cortex model. A gateway that is not ready, or
-runs another model, fails the command with the probe in `result`; the setting stays as written.
+Params: `{ claude_enabled: boolean, claude_model?: string }`. `claude_model`, when given, must be one
+of the contracts' `vertex.models.claude_candidates`; anything else fails the command before anything
+is written. The dashboard sends it with the model that passed `claude_check` when it turns Claude on.
+Result: `{ claude_enabled, claude_model, expected_cortex, gateway }`. Writes `claude_enabled`,
+`claude_updated_at`, `claude_updated_by` and, when given, `claude_model` in `config/settings` (nothing
+else in it), restarts the gateway, and waits for it to be ready on the expected models: with Claude on,
+the chosen Claude model (the one given, else the stored choice, else `vertex.models.claude`) for the
+cortex and the strong tier; with it off, the contracts' `cortex` and `strong`. The expectation comes
+from the gateway's own code (`agent/services/gateway/settings.mjs`). `claude_model` in the result is
+that Claude model, or null with Claude off. A gateway that is not ready, or runs other models, fails the
+command with the probe in `result`; the setting stays as written.
 
 ### `restart_service`
 
@@ -335,6 +378,7 @@ command again is safe.
 | Field | Written by | Meaning |
 |---|---|---|
 | `claude_enabled` | `set_model` | Claude for the cortex and the strong tier. Only `true` turns it on. The gateway reads it at startup |
+| `claude_model` | `set_model` | Which Claude model runs while Claude is on: one of the contracts' `vertex.models.claude_candidates`. Absent, or a model they no longer list, means `vertex.models.claude`. The gateway reads it at startup |
 | `claude_updated_at`, `claude_updated_by` | `set_model` | When and by whom it last changed |
 | `effort` | the dashboard | One of the contracts' effort levels; `effort.default` when absent |
 | `effort_updated_at`, `effort_updated_by` | the dashboard | When and by whom the effort last changed |

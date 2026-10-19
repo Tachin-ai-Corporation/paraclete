@@ -30,6 +30,7 @@ executed and checked by an independent verifier.
 | `roles/` | One package per role, starting with `generic` |
 | `config/` | `contracts.json`, the single source for shared values |
 | `install/` | Installer, uninstaller, VM bootstrap and install manifest |
+| `migrations/` | Data migrations a release carries, run by the upgrade |
 | `docs/` | Build plan, glossary, product rules and guides |
 | `tests/` | Every test; `npm test` runs them all |
 | `dev/` | Tools for developing this repo; never installed |

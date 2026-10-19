@@ -7,11 +7,12 @@
 // The transcript (`messages`, and what a failed turn hands its fallback) is provider-neutral:
 //   { role: 'user'|'assistant', content: string | Array<{type: 'text', text, tier?}> }
 //   { role: 'assistant', content: string|null,
-//     toolCalls: [{ id, name, args, provider, modelId, googleId?, thoughtSignature? }] }
+//     toolCalls: [{ id, name, args, provider, modelId, googleId?, thoughtSignature?, anthropicThinking? }] }
 //   { role: 'tool', toolCallId, name, content, images?: [{ mimeType, data, name }] }
 // `id` is unique in the transcript and safe as a Claude tool_use id. `provider` and `modelId` name
 // the model that made the call. `googleId` and `thoughtSignature` are what Gemini returned with it,
-// sent back to that model as they came. `images` are what a tool such as viewImage returned for the
+// and `anthropicThinking` the thinking blocks Claude wrote before it: each is sent back to the model
+// that made the call, as it came. `images` are what a tool such as viewImage returned for the
 // model to look at (base64 `data`, a viewable `mimeType`, the `name` the organ gave): each provider's
 // step turns them into its own image part, and only the most recent `images.kept` stay attached
 // (retainImages() in images.mjs). Images never reach the tool log, the tool records or the response.
@@ -32,6 +33,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     // 1h is load-bearing, not an optimization: one motor task can outlive the 5m default.
     cacheTtlStable: '1h',
     cacheTtlMission: '1h',
+    // The Claude models a request may send a temperature to; the others take none.
+    temperatureModels: Object.freeze([]),
   }),
   gemini: Object.freeze({
     explicitCache: false,
@@ -79,6 +82,8 @@ export function resolveSettings(settings = {}) {
       sessionAffinity: bool(a.sessionAffinity, d.anthropic.sessionAffinity),
       cacheTtlStable: ttl(a.cacheTtlStable, d.anthropic.cacheTtlStable),
       cacheTtlMission: ttl(a.cacheTtlMission, d.anthropic.cacheTtlMission),
+      temperatureModels: Array.isArray(a.temperatureModels)
+        ? a.temperatureModels.filter((m) => typeof m === 'string' && m) : d.anthropic.temperatureModels,
     },
     gemini: {
       explicitCache: bool(g.explicitCache, d.gemini.explicitCache),
@@ -334,6 +339,7 @@ export async function runTurn({
         modelId,
         ...(first.googleId ? { googleId: first.googleId } : {}),
         ...(first.thoughtSignature ? { thoughtSignature: first.thoughtSignature } : {}),
+        ...(out.thinking?.length ? { anthropicThinking: out.thinking } : {}),
       };
       history.push({ role: 'assistant', content: out.text || null, toolCalls: [call] });
 

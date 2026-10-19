@@ -53,10 +53,57 @@ test('a model string must name its provider, and the fallbacks must be Gemini', 
   assert.ok(problems.some((p) => p.startsWith('vertex.models.fallback must be a Gemini model')));
 });
 
+test('the Claude candidates: newest first from Opus 5.5, the contracts Claude model among them, each with a context window', () => {
+  const { models, context_windows: windows } = loadContracts().vertex;
+  assert.equal(models.claude_candidates[0], 'vertex-anthropic/claude-opus-5-5');
+  assert.equal(models.claude_candidates.at(-1), models.claude);
+  for (const model of models.claude_candidates) {
+    assert.match(model, /^vertex-anthropic\/claude-opus-/);
+    assert.ok(windows[model.split('/')[1]] > 0, `${model} has a context window`);
+  }
+});
+
+test('a Claude candidate list that is empty, repeats a model, names Gemini, lacks a context window or leaves out the Claude model is refused', () => {
+  const problemsWith = (change) => {
+    const c = real();
+    change(c.vertex);
+    return validateContracts(c);
+  };
+  assert.ok(problemsWith((v) => { v.models.claude_candidates = []; }).some((p) => p.includes('non-empty list')));
+  assert.ok(problemsWith((v) => { delete v.models.claude_candidates; }).some((p) => p.includes('non-empty list')));
+  assert.ok(problemsWith((v) => { v.models.claude_candidates.push(v.models.claude); }).some((p) => p.includes('twice')));
+  assert.ok(problemsWith((v) => { v.models.claude_candidates.unshift('vertex-google/gemini-4-argon'); }).some((p) => p.includes("only 'vertex-anthropic/")));
+  assert.ok(problemsWith((v) => { delete v.context_windows['claude-opus-5-5']; }).some((p) => p.includes('give claude-opus-5-5 a context window')));
+  assert.ok(problemsWith((v) => { v.models.claude_candidates = v.models.claude_candidates.filter((m) => m !== v.models.claude); })
+    .some((p) => p.includes('must include vertex.models.claude')));
+});
+
 test('the gateway listens on loopback only', () => {
   const c = real();
   c.gateway.bind = '0.0.0.0';
   assert.ok(validateContracts(c).some((p) => p.includes('loopback')));
+});
+
+test("the dashboard's build and service are checked: sizes, ingress, image, build config, timeout and the release check", () => {
+  const { dashboard } = loadContracts();
+  assert.deepEqual(dashboard.service, { cpu: '1', memory: '1Gi', max_instances: 3, ingress: 'all' });
+  assert.equal(dashboard.build_config_path, 'dashboard/cloudbuild.json');
+  const problemsWith = (change) => {
+    const c = real();
+    change(c.dashboard);
+    return validateContracts(c);
+  };
+  assert.ok(problemsWith((d) => { d.service.cpu = 'one'; }).some((p) => p.startsWith('dashboard.service.cpu')));
+  assert.ok(problemsWith((d) => { d.service.memory = '1GB'; }).some((p) => p.startsWith('dashboard.service.memory')));
+  assert.ok(problemsWith((d) => { d.service.max_instances = '3'; }).some((p) => p.startsWith('dashboard.service.max_instances')));
+  assert.ok(problemsWith((d) => { d.service.ingress = 'public'; }).some((p) => p.startsWith('dashboard.service.ingress')));
+  assert.ok(problemsWith((d) => { d.image_name = 'Dashboard'; }).some((p) => p.startsWith('dashboard.image_name')));
+  assert.ok(problemsWith((d) => { d.build_config_path = 'dashboard/cloudbuild.yaml'; }).some((p) => p.startsWith('dashboard.build_config_path')));
+  assert.ok(problemsWith((d) => { d.build_timeout_seconds = 0; }).some((p) => p.startsWith('dashboard.build_timeout_seconds')));
+  assert.ok(problemsWith((d) => { d.release_check_ttl_seconds = 60; }).some((p) => p.includes('60 unauthenticated requests an hour')));
+  const c = real();
+  delete c.dashboard;
+  assert.deepEqual(validateContracts(c), ['missing section: dashboard']);
 });
 
 test('a missing section is named', () => {

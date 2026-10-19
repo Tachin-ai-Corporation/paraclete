@@ -3,10 +3,13 @@
 // runs; dev/deploy.mjs imports it to move a dev instance's dashboard the same way, and dev/status.mjs
 // to read which commit a deployed dashboard runs. It only builds argument lists, files and
 // comparisons: it never calls gcloud or the network. The names it needs (the Cloud Run service, the
-// image repository, the dashboard's account) come from install/lib/names.sh, their one definition.
+// image repository, the dashboard's account) come from install/lib/names.sh, their one definition; the
+// image's name, where a commit keeps its build config, the build's timeout and the service's size come
+// from config/contracts.json's `dashboard` section, which the dashboard's own upgrade
+// (dashboard/lib/server/upgrade.mjs) reads too, so an upgraded dashboard is built and sized the same.
 //
 // The build: Cloud Build fetches the repository at one commit from GitHub and runs that commit's own
-// dashboard/cloudbuild.yaml (gcloud reads --config from this machine, so the caller downloads it
+// dashboard/cloudbuild.json (gcloud reads --config from this machine, so the caller downloads it
 // first), as the dashboard's service account, in the instance's region. The image is
 // <region>-docker.pkg.dev/<project>/<repository>/dashboard:<commit>, so whether a commit is built is a
 // question of whether its tag exists.
@@ -21,11 +24,17 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** The image inside the repository. dashboard/cloudbuild.yaml tags it with the commit it was built from. */
-export const IMAGE_NAME = 'dashboard';
+/** config/contracts.json's `dashboard` section, read once. */
+const DASHBOARD = JSON.parse(readFileSync(new URL('../../config/contracts.json', import.meta.url), 'utf8')).dashboard;
 
-/** Where a commit keeps its build config. Every commit is built with its own. */
-export const BUILD_CONFIG_PATH = 'dashboard/cloudbuild.yaml';
+/** The image inside the repository. The build config tags it with the commit it was built from. */
+export const IMAGE_NAME = DASHBOARD.image_name;
+
+/** Where a commit keeps its build config (dashboard/cloudbuild.json). Every commit is built with its own. */
+export const BUILD_CONFIG_PATH = DASHBOARD.build_config_path;
+
+/** How long one build may take. The build config names no timeout, so every build gets this one. */
+export const BUILD_TIMEOUT_SECONDS = DASHBOARD.build_timeout_seconds;
 
 /**
  * The Cloud Run service's size and reach. One agent and a handful of people: one CPU and 1 GiB run
@@ -33,7 +42,12 @@ export const BUILD_CONFIG_PATH = 'dashboard/cloudbuild.yaml';
  * instances bound what a burst can cost. Ingress is `all` because IAP itself stands in front of the
  * service's URL; nothing reaches the container without passing it.
  */
-export const SERVICE_SETTINGS = Object.freeze({ cpu: '1', memory: '1Gi', maxInstances: '3', ingress: 'all' });
+export const SERVICE_SETTINGS = Object.freeze({
+  cpu: DASHBOARD.service.cpu,
+  memory: DASHBOARD.service.memory,
+  maxInstances: String(DASHBOARD.service.max_instances),
+  ingress: DASHBOARD.service.ingress,
+});
 
 /** The annotations Cloud Run keeps these settings in, as `gcloud run services describe` shows them. */
 const IAP_ANNOTATION = 'run.googleapis.com/iap-enabled';
@@ -99,14 +113,14 @@ export function tagsArgs({ project, region }) {
  * `gcloud` arguments that build the image at a commit. `--region` keeps the build, its logs and its
  * record in the instance's region, beside the image repository, whatever the caller's own
  * `builds/region` setting says; without it a build goes wherever that setting points, or to `global`,
- * which an organization's resource-location policy may forbid.
+ * which an organization's resource-location policy may forbid. `--timeout` is the contracts' bound.
  */
 export function buildArgs({ repo, commit, configFile, project, region }) {
   need({ repo, commit, configFile, project, region }, ['repo', 'commit', 'configFile', 'project', 'region']);
   return ['builds', 'submit', `https://github.com/${repo}`, `--git-source-revision=${commit}`, `--config=${configFile}`,
     `--substitutions=_IMAGE=${imagePath({ project, region })},_COMMIT=${commit}`,
     `--service-account=projects/${project}/serviceAccounts/${dashboardAccount(project)}`,
-    `--region=${region}`, `--project=${project}`, '--quiet'];
+    `--timeout=${BUILD_TIMEOUT_SECONDS}s`, `--region=${region}`, `--project=${project}`, '--quiet'];
 }
 
 /**

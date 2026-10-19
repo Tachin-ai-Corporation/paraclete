@@ -1,11 +1,12 @@
 // tests/repo/dashboard-boundaries.test.mjs: what the dashboard may import. dashboard/README.md
 // explains why:
 //   - outside dashboard/, only the agent libraries the two share (agent/auth, agent/storage,
-//     agent/work) and config/*.json. Never config/*.mjs: config/contracts.mjs finds its JSON through
+//     agent/work, agent/release) and config/*.json. Never config/*.mjs: config/contracts.mjs finds its JSON through
 //     `new URL(..., import.meta.url)`, which a bundler rewrites into an asset URL;
 //   - code the browser runs ('use client') never imports lib/server/, which holds the Firestore client
 //     and the signing calls;
-//   - npm packages only when dashboard/package.json declares them.
+//   - npm packages only when dashboard/package.json declares them;
+//   - the image (dashboard/Dockerfile) copies in every agent package the dashboard imports.
 // The agent never imports the dashboard: tests/repo/boundaries.test.mjs refuses any agent import
 // outside its table.
 import { test } from 'node:test';
@@ -16,7 +17,7 @@ import { repoFiles, readRepoFile } from './repo-files.mjs';
 const files = repoFiles().filter((path) => path.startsWith('dashboard/') && /\.(mjs|js|jsx)$/.test(path)
   && !/^dashboard\/(next\.config\.mjs)$/.test(path));
 const DECLARED = new Set(Object.keys(JSON.parse(readRepoFile('dashboard/package.json')).dependencies || {}));
-const SHARED = /^(agent\/(auth|storage|work)\/[^/]+\.mjs|config\/[^/]+\.json)$/;
+const SHARED = /^(agent\/(auth|storage|work|release)\/[^/]+\.mjs|config\/[^/]+\.json)$/;
 
 function specifiers(source) {
   const found = [];
@@ -80,4 +81,17 @@ test('the server libraries never import client code', () => {
     }
   }
   assert.deepEqual(violations, []);
+});
+
+test('the image copies in every agent package the dashboard imports', () => {
+  const imported = new Set();
+  for (const path of files) {
+    for (const spec of specifiers(readRepoFile(path))) {
+      const target = resolve(path, spec);
+      const m = target && /^agent\/([^/]+)\//.exec(target);
+      if (m) imported.add(m[1]);
+    }
+  }
+  const copied = new Set([...readRepoFile('dashboard/Dockerfile').matchAll(/^COPY agent\/([a-z-]+) agent\/\1$/gm)].map((m) => m[1]));
+  assert.deepEqual([...imported].filter((pkg) => !copied.has(pkg)).sort(), [], 'dashboard/Dockerfile must COPY each of these');
 });

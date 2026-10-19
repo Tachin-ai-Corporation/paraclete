@@ -79,8 +79,7 @@ DASHBOARD_PROJECT_ROLES=(
   roles/secretmanager.admin      # the secret store: creates secrets and grants the agent access to each
   roles/cloudbuild.builds.editor # self-upgrade: builds the dashboard image at a release
   roles/run.admin                # self-upgrade: deploys the new revision of its own service
-  roles/aiplatform.user          # Settings, Models: the Test button probes the model
-  roles/logging.logWriter        # its builds run as itself and log to Cloud Logging only (dashboard/cloudbuild.yaml)
+  roles/logging.logWriter        # its builds run as itself and log to Cloud Logging only (dashboard/cloudbuild.json)
 )
 # Granted on the dashboard's own account, not the project: it deploys revisions and submits builds
 # that run as itself (actAs), and it signs its upload URLs and the commands it sends the VM as itself.
@@ -868,20 +867,21 @@ gcloud_args() {
   done <<<"$listing"
 }
 
-# Downloads the release's own dashboard/cloudbuild.yaml. gcloud reads --config from this machine, not
+# Downloads the release's own dashboard/cloudbuild.json. gcloud reads --config from this machine, not
 # from the source it builds, and a release is built with its own build steps, not this clone's. A
-# release from before the dashboard has none, and installs without a dashboard.
+# commit from before the first release has none (older ones kept their steps in YAML, or had no
+# dashboard), and installs without a dashboard.
 fetch_build_config() {
   local url status=0
-  BUILD_CONFIG_FILE="$WORK_DIR/cloudbuild.yaml"
+  BUILD_CONFIG_FILE="$WORK_DIR/cloudbuild.json"
   url="$(dashboard_js build-config-url repo="$REPO" commit="$COMMIT")"
   curl -sSfL --retry 3 -o "$BUILD_CONFIG_FILE" "$url" 2>/dev/null || status=$?
   case "$status" in
     0)
-      show_file cloudbuild.yaml "$BUILD_CONFIG_FILE"
+      show_file cloudbuild.json "$BUILD_CONFIG_FILE"
       return 0 ;;
     22)
-      note "$RELEASE has no dashboard/cloudbuild.yaml: it predates the dashboard, so there is none to deploy"
+      note "$RELEASE has no dashboard/cloudbuild.json: it is older than the first release, so no dashboard is deployed"
       return 1 ;;
     *) die "could not download $url (curl exit $status)" ;;
   esac

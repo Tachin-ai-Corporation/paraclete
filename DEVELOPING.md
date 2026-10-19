@@ -87,6 +87,7 @@ product: something a fresh install needs.
 | `roles/` | One package per role. `generic` is the base of every role | `generic` plus the chosen role |
 | `config/` | `contracts.json`, the single source for shared values | Yes |
 | `install/` | Installer, uninstaller, VM bootstrap, install manifest, Firestore indexes | The parts the manifest lists |
+| `migrations/` | Data migrations a release carries; the upgrade runs them | Yes |
 | `docs/` | Build plan, glossary, product rules, guides | No |
 | `tests/` | Every test. `npm test` runs them all | No |
 | `dev/` | Tooling for working on the repo: deploy, status, logs, queries | **Never** |
@@ -299,6 +300,29 @@ often broken:
 - Before pushing, run `npm test`.
 - Commit or push only when the developer has asked you to.
 - Releases are tags that maintainers cut after CI is green. Don't tag a release unless asked.
+
+### Cutting a release
+
+A release is a version tag on `main`, `vYYYY.MM.DD.N.N`, published as a GitHub release with notes.
+Dashboards learn of it from GitHub's release list and offer it as an update
+(`agent/release/versions.mjs` defines versions and their order). Its version is the one the released
+commit's subject already starts with, so there is nothing to choose.
+
+1. Merge what the release should hold into `main`, and let CI pass on `main`'s head.
+2. On a clean, up-to-date `main`: `node dev/release.mjs --dry-run`. It refuses unless `origin` has the
+   same head, every CI check run on it passed, and the head's version is newer than every version tag;
+   then it shows the notes the release will carry.
+3. `node dev/release.mjs`: the same checks, then an annotated tag of the version at the head, pushed
+   to `origin`.
+4. The push starts `.github/workflows/release.yml`. It refuses a tag that is not a version or whose
+   commit is not on `main`, runs the tests and the dashboard build at the tag, then publishes the
+   release with `node dev/release.mjs notes <tag>` as its notes: one line per commit since the
+   previous version tag, each the commit's subject. Follow it in the repository's Actions tab.
+
+A tag whose workflow failed is not a release, and no dashboard offers it. Fix the cause in a new
+commit with a newer version, and release that. Rerunning the workflow (after a GitHub outage, say)
+publishes the release, or updates the notes of one an earlier run published. The commands' options
+are in [dev/README.md](dev/README.md).
 
 ---
 

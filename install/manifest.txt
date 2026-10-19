@@ -14,8 +14,9 @@ skills/
 roles/generic/
 roles/{role}/
 
-# What keeps the instance current.
+# What keeps the instance current, and the data migrations an upgrade runs.
 install/bootstrap.sh
 install/upgrade.sh
 install/manifest.txt
 install/vm/
+migrations/

@@ -213,7 +213,7 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
 
   test('grants the dashboard what phase 6 needs, and itself only on its own account', () => {
     assert.deepEqual(projectGrants(run.commands, DASHBOARD), [
-      'roles/datastore.user', 'roles/secretmanager.admin', 'roles/cloudbuild.builds.editor', 'roles/run.admin', 'roles/aiplatform.user',
+      'roles/datastore.user', 'roles/secretmanager.admin', 'roles/cloudbuild.builds.editor', 'roles/run.admin',
       'roles/logging.logWriter',
     ]);
     const onAccounts = find(run.commands, 'gcloud', 'iam', 'service-accounts', 'add-iam-policy-binding')
@@ -286,10 +286,10 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.ok(!run.calls.some((call) => call.command === 'vertex generateContent'));
   });
 
-  test("builds with the release's own cloudbuild.yaml, downloaded at its commit", () => {
+  test("builds with the release's own cloudbuild.json, downloaded at its commit", () => {
     const raw = run.calls.filter((call) => call.command === 'raw').map((call) => call.args.find((arg) => arg.startsWith('https://')));
-    assert.ok(raw.includes(`https://raw.githubusercontent.com/${REPO}/${COMMITS.release}/dashboard/cloudbuild.yaml`));
-    assert.equal(shownFile(run.stdout, 'cloudbuild.yaml'), readFileSync(join(repoRoot, 'dashboard', 'cloudbuild.yaml'), 'utf8').trimEnd());
+    assert.ok(raw.includes(`https://raw.githubusercontent.com/${REPO}/${COMMITS.release}/dashboard/cloudbuild.json`));
+    assert.equal(shownFile(run.stdout, 'cloudbuild.json'), readFileSync(join(repoRoot, 'dashboard', 'cloudbuild.json'), 'utf8').trimEnd());
   });
 
   test('creates the Docker image repository in the region, and lets the dashboard push to it alone', () => {
@@ -309,7 +309,8 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.equal(more.length, 0);
     assert.equal(build[3], `https://github.com/${REPO}`);
     assert.equal(flag(build, 'git-source-revision'), COMMITS.release);
-    assert.match(flag(build, 'config'), /cloudbuild\.yaml$/);
+    assert.match(flag(build, 'config'), /cloudbuild\.json$/);
+    assert.equal(flag(build, 'timeout'), '1200s', "the contracts' bound on one build");
     assert.equal(flag(build, 'substitutions'), `_IMAGE=${IMAGE},_COMMIT=${COMMITS.release}`);
     assert.equal(flag(build, 'service-account'), `projects/${PROJECT}/serviceAccounts/${DASHBOARD}`);
     assert.equal(flag(build, 'region'), 'us-central1');
@@ -933,7 +934,8 @@ describe('a real run, then re-runs', { skip: needsBash, concurrency: false }, ()
     const [build] = state.builds;
     assert.deepEqual([build.source, build.revision, build.region, build.serviceAccount],
       [`https://github.com/${REPO}`, COMMITS.release, 'us-central1', `projects/${PROJECT}/serviceAccounts/${DASHBOARD}`]);
-    assert.equal(build.config, readFileSync(join(repoRoot, 'dashboard', 'cloudbuild.yaml'), 'utf8'));
+    assert.equal(build.config, readFileSync(join(repoRoot, 'dashboard', 'cloudbuild.json'), 'utf8'));
+    assert.equal(build.timeout, '1200s');
     assert.deepEqual(Object.keys(state.users), [OWNER]);
     assert.deepEqual({ ...state.users[OWNER], added_at: 'when' }, { email: OWNER, role: 'admin', added_by: 'install.sh', added_at: 'when' });
     assert.equal(state.instances.paraclete.metadata['paraclete-dashboard-url'], service.url);
@@ -1104,12 +1106,12 @@ describe('a dashboard that partly exists', { skip: needsBash, concurrency: true 
     assert.ok(box.state().iapPolicies['us-central1/paraclete'].some(([, member]) => member === `user:${OWNER}`));
   });
 
-  test('a release from before the dashboard installs without one', async () => {
+  test('a commit from before the first release installs without a dashboard', async () => {
     const state = freshProject();
-    state.rawFiles = state.rawFiles.filter((path) => path !== `${REPO}/${COMMITS.olderRelease}/dashboard/cloudbuild.yaml`);
+    state.rawFiles = state.rawFiles.filter((path) => path !== `${REPO}/${COMMITS.olderRelease}/dashboard/cloudbuild.json`);
     const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes', '--ref', OLDER_TAG]);
     assert.equal(run.status, 0, run.stderr);
-    assert.match(run.stdout, new RegExp(`${OLDER_TAG} has no dashboard/cloudbuild.yaml: it predates the dashboard`));
+    assert.match(run.stdout, new RegExp(`${OLDER_TAG} has no dashboard/cloudbuild.json: it is older than the first release, so no dashboard is deployed`));
     assert.deepEqual(dashboardCommands(run.commands), []);
     assert.deepEqual(corsUpdates(run.commands), [], 'no dashboard, so nothing uploads');
     assert.ok(find(run.commands, 'gcloud', 'compute', 'instances', 'create').length === 1, 'the agent still installs');

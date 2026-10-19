@@ -13,6 +13,7 @@ instance.
 | `trigger.mjs` | Runs a responsibility now, as the dashboard's "run now" does |
 | `say.mjs` | Sends the agent a chat message from your account and follows the conversation |
 | `smoke.mjs` | Runs the instance's role through one request in its area that changes nothing, and says PASS or FAIL |
+| `release.mjs` | Cuts a release from main's head by pushing its version tag, and writes a release's notes for `.github/workflows/release.yml` |
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
 
@@ -27,7 +28,7 @@ dashboard's service account; the project's owner can. Each reads your instance f
 
 | Command | Does |
 |---|---|
-| `node dev/deploy.mjs <branch\|tag\|commit> [--repo <owner>/<name>] [--vm-only \| --dashboard-only] [--timeout <seconds>]` | Resolves the ref to a commit on GitHub (a branch must be pushed), runs `sudo /opt/paraclete/install/upgrade.sh --ref <commit> --repo <owner>/<name>` on the VM with its output streamed, and waits for `agent/instance` to report ready on that commit. Then the dashboard, with the same commands `install/install.sh` uses (`install/lib/dashboard.mjs`): Cloud Build builds the commit's image with that commit's own `dashboard/cloudbuild.yaml` (from `git show`; the working tree's copy, with a warning, when your clone lacks the commit) unless the image exists, and Cloud Run deploys it with the service's environment moved to the commit, unless it already runs it. Both stream their output. `--vm-only` and `--dashboard-only` move one half. `--repo` defaults to this clone's origin, and must be public. The dashboard service must exist: `install/install.sh` creates it |
+| `node dev/deploy.mjs <branch\|tag\|commit> [--repo <owner>/<name>] [--vm-only \| --dashboard-only] [--timeout <seconds>]` | Resolves the ref to a commit on GitHub (a branch must be pushed), runs `sudo /opt/paraclete/install/upgrade.sh --ref <commit> --repo <owner>/<name>` on the VM with its output streamed, and waits for `agent/instance` to report ready on that commit. Then the dashboard, with the same commands `install/install.sh` uses (`install/lib/dashboard.mjs`): Cloud Build builds the commit's image with that commit's own `dashboard/cloudbuild.json` (from `git show`; the working tree's copy, with a warning, when your clone lacks the commit) unless the image exists, and Cloud Run deploys it with the service's environment moved to the commit, unless it already runs it. Both stream their output. `--vm-only` and `--dashboard-only` move one half. `--repo` defaults to this clone's origin, and must be public. The dashboard service must exist: `install/install.sh` creates it |
 | `node dev/status.mjs [--json]` | The installed release, each service's unit state and heartbeat age, the gateway's models, `agent/instance`, the five newest missions, and the dashboard's URL and the commit its image was built from. Exits 1 when a service is down or hung, the installed commit and `agent/instance` disagree, or the dashboard is missing or on another commit than the VM |
 | `node dev/logs.mjs <service\|all> [--lines N] [--follow]` | `journalctl` for `paraclete-<service>.service` (or every unit), 100 lines unless `--lines`; `--follow` until Ctrl+C |
 | `node dev/query.mjs <collection> [--where <field><op><value> ...] [--order <field> [desc]] [--limit N]` | Prints matching documents as JSON. `<collection>` may be a subcollection path such as `work/<id>/history`; `--doc <id>` reads one document. `--help` lists the operators and value types |
@@ -46,5 +47,20 @@ client only reads.
 **On Windows** Node cannot start `gcloud.cmd` without a shell, so the commands start gcloud the way
 `gcloud.cmd` does: the SDK's Python running its `lib/gcloud.py`. They find the SDK through `gcloud.cmd`
 on `PATH`, or `CLOUDSDK_ROOT_DIR`, and honor `CLOUDSDK_PYTHON`.
+
+## Cutting a release
+
+`release.mjs` is for maintainers and touches no instance: it needs `git` and the GitHub CLI, logged in
+(`gh auth login`), and neither gcloud nor `.local/instance.env`. When and why:
+[DEVELOPING.md](../DEVELOPING.md) section 10.
+
+| Command | Does |
+|---|---|
+| `node dev/release.mjs [--dry-run]` | Refuses unless this clone is on `main` with a clean tree, `origin` has `main` at the same commit, the head commit's subject starts with a version (`vYYYY.MM.DD.N.N: ...`), that version is newer than every version tag here and on `origin` and not taken, and every check run GitHub has for the head commit finished with success (`gh api repos/<owner>/<name>/commits/<sha>/check-runs`; it refuses while one is queued or running). Then it shows the release notes, makes an annotated tag of the version at the head and pushes it to `origin`, which starts the release workflow. `--dry-run` stops before the tag. A run after a failed push pushes the tag it made; a run after a finished one says so and does nothing |
+| `node dev/release.mjs notes <tag>` | Prints a release's notes to stdout: the line `Changes in <tag> since <previous tag>`, then one line per commit after the previous version tag up to the tag, oldest first, each the commit's subject as written. The previous version tag is the newest version tag older than `<tag>`, in version order. Only main's own line of commits counts (`git log --first-parent --no-merges`), so merge commits are left out. The release workflow publishes this |
+| `node dev/release.mjs check <tag>` | Exits 0 when `<tag>` is a version whose commit is on `origin/main`, 1 otherwise. The release workflow's first step |
+
+**What it changes.** One annotated tag in this clone and on `origin`, and only without `--dry-run`.
+`notes` and `check` only read.
 
 Their tests are in `tests/dev/`, against fake programs and the Firestore fake in `tests/fakes/`.

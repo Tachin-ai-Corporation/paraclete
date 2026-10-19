@@ -191,14 +191,14 @@ async function deployVm(ctx, { instance, repo, commit, timeoutSeconds }) {
 }
 
 /**
- * The commit's own dashboard/cloudbuild.yaml (gcloud reads --config from this machine). From your
+ * The commit's own dashboard/cloudbuild.json (gcloud reads --config from this machine). From your
  * clone when it has the commit; otherwise the working tree's copy, with a warning.
  */
 async function buildConfig(ctx, commit) {
   const shown = await ctx.git(['show', `${commit}:${BUILD_CONFIG_PATH}`]);
   if (shown.code === 0 && shown.stdout.trim()) return shown.stdout;
   if (/does not exist in|exists on disk, but not in/.test(shown.stderr || '')) {
-    throw new DevError(`${commit} has no ${BUILD_CONFIG_PATH}: it predates the dashboard. Deploy it with --vm-only.`);
+    throw new DevError(`${commit} has no ${BUILD_CONFIG_PATH}: it is older than the first release. Deploy it with --vm-only.`);
   }
   ctx.warn(`warning: this clone does not have ${commit.slice(0, 12)} (git fetch gets it); building with the working tree's ${BUILD_CONFIG_PATH}.`);
   return readFileSync(join(REPO_ROOT, BUILD_CONFIG_PATH), 'utf8');
@@ -228,7 +228,7 @@ async function deployDashboard(ctx, { instance, repo, commit, release }) {
     if (tags.code === 0 && tags.stdout.split(/\r?\n/).map((line) => line.trim()).includes(commit)) {
       ctx.out(`The dashboard's image for ${short} exists; not building it again.`);
     } else {
-      const configFile = join(dir, 'cloudbuild.yaml');
+      const configFile = join(dir, 'cloudbuild.json');
       writeFileSync(configFile, await buildConfig(ctx, commit));
       ctx.out(`Building the dashboard at ${short} with Cloud Build; its output follows.`);
       const build = await ctx.gcloud(buildArgs({ ...where, repo, commit, configFile }), stream);

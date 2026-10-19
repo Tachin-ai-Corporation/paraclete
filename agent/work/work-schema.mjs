@@ -150,8 +150,9 @@ export const WORK_SCHEMA = schema('work', 1, {
   delivered_at: NULLABLE_ISO,
   delivered_channel: { type: 'string', nullable: true },
 
-  // The paraclete release or commit that created the envelope. Stamped at creation and kept for
-  // the envelope's whole life, so a mission can be attributed to the code that ran it.
+  // The paraclete release that created the envelope (platform-version.mjs): the installed
+  // release.json's version, null when it names none. Stamped at creation and kept for the envelope's
+  // whole life, so a mission can be attributed to the code that ran it.
   platform_version: { type: 'string', nullable: true },
 
   step_ledger: { type: 'object', open: true, describe: 'Idempotency keys for replay-safe dispatch' },

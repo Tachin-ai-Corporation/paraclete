@@ -1,9 +1,11 @@
 // Tests for agent/services/control/commands.mjs: the command set is closed and matches the README;
 // restart_service names only allowlisted services, restarts control only after recording the command,
 // and waits for a restarted gateway; set_model, run_responsibility and upgrade reach their modules with
-// the command's id and requester; drive_check runs on the Drive client it is given and reads the output
-// folder from the settings. Run through the real queue against fake Firestore, systemd, gateway and
-// Drive, the way the service runs them.
+// the command's id and requester, and set_model passes on only a Claude model the contracts list;
+// claude_check tests the contracts' Claude candidates with the VM's token in the Claude region;
+// drive_check runs on the Drive client it is given and reads the output folder from the settings. Run
+// through the real queue against fake Firestore, systemd, gateway, Vertex AI and Drive, the way the
+// service runs them.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
@@ -97,18 +99,67 @@ test('control restarts itself only after the command is recorded as done', async
 });
 
 test('set_model records who switched Claude on and checks the gateway with the token', async () => {
-  const { send, db, gateway, runtime } = harness({ gateway: fakeGatewayFetch({ models: { cortex: 'vertex-anthropic/claude-opus-4-6' } }) });
+  const claude = 'vertex-anthropic/claude-opus-4-6';
+  const { send, db, gateway, runtime } = harness({ gateway: fakeGatewayFetch({ models: { cortex: claude, strong: claude } }) });
   const contractsClaude = runtime.contracts.vertex.models.claude;
-  assert.equal(contractsClaude, 'vertex-anthropic/claude-opus-4-6', 'this test assumes the contracts Claude model');
+  assert.equal(contractsClaude, claude, 'this test assumes the contracts Claude model');
   const doc = await send('set_model', { claude_enabled: true });
   assert.equal(doc.status, 'done', doc.error);
   assert.equal(db.get('config/settings').claude_enabled, true);
   assert.equal(db.get('config/settings').claude_updated_by, 'admin@example.com');
+  assert.equal('claude_model' in db.get('config/settings'), false, 'no model named, none stored');
   assert.ok(gateway.calls.some((c) => c.headers.Authorization === `Bearer ${GATEWAY_TOKEN}`));
 
   const refused = await send('set_model', { claude_enabled: 'yes' });
   assert.equal(refused.status, 'failed');
   assert.match(refused.error, /params\.claude_enabled must be true or false/);
+});
+
+test('set_model stores the Claude model it is given, and refuses one the contracts do not list', async () => {
+  const newest = 'vertex-anthropic/claude-opus-5-5';
+  const { send, db, systemd } = harness({ gateway: fakeGatewayFetch({ models: { cortex: newest, strong: newest } }) });
+  const doc = await send('set_model', { claude_enabled: true, claude_model: newest });
+  assert.equal(doc.status, 'done', doc.error);
+  assert.equal(doc.result.claude_model, newest);
+  assert.equal(db.get('config/settings').claude_model, newest);
+
+  const restarts = systemd.calls.length;
+  for (const claude_model of ['vertex-anthropic/claude-sonnet-x', null]) {
+    const refused = await send('set_model', { claude_enabled: true, claude_model });
+    assert.equal(refused.status, 'failed');
+    assert.match(refused.error, /^params\.claude_model must be one of /);
+  }
+  assert.equal(systemd.calls.length, restarts, 'nothing restarted');
+  assert.equal(db.get('config/settings').claude_model, newest);
+});
+
+test('claude_check tries every Claude candidate as the VM, in the Claude region, and names the newest that answered', async () => {
+  const db = fakeDb();
+  const asked = [];
+  const fetch = async (url, init = {}) => {
+    asked.push({ url, init });
+    const answered = url.includes('/models/claude-opus-4-8:') || url.includes('/models/claude-opus-4-6:');
+    return answered
+      ? { ok: true, status: 200, text: async () => '{"content":[{"type":"text","text":"ready"}]}' }
+      : { ok: false, status: 404, text: async () => '{"error":{"code":404,"message":"Publisher model not found","status":"NOT_FOUND"}}' };
+  };
+  const runtime = { ...controlRuntime({ db, fetch }), getAccessToken: async () => 'vm-token' };
+  const handlers = createHandlers({ runtime, systemd: fakeSystemd(), settings: SETTINGS, now: () => NOW });
+  const queue = createCommandQueue({ db, collections: runtime.collections, handlers, verifyCommand: async () => ({}), now: () => NOW });
+  db.set('commands/cc1', { type: 'claude_check', params: {}, status: 'pending', requested_by: 'admin@example.com', created_at: NOW.toISOString() });
+  await queue.tick();
+  const doc = db.get('commands/cc1');
+
+  assert.equal(doc.status, 'done', doc.error);
+  const { models: candidates } = runtime.contracts.vertex;
+  assert.deepEqual(doc.result.models.map((entry) => entry.model), [...candidates.claude_candidates]);
+  assert.equal(doc.result.best, 'vertex-anthropic/claude-opus-4-8');
+  assert.equal(doc.result.location, runtime.contracts.vertex.anthropic_location);
+  assert.equal(asked.length, candidates.claude_candidates.length);
+  for (const { url, init } of asked) {
+    assert.ok(url.startsWith(`https://${runtime.contracts.vertex.anthropic_location}-aiplatform.googleapis.com/v1/projects/your-gcp-project/`), url);
+    assert.equal(init.headers.Authorization, 'Bearer vm-token');
+  }
 });
 
 test('run_responsibility queues a trigger keyed by the command id', async () => {

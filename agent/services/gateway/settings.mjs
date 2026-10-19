@@ -1,8 +1,10 @@
 // agent/services/gateway/settings.mjs: turns the contracts, the instance's paths and the admin's Claude
-// switch into what agent/gateway/ is built from: the turn and server settings, the organ models, and
-// the tool, memory and session limits. Pure: main.mjs reads the files and Firestore and passes the
-// values in. The admin settings reader and the skill directories, which the brain shares, are in
-// service-runtime.mjs. The settings keys are documented in agent/gateway/README.md.
+// switch and Claude model into what agent/gateway/ is built from: the turn and server settings, the
+// organ models, and the tool, memory and session limits. Pure: main.mjs reads the files and Firestore
+// and passes the values in. The control service's set_model imports isClaudeEnabled, claudeModel and
+// organModels too, so the model it expects a restarted gateway to run is decided by the same code. The
+// admin settings reader and the skill directories, which the brain shares, are in service-runtime.mjs.
+// The settings keys are documented in agent/gateway/README.md.
 
 import { basename } from 'node:path';
 
@@ -40,19 +42,38 @@ export function isClaudeEnabled(settings) {
 }
 
 /**
+ * Which Claude model runs when Claude is on: the admin's choice, `claude_model` in the settings, when it
+ * is one of the contracts' `claude_candidates` (the models the dashboard's Test tries, and the only ones
+ * the control service's set_model stores); otherwise the contracts' `claude`. A stored choice that is
+ * not a candidate (a release dropped it, or someone wrote it by hand) comes back as `ignored`, for the
+ * caller to log, and never runs.
+ *
+ * @param {object}      models    the contracts' vertex.models
+ * @param {object|null} settings  the admin settings ({} when there are none)
+ * @returns {{model: string, ignored: unknown}} `ignored` is null when nothing was set aside
+ */
+export function claudeModel(models, settings) {
+  const chosen = settings?.claude_model;
+  if (chosen === undefined || chosen === null) return { model: models.claude, ignored: null };
+  const candidates = Array.isArray(models.claude_candidates) ? models.claude_candidates : [];
+  if (typeof chosen === 'string' && candidates.includes(chosen)) return { model: chosen, ignored: null };
+  return { model: models.claude, ignored: chosen };
+}
+
+/**
  * The organ models for createOrganRegistry(). With Claude on, the cortex and the strong tier move to
- * the contracts' Claude model and every organ falls back to `claude_fallback`; the temporal organs
- * stay on the fast model either way.
+ * the Claude model (`claude`, from claudeModel(); the contracts' `claude` when not given) and every
+ * organ falls back to `claude_fallback`; the temporal organs stay on the fast model either way.
  *
  * @param {object} models the contracts' vertex.models
- * @param {{claudeEnabled?: boolean}} [o]
+ * @param {{claudeEnabled?: boolean, claude?: string}} [o]
  * @returns {{cortex: string, strong: string, fast: string, fallback: string}}
  */
-export function organModels(models, { claudeEnabled = false } = {}) {
+export function organModels(models, { claudeEnabled = false, claude = models.claude } = {}) {
   if (!claudeEnabled) {
     return { cortex: models.cortex, strong: models.strong, fast: models.fast, fallback: models.fallback };
   }
-  return { cortex: models.claude, strong: models.claude, fast: models.fast, fallback: models.claude_fallback };
+  return { cortex: claude, strong: claude, fast: models.fast, fallback: models.claude_fallback };
 }
 
 /**
@@ -72,6 +93,7 @@ export function gatewaySettings(contracts) {
       sessionAffinity: v.anthropic_session_affinity,
       cacheTtlStable: v.anthropic_cache_ttl_stable,
       cacheTtlMission: v.anthropic_cache_ttl_mission,
+      temperatureModels: v.anthropic_temperature_models,
     },
     gemini: {
       explicitCache: v.gemini_explicit_cache,

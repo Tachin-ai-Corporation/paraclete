@@ -5,7 +5,8 @@ download its files, and manage the instance. Next.js (App Router, JavaScript), d
 Proxy (IAP).
 
 **Installed:** not onto the VM. `install/install.sh` builds this directory into an image with Cloud
-Build at the release being installed (`cloudbuild.yaml`, `Dockerfile`) and deploys it to Cloud Run.
+Build at the release being installed (`cloudbuild.json`, `Dockerfile`) and deploys it to Cloud Run;
+from then on the dashboard upgrades itself the same way (see [Updates](#updates)).
 
 ## What belongs here
 
@@ -62,7 +63,7 @@ signature from that account. Read-only commands (`status`, `skills`, `config`, `
 
 The server code imports the agent's Firestore client and collection names (`agent/storage/`), the
 command signature (`agent/auth/`), pure work helpers such as `approvalResolution()` (`agent/work/`),
-and `config/contracts.json`. One definition of each, so the two sides cannot drift. Nothing else
+what a release is and which is newer (`agent/release/`), and `config/contracts.json`. One definition of each, so the two sides cannot drift. Nothing else
 outside `dashboard/`, and never `config/*.mjs`: `tests/repo/dashboard-boundaries.test.mjs` checks.
 The build's root is the repo for this reason (`next.config.mjs`).
 
@@ -78,9 +79,11 @@ The build's root is the repo for this reason (`next.config.mjs`).
 | `approvals` | reads; resolves | Patches only the fields `approvalResolution()` returns, only if the gate is unchanged since it was read (an `updateTime` precondition), so two people deciding at once cannot both win |
 | `commands` | writes signed commands | Never edits a command after writing it |
 | `responsibility_triggers` | reads | Follows a "run now" until the brain fires, skips or fails it |
-| `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` and `drive_output_folder`, `drive_output_folder_updated_at`, `drive_output_folder_updated_by` (each setting field-masked to its own three); reads `claude_enabled` | `claude_enabled` is changed only through the `set_model` command. `drive_output_folder` is a Drive folder id or null |
+| `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` and `drive_output_folder`, `drive_output_folder_updated_at`, `drive_output_folder_updated_by` (each setting field-masked to its own three); reads `claude_enabled` | `claude_enabled` and `claude_model` are changed only through the `set_model` command (Settings, Models; see below). `drive_output_folder` is a Drive folder id or null |
 | `agent/instance` | reads | Written by the VM's bootstrap |
 | `config/workspace_account` | reads | Written only by the control service: the recorded Workspace account and the last check (see [Workspace](#workspace-the-agents-own-google-account)) |
+| `config/release_check` | owns | GitHub's release list, `{ repo, checked_at, releases, error }`, replaced only if unchanged since it was read (see [Updates](#updates)) |
+| `config/upgrade` | owns | The upgrade in progress or the last one; every write is guarded by the record's update time, or creates it only if absent (see [Updates](#updates)) |
 
 **Threads.** Each user's thread id is `user-` and the first 32 hex digits of the SHA-256 of their
 lowercased email: fixed per person, a valid document id, and the same key the agent's thread ledger
@@ -153,6 +156,77 @@ other roles the tab is hidden and the Setup checklist says the account is not ne
 Members see the state only. The commands and the record are in
 [agent/services/control/README.md](../agent/services/control/README.md).
 
+## Models: turning Claude on
+
+The agent runs on Gemini. Settings has a Models tab (`components/settings/ModelsTab.jsx`, with its
+decisions in `models-settings.js`) where an admin moves the cortex and the strong tier to Claude Opus,
+with Gemini as the fallback. Everyone sees whether Claude is on and with which model, from the
+`brain_config` command; Agent, Models stays the read-only view of every tier.
+
+1. **Model Garden.** A link per model in the contracts' `vertex.models.claude_candidates`, newest
+   first, to its Model Garden page, where a project owner enables it and accepts Anthropic's terms.
+2. **Test** sends `claude_check`: the VM sends each of those models one short message, as the agent,
+   in the contracts' Claude region, and reports per model whether it answered and the one thing to do
+   when it did not.
+3. **The switch** sends `set_model { claude_enabled: true, claude_model }` with the newest model that
+   answered a test from this page in the last hour, or `{ claude_enabled: false }`. Without such a test
+   it is not offered, and the tab says why. The control service accepts only a model the contracts
+   list, restarts the model gateway and checks that it runs that model.
+
+No route of its own: the tab sends commands through `POST /api/commands`.
+
+## Updates
+
+Settings, System opens with a version card (`components/settings/UpdateCard.jsx`, its decisions in
+`release-update.js`): which release the agent and the dashboard run, the repository's newer releases
+with their notes (Markdown from GitHub, shown as plain lines), and, for admins, Install. A release is a
+version tag published on GitHub (`agent/release/versions.mjs`).
+
+**Detection** (`lib/server/releases.mjs`). GitHub answers 60 unauthenticated requests an hour per
+address, and Cloud Run shares its addresses, so the release list of `PARACLETE_REPO` is asked for at
+most once per `dashboard.release_check_ttl_seconds` (contracts) and kept in `config/release_check`;
+an admin's Check now asks again, at most every five minutes. A failed check keeps the releases it had
+and says why. What the instance runs is the VM's release as `agent/instance` reports it when that is a
+ready version, else this dashboard's `PARACLETE_RELEASE`; an instance installed from a branch or a
+commit is offered nothing.
+
+**Install** (`lib/server/upgrade.mjs`). An admin may install a published release newer than the
+installed one, or the same one again to finish an upgrade left half-done. The VM moves first, so a
+failed VM upgrade leaves the dashboard as it was:
+
+1. **vm.** The tag's commit is looked up on GitHub, `config/upgrade` is claimed (created, or replaced
+   only if unchanged since it was read and not running, so two admins cannot start two), and the signed
+   `upgrade { ref: <version> }` command goes to the control service, which runs that release's own
+   upgrader.
+2. **build.** Once the command is `done` and `agent/instance` reports ready on the commit: Cloud Build
+   (REST, in the region, as `paraclete-dashboard@`) builds the image at the commit from GitHub with the
+   commit's own `dashboard/cloudbuild.json` (read from GitHub), tagged with the commit, within
+   `dashboard.build_timeout_seconds`. Skipped when Artifact Registry has that tag already.
+3. **deploy.** Cloud Run's Admin API v2: the service is read, its first container moved to the new image
+   with `PARACLETE_RELEASE` and `PARACLETE_COMMIT` changed, everything else (IAP, the account, the size,
+   the rest of the environment) sent back as read, and the operation followed to the end.
+
+Nothing runs in the background. `GET /api/upgrade`, which the card polls every five seconds while an
+upgrade runs, checks the current step and starts the next when it finished. Each move is claimed with a
+write guarded by the record's update time before its call is made, so of two readers one starts the
+build or the rollout and the other sees it. A step claimed but never started (the dashboard stopped in
+between) fails after two minutes; a VM upgrade that has not finished `control.upgrade_max_seconds` plus
+ten minutes after it was asked for fails too. After `done`, the old revision may still answer for a
+moment: the card waits until `GET /api/me` names the new commit, then reloads the page.
+
+| Route | Who | Does |
+|---|---|---|
+| `GET /api/releases` | any user | What the agent and the dashboard run, the newer releases with notes, the release an upgrade left half-done, and when GitHub was asked (`releases.mjs`) |
+| `POST /api/releases` | admins | Asks GitHub now, at most every five minutes |
+| `GET /api/upgrade` | any user | The upgrade in progress or the last one, moved on when its step finished. Admins also see the command, build and operation ids and the build's log link |
+| `POST /api/upgrade { version }` | admins | Starts one |
+
+`config/upgrade` holds `{ id, version, commit, requested_by, requested_at, state: 'vm' | 'build' |
+'deploy' | 'done' | 'failed', vm_command_id, build_id, operation, error, updated_at }`. The dashboard's
+account already has what this needs (install/README.md, step 3): Cloud Build Editor and Cloud Run Admin
+on the project, act-as on itself (its builds and its revisions run as it), Artifact Registry Writer on
+its image repository, and Logging Writer (its builds log to Cloud Logging only).
+
 ## Running it locally
 
 ```
@@ -175,7 +249,7 @@ account to hold Token Creator on it; without it, views that need the VM say so.
 | `PARACLETE_PROJECT`, `PARACLETE_PROJECT_NUMBER`, `PARACLETE_REGION` | Where the instance lives |
 | `PARACLETE_SERVICE` | The Cloud Run service name (Cloud Run's own `K_SERVICE` otherwise) |
 | `PARACLETE_BUCKET` | The instance's bucket |
-| `PARACLETE_REPO`, `PARACLETE_RELEASE`, `PARACLETE_COMMIT` | What the dashboard was built from |
+| `PARACLETE_REPO`, `PARACLETE_RELEASE`, `PARACLETE_COMMIT` | What the dashboard was built from. Its upgrade moves the last two with the image |
 | `PARACLETE_AGENT_NAME`, `PARACLETE_ROLE` | The agent's name and role |
 | `PARACLETE_WORKSPACE_ROLE` | `true` when the role's `role.json` sets `workspace` (the image carries no `roles/`): Settings then shows the Workspace setup |
 | `PARACLETE_IAP_AUDIENCE` | Overrides the IAP audience, which is normally derived; the installer never sets it |

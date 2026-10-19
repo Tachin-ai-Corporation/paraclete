@@ -1,8 +1,9 @@
 // agent/services/gateway/main.mjs: the gateway service's entry point. It reads the contracts, the
-// instance record, the gateway token and the admin's Claude switch, builds the model clients, organs,
-// tools and sessions from agent/gateway/, and listens on loopback. It runs no turns itself; the
-// server in agent/gateway/server.mjs does. systemd starts it (paraclete-gateway.service); the control
-// service restarts it when an admin turns Claude on or off, which is when the switch is read again.
+// instance record, the gateway token and the admin's Claude switch and Claude model, builds the model
+// clients, organs, tools and sessions from agent/gateway/, and listens on loopback. It runs no turns
+// itself; the server in agent/gateway/server.mjs does. systemd starts it (paraclete-gateway.service);
+// the control service restarts it when an admin turns Claude on or off, which is when the switch is
+// read again.
 
 import { readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,7 +15,7 @@ import { createToolRegistry } from '../../gateway/tools.mjs';
 import { createSessionStore } from '../../gateway/sessions.mjs';
 import { buildSkillCatalog } from '../../gateway/skill-catalog.mjs';
 import { createGatewayServer } from '../../gateway/server.mjs';
-import { isClaudeEnabled, organModels, gatewaySettings, toolLimits, sessionLimits, memoryPolicy } from './settings.mjs';
+import { isClaudeEnabled, claudeModel, organModels, gatewaySettings, toolLimits, sessionLimits, memoryPolicy } from './settings.mjs';
 
 /** The exit code for a configuration the service cannot start with (sysexits EX_CONFIG). */
 export const EXIT_CONFIG = 78;
@@ -44,7 +45,8 @@ export function readGatewayToken(path, readText) {
  *
  * The admin's Claude switch is read strictly: a Firestore failure stops startup (systemd starts the
  * service again) rather than guessing which models the admin chose. No settings document means
- * Claude is off.
+ * Claude is off. With Claude on, a stored Claude model the contracts do not list is logged once, here
+ * at startup, and the contracts' Claude model runs instead (claudeModel() in settings.mjs).
  *
  * @param {object}   runtime                from createServiceRuntime({ service: 'gateway' })
  * @param {object}   [deps]                 injectable for tests
@@ -65,8 +67,14 @@ export async function buildGateway(runtime, deps = {}) {
   const { contracts, instance, paths, log, db } = runtime;
 
   const token = readGatewayToken(instance.gateway_token_file, readText);
-  const claudeEnabled = isClaudeEnabled(await readAdminSettings(db, { strict: true }));
-  const models = organModels(contracts.vertex.models, { claudeEnabled });
+  const adminSettings = await readAdminSettings(db, { strict: true });
+  const claudeEnabled = isClaudeEnabled(adminSettings);
+  const claude = claudeModel(contracts.vertex.models, adminSettings);
+  if (claudeEnabled && claude.ignored !== null) {
+    log('WARN', `the stored Claude model ${JSON.stringify(claude.ignored)} is not one of the contracts' claude_candidates; running ${claude.model} instead`,
+      { claude_model_ignored: claude.ignored });
+  }
+  const models = organModels(contracts.vertex.models, { claudeEnabled, claude: claude.model });
 
   const clients = createClients({
     project: instance.project,

@@ -14,7 +14,7 @@ that must be deterministic.
 
 | Group | Files |
 |---|---|
-| Envelope state | `work-transitions.mjs` (legal status changes), `work-schema.mjs` (record shapes), `work-ids.mjs`, `validate-schema.mjs` |
+| Envelope state | `work-transitions.mjs` (legal status changes), `work-schema.mjs` (record shapes), `work-ids.mjs`, `validate-schema.mjs`, `platform-version.mjs` (the release stamped on each envelope the brain creates) |
 | Planning | `plan-utils.mjs` (plans into checkpoint lists), `plan-lint.mjs`, `checkpoint-spine.mjs` (the verified skeleton of a mission) |
 | Verification | `verdict.mjs` (reads the verifier's verdict), `agent-output.mjs` (spots failures in motor output), `result-packet.mjs` (evidence between organs) |
 | Finishing | `finalization.mjs`, `deliverable.mjs`, `mission-record.mjs` |

@@ -3,9 +3,9 @@
 // VM runs. bootstrap.sh runs it on the staged release; the control service reports the file, and
 // bootstrap.sh reads it at the next boot to decide whether anything needs installing.
 //
-// Its fields (install/README.md): `version` is the release version in the commit format the
-// contracts' versioning.canonical_regex parses: the release tag when one was asked for, otherwise the
-// version prefix of the commit's message, looked up once from GitHub (best effort; null when neither
+// Its fields (install/README.md): `version` is the release version, a version as
+// agent/release/versions.mjs defines one: the release tag when one was asked for, otherwise the
+// version the commit's message starts with, looked up once from GitHub (best effort; null when neither
 // gives one). `ref` is what was asked for, `commit` the 40-character commit installed, `repo` the
 // owner/name it came from, `installed_at` when. `metadata` holds the VM metadata's paraclete-repo and
 // paraclete-ref at that moment: a boot reinstalls from the metadata only once they change, so an
@@ -17,7 +17,7 @@
 import { renameSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { loadContracts } from '../../config/contracts.mjs';
+import { isVersion, versionFromText } from '../../agent/release/versions.mjs';
 
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 
@@ -25,21 +25,17 @@ const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const LOOKUP_TIMEOUT_MS = 10_000;
 
 /**
- * The release version: the ref itself when it is a release tag, else the version prefix of the
- * commit's message, else null.
+ * The release version: the ref itself when it is exactly a version (a release tag), else the version
+ * the commit's message starts with, else null.
  *
  * @param {object} o
  * @param {string} o.ref            what was asked for
  * @param {string|null} [o.commitMessage]
- * @param {string} o.canonicalRegex the contracts' versioning.canonical_regex
  * @returns {string|null}
  */
-export function releaseVersion({ ref, commitMessage, canonicalRegex }) {
-  const pattern = new RegExp(canonicalRegex);
-  const fromRef = String(ref ?? '').match(pattern);
-  if (fromRef && fromRef[0] === ref) return fromRef[1] ?? fromRef[0];
-  const fromMessage = String(commitMessage ?? '').match(pattern);
-  return fromMessage ? (fromMessage[1] ?? fromMessage[0]) : null;
+export function releaseVersion({ ref, commitMessage }) {
+  if (typeof ref === 'string' && ref === ref.trim() && isVersion(ref)) return ref;
+  return versionFromText(commitMessage);
 }
 
 /**
@@ -95,13 +91,11 @@ export function buildRelease({ version, ref, commit, repo, installedAt, metadata
  * @param {object} [deps]
  * @param {Function} [deps.fetch]
  * @param {Function} [deps.now] () => ISO timestamp
- * @param {object}   [deps.contracts]
  * @returns {Promise<number>} exit code
  */
 export async function main(argv, {
   fetch = globalThis.fetch,
   now = () => new Date().toISOString(),
-  contracts,
   stdout = process.stdout,
   stderr = process.stderr,
 } = {}) {
@@ -121,11 +115,10 @@ export async function main(argv, {
       stderr.write('Usage: release-record.mjs --out <file> --repo <owner/name> --ref <ref> --commit <sha> --metadata-repo <owner/name> --metadata-ref <sha>\n');
       return 2;
     }
-    const { canonical_regex: canonicalRegex } = (contracts || loadContracts()).versioning;
-    let version = releaseVersion({ ref: v.ref, canonicalRegex });
+    let version = releaseVersion({ ref: v.ref });
     if (!version && COMMIT_PATTERN.test(v.commit ?? '')) {
       const commitMessage = await lookupCommitMessage({ repo: v.repo, commit: v.commit, fetch });
-      version = releaseVersion({ ref: v.ref, commitMessage, canonicalRegex });
+      version = releaseVersion({ ref: v.ref, commitMessage });
       if (!version) stderr.write(`release-record: no version found for ${v.commit}; recording null\n`);
     }
     const record = buildRelease({

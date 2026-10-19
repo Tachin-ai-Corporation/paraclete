@@ -103,7 +103,7 @@ describe('a Gemini tool turn', () => {
 });
 
 describe('a Claude tool turn', () => {
-  it('streams, sends temperature only, and pairs tool_result with the tool_use id', async () => {
+  it('streams, sends temperature only to a model listed as taking it, and pairs tool_result with the tool_use id', async () => {
     const anthropic = fakeAnthropic([
       claudeCalls([{ id: 'toolu_01', name: 'lookup', input: { key: 'alpha' } }], { text: 'Looking it up.' }),
       claudeText('The value is value-42.'),
@@ -112,6 +112,7 @@ describe('a Claude tool turn', () => {
     const out = await runTurn({
       ...base, clients: { anthropic }, model: CLAUDE, systemBlocks: ['stable'], messages: ask,
       tools: { lookup: lookupTool(keys) }, sampling: { temperature: 0.3, topP: 0.9 },
+      settings: { anthropic: { temperatureModels: ['claude-opus-test'] } },
     });
     assert.deepEqual(keys, ['alpha']);
     const first = anthropic.requests[0].params;
@@ -128,6 +129,49 @@ describe('a Claude tool turn', () => {
     assert.equal(out.usage.prompt_tokens, 200, 'input + cache reads + cache writes, two steps');
     assert.equal(out.usage.cacheCreationTokenCount, 10);
     assert.equal(out.usage.provider, 'vertex-anthropic');
+  });
+
+  it('sends no sampling setting at all to a model not listed as taking a temperature (the newer Opus models refuse one)', async () => {
+    const anthropic = fakeAnthropic([claudeText('ok')]);
+    await runTurn({ ...base, clients: { anthropic }, model: CLAUDE, messages: ask, sampling: { temperature: 0.3, topP: 0.9 } });
+    const params = anthropic.requests[0].params;
+    assert.equal('temperature' in params, false);
+    assert.equal('top_p' in params, false);
+    assert.deepEqual(resolveSettings({}).anthropic.temperatureModels, [], 'none by default');
+  });
+
+  it("sends the model's thinking back first, unchanged, with the tool call it came with; its text is not the answer", async () => {
+    const thinking = { type: 'thinking', thinking: 'I should look alpha up.', signature: 'c2lnLWNsYXVkZQ==' };
+    const redacted = { type: 'redacted_thinking', data: 'ZW5jcnlwdGVk' };
+    const step = claudeCalls([{ id: 'toolu_01', name: 'lookup', input: { key: 'alpha' } }], { text: 'Looking it up.' });
+    step.content.unshift({ ...thinking, extra: 'not an API field' }, redacted);
+    const anthropic = fakeAnthropic([step, claudeText('The value is value-42.')]);
+    const out = await runTurn({ ...base, clients: { anthropic }, model: CLAUDE, messages: ask, tools: { lookup: lookupTool() } });
+
+    const [, assistant] = anthropic.requests[1].params.messages;
+    assert.deepEqual(assistant.content, [
+      thinking,
+      redacted,
+      { type: 'text', text: 'Looking it up.' },
+      { type: 'tool_use', id: 'toolu_01', name: 'lookup', input: { key: 'alpha' } },
+    ]);
+    assert.doesNotMatch(out.text, /I should look alpha up/, 'thinking never reaches the answer');
+    assert.deepEqual(out.transcript.find((m) => m.toolCalls)?.toolCalls[0].anthropicThinking, [thinking, redacted]);
+  });
+
+  it("keeps another model's thinking out: only the model that signed it can check it", async () => {
+    const transcript = [
+      ...ask,
+      { role: 'assistant', content: null, toolCalls: [{
+        id: 'toolu_09', name: 'lookup', args: { key: 'alpha' }, provider: 'vertex-anthropic', modelId: 'claude-opus-other',
+        anthropicThinking: [{ type: 'thinking', thinking: 'x', signature: 'sig' }],
+      }] },
+      { role: 'tool', toolCallId: 'toolu_09', name: 'lookup', content: 'value-42' },
+    ];
+    const anthropic = fakeAnthropic([claudeText('done')]);
+    await runTurn({ ...base, clients: { anthropic }, model: CLAUDE, messages: transcript, tools: { lookup: lookupTool() } });
+    const [, assistant] = anthropic.requests[0].params.messages;
+    assert.deepEqual(assistant.content, [{ type: 'tool_use', id: 'toolu_09', name: 'lookup', input: { key: 'alpha' } }]);
   });
 });
 

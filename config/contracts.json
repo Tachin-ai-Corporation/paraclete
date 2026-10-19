@@ -6,18 +6,29 @@
   "vertex": {
     "location": "global",
     "anthropic_location": "us-east5",
-    "_models_comment": "Organ model tiers. cortex decides each step; strong serves prefrontal, motor and cerebellum; fast serves the temporal organs; fallback is where a failed turn continues. claude is the model the cortex and strong tier move to when an admin turns Claude on (after accepting Anthropic's terms in Model Garden); Gemini stays the fallback.",
+    "_models_comment": "Organ model tiers. cortex decides each step; strong serves prefrontal, motor and cerebellum; fast serves the temporal organs; fallback is where a failed turn continues. claude is the model the cortex and strong tier move to when an admin turns Claude on (after accepting Anthropic's terms in Model Garden); Gemini stays the fallback. claude_candidates are the Claude Opus models the dashboard's Test tries, newest first, claude among them, each with its context window below: an admin turns Claude on with one that answered, stored as config/settings claude_model, and claude runs when none is stored or the stored one is not listed here.",
     "models": {
       "cortex": "vertex-google/gemini-4-argon",
       "strong": "vertex-google/gemini-4-argon",
       "fast": "vertex-google/gemini-3.8-flash",
       "fallback": "vertex-google/gemini-3.8-flash",
       "claude": "vertex-anthropic/claude-opus-4-6",
-      "claude_fallback": "vertex-google/gemini-4-argon"
+      "claude_fallback": "vertex-google/gemini-4-argon",
+      "claude_candidates": [
+        "vertex-anthropic/claude-opus-5-5",
+        "vertex-anthropic/claude-opus-5",
+        "vertex-anthropic/claude-opus-4-8",
+        "vertex-anthropic/claude-opus-4-7",
+        "vertex-anthropic/claude-opus-4-6"
+      ]
     },
     "context_windows": {
       "gemini-4-argon": 1048576,
       "gemini-3.8-flash": 1048576,
+      "claude-opus-5-5": 1000000,
+      "claude-opus-5": 1000000,
+      "claude-opus-4-8": 1000000,
+      "claude-opus-4-7": 1000000,
       "claude-opus-4-6": 200000
     },
     "anthropic_prompt_caching": true,
@@ -25,6 +36,8 @@
     "anthropic_cache_ttl_mission": "1h",
     "anthropic_cache_message_breakpoints": true,
     "anthropic_session_affinity": true,
+    "_anthropic_temperature_comment": "The Claude models a request may send a temperature to (model ids without the provider). The newer Opus models reject any sampling setting, and leaving it out is valid for every model, so a model not listed gets none.",
+    "anthropic_temperature_models": ["claude-opus-4-6"],
     "gemini_explicit_cache": false,
     "gemini_explicit_cache_ttl_seconds": 3600,
     "gemini_tool_image_placement": "function-response"
@@ -254,13 +267,27 @@
     "upgrade_max_seconds": 1800
   },
 
+  "dashboard": {
+    "_comment": "The dashboard on Cloud Run, built and deployed the same way by install/install.sh and dev/deploy.mjs (both through install/lib/dashboard.mjs) and by the dashboard's own upgrade (dashboard/lib/server/upgrade.mjs). service: one CPU, 1 GiB and at most three instances, scaling to zero; ingress all, because IAP stands in front of the URL itself. image_name is the image inside the instance's Artifact Registry repository, tagged with the commit it was built from. build_config_path is where each commit keeps the Cloud Build steps that build it; build_timeout_seconds bounds one build (the build config names no timeout of its own). release_check_ttl_seconds is how long the dashboard keeps GitHub's list of releases before asking again: GitHub answers 60 unauthenticated requests an hour per address.",
+    "service": {
+      "cpu": "1",
+      "memory": "1Gi",
+      "max_instances": 3,
+      "ingress": "all"
+    },
+    "image_name": "dashboard",
+    "build_config_path": "dashboard/cloudbuild.json",
+    "build_timeout_seconds": 1200,
+    "release_check_ttl_seconds": 3600
+  },
+
   "effort": {
     "_comment": "The dashboard's effort setting, stored in Firestore config/settings. One of low, medium, high, max.",
     "default": "medium"
   },
 
   "versioning": {
-    "_comment": "The commit and release version format. The dashboard parses versions with canonical_regex.",
+    "_comment": "The commit and release version format. A release is a tag in this format (agent/release/versions.mjs parses and orders them; a test keeps it equal to canonical_regex). The control service's upgrade and the installer check refs against canonical_regex.",
     "commit_format": "v{YYYY}.{MM}.{DD}.{index}.{subindex}: description",
     "canonical_regex": "^(v\\d{4}\\.\\d{2}\\.\\d{2}\\.\\d+\\.\\d+)"
   }

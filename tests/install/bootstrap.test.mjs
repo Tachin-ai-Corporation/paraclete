@@ -1,7 +1,8 @@
 // tests/install/bootstrap.test.mjs: install/bootstrap.sh and the Node helpers it runs from a release
 // (install/vm/): the command launchers, the instance record, release.json, the role's packages, the
-// validation gate and the readiness document. The helpers run here as they run on the VM, on the real
-// repo or on scratch directories; the readiness document is written to the in-memory Firestore fake.
+// validation gate, when the data migrations run (vm/migrate.test.mjs tests the runner itself) and the
+// readiness document. The helpers run here as they run on the VM, on the real repo or on scratch
+// directories; the readiness document is written to the in-memory Firestore fake.
 // The script's own logic runs by sourcing it in bash, on Linux only; nothing here needs root, the
 // metadata server or the network.
 import { test, describe } from 'node:test';
@@ -18,7 +19,6 @@ import * as rolePackagesCli from '../../install/vm/role-packages.mjs';
 import { checkRelease } from '../../install/vm/check-release.mjs';
 import * as readiness from '../../install/vm/readiness.mjs';
 import { validateInstance, loadInstance, dataPaths, DEFAULT_INSTANCE_PATH } from '../../config/instance.mjs';
-import { loadContracts } from '../../config/contracts.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
 
@@ -235,13 +235,11 @@ describe('the instance record', () => {
 });
 
 describe('release.json', () => {
-  const canonicalRegex = loadContracts().versioning.canonical_regex;
-
   test('the version is the release tag, else the version prefix of the commit message, else null', () => {
-    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1', canonicalRegex }), 'v2026.10.17.1.1');
-    assert.equal(releaseRecord.releaseVersion({ ref: 'my-branch', commitMessage: 'v2026.10.17.5.2: install the agent', canonicalRegex }), 'v2026.10.17.5.2');
-    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1-rc', commitMessage: 'no prefix', canonicalRegex }), null);
-    assert.equal(releaseRecord.releaseVersion({ ref: COMMIT, commitMessage: null, canonicalRegex }), null);
+    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1' }), 'v2026.10.17.1.1');
+    assert.equal(releaseRecord.releaseVersion({ ref: 'my-branch', commitMessage: 'v2026.10.17.5.2: install the agent' }), 'v2026.10.17.5.2');
+    assert.equal(releaseRecord.releaseVersion({ ref: 'v2026.10.17.1.1-rc', commitMessage: 'no prefix' }), null);
+    assert.equal(releaseRecord.releaseVersion({ ref: COMMIT, commitMessage: null }), null);
   });
 
   test("the commit message comes from GitHub, and any failure leaves it unknown", async () => {
@@ -717,5 +715,89 @@ staged_for_role '${root}' && echo same || echo other`).stdout.trim();
     assert.match(check, /if ! staged_for_role "\$INSTALL_ROOT"; then\n\s+warn "the installed release was installed for another role than \$\{ROLE\}; installing it again for \$\{ROLE\}"\n\s+return 1/);
     assert.match(script, /manifest\.mjs" stage \\\n\s+"--source=\$RELEASE_DIR" "--dest=\$STAGE_ROOT" "--role=\$ROLE"/,
       'the new stage holds only the role the metadata names');
+  });
+});
+
+describe('data migrations', { skip: LINUX_ONLY }, () => {
+  /** Stand-ins for everything a switch touches: each appends its name, and its arguments, to <dir>/steps.
+   * migrate_as_agent fails with $MIGRATION_FAILS on stderr when that is set. */
+  const stubs = (dir) => `
+WORK_DIR='${dir}' PROJECT=your-gcp-project TARGET_COMMIT='${COMMIT}' INSTALLED_COMMIT='${OTHER}'
+step() { printf '%s\\n' "$*" >> '${dir}/steps'; }
+stop_services() { step stop_services; }
+swap_release() { step swap_release; MOVED_PREVIOUS=1; SWAPPED=1; }
+install_instance_record() { step install_instance_record; }
+install_units() { step install_units; }
+start_services() { step "start_services $1"; }
+rollback() { step rollback; }
+restart_installed() { step restart_installed; install_units && start_services start; }
+migrate_as_agent() {
+  step "migrate_as_agent $*"
+  if [[ -n "\${MIGRATION_FAILS:-}" ]]; then printf 'migrate: %s\\n' "$MIGRATION_FAILS" >&2; return 1; fi
+  echo 'migrate: running v2026.10.20.1.1-move-settings: Moves a setting.'
+}
+node_step() { shift; step "node_step $*"; }
+build_instance_record() { step build_instance_record; }`;
+  /** Everything a full install does before the switch, as no-ops. */
+  const beforeSwitch = `
+finish_interrupted_dpkg() { :; }; ensure_packages() { :; }; ensure_node() { :; }; download_release() { :; }
+install_role_packages() { :; }; stage_release() { :; }; record_release() { :; }; prepare_host() { :; }`;
+  const steps = (dir) => (existsSync(join(dir, 'steps')) ? readFileSync(join(dir, 'steps'), 'utf8').trim().split('\n') : []);
+  const MIGRATE = 'migrate_as_agent --project=your-gcp-project --root=/opt/paraclete.next --data-root=/var/lib/paraclete';
+
+  test("a switch runs the staged release's migrations after the services stop and before the swap", (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${stubs(dir)}\nswitch_release && echo switched`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /running the data migrations of a{40}\n.*migrate: running v2026\.10\.20\.1\.1-move-settings/s);
+    assert.match(r.stdout, /switched/);
+    assert.deepEqual(steps(dir), ['stop_services', MIGRATE, 'swap_release', 'install_instance_record', 'install_units', 'start_services start']);
+  });
+
+  test('a failing migration fails the switch: nothing is swapped, and the installed release starts again', (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${stubs(dir)}${beforeSwitch}\nfull_install\necho "carried on"`,
+      { MIGRATION_FAILS: 'v2026.10.20.1.1-move-settings failed: the old shape is unreadable; it is not recorded as applied' });
+    assert.equal(r.status, 1);
+    assert.doesNotMatch(r.stdout, /carried on/);
+    assert.deepEqual(steps(dir).slice(1), [
+      'node_step /opt/paraclete.next/install/vm/migrate.mjs --dry-run --project=your-gcp-project --root=/opt/paraclete.next --data-root=/var/lib/paraclete',
+      'build_instance_record',
+      'stop_services', MIGRATE, 'restart_installed', 'install_units', 'start_services start',
+    ], 'checked first, then stopped, migrated, and the installed release started again');
+    assert.match(r.stderr, /paraclete-bootstrap: error: the data migrations stopped: v2026\.10\.20\.1\.1-move-settings failed: the old shape is unreadable; it is not recorded as applied; the installed release was not changed and runs again\n/);
+    assert.match(r.stderr, /^migrate: v2026\.10\.20\.1\.1-move-settings failed/m, "the migration's own output reaches the journal");
+  });
+
+  test('the migrations are checked, with nothing run, before anything is stopped', (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${stubs(dir)}\nvalidate_release`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(steps(dir), [
+      'node_step /opt/paraclete.next/install/vm/check-release.mjs --install-root=/opt/paraclete',
+      'node_step /opt/paraclete.next/install/vm/migrate.mjs --dry-run --project=your-gcp-project --root=/opt/paraclete.next --data-root=/var/lib/paraclete',
+      'build_instance_record',
+    ]);
+    const script = readRepoFile('install/bootstrap.sh');
+    const install = script.slice(script.indexOf('full_install() {'), script.indexOf('fast_path() {'));
+    assert.ok(install.indexOf('validate_release') < install.indexOf('switch_release'), 'validated before the switch stops anything');
+  });
+
+  test('the installed commit (the fast path) runs no migrations', (t) => {
+    const dir = scratch(t);
+    const r = bashWithBootstrap(`${stubs(dir)}
+recheck_role_packages() { :; }; prepare_host() { :; }
+fast_path && echo started`);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /started/);
+    assert.deepEqual(steps(dir), ['build_instance_record', 'install_instance_record', 'install_units', 'start_services start']);
+    const script = readRepoFile('install/bootstrap.sh');
+    assert.doesNotMatch(script.slice(script.indexOf('fast_path() {'), script.indexOf('# ---- readiness')), /migrat/);
+  });
+
+  test("they run from the staged release, as the paraclete user, against the data root", () => {
+    const script = readRepoFile('install/bootstrap.sh');
+    assert.match(script, /migrate_as_agent\(\) \{[^\n]*\n {2}runuser -u "\$SERVICE_USER" -- "\$NODE" "\$STAGE_ROOT\/install\/vm\/migrate\.mjs" "\$@"\n\}/);
+    assert.match(script, /switch_release\(\) \{[^\n]*\n {2}stop_services \|\| return 1\n {2}run_migrations \|\| return 1\n {2}swap_release \|\| return 1\n/);
   });
 });

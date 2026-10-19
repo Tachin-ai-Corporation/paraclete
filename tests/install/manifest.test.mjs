@@ -62,10 +62,10 @@ test('expandManifest fills in the role and drops the duplicate the generic role 
   }
 });
 
-test('the real manifest installs the product and the upgrader, and nothing else', () => {
+test('the real manifest installs the product, the upgrader and the data migrations, and nothing else', () => {
   const paths = expandManifest(parseManifest(readRepoFile('install/manifest.txt')), 'generic');
   for (const path of ['agent/', 'config/', 'prompts/', 'skills/', 'roles/generic/', 'install/bootstrap.sh',
-    'install/upgrade.sh', 'install/manifest.txt', 'install/vm/']) {
+    'install/upgrade.sh', 'install/manifest.txt', 'install/vm/', 'migrations/']) {
     assert.ok(paths.includes(path), `${path} is installed`);
   }
   for (const path of paths) {

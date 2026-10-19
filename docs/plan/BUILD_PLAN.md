@@ -201,8 +201,11 @@ signatures and a call `id`; the gateway must send both back.
 The strong tier is on for every role. The effort setting stays as the dial.
 
 **Turning on Claude.** Settings → Models links to Model Garden to accept Anthropic's terms. A Test
-button probes the newest Claude Opus the project can reach; a switch then moves the cortex and the
-strong tier to it. Gemini stays the fallback.
+button probes the Claude Opus models the contracts list (`vertex.models.claude_candidates`, newest
+first) and names the newest the project can reach; a switch then moves the cortex and the strong tier
+to it (`config/settings.claude_model`). Gemini stays the fallback. Only the models listed in
+`vertex.anthropic_temperature_models` get a temperature: the newer Opus models refuse any sampling
+setting.
 
 ---
 
@@ -267,17 +270,22 @@ unless you pass `--purge`.
 
 ## 9. Upgrades
 
-1. **Releases.** Maintainers tag a release with the commit version format (`vYYYY.MM.DD.N.N`) once CI
-   is green, with release notes.
-2. **Detection.** The dashboard checks this repo's releases (cached hourly) and shows "Update
-   available" with the notes.
-3. **Install.** An admin clicks Install. Cloud Build builds the dashboard at the tag and deploys a new
-   revision. The control service downloads that tag's upgrader, never the copy already installed,
-   then installs, runs the validation gate and restarts the services.
-4. **Migrations.** A release can carry an idempotent data migration, which the upgrader runs before
-   restarting.
-5. **One version.** The dashboard and the agent report the same version. Rolling back means
-   installing the previous tag.
+1. **Releases.** A maintainer cuts a release from main's head with `dev/release.mjs` once CI is green
+   for it: a tag in the commit version format (`vYYYY.MM.DD.N.N`). The tag's workflow
+   (`.github/workflows/release.yml`) runs the tests again and publishes the GitHub release with notes,
+   one line per commit since the previous release.
+2. **Detection.** The dashboard checks this repo's releases (cached hourly in `config/release_check`)
+   and shows "Update available" with the notes.
+3. **Install.** An admin clicks Install. The VM goes first: the control service downloads that tag's
+   upgrader, never the copy already installed, then installs, runs the validation gate and the
+   migrations, and restarts the services. Only then does Cloud Build build the dashboard at the tag,
+   and Cloud Run roll the dashboard to it. A failed VM upgrade leaves the dashboard as it was; a
+   failure after it leaves an upgrade the card offers to finish.
+4. **Migrations.** A release can carry idempotent data migrations (`migrations/`), which the upgrader
+   runs after the services stop and before the new release is swapped in. A failure keeps the
+   installed release, which starts again.
+5. **One version.** The dashboard and the agent report the same version. The button only moves
+   forward; going back is `install/install.sh --ref <older tag>`.
 
 ---
 
@@ -327,7 +335,7 @@ done.
 8. **Roles** (done and checked live; Chat answers in spaces, not yet in direct messages). The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
    Chat channel.
    *Exit:* `generic`, one Workspace role and one other role each install and pass a smoke mission.
-9. **Models and upgrades.** The Claude switch, the release workflow, release detection, the upgrade
+9. **Models and upgrades** (code done; the live check is next). The Claude switch, the release workflow, release detection, the upgrade
    button, and migrations.
    *Exit:* turn Claude on and off; upgrade a dev instance from one release to the next from the
    dashboard.

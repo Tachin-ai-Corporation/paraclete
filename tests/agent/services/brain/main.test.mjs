@@ -121,6 +121,48 @@ test('a request becomes a mission that is planned, executed, verified and delive
   }
 });
 
+test("every envelope the brain creates carries the installed release's version; older envelopes keep what they had", async () => {
+  const releaseFile = /[\\/]release\.json$/;
+  const readText = (path) => (releaseFile.test(path)
+    ? JSON.stringify({ version: 'v2026.10.18.1.1', commit: 'a'.repeat(40) })
+    : readFileSync(path, 'utf8'));
+  const t = await startBrain({ respond: organScript({ decisions: [{ action: 'checkpoint_plan', goal: 'Write the quarterly report' }] }), deps: { readText } });
+  try {
+    const older = {
+      id: 'w-older', type: 'M', parent_id: null, status: 'complete', intent: 'decide', title: 'Older work', instruction: 'Older work',
+      accept_criteria: null, children: [], source_channel: 'dashboard', source_meta: {}, project_id: 'general',
+      created_at: '2026-10-01T09:00:00.000Z', updated_at: '2026-10-01T09:30:00.000Z', completed_at: '2026-10-01T09:30:00.000Z', iteration: 1,
+    };
+    await t.db.write(`${COLLECTIONS.work}/w-older`, older);
+    await t.brain.init();
+    await writeIntake(t.db, { text: 'Please write the quarterly report' });
+    await t.brain.tickIntake();
+    await drainRunner(t.brain);
+
+    const created = (await t.work()).filter((w) => w.id !== 'w-older');
+    assert.deepEqual([...new Set(created.map((w) => w.type))].sort(), ['C', 'M', 'T'], 'the mission, its checkpoints and its tasks');
+    assert.deepEqual(created.filter((w) => w.platform_version !== 'v2026.10.18.1.1').map((w) => `${w.id} ${w.type} ${w.intent}`), []);
+
+    await t.brain.parts.store.save({ ...(await t.brain.parts.store.read('w-older')), id: 'w-older', updated_at: new Date(START).toISOString() });
+    assert.ok(!('platform_version' in (await t.read(`${COLLECTIONS.work}/w-older`))), 'an envelope from before the brain started is not attributed to it');
+    await assertWorkDeclared(t);
+  } finally {
+    await t.stop();
+  }
+
+  const unknown = await startBrain();
+  try {
+    await unknown.brain.init();
+    await writeIntake(unknown.db, { text: 'Please write the quarterly report' });
+    await unknown.brain.tickIntake();
+    const work = await unknown.work();
+    assert.ok(work.length > 0 && work.every((w) => w.platform_version === null), 'no release.json: every envelope says so with null');
+    assert.equal(unknown.logs.filter((l) => /release\.json cannot be read/.test(l.message)).length, 1, 'said once, at start');
+  } finally {
+    await unknown.stop();
+  }
+});
+
 test('a conversational turn is answered at once, grounded on the one read it asked for', async () => {
   const t = await startBrain({
     respond: organScript({ classify: { classification: 'respond', reasoning: 'a question about recent work', response: 'Draft', reads: ['recent_work'] }, composed: 'This week I wrote the report.' }),

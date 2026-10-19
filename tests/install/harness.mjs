@@ -66,7 +66,7 @@ export function freshProject() {
     remotes: { [REMOTE_URL]: LISTING },
     rawFiles: Object.values(COMMITS).flatMap((commit) => [
       `${REPO}/${commit}/install/bootstrap.sh`,
-      `${REPO}/${commit}/dashboard/cloudbuild.yaml`,
+      `${REPO}/${commit}/dashboard/cloudbuild.json`,
     ]),
     services: [],
     accounts: [],

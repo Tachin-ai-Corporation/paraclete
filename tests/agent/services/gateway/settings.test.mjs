@@ -1,6 +1,7 @@
 // Tests for agent/services/gateway/settings.mjs: every contract key lands on the gateway setting the
 // README names (so none silently falls back to its default), the Claude switch moves exactly the cortex
-// and the strong tier, and the memory boundary is the closed set the memory organ may touch.
+// and the strong tier, to the admin's Claude model only when the contracts list it, and the memory
+// boundary is the closed set the memory organ may touch.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import { loadContracts } from '../../../../config/contracts.mjs';
 import { resolveSettings } from '../../../../agent/gateway/turn-loop.mjs';
 import { checkMemoryCommand } from '../../../../agent/gateway/tools.mjs';
 import {
-  isClaudeEnabled, organModels, gatewaySettings, toolLimits, sessionLimits, memoryPolicy, MEMORY_COMMANDS,
+  isClaudeEnabled, claudeModel, organModels, gatewaySettings, toolLimits, sessionLimits, memoryPolicy, MEMORY_COMMANDS,
 } from '../../../../agent/services/gateway/settings.mjs';
 
 const contracts = loadContracts();
@@ -43,7 +44,9 @@ test('the contracts map onto every gateway setting, and the turn loop keeps each
     sessionAffinity: v.anthropic_session_affinity,
     cacheTtlStable: v.anthropic_cache_ttl_stable,
     cacheTtlMission: v.anthropic_cache_ttl_mission,
+    temperatureModels: v.anthropic_temperature_models,
   });
+  assert.deepEqual(v.anthropic_temperature_models, ['claude-opus-4-6'], 'only the model known to take one');
   assert.deepEqual(resolved.gemini, { explicitCache: v.gemini_explicit_cache, explicitCacheTtlSeconds: v.gemini_explicit_cache_ttl_seconds });
   assert.deepEqual(resolved.retry, { maxRetries: g.retry_max, baseDelayMs: g.retry_base_delay_ms });
   assert.equal(resolved.loopGuard.identicalNudge, g.identical_result_nudge_threshold);
@@ -74,6 +77,18 @@ test('the Claude switch moves the cortex and the strong tier to Claude and the f
   assert.deepEqual(organModels(m), organModels(m, { claudeEnabled: false }));
   assert.deepEqual(organModels(m, { claudeEnabled: true }), { cortex: m.claude, strong: m.claude, fast: m.fast, fallback: m.claude_fallback });
   assert.match(organModels(m, { claudeEnabled: true }).fallback, /^vertex-google\//, 'Gemini stays the fallback');
+});
+
+test('the Claude model is the stored choice only when the contracts list it; anything else runs the contracts one and is set aside', () => {
+  const m = contracts.vertex.models;
+  for (const candidate of m.claude_candidates) assert.deepEqual(claudeModel(m, { claude_model: candidate }), { model: candidate, ignored: null });
+  for (const none of [null, undefined, {}, { claude_model: null }]) assert.deepEqual(claudeModel(m, none), { model: m.claude, ignored: null });
+  for (const bad of ['vertex-anthropic/claude-opus-1', 'claude-opus-5-5', m.cortex, '', 5, ['x']]) {
+    assert.deepEqual(claudeModel(m, { claude_model: bad }), { model: m.claude, ignored: bad }, JSON.stringify(bad));
+  }
+  const newest = m.claude_candidates[0];
+  assert.deepEqual(organModels(m, { claudeEnabled: true, claude: newest }), { cortex: newest, strong: newest, fast: m.fast, fallback: m.claude_fallback });
+  assert.deepEqual(organModels(m, { claudeEnabled: false, claude: newest }), organModels(m), 'Claude off ignores the choice');
 });
 
 test('tool and session limits come from the contracts', () => {
