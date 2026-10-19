@@ -18,8 +18,8 @@
 export const MEMORY_SCOPE = 'memory';
 
 // Organs that may act in a memory mission. Temporal-memory is the memory authority (its toolset is
-// memory-only); temporal-research (the organ that researches outside sources) is read-only and
-// changes nothing.
+// memory-only); temporal-research (the organ that researches outside sources) changes nothing in
+// memory. It has the open toolset (agent/gateway/organs.mjs), so only its prompt keeps it to research.
 const MEMORY_SAFE_AGENTS = new Set(['temporal-memory', 'temporal-research']);
 
 /** True when the mission was fired by a memory-scoped responsibility. */

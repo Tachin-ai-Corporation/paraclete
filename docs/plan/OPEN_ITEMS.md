@@ -245,3 +245,52 @@ Claude model enabled.
   a release.
 - **The Claude Test's result is not kept.** It lives in the open tab, and the switch offers only the
   newest model that answered; members see the setting, not the last test.
+
+## Found while writing the product docs (phase 10)
+
+Writing the canon, the concepts and the guides against the code found these. The docs describe the
+code as it is, gaps included; stale READMEs, comments and agent-facing lines were fixed as they were
+found. Worst first.
+
+**Verification and honesty.**
+- **A mission can complete without verification.** When the cortex chooses `synthesize_with_failure`
+  again after its one chance to unblock, the mission completes as `complete` if any task in the whole
+  run succeeded, skipping the finish gate and verification
+  (`agent/services/brain/actions/synthesize-with-failure.mjs`).
+- **The tool log can be imitated.** Nothing strips a `[TOOL EXECUTION LOG]` marker a model writes into
+  its own prose, and the readers take the first block they find (`agent/work/verdict.mjs`,
+  `agent/work/task-outcome.mjs`, `agent/work/result-packet.mjs`).
+- **Advice where a rule was meant.** The escalation after three failed plans is an instruction to the
+  cortex; a plan with a destructive or public part and no approval gate is warned once, then runs; a
+  Chat approval is written without the `updateTime` precondition the dashboard's uses.
+- **A stray "yes" can decide another person's gate.** With exactly one gate pending anywhere,
+  "approve", "yes" or "lgtm" in any dashboard thread resolves it.
+
+**Fences that rest on prompts.** The agent's shell runs as the VM's account, which may write Firestore
+message documents and sign as `paraclete-dwd@` (so mint a Chat token); the VM's `drive` scope would let
+the shell change a shared file; temporal-research has the motor's open toolset; Calendar invitations
+and Doc comments reach people without passing the mouth. The canon's P-16 lists them.
+
+**Work model.**
+- The mission record is written under the mission tree's `missions/`, which the publish excludes, so
+  it is never committed (`agent/work/mission-record.mjs`, `agent/work/artifacts.mjs`).
+- A responsibility record without `enabled` never fires from its clock or an event (defaults are not
+  applied to installed records), while running it now treats it as enabled. Every shipped file sets it.
+- `processParameters` is stored but never reaches the mission a firing creates.
+- `on_deploy` is accepted as an event, but nothing raises it.
+- The brain's capability map ignores a skill's `requires`, so the planners see Workspace skills on an
+  instance with no Workspace account.
+- `process-ops write` sets no `intent_keywords`, and a stored playbook replaces the installed one
+  whole, so the agent's own revision of an installed playbook stops matching the planner's hint.
+- A `gated` merge is parked in `context.pending_merge`, and nothing resolves it; context promotions are
+  listed in the Library, and nothing accepts one; the canon authority check compares against the
+  agent's own account, so no person can change a project's canon.
+- Rejected missions are never archived, and their checkpoint stays `awaiting_approval`. The archival
+  sweep writes statuses directly, outside the transition table. `planned`, `needs_review` and
+  `timed_out` are declared and never entered. Nothing writes `depends_on`. The plan schema allows a
+  step type `ask`, which runs as an ordinary task.
+- Skills the agent writes under its data root reach the motor only after a gateway restart.
+- `projects.context_max_tokens` and `projects.archive_completed_after_days` are never read.
+- `uninstall.sh` keeps the agent's Secret Manager secrets even with `--purge`.
+- The Setup tab's Drive advice now matches the Drive rule (Editor only on a folder the agent writes new
+  files into).

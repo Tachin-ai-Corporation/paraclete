@@ -5,8 +5,8 @@ single command. It gets its own dashboard, open to the people in the owner's Goo
 does real work: research, analysis, writing, files and scheduled duties. Every step is planned,
 executed and checked by an independent verifier.
 
-> **Status: under construction.** Nothing here is installable yet. The build plan is
-> [docs/plan/BUILD_PLAN.md](docs/plan/BUILD_PLAN.md).
+> **Status: in development.** It installs from its releases. The build plan,
+> [docs/plan/BUILD_PLAN.md](docs/plan/BUILD_PLAN.md), says what is done and what comes next.
 
 ## How it works
 
@@ -18,6 +18,25 @@ executed and checked by an independent verifier.
   Google Drive. It hands back standard files as dashboard downloads.
 - **Gemini by default.** Claude is an optional upgrade.
 - **Upgrades from releases.** The dashboard shows new releases and installs one with a click.
+
+## Install
+
+[![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/Tachin-ai-Corporation/paraclete&cloudshell_git_branch=main&cloudshell_workspace=.&cloudshell_open_in_editor=docs/INSTALL.md)
+
+You need a Google Cloud project inside your organization, with billing turned on, and owner rights on
+it. The button opens Google Cloud Shell with this repository cloned and the install guide open. Then
+run, with your project's id:
+
+```
+gcloud auth login
+install/install.sh --project your-gcp-project
+```
+
+The first command logs Cloud Shell in as you: Google opens a repository it does not own without your
+credentials. The installer asks for the agent's role and name, sets up the project, waits until the
+agent is ready, and prints the dashboard's address. [docs/INSTALL.md](docs/INSTALL.md) is the full
+guide: what each step does, signing in and adding people, updates, Claude, removing paraclete, and what
+to do when a step fails.
 
 ## Repository map
 

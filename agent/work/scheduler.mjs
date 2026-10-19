@@ -1,6 +1,7 @@
 // agent/work/scheduler.mjs: fires the agent's responsibilities. Cron responsibilities fire when their
 // next slot arrives, matched in the responsibility's own IANA `timezone` (default UTC); event
-// responsibilities fire from fireEvent (on_complete, on_deploy, on_failure); and fireById runs one on
+// responsibilities fire from fireEvent (on_complete and on_failure, which the brain raises when a
+// mission ends; on_deploy is accepted but nothing raises it); and fireById runs one on
 // demand. Each firing creates a responsibility (R) envelope and its mission (M) and hands the mission
 // to the brain. What the responsibilities are is decided by responsibility-store.mjs: the installed
 // defaults with the agent's own store applied, re-read every refresh so a change is live without a
@@ -665,7 +666,7 @@ export function createScheduler(deps) {
    * clock fires from, so an event responsibility from a role package or the agent's own store fires
    * too.
    *
-   * @param {string} eventType - 'on_complete', 'on_deploy' or 'on_failure'
+   * @param {string} eventType - 'on_complete' or 'on_failure' ('on_deploy' is accepted; nothing raises it)
    * @param {object} [eventContext] - { mission_id, project_id, responsibility_id, fired_by_event }
    */
   async function fireEvent(eventType, eventContext = {}) {

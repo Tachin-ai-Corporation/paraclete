@@ -61,10 +61,11 @@ responsibility-manage revert <id> --to <n>      # restore revision n, as a new r
 
 `--note "<why>"` records the reason on the revision; `--json` prints machine-readable output. On
 `create` and `update`, `--process-ref <playbook-id>` links a process playbook (`""` clears it) and
-`--process-params '<json>'` carries its parameters.
+`--process-params '<json>'` stores parameters beside it; a firing does not pass them to its mission, so
+put anything the mission needs in the instruction or the project.
 
 A new responsibility needs `id`, `name`, either `schedule` (a five-field cron expression) or `event`
-(`on_complete`, `on_failure` or `on_deploy`), `instruction`, `success_criteria`, `context.purpose` and
+(`on_complete` or `on_failure`), `instruction`, `success_criteria`, `context.purpose` and
 `context.process` (an array of steps). `timezone` is an IANA zone (default `UTC`); it defaults to
 `enabled: true` and `min_spacing_minutes: 30`. Put any identifiers it depends on (folders, documents)
 in a project and set `project_id`; never bury them in the text.

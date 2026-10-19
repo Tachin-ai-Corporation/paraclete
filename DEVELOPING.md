@@ -275,8 +275,8 @@ gets it.
 
 ## 9. Product rules every change keeps
 
-The full product rules arrive as `docs/canon/` during the build. Until then, these are the ones most
-often broken:
+The product rules are [docs/canon/PRODUCT.md](docs/canon/PRODUCT.md), and the qualities the brain must
+have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often broken:
 
 - One GCP project holds exactly one paraclete.
 - **Template-clean.** No organization-specific values anywhere in the product.

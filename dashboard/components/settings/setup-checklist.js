@@ -121,7 +121,7 @@ function driveItem(agentAccount, drive, workspaceAccount, isAdmin) {
     return {
       ...item,
       state: 'info',
-      detail: 'Share a Drive file or folder with the agent\'s address, as Viewer to let it read or as Editor to let it change, and the agent can open it. Test Drive checks that the agent reaches Drive, and lists what is shared with it.',
+      detail: 'Share a Drive file or folder with the agent\'s address, as Viewer to let it read, or a folder as Editor (Content manager in a shared drive) to let it put the files it makes there; it never changes a file shared with it. Test Drive checks that the agent reaches Drive, and lists what is shared with it.',
     };
   }
   return { ...item, state: view.ok ? 'done' : 'problem', detail: view.headline };

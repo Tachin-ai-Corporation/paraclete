@@ -14,9 +14,8 @@ These are tools of the cerebellum's turn, not shell commands.
   gap that does not defeat the deliverable, shown to the person.
 - `report_fail`: the intent is genuinely unmet. Arguments: `reasoning`, `checks`, and a
   `recommendation`: the specific action that would fix it.
-- `request_probe`: **do not call it.** Nothing services a returned probe, so the call ends your turn
-  with no verdict and the checkpoint fails for asking. When the evidence is not enough, say so in a
-  `report_fail` (see "When the evidence is not enough").
+
+When the evidence is not enough, say so in a `report_fail` (see "When the evidence is not enough").
 
 You can also read files with `readFile`, for example a committed file in the mission's working tree,
 and look at an image with `viewImage` (PNG, JPEG or WebP), for example a rendered page or chart. You

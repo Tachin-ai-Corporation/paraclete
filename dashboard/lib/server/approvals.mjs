@@ -11,10 +11,8 @@
 // from a partial copy would drop that field and strand the mission.
 //
 // Guarding against a double decision: the gate is read, refused unless it is still pending and its
-// mission still waits on it, then patched, then read back. The client's patch() has no precondition,
-// so two people deciding in the same instant both pass the check, and the later patch wins; the read
-// back tells the earlier one their decision was overwritten. A field-masked patch with an
-// `updateTime` precondition in agent/storage/firestore.mjs would close that window entirely.
+// mission still waits on it, then patched with an `updateTime` precondition: two people deciding in
+// the same instant cannot both win, and the later one is told the gate was already decided.
 //
 // Does not: decide anything about the mission itself (the agent's poller does), or read the work tree
 // (work.mjs, which shows a mission's own gates through approvalsForMission()).

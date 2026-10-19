@@ -30,6 +30,10 @@ const ALLOWED_ADDRESSES = new Set(['git@github.com']);
 const DENYLIST = join(repoRoot, '.local', 'denylist.txt');
 // The license names its copyright holder, which a developer may also have on their denylist.
 const DENYLIST_EXEMPT = new Set(['LICENSE']);
+// The project's own home on GitHub, which the README's install button and docs/INSTALL.md must name to
+// work. Exactly this repository address is allowed; its owner's name stays denied everywhere else.
+export const PROJECT_REPO_URL = 'https://github.com/Tachin-ai-Corporation/paraclete';
+const PROJECT_REPO_PATH = PROJECT_REPO_URL.replace(/^https:\/\//, '').toLowerCase();
 
 const MAX_FILE_BYTES = 1024 * 1024;
 
@@ -63,7 +67,7 @@ test("nothing on the developer's private denylist appears", (t) => {
   const found = [];
   for (const path of textFiles) {
     if (DENYLIST_EXEMPT.has(path)) continue;
-    const haystack = `${path}\n${readRepoFile(path)}`.toLowerCase();
+    const haystack = `${path}\n${readRepoFile(path)}`.toLowerCase().split(PROJECT_REPO_PATH).join('');
     for (const term of terms) {
       const word = new RegExp(`(^|[^a-z0-9])${escapeRegExp(term)}([^a-z0-9]|$)`);
       if (word.test(haystack)) found.push(`${path}: ${term}`);

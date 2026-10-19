@@ -231,9 +231,10 @@ setting.
 
 ## 8. Install
 
-An "Open in Cloud Shell" button on the README runs `install/install.sh` at a release tag. It asks two
+An "Open in Cloud Shell" button on the README opens Cloud Shell with the repository cloned at `main`;
+`install/install.sh` there installs the newest release tag (`--ref` picks another). It asks two
 questions, the role (default `generic`) and the agent's name, then runs unattended. Re-running it
-repairs an install.
+repairs an install. [docs/INSTALL.md](../INSTALL.md) is the owner's guide.
 
 ```
 install/install.sh
@@ -339,8 +340,8 @@ done.
    button, and migrations.
    *Exit:* turn Claude on and off; upgrade a dev instance from one release to the next from the
    dashboard.
-10. **Product docs.** `docs/canon/`, `docs/concepts/`, the guides, `docs/INSTALL.md`, and the README's
-    install button.
+10. **Product docs** (done; the install button's first live press is next). `docs/canon/`,
+    `docs/concepts/`, the guides, `docs/INSTALL.md`, and the README's install button.
     *Exit:* every doc matches the code, and the doc-path tests pass.
 
 **Acceptance.** In a clean project inside a Workspace organization: one command, a dashboard link in
@@ -383,7 +384,8 @@ blind after 300 envelopes, a mission stranded when its resume after approval fai
 - **Release-check rate limit.** GitHub allows 60 unauthenticated requests per hour per IP address. The
   dashboard caches the result.
 - **Organization policies.** No `allUsers` invoker (IAP removes the need) and no reliance on default
-  service-account grants. The installer names any policy that blocks it.
+  service-account grants. A blocked step prints the command and Google's own error; only the model
+  check names organization policies as a likely cause.
 
 ---
 

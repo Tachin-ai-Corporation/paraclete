@@ -12,7 +12,7 @@ roles/<id>/
   README.md               what the role is for, for people reading the repo
   role.json               id, title, summary, version,
                           workspace: true | false,
-                          skills: [...]       added to the base skills
+                          skills: [...]       the role's own skills, in skills/ (every one there is installed)
                           gcp_roles: [...]    granted to the agent's service account at install, on the project
                           apis: [...]         Google APIs the installer turns on, by short name (optional)
                           resource_roles: [{ role, on }]
@@ -62,7 +62,7 @@ images stay, and `install/uninstall.sh` deletes them only with `--purge`.
 | [`software-engineer`](software-engineer/) | no | Coding with tests, code review, GitHub pull requests through `gh` |
 | [`qa-engineer`](qa-engineer/) | no | Test runs reported as evidence, baselines, flaky tests, defect reports |
 | [`data-engineer`](data-engineer/) | no | BigQuery with dry runs and byte caps, loads through staging; BigQuery User and Data Editor |
-| [`security-engineer`](security-engineer/) | no | A read-only IAM and exposure audit; Security Reviewer and Cloud Asset Viewer; a weekly security review |
+| [`security-engineer`](security-engineer/) | no | A read-only IAM and exposure audit; Security Reviewer, Cloud Asset Viewer, Org Policy Viewer and Storage Bucket Viewer; a weekly security review |
 | [`web-master`](web-master/) | no | Firebase Hosting changes through preview channels, custom domains, site audits with Lighthouse, read-only gcloud |
 
 ## Status

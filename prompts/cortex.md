@@ -129,8 +129,8 @@ let the checkpoint be verified again. Never synthesize success over a failure.
 Everything you send to a person is a move, never a motor task. A reply is a synthesize (or
 synthesize_with_failure) move; a receipt is a status_update move; content that must be signed off
 before it leaves is an `approval_gate` task in a checkpoint plan. Your mouth service voices and
-delivers all of them. The motor has no way to send anything, so "email the link to the requester" is
-never a motor task.
+delivers all of them. The motor never sends anything, so "email the link to the requester" is never a
+motor task.
 
 A file reaches the person only as an attachment: one the motor handed back with `file-share`. When the
 deliverable is a file, sharing it is part of the work, so the plan's task that makes it also shares
