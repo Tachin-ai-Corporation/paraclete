@@ -192,8 +192,10 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
 
 ## Phase 8's live check (2026-10-18)
 
-Checked on the dev instance: the devops-engineer and executive-assistant smoke missions pass (Cloud
-Run listed read-only; the agent's own calendar read as its Workspace account). The wizard's Test
+Checked on the dev instance: the generic, devops-engineer and executive-assistant smoke missions pass
+(the HTTP/2 RFCs; Cloud Run listed read-only; the agent's own calendar read as its Workspace account),
+each after a role move with install.sh --role, which took back the previous role's grants. On the
+Workspace role, two @mentions in Chat spaces were taken in and answered in their threads. The wizard's Test
 passes Drive, Docs, Sheets, Slides, Calendar and Gmail (the Docs, Sheets and Slides 404 probes hold).
 A Chat message posted by the mouth with its client-assigned id and `requestId` goes through under user
 authentication. Google Chat needed four things the code did not know, each found by swapping signers
@@ -214,6 +216,6 @@ and accounts between this instance and an older deployment that works:
   the older deployment did: outside members can ask and see answers there; approvals still come only
   from dashboard users. Their count shows on the System tab.
 
-Not yet checked live: the full loop in a space (a mention taken in and answered in its thread), and
-the generic role's smoke mission after a move back.
+Also seen: the generic smoke answer says it verified both RFCs at the IETF, yet tags both claims
+`[assumed]`. A claim the mission checked against a source should carry the bin for that.
 

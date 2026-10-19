@@ -324,7 +324,7 @@ done.
    `drive` skill with both identities.
    *Exit:* drop a PDF into chat and get a .docx back; read a Doc shared with the service account; write
    into a shared drive; the sharing-policy check reports correctly in a restricted organization.
-8. **Roles** (code done; the live check is next). The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
+8. **Roles** (done and checked live; Chat answers in spaces, not yet in direct messages). The 11 roles in the catalog, the Workspace flag with its setup wizard, and the Google
    Chat channel.
    *Exit:* `generic`, one Workspace role and one other role each install and pass a smoke mission.
 9. **Models and upgrades.** The Claude switch, the release workflow, release detection, the upgrade
