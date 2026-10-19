@@ -53,6 +53,7 @@ test('release notes become plain lines: headings, items and text, Markdown marks
 test('what a half runs: its release, its commit beside it, or the commit alone', () => {
   assert.equal(runsText({ release: V1, commit: A }), `${V1} (commit aaaaaaa)`);
   assert.equal(runsText({ release: A, commit: A }), A, 'a VM installed by commit names it once');
+  assert.equal(runsText({ release: A, commit: A, version: V1 }), `${V1} (commit aaaaaaa)`, 'unless it reports its version');
   assert.equal(runsText({ release: null, commit: A }), 'commit aaaaaaa');
   assert.equal(runsText({ release: null, commit: null }), 'not recorded');
   assert.equal(runsText(null), '');

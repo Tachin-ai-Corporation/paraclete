@@ -107,7 +107,8 @@ function versionOf(value) {
  * kept). `matched` says whether both halves run the same commit; `repair` names the release an
  * upgrade left half-done: the VM runs it, ready, and the dashboard another commit.
  *
- * @param {object|null} agent      agent/instance: { status, release, commit }
+ * @param {object|null} agent      agent/instance: { status, release, commit, version } (`version` is the
+ *   installed release.json's, so a VM installed by commit still names its release)
  * @param {{release?: string, commit?: string}} dashboard  this dashboard's PARACLETE_RELEASE and PARACLETE_COMMIT
  * @returns {{version: string|null, source: 'agent'|'dashboard'|null, matched: boolean, repair: string|null,
  *   agent: object, dashboard: object}}
@@ -118,7 +119,7 @@ export function installedVersion(agent, dashboard) {
     status: text(agent?.status) || 'unknown',
     release: text(agent?.release),
     commit: text(agent?.commit),
-    version: ready ? versionOf(agent?.release) : null,
+    version: ready ? versionOf(agent?.version) || versionOf(agent?.release) : null,
   };
   const dashboardView = { release: text(dashboard?.release), commit: text(dashboard?.commit), version: versionOf(dashboard?.release) };
   const version = agentView.version || dashboardView.version;

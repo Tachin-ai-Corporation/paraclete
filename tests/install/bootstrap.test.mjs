@@ -419,12 +419,13 @@ describe('the readiness document', () => {
     const doc = () => firestore.dump()['agent/instance'].fields;
 
     await db.write('agent/instance', { set_by_someone_else: 'kept' });
-    await readiness.writeReadiness(db, { status: 'ready', release: 'v2026.10.17.1.1', commit: COMMIT, now: '2026-10-17T12:00:00.000Z' });
+    await readiness.writeReadiness(db, { status: 'ready', release: COMMIT, commit: COMMIT, version: 'v2026.10.17.1.1', now: '2026-10-17T12:00:00.000Z' });
     assert.deepEqual(doc(), {
       set_by_someone_else: { stringValue: 'kept' },
       status: { stringValue: 'ready' },
-      release: { stringValue: 'v2026.10.17.1.1' },
+      release: { stringValue: COMMIT },
       commit: { stringValue: COMMIT },
+      version: { stringValue: 'v2026.10.17.1.1' },
       ready_at: { stringValue: '2026-10-17T12:00:00.000Z' },
     });
 
@@ -432,12 +433,14 @@ describe('the readiness document', () => {
     assert.equal(doc().status.stringValue, 'failed');
     assert.equal(doc().commit.stringValue, OTHER);
     assert.equal(doc().ready_at.stringValue, '2026-10-17T12:00:00.000Z', 'a failure keeps when it was last ready');
+    assert.equal(doc().version.stringValue, 'v2026.10.17.1.1', 'and the version of the release that still runs');
     assert.equal(doc().failed_at.stringValue, '2026-10-18T09:00:00.000Z');
     assert.equal(doc().error.stringValue.length, readiness.MAX_ERROR_CHARS + 1);
 
-    await readiness.writeReadiness(db, { status: 'ready', release: 'v2026.10.18.1.1', commit: OTHER, now: '2026-10-18T09:05:00.000Z' });
+    await readiness.writeReadiness(db, { status: 'ready', release: 'v2026.10.18.1.1', commit: OTHER, version: 'not a version', now: '2026-10-18T09:05:00.000Z' });
     assert.equal(doc().status.stringValue, 'ready');
     assert.ok(!('error' in doc()) && !('failed_at' in doc()), 'ready clears the last error');
+    assert.deepEqual(doc().version, { nullValue: null }, 'a release.json without a version names none');
     assert.ok(firestore.requests.every((r) => r.token === 'vm-token'));
   });
 
@@ -452,6 +455,26 @@ describe('the readiness document', () => {
     assert.equal(firestore.dump()['agent/instance'].fields.error.stringValue, '-step stage failed');
     assert.equal(await readiness.main([`--project=${firestore.projectId}`, '--status=done'], { ...deps, stderr: sink() }), 1);
     assert.equal(await readiness.main([], { ...deps, stderr: sink() }), 2);
+  });
+
+  test("a ready report names the installed release.json's version; a missing or broken file names none", async (t) => {
+    const firestore = await startFirestore();
+    t.after(() => firestore.stop());
+    const files = { '/opt/paraclete/release.json': JSON.stringify({ version: 'v2026.10.19.1.2', commit: COMMIT }) };
+    const readFile = (p) => { if (!(p in files)) throw new Error(`ENOENT: ${p}`); return files[p]; };
+    const deps = { firestoreHost: firestore.origin, getAccessToken: async () => 'vm-token', now: () => '2026-10-19T12:00:00.000Z', stdout: sink(), stderr: sink(), readFile };
+    const run = (file) => readiness.main([`--project=${firestore.projectId}`, '--status=ready', `--release=${COMMIT}`, `--commit=${COMMIT}`, `--release-file=${file}`], deps);
+    assert.equal(await run('/opt/paraclete/release.json'), 0);
+    assert.equal(firestore.dump()['agent/instance'].fields.version.stringValue, 'v2026.10.19.1.2');
+    assert.equal(await run('/nowhere/release.json'), 0, 'a missing file never fails the report');
+    assert.deepEqual(firestore.dump()['agent/instance'].fields.version, { nullValue: null });
+    assert.equal(readiness.releaseFileVersion('/x', () => '{not json'), null);
+    assert.equal(readiness.releaseFileVersion('/x', () => JSON.stringify({ version: 'main' })), null);
+  });
+
+  test('bootstrap.sh passes the installed release.json only on a ready report', () => {
+    const script = readFileSync(join(repoRoot, 'install/bootstrap.sh'), 'utf8');
+    assert.match(script, /if \[\[ "\$1" == ready \]\]; then args\+=\("--release-file=\$INSTALL_ROOT\/release\.json"\); fi/);
   });
 });
 

@@ -65,6 +65,11 @@ test('what the instance runs: the VM when it reports a ready release, else the d
   const byCommit = installedVersion({ status: 'ready', release: A, commit: A }, { release: V1, commit: A });
   assert.equal(byCommit.version, V1, 'a VM moved to the commit by dev/deploy.mjs: the dashboard names its release');
 
+  const named = installedVersion({ status: 'ready', release: B, commit: B, version: V2 }, { release: V1, commit: A });
+  assert.deepEqual({ version: named.version, source: named.source, repair: named.repair }, { version: V2, source: 'agent', repair: V2 },
+    "a VM installed by commit that reports its release.json's version names it");
+  assert.equal(installedVersion({ status: 'ready', release: V2, commit: B, version: 'junk' }, {}).version, V2, 'a bad version falls back to the release');
+
   const branch = installedVersion({ status: 'ready', release: 'main', commit: A }, { release: 'main', commit: A });
   assert.deepEqual({ version: branch.version, source: branch.source, matched: branch.matched }, { version: null, source: null, matched: true });
   assert.equal(installedVersion(null, {}).agent.status, 'unknown');

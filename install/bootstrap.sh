@@ -827,6 +827,9 @@ report_readiness() {  # report_readiness ready|failed [error]: the Firestore doc
     return 1
   fi
   local args=("--project=$PROJECT" "--status=$1" "--release=$TARGET_RELEASE" "--commit=$TARGET_COMMIT")
+  # Ready: the release now installed names its version. A failure names none: the helper may then be
+  # an older release's, and the version of whatever runs stays as last reported.
+  if [[ "$1" == ready ]]; then args+=("--release-file=$INSTALL_ROOT/release.json"); fi
   if [[ -n "${2:-}" ]]; then args+=("--error=$2"); fi
   "$NODE" "$helper" "${args[@]}"
 }

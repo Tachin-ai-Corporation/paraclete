@@ -54,10 +54,13 @@ function short(commit) {
   return typeof commit === 'string' ? commit.slice(0, 7) : '';
 }
 
-/** What one half runs, for a line of the card: its release, or its commit when that is all there is. */
+/**
+ * What one half runs, for a line of the card: its version, else the release it was asked for, or its
+ * commit when that is all there is.
+ */
 export function runsText(half) {
   if (!half) return '';
-  const release = half.release || '';
+  const release = half.version || half.release || '';
   const commit = short(half.commit);
   if (release && commit && release.toLowerCase() !== String(half.commit).toLowerCase()) return `${release} (commit ${commit})`;
   return release || (commit ? `commit ${commit}` : 'not recorded');
