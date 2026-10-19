@@ -78,7 +78,7 @@ mission. Write what the work needs into `instruction` or `context`.
 | `singleton` | `true` for anything that takes minutes | Two cycles at once must never run: a second consolidation over the same memory would corrupt it |
 | `min_spacing_minutes` | A floor between firings, below the schedule's own interval | It stops a double firing, such as the one a daylight-saving change causes (below) |
 | `triggerable` | `true` when a person may ask for a run in chat | Only these are offered to the cortex as cycles a person can start |
-| `enabled` | Always written out, `true` or `false` | The scheduler arms only a responsibility whose `enabled` is `true`. The schema's default is not applied to installed files: one without the field never fires |
+| `enabled` | Always written out, `true` or `false` | `false` stops the responsibility from its clock and its events. Left out, it counts as `true`, the schema's default, everywhere (`isEnabled` in `agent/work/scheduler.mjs`); write it out anyway, so a reader sees it |
 | `timezone` | An IANA zone; `UTC` for a role default | The shipped defaults use UTC, because no one's timezone is known at install; the agent moves one into a person's zone with an override when asked |
 | `project_id` | None in a role default | The repo is template-clean; the agent puts identifiers in a project for its own responsibilities |
 | `locked` | Only on generic's upkeep | See above |

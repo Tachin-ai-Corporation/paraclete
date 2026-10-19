@@ -252,19 +252,24 @@ Writing the canon, the concepts and the guides against the code found these. The
 code as it is, gaps included; stale READMEs, comments and agent-facing lines were fixed as they were
 found. Worst first.
 
-**Verification and honesty.**
-- **A mission can complete without verification.** When the cortex chooses `synthesize_with_failure`
-  again after its one chance to unblock, the mission completes as `complete` if any task in the whole
-  run succeeded, skipping the finish gate and verification
+**Fixed in the hardening pass that followed** (each with its tests):
+- A mission no longer completes without verification after the cortex gives up a second time: only
+  work done after the self-unblock check counts, and work that succeeded goes on as a `synthesize`
+  move, through the finish gate and the verifier
   (`agent/services/brain/actions/synthesize-with-failure.mjs`).
-- **The tool log can be imitated.** Nothing strips a `[TOOL EXECUTION LOG]` marker a model writes into
-  its own prose, and the readers take the first block they find (`agent/work/verdict.mjs`,
-  `agent/work/task-outcome.mjs`, `agent/work/result-packet.mjs`).
+- The tool log can no longer be imitated: a marker a model writes into its own text is made inert at
+  the gateway, and the verdict and the task's outcome read the last block, the gateway's
+  (`agent/context/tool-record.mjs`, `agent/gateway/turn-loop.mjs`).
+- A reply in a dashboard thread decides only gates raised in that thread, even when one is all that
+  is pending; an approval in chat is written only if the gate is unchanged since it was read, as the
+  dashboard's is (`agent/services/brain/approval-replies.mjs`).
+- A responsibility that leaves out `enabled` fires, as its schema says; the planners' capability map
+  leaves out skills the instance cannot use; the first `process-ops write` over an installed playbook
+  keeps its `intent_keywords`.
+
+**Verification and honesty, still open.**
 - **Advice where a rule was meant.** The escalation after three failed plans is an instruction to the
-  cortex; a plan with a destructive or public part and no approval gate is warned once, then runs; a
-  Chat approval is written without the `updateTime` precondition the dashboard's uses.
-- **A stray "yes" can decide another person's gate.** With exactly one gate pending anywhere,
-  "approve", "yes" or "lgtm" in any dashboard thread resolves it.
+  cortex; a plan with a destructive or public part and no approval gate is warned once, then runs.
 
 **Fences that rest on prompts.** The agent's shell runs as the VM's account, which may write Firestore
 message documents and sign as `paraclete-dwd@` (so mint a Chat token); the VM's `drive` scope would let
@@ -273,15 +278,10 @@ and Doc comments reach people without passing the mouth. The canon's P-16 lists 
 
 **Work model.**
 - The mission record is written under the mission tree's `missions/`, which the publish excludes, so
-  it is never committed (`agent/work/mission-record.mjs`, `agent/work/artifacts.mjs`).
-- A responsibility record without `enabled` never fires from its clock or an event (defaults are not
-  applied to installed records), while running it now treats it as enabled. Every shipped file sets it.
+  it stays on the VM (`agent/work/mission-record.mjs` now says so). Committing it needs a path per
+  mission: every mission writes the same two paths, which would collide when mission branches merge.
 - `processParameters` is stored but never reaches the mission a firing creates.
 - `on_deploy` is accepted as an event, but nothing raises it.
-- The brain's capability map ignores a skill's `requires`, so the planners see Workspace skills on an
-  instance with no Workspace account.
-- `process-ops write` sets no `intent_keywords`, and a stored playbook replaces the installed one
-  whole, so the agent's own revision of an installed playbook stops matching the planner's hint.
 - A `gated` merge is parked in `context.pending_merge`, and nothing resolves it; context promotions are
   listed in the Library, and nothing accepts one; the canon authority check compares against the
   agent's own account, so no person can change a project's canon.

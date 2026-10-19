@@ -5,7 +5,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { start as startFirestore } from '../../../fakes/firestore-server.mjs';
-import { createClient } from '../../../../agent/storage/firestore.mjs';
+import { createClient, firestoreEncode } from '../../../../agent/storage/firestore.mjs';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import { addressFor, createEnvelopeStore } from '../../../../agent/services/brain/envelope-store.mjs';
 import {
@@ -98,6 +98,35 @@ test('a reply resolves only its own conversation\'s gates', async () => {
   assert.equal(await handler.handle(intake('approve all')), 'approved');
   assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-mine`)).status, 'approved');
   assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-theirs`)).status, 'pending', 'someone else\'s gate is never swept up');
+});
+
+test('a gate decided by someone else between the read and the write is left as it is, and the person is told', async () => {
+  const { handler, checks } = await seed({ 'apr-1': { envelopeId: 'w-1', title: 'Deploy', source_thread: 'th-1', requestedAt: '2026-10-17T11:00:00.000Z' } });
+  await db.write(`${COLLECTIONS.intake}/i-dashboard-m9`, { status: 'claimed', text: 'reject' });
+  // Someone decides the gate in the dashboard after the reply listed it as pending.
+  const realReadDoc = db.readDoc;
+  db.readDoc = async (path) => {
+    const doc = await realReadDoc.call(db, path);
+    if (path.endsWith('/apr-1')) await db.patch(path, ['status', 'resolvedBy'], firestoreEncode({ status: 'approved', resolvedBy: 'other@example.com' }));
+    return doc;
+  };
+  try {
+    assert.equal(await handler.handle(intake('reject')), 'already_decided');
+  } finally {
+    db.readDoc = realReadDoc;
+  }
+  const a = await db.read(`${COLLECTIONS.approvals}/apr-1`);
+  assert.deepEqual([a.status, a.resolvedBy], ['approved', 'other@example.com'], 'the first decision stands');
+  assert.equal((await db.read(`${COLLECTIONS.intake}/i-dashboard-m9`)).resolution, 'already_decided');
+  assert.equal(checks(), 0);
+});
+
+test("a \"yes\" in one person's thread never decides the only gate pending, raised in another's", async () => {
+  const { handler, checks } = await seed({ 'apr-theirs': { envelopeId: 'w-2', title: 'Theirs', source_thread: 'th-2', requestedAt: '2026-10-17T11:01:00.000Z' } });
+  assert.equal(await handler.handle(intake('yes')), null, 'an ordinary message: it is classified as usual');
+  assert.equal((await db.read(`${COLLECTIONS.approvals}/apr-theirs`)).status, 'pending');
+  assert.equal(checks(), 0);
+  assert.equal(await handler.handle(intake('yes', '')), null, 'a reply naming no thread reaches no gate');
 });
 
 test('several pending and no number: the person is asked which, and nothing is resolved', async () => {

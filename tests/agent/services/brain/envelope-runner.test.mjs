@@ -212,7 +212,8 @@ test('a synthesis the verifier failed cannot be repeated: the move is turned int
     await drainRunner(t.brain);
     const m = await t.read(`${COLLECTIONS.work}/w-1`);
     assert.equal(m._swf_state, 'unblock_attempted', 'the repeated synthesize was forced to synthesize_with_failure, which checked once before accepting');
-    assert.equal(m.status, 'complete', 'the work had succeeded: the honest synthesis is delivered');
+    assert.equal(m.status, 'blocked',
+      'the verifier rejected the answer and nothing new was tried after the check: it is never delivered as complete');
     const synthesisChecks = t.gateway.of('cerebellum').filter((x) => x.user.includes('mission synthesis')).length;
     assert.ok(synthesisChecks <= 3, `a judged answer is not re-verified in a loop (${synthesisChecks} checks)`);
   } finally {

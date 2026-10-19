@@ -39,9 +39,10 @@ Two consequences:
 
 - **An instance whose agent rewrote an installed playbook keeps its own version.** A release that
   improves that playbook does not reach it.
-- **A playbook the agent writes has no `intent_keywords`.** `process-ops` takes none
-  (`agent/cli/process-ops.mjs`), and a stored playbook replaces the installed one whole, so the
-  planner's keyword hint stops matching it; it still reaches the cortex in the library.
+- **A playbook the agent writes takes no `intent_keywords` of its own.** `process-ops` takes none
+  (`agent/cli/process-ops.mjs`). Its first write over an installed playbook carries the installed
+  one's over, so the planner's keyword hint still finds it; a playbook the agent creates from nothing
+  has none, and reaches the cortex through the library only.
 
 ## What the agent sees, and when
 

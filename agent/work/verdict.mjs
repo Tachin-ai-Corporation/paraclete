@@ -4,6 +4,8 @@
 // for control flow. Running the verifier, and deciding what a verdict does to the mission, belong to
 // the checkpoint executor and the brain's synthesize step, which call these.
 
+import { lastToolLog } from '../context/tool-record.mjs';
+
 /**
  * Extract a verification verdict from a cerebellum response's tool log.
  *
@@ -13,7 +15,8 @@
 export function extractVerdict(output) {
   if (!output) return null;
   const text = typeof output === 'string' ? output : JSON.stringify(output);
-  const toolLog = text.match(/\[TOOL EXECUTION LOG\]([\s\S]*?)\[END TOOL LOG\]/)?.[1] || '';
+  // The gateway's own log is the last block: a block a model's prose imitated cannot decide the verdict.
+  const toolLog = lastToolLog(text);
   if (toolLog.includes('[TOOL] report_pass(')) return 'PASS';
   if (toolLog.includes('[TOOL] report_fail(')) return 'FAIL';
   return null; // no verdict tool called: escalate

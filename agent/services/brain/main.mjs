@@ -270,7 +270,7 @@ export function buildBrain(runtime, deps = {}) {
   let capMap = '';
   let skillIds = [];
   function refreshCapabilities(reason = 'refresh') {
-    const skills = readSkills(skillDirectories(paths));
+    const skills = readSkills(skillDirectories(paths), { instance: instance || null });
     if (skills.length === 0 && capMap) {
       log('WARN', `the skill scan came back empty (${reason}); keeping the previous capability map`);
       return;

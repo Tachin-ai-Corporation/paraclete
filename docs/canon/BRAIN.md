@@ -159,9 +159,10 @@ still out of view the milestone is inconclusive, not failed work.
 - **How the code gives it.** `agent/gateway/turn-loop.mjs` appends the tool log;
   `agent/context/tool-record.mjs` stores and digests large results; `agent/work/checkpoint-verify.mjs`
   runs the re-check; `isMissingEvidenceFail()` in `agent/work/verdict.mjs` tells "not visible" from
-  "wrong". **Missing:** the verifier cannot ask for a [probe](../GLOSSARY.md); nothing services one
-  (`agent/work/checkpoint-verify.mjs` says so). The gateway does not remove a tool-log marker a model
-  writes into its own text, and the readers take the first log block they find.
+  "wrong". The log is the gateway's alone: a tool-log marker a model writes into its own text is made
+  inert (`quoteToolLogMarkers()` in `agent/context/tool-record.mjs`), and the verdict and the task's
+  outcome read the last block, the gateway's (`lastToolLog()`). **Missing:** the verifier cannot ask
+  for a [probe](../GLOSSARY.md); nothing services one (`agent/work/checkpoint-verify.mjs` says so).
 
 ### B-10. The verdict is graded, and the verifier owns it
 
@@ -218,9 +219,8 @@ composed from the mission's state and labelled as such.
 - **How the code gives it.** `agent/services/brain/actions/synthesize.mjs`, `finalizeBlockedBySpine()`
   in `agent/work/checkpoint-spine.mjs`, `agent/services/brain/actions/synthesize-with-failure.mjs`,
   `agent/work/deliverable.mjs`. **Known gaps:** a synthesis the verifier returned no verdict on still
-  completes, flagged for review. A `synthesize_with_failure` chosen again after its one chance
-  completes the mission, without the spine check or verification, when any task in the run succeeded.
-  And a checkpoint whose last task is an approval gate is marked complete on resume without being
+  completes, flagged for review. And a checkpoint whose last task is an approval gate is marked
+  complete on resume without being
   judged ([plan/OPEN_ITEMS.md](../plan/OPEN_ITEMS.md), phase 4).
 
 ## Durable work

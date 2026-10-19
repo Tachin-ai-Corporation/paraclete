@@ -579,6 +579,17 @@ describe('the scheduler runs the agent\'s store without a restart', () => {
     } finally { h.done(); }
   });
 
+  it('an installed responsibility that leaves out `enabled` fires, as its schema default says', async () => {
+    const { enabled, ...noFlag } = own({ id: 'r-on-fail', schedule: null, event: 'on_failure' });
+    assert.equal(enabled, true);
+    const h = storeHarness([noFlag], async () => []);
+    try {
+      await h.s.refreshStore(new Date('2026-09-28T08:00:00Z'), { force: true });
+      await h.s.fireEvent('on_failure', { mission_id: 'w-1' });
+      assert.deepEqual(h.missions, ['r-on-fail'], 'it fired from its event, as it fires when run now');
+    } finally { h.done(); }
+  });
+
   it('an on_complete responsibility cannot loop on its own missions, and events are spaced', async () => {
     const docs = [{ id: 'r-after', mode: 'own', status: 'active', revision: 1, updated_by: 'agent', body: own({ id: 'r-after', schedule: null, event: 'on_complete', min_spacing_minutes: 0 }) }];
     const h = storeHarness([], async () => docs);

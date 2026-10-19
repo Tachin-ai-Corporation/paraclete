@@ -14,11 +14,13 @@
 // (source_meta.sender_email, agent/services/ears/chat-identity.mjs) and that user's record still
 // holds a dashboard role; anyone else is told how to approve and nothing is resolved. A Chat reply
 // resolves only gates whose mission came from the same Chat space (its own thread first); never a
-// gate raised in the dashboard or in another space.
+// gate raised in the dashboard or in another space. A dashboard reply resolves only gates raised in
+// its own thread (each dashboard user has their own), even when one gate is all that is pending: a
+// "yes" in one person's conversation never decides another's gate. The Approvals page decides any.
 
 import { isDashboardUser } from '../../storage/dashboard-users.mjs';
 import { COLLECTIONS } from '../../storage/collections.mjs';
-import { firestoreEncode } from '../../storage/firestore.mjs';
+import { firestoreEncode, StoreConflict } from '../../storage/firestore.mjs';
 import { approvalResolution, scopeApprovalsToConversation } from '../../work/approvals.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { addressMeta } from './envelope-store.mjs';
@@ -47,6 +49,20 @@ export function chatScopedApprovals(pending, address) {
   if (!space) return [];
   const inSpace = pending.filter((a) => a._address?.channel === 'gchat' && a._address?.space === space);
   return scopeApprovalsToConversation(inSpace, { thread: address?.thread || '' });
+}
+
+/**
+ * The pending approvals a dashboard reply may resolve: those raised in its own thread. Nothing when
+ * the reply names no thread.
+ *
+ * @param {object[]} pending   from livePending()
+ * @param {object}   address   the reply's Address
+ * @returns {object[]}
+ */
+export function dashboardScopedApprovals(pending, address) {
+  const thread = address?.thread || '';
+  if (!thread) return [];
+  return pending.filter((a) => a.source_channel === 'dashboard' && a.source_thread === thread);
 }
 
 /**
@@ -166,8 +182,9 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
    * Handles a message if it is an approval reply with pending approvals to resolve.
    *
    * @param {object} intake
-   * @returns {Promise<'approved'|'rejected'|'disambiguation'|'not_authorized'|null>} null when it is
-   *   not one, and classification goes on as usual ("yes" with nothing pending is an ordinary message)
+   * @returns {Promise<'approved'|'rejected'|'disambiguation'|'not_authorized'|'already_decided'|null>} null
+   *   when it is not one, and classification goes on as usual ("yes" with nothing pending is an
+   *   ordinary message)
    */
   async function handle(intake) {
     const parsed = parseApprovalReply(intake.source_meta?.raw_text || intake.text);
@@ -177,10 +194,7 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
       const live = await livePending();
       pending = intake.source === 'gchat'
         ? chatScopedApprovals(live, intake.source_meta?.address)
-        : scopeApprovalsToConversation(live, {
-          thread: intake.source_meta?.address?.thread || '',
-          channel: intake.source || '',
-        });
+        : dashboardScopedApprovals(live, intake.source_meta?.address);
     } catch (e) {
       log('WARN', `approval reply check could not read the approvals (${e.message}); classifying the message instead`);
       return null;
@@ -209,27 +223,50 @@ export function createApprovalReplies({ db, store, approvals, addressFor, log = 
     }
 
     const reason = parsed.decision === 'rejected' && parsed.userText.length > 20 ? parsed.userText : undefined;
+    // Each gate is decided only if it is unchanged since it was read: of two people deciding at the
+    // same moment (here, in the dashboard, in Chat), the second never overwrites the first.
+    const decided = [];
     for (const a of targets) {
+      const path = `${COLLECTIONS.approvals}/${a.id}`;
       const fields = approvalResolution({ decision: parsed.decision, resolvedBy, reason, now: store.iso() });
       try {
-        await db.patch(`${COLLECTIONS.approvals}/${a.id}`, Object.keys(fields), firestoreEncode(fields), { strict: true });
+        const current = await db.readDoc(path);
+        if (!current || current.data.status !== 'pending') {
+          log('INFO', `approval ${a.id} was decided meanwhile; left as it is`);
+          continue;
+        }
+        await db.patch(path, Object.keys(fields), firestoreEncode(fields), { strict: true, precondition: { updateTime: current.updateTime } });
+        decided.push(a);
         log('INFO', `approval ${a.id} ${parsed.decision} by ${resolvedBy} (mission ${a.envelopeId})`);
       } catch (e) {
-        log('WARN', `approval ${a.id} could not be resolved: ${e.message}`);
+        log('WARN', e instanceof StoreConflict
+          ? `approval ${a.id} changed while it was being decided; left as it is`
+          : `approval ${a.id} could not be resolved: ${e.message}`);
       }
     }
 
+    if (decided.length === 0) {
+      await reply(intake, {
+        parentId: targets[0].envelopeId || null,
+        title: 'Already decided',
+        output: 'Nothing changed: that approval was decided by someone else just before your reply. The Approvals page shows who decided it.',
+      });
+      await db.patch(`${COLLECTIONS.intake}/${intake.id}`, ['status', 'resolution', 'resolved_at'],
+        firestoreEncode({ status: 'resolved_approval', resolution: 'already_decided', resolved_at: store.iso() }));
+      return 'already_decided';
+    }
+
     // The receipt goes out before the work resumes, so it reaches the person ahead of the results.
-    const titles = targets.map((a) => a.title || a.envelopeId).join(', ');
+    const titles = decided.map((a) => a.title || a.envelopeId).join(', ');
     await reply(intake, {
-      parentId: targets[0].envelopeId || null,
+      parentId: decided[0].envelopeId || null,
       title: `Approval ${parsed.decision}`,
       output: parsed.decision === 'approved'
         ? `✅ Approved: ${titles}. Resuming work.`
         : `❌ Rejected: ${titles}. ${reason || 'Work stopped at this gate.'}`,
     });
     await db.patch(`${COLLECTIONS.intake}/${intake.id}`, ['status', 'resolution', 'resolved_at', 'approval_ids'],
-      firestoreEncode({ status: 'resolved_approval', resolution: parsed.decision, resolved_at: store.iso(), approval_ids: targets.map((a) => a.id) }));
+      firestoreEncode({ status: 'resolved_approval', resolution: parsed.decision, resolved_at: store.iso(), approval_ids: decided.map((a) => a.id) }));
 
     // Act now rather than at the poller's next turn: an approval resumes the paused plan, a
     // rejection fails the mission with the reason.

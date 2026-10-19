@@ -17,7 +17,7 @@
 // step turns them into its own image part, and only the most recent `images.kept` stay attached
 // (retainImages() in images.mjs). Images never reach the tool log, the tool records or the response.
 
-import { buildToolLog, recordPolicy, DEFAULT_RECORD_POLICY, TERMINAL_TOOLS } from '../context/tool-record.mjs';
+import { buildToolLog, recordPolicy, DEFAULT_RECORD_POLICY, TERMINAL_TOOLS, quoteToolLogMarkers } from '../context/tool-record.mjs';
 import { parseModel, clientFor, PROVIDERS } from './model-clients.mjs';
 import { LoopGuard, DEFAULT_LOOP_GUARD } from './loop-guard.mjs';
 import { retainImages, isTranscriptImage } from './images.mjs';
@@ -316,7 +316,8 @@ export async function runTurn({
     while (step < maxSteps) {
       const out = await stepper.call(history, step);
       addUsage(usage, out.usage, stepper.provider);
-      text = appendStepText(text, out.text);
+      // A model's own text never carries a working tool-log marker: only the gateway writes the log.
+      text = appendStepText(text, quoteToolLogMarkers(out.text));
 
       if (out.calls.length === 0) {
         finishReason = out.finishReason || 'stop';
@@ -406,7 +407,7 @@ export async function runTurn({
       addUsage(usage, out.usage, stepper.provider);
       if (out.text.trim()) {
         const logAt = text.indexOf(TOOL_LOG_START);
-        text = out.text + (logAt >= 0 ? text.slice(logAt) : '');
+        text = quoteToolLogMarkers(out.text) + (logAt >= 0 ? text.slice(logAt) : '');
         logger('INFO', 'loop guard synthesis answered from the gathered results');
       }
     } catch (e) {

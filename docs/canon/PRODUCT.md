@@ -361,17 +361,17 @@ removed nor made a member.
 ### P-23. Only dashboard users decide approval gates
 
 An [approval gate](../GLOSSARY.md) is decided in the dashboard by any dashboard user, or by a reply in
-the conversation that raised it. A reply in Google Chat counts only from someone the ears matched to a
-dashboard user, and only for gates raised in that space. Two people deciding one gate in the dashboard
-at the same moment cannot both win.
+the conversation that raised it: a reply in a dashboard thread decides only gates raised in that
+thread, even when one gate is all that is pending. A reply in Google Chat counts only from someone the
+ears matched to a dashboard user, and only for gates raised in that space. Two people deciding one
+gate at the same moment, wherever they decide it, cannot both win.
 
 - **Why.** An approval lets consequential work go ahead. Anyone in the organization may reach the
   agent in Chat, and some spaces admit people outside it; neither makes someone an approver.
 - **Kept by.** `agent/services/brain/approval-replies.mjs` (approvals in chat, checked against
   `agent/storage/dashboard-users.mjs`), `dashboard/lib/server/approvals.mjs` (the dashboard's decision,
   guarded by the gate's update time), `agent/work/approvals.mjs` (the gate's lifecycle). A reply in
-  chat that lands in the same instant as a dashboard decision is not guarded the same way: the chat
-  path writes without a precondition.
+  chat is guarded the same way: it re-reads the gate and writes only if it is unchanged.
 
 ## Code structure
 

@@ -3,7 +3,7 @@
 // and each cortex mode's and the prefrontal's user turn.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -46,6 +46,22 @@ test('the capability map says which organ can do what, never how', () => {
   const real = capabilityMap(readSkills([join(REPO_ROOT, 'skills')]));
   assert.match(real, /## prefrontal\n- Checkpoint Plan Structuring/);
   assert.match(real, /## cerebellum/);
+});
+
+test('the planners never see a skill the instance cannot use, as the motor\'s skill index never does', () => {
+  const skillsDir = join(REPO_ROOT, 'skills');
+  const workspaceSkills = readdirSync(skillsDir).filter((d) => {
+    try { return (JSON.parse(readFileSync(join(skillsDir, d, 'skill.json'), 'utf8')).requires || []).includes('workspace'); } catch { return false; }
+  });
+  assert.ok(workspaceSkills.length > 0, 'the repo has Workspace skills to leave out');
+  const ids = (instance) => readSkills([skillsDir], { instance }).map((s) => s.id);
+  const without = ids({ project: 'your-gcp-project', workspace: null });
+  const withAccount = ids({ project: 'your-gcp-project', workspace: { account: 'agent@example.com', signer: 'paraclete-dwd@your-gcp-project.iam.gserviceaccount.com' } });
+  for (const id of workspaceSkills) {
+    assert.ok(!without.includes(id), `${id} left out with no Workspace account`);
+    assert.ok(withAccount.includes(id), `${id} listed with one`);
+  }
+  assert.ok(without.includes('files'), 'the other skills stay');
 });
 
 test('the cortex\'s system blocks: Deep Truths and registries first and stable, working memory last', () => {

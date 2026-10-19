@@ -3,6 +3,10 @@
 // succeeded, it is upgraded to a plain synthesis; on a first real failure the cortex gets one chance to
 // resolve it another way; after that the failure is accepted, a mission as blocked with its synthesis
 // as the account. Called by the decide loop in envelope-runner.mjs.
+//
+// A mission never completes here: work that succeeded goes on as a `synthesize` move, through the
+// finish gate and the verifier like any other answer. Only the work done after the self-unblock check
+// counts as having resolved the failure; a success from before it is the work that failed.
 
 import { isRealTaskFailure, isRealTaskSuccess } from '../../../work/finalization.mjs';
 import { toStr } from '../../../providers/to-str.mjs';
@@ -50,19 +54,16 @@ export async function handleSynthesizeWithFailure(ctx, deps) {
   }
 
   if (state === 'awaiting_unblock') {
-    if (dispatches.some((r) => r.success === true)) {
-      log('INFO', 'synthesize_with_failure: the self-unblock resolved the failure');
-      envelope._swf_state = 'unblock_attempted';
-      await completeEnvelope(envelope, {
-        status: 'complete',
-        output: synthesisOf(decision),
-        priorResults,
-        historyDetail: 'Completed (the self-unblock resolved the failure)',
-      });
-      return { exit: true };
+    envelope._swf_state = 'unblock_attempted';
+    const check = priorResults.findLastIndex((r) => r.agent === 'system' && String(r.result || '').startsWith('[SELF-UNBLOCK CHECK]'));
+    const sinceCheck = check >= 0 ? priorResults.slice(check + 1).filter(isDispatch) : [];
+    if (sinceCheck.some(isRealTaskSuccess) && !sinceCheck.some(isRealTaskFailure)) {
+      log('INFO', 'synthesize_with_failure: the work after the self-unblock check succeeded; synthesizing through the finish gate');
+      await store.save(envelope);
+      decision.action = 'synthesize';
+      return { nextAction: 'synthesize' };
     }
     log('INFO', 'synthesize_with_failure: the self-unblock did not resolve the failure');
-    envelope._swf_state = 'unblock_attempted';
   }
 
   if (envelope.type === 'M') {

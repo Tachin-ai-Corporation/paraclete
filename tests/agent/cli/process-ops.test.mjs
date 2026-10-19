@@ -14,7 +14,7 @@ function setup(initial = {}) {
   const root = mkdtempSync(join(tmpdir(), 'process-install-'));
   const dir = join(root, 'roles', 'generic', 'processes');
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'p-plan.json'), JSON.stringify({ id: 'p-plan', name: 'Planning', description: 'Plan work well', narrative: 'Fix the outcome first.' }));
+  writeFileSync(join(dir, 'p-plan.json'), JSON.stringify({ id: 'p-plan', name: 'Planning', description: 'Plan work well', narrative: 'Fix the outcome first.', intent_keywords: ['plan', 'roadmap'] }));
   writeFileSync(join(dir, 'p-review.json'), JSON.stringify({ id: 'p-review', name: 'Review', description: 'Review a change', narrative: 'Read it twice.' }));
   const db = fakeDb(initial);
   const runtime = fakeRuntime({ db, instance: { install_root: root } });
@@ -86,6 +86,7 @@ test('the first write over an installed playbook keeps the fields it does not ch
   await ops(['write', 'p-plan', '--narrative', 'Fix the outcome, then the steps.']);
   const doc = db.docs.get('processes/p-plan');
   assert.deepEqual([doc.name, doc.description, doc.narrative, doc.created_at], ['Planning', 'Plan work well', 'Fix the outcome, then the steps.', '2026-10-17T12:00:00Z']);
+  assert.deepEqual(doc.intent_keywords, ['plan', 'roadmap'], 'its recall phrases come along, so the planner still finds it');
   assert.match((await ops(['write', 'Bad/Id', '--name', 'x'])).err, /is not a playbook id/);
 });
 

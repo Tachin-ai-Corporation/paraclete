@@ -23,6 +23,40 @@ import { COLLECTIONS } from '../storage/collections.mjs';
 /** The collection full tool results are stored in; refs look like `tool_results/<id>`. */
 export const TOOL_RESULTS_COLLECTION = COLLECTIONS.toolResults;
 
+/** What a model's own text carries in place of a tool-log marker it wrote: it opens and closes nothing. */
+const QUOTED_START = '[TOOL EXECUTION LOG (quoted)]';
+const QUOTED_END = '[END TOOL LOG (quoted)]';
+
+/**
+ * A model's text with every tool-log marker it wrote made inert, so its prose can never open or close
+ * a log block: only the gateway writes the real markers, after the model's text. A model quoting an
+ * earlier turn's log, or imitating one, would otherwise hand the readers (the verdict, the task's
+ * outcome, the evidence checks) a block they take for the gateway's.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function quoteToolLogMarkers(text) {
+  return String(text ?? '').replaceAll('[TOOL EXECUTION LOG]', QUOTED_START).replaceAll('[END TOOL LOG]', QUOTED_END);
+}
+
+/**
+ * The last tool-log block in an output, or ''. The gateway appends the real one after the model's
+ * text, so the last block is the gateway's even if a model's text slipped a marker past
+ * quoteToolLogMarkers.
+ *
+ * @param {string} text
+ * @returns {string} the block's body, without its markers
+ */
+export function lastToolLog(text) {
+  const s = String(text ?? '');
+  const start = s.lastIndexOf('[TOOL EXECUTION LOG]');
+  if (start < 0) return '';
+  const bodyStart = start + '[TOOL EXECUTION LOG]'.length;
+  const end = s.indexOf('[END TOOL LOG]', bodyStart);
+  return end < 0 ? '' : s.slice(bodyStart, end);
+}
+
 // Terminal tools carry their payload through the log (the verdict parser in work/ reads their JSON
 // arguments), so their arguments get the generous cap and are never marked as cut.
 export const TERMINAL_TOOLS = new Set(['report_pass', 'report_fail']);

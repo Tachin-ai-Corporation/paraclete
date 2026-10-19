@@ -30,8 +30,9 @@ do. Three consequences:
 - **`organs` is not an access list.** Every tool-using organ gets the same index, whatever a skill's
   `organs` says; the index leaves out only skills used by nothing but the planning organs, and skills
   whose `requires` the instance does not meet (`agent/gateway/skill-catalog.mjs`). `organs` decides
-  where the skill appears in the capability map. The brain's capability map does not apply `requires`,
-  so the planners see a Workspace skill listed on an instance without a Workspace account.
+  where the skill appears in the capability map, which applies `requires` the same way
+  (`readSkills()` in `agent/services/brain/prompt-assembly.mjs`): the planners never plan with a
+  skill the motor cannot see.
 
 ## When a skill, and when something else
 

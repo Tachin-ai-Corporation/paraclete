@@ -9,9 +9,8 @@
 // finishReason?, timedOut? }. Every function here returns a new result and never mutates its input.
 
 import { toStr } from '../providers/to-str.mjs';
+import { lastToolLog } from '../context/tool-record.mjs';
 import { detectMotorFailure, isRecoveredToolError, isDeliveryCriticalIntent } from './agent-output.mjs';
-
-const TOOL_LOG = /\[TOOL EXECUTION LOG\]([\s\S]*?)\[END TOOL LOG\]/;
 
 // A durable change the agent made: a file written, a commit, a file handed back or stored, a
 // memory write. A thin success that made one of these is not suspicious, whatever its speed.
@@ -116,7 +115,7 @@ export function prepareRetry(result) {
 export function withEvidenceWarnings(result, { organ }) {
   if (!result.success || organ !== 'motor') return { result, warnings: [] };
   const text = toStr(result.output) || result.text || '';
-  const toolLog = text.match(TOOL_LOG)?.[1] || '';
+  const toolLog = lastToolLog(text);
   const toolCount = (toolLog.match(/\[TOOL\]/g) || []).length;
   const warnings = [];
   if ((result.durationMs || 0) < FLOOR_MAX_MS && toolCount <= FLOOR_MAX_TOOLS && !isDurableWrite(toolLog)) {

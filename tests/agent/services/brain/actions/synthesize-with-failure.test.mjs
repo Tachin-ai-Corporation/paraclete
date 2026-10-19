@@ -39,17 +39,36 @@ test('recent work is what ran after the last failed plan\'s note, counted in the
   assert.ok((await handleSynthesizeWithFailure(failedLast, deps)).continue, 'the latest plan failed: no upgrade');
 });
 
-test('a first real failure gets one self-unblock check; success after it completes the mission', async () => {
+test('a first real failure gets one self-unblock check; work that succeeds after it goes on to a verified synthesis', async () => {
   const { deps, calls } = mockDeps();
   const env = { id: 'm-1', type: 'M' };
-  const first = await handleSynthesizeWithFailure({ envelope: env, decision: { synthesis: 'Could not reach the API.' }, priorResults: [{ agent: 'motor', success: false }], iteration: 2 }, deps);
-  assert.match(first.priorResultsAppend[0].result, /^\[SELF-UNBLOCK CHECK\]/);
+  const failed = { agent: 'motor', success: false };
+  const first = await handleSynthesizeWithFailure({ envelope: env, decision: { synthesis: 'Could not reach the API.' }, priorResults: [failed], iteration: 2 }, deps);
+  const note = first.priorResultsAppend[0];
+  assert.match(note.result, /^\[SELF-UNBLOCK CHECK\]/);
   assert.equal(env._swf_state, 'awaiting_unblock');
   assert.equal(env._failure_synthesis, 'Could not reach the API.');
   assert.equal(calls.saves, 1);
-  await handleSynthesizeWithFailure({ envelope: env, decision: { synthesis: 'Worked around it.' }, priorResults: [{ agent: 'motor', success: false }, { agent: 'motor', success: true }], iteration: 5 }, deps);
-  assert.equal(calls.completions[0].status, 'complete');
+  const decision = { action: 'synthesize_with_failure', synthesis: 'Worked around it.' };
+  const second = await handleSynthesizeWithFailure({ envelope: env, decision, priorResults: [failed, note, { agent: 'motor', success: true }], iteration: 5 }, deps);
+  assert.deepEqual(second, { nextAction: 'synthesize' }, 'through the finish gate and the verifier, like any answer');
+  assert.equal(decision.action, 'synthesize');
+  assert.deepEqual(calls.completions, [], 'never completed here');
   assert.equal(env._swf_state, 'unblock_attempted');
+});
+
+test('a success from before the self-unblock check does not complete the mission (it skipped verification)', async () => {
+  const { deps, calls } = mockDeps();
+  const env = { id: 'm-1', type: 'M', _swf_state: 'awaiting_unblock' };
+  const note = { agent: 'system', result: '[SELF-UNBLOCK CHECK] Before accepting this failure, check what actually happened.' };
+  const priorResults = [{ agent: 'motor', success: true, result: 'step 1 worked' }, { agent: 'motor', success: false, result: 'step 2 failed' }, note,
+    { agent: 'motor', success: false, result: 'the other way failed too' }];
+  await handleSynthesizeWithFailure({ envelope: env, decision: { synthesis: 'Half done.', failure_summary: 'step 2 cannot run' }, priorResults, iteration: 6 }, deps);
+  assert.equal(calls.completions.length, 1);
+  assert.equal(calls.completions[0].status, 'blocked', 'the earlier success no longer passes the whole run as complete');
+  const nothingAfter = { envelope: { id: 'm-2', type: 'M', _swf_state: 'awaiting_unblock' }, decision: {}, priorResults: priorResults.slice(0, 3), iteration: 6 };
+  await handleSynthesizeWithFailure(nothingAfter, deps);
+  assert.equal(calls.completions[1].status, 'blocked', 'nothing tried after the check is nothing resolved');
 });
 
 test('a failure that stays a failure ends the mission as blocked, its synthesis the account', async () => {

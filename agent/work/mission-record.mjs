@@ -1,8 +1,9 @@
-// agent/work/mission-record.mjs: renders a mission's durable record (missions/output.md, the
-// readable result with a header, and missions/result.json, a structured summary for deterministic
-// recovery) and writes both into the mission's artifact working tree. Committing and publishing
-// that tree belongs to the artifact store in agent/storage. The brain calls writeMissionRecord
-// before the artifact publish step, so the publish captures the record.
+// agent/work/mission-record.mjs: renders a mission's record (missions/output.md, the readable result
+// with a header, and missions/result.json, a structured summary) and writes both into the mission's
+// working tree on the VM. The publish does not commit them: the tree's excludes leave out
+// `/missions/` (agent/work/artifacts.mjs), and every mission writes the same two paths, which would
+// collide when mission branches merge. So the record lives with the mission tree on the VM only; the
+// mission's envelope in Firestore is its lasting account (OPEN_ITEMS, phase 10).
 
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';

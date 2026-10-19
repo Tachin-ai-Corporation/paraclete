@@ -32,6 +32,12 @@ const REARM_INTERVAL_MS = 60 * 60 * 1000;
 
 const TICK_INTERVAL_MS = 60_000;
 const DEFAULT_MIN_SPACING_MINUTES = 15; // default; a responsibility sets its own min_spacing_minutes
+
+/**
+ * Whether a responsibility fires. `enabled` defaults to true (responsibility-schema.mjs), and a record
+ * that leaves it out fires: from its clock, from an event, and when run now, the same everywhere.
+ */
+const isEnabled = (r) => r?.enabled !== false;
 const STORE_WARN_INTERVAL_MS = 15 * 60_000;
 
 // ---- Cron expression helpers (pure functions) ----
@@ -241,12 +247,12 @@ export function createScheduler(deps) {
 
   /** What a responsibility's armed slot depends on; a change to any of it re-arms. */
   function armSignature(r) {
-    return `${Boolean(r.enabled)}|${r.schedule || ''}|${r.timezone || 'UTC'}`;
+    return `${isEnabled(r)}|${r.schedule || ''}|${r.timezone || 'UTC'}`;
   }
 
   function armOne(r, at) {
     armedSig[r.id] = armSignature(r);
-    if (r.enabled && r.schedule) {
+    if (isEnabled(r) && r.schedule) {
       nextFires[r.id] = nextFireFor(r, at);
       const nextStr = nextFires[r.id]
         ? nextFires[r.id].toISOString()
@@ -557,7 +563,7 @@ export function createScheduler(deps) {
 
     lastFired[id] = clock();
     // Keep the cron cadence coherent: re-arm the next scheduled fire.
-    if (resp.enabled && resp.schedule) nextFires[id] = nextFireFor(resp);
+    if (isEnabled(resp) && resp.schedule) nextFires[id] = nextFireFor(resp);
     log('INFO', `[TELEMETRY] responsibility_triggered id=${id} source=${source} bypass_spacing=${bypassSpacing === true}`);
 
     fireResponsibility(resp).catch((e) => log('ERROR', `fireById ${id} fire failed: ${e.message}`));
@@ -598,7 +604,7 @@ export function createScheduler(deps) {
   async function tick(at = new Date(clock())) {
     await refreshStore(at);
     for (const r of responsibilities) {
-      if (!r.enabled || !r.schedule) continue;
+      if (!isEnabled(r) || !r.schedule) continue;
       let nextFire = nextFires[r.id];
       if (!nextFire) {
         // null means "no slot within the horizon when last computed", not "never". Re-arm it,
@@ -655,7 +661,7 @@ export function createScheduler(deps) {
     nextFires = {};
     for (const r of responsibilities) {
       armedSig[r.id] = armSignature(r);
-      if (r.enabled && r.schedule) nextFires[r.id] = nextFireFor(r, at);
+      if (isEnabled(r) && r.schedule) nextFires[r.id] = nextFireFor(r, at);
     }
   }
 
@@ -672,7 +678,7 @@ export function createScheduler(deps) {
   async function fireEvent(eventType, eventContext = {}) {
     if (!eventType) return;
 
-    const matching = responsibilities.filter((r) => r.enabled && r.event && r.event === eventType);
+    const matching = responsibilities.filter((r) => isEnabled(r) && r.event && r.event === eventType);
     if (matching.length === 0) return;
     // No event chains. A mission an event responsibility produced never fires another event
     // responsibility, and no responsibility fires from its own mission: once the agent can write an

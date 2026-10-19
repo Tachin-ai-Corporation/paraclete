@@ -9,6 +9,7 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { toContentParts } from '../../context/prompt-blocks.mjs';
+import { skillRequires, unavailableReason } from '../../context/skill-requirements.mjs';
 import { renderResources } from '../../work/resource-ledger.mjs';
 import { smartTruncate } from '../../providers/vertex-text.mjs';
 import { toStr } from '../../providers/to-str.mjs';
@@ -37,15 +38,19 @@ const ENVELOPE_MUTABLE_KEYS = new Set([
 /**
  * The installed skills, from each directory's <skill>/skill.json, in the order given (base skills,
  * the generic role's, the chosen role's, the agent's own). The first skill with an id wins: the same
- * skill reached twice is one skill. Unreadable manifests are skipped.
+ * skill reached twice is one skill. Unreadable manifests are skipped, and so is a skill whose
+ * `requires` the instance does not meet (a Workspace skill with no Workspace account): the planners
+ * must not plan with what the motor's skill index leaves out (agent/gateway/skill-catalog.mjs).
  *
  * @param {string[]} skillDirs
  * @param {object} [io]
  * @param {Function} [io.readText]
  * @param {Function} [io.listDir]
+ * @param {object|null} [io.instance] the instance record `requires` is checked against; undefined
+ *   checks nothing
  * @returns {Array<{id: string, name: string, whenToUse: string, organs: string[]}>}
  */
-export function readSkills(skillDirs, { readText = (p) => readFileSync(p, 'utf8'), listDir = (d) => readdirSync(d), exists = existsSync } = {}) {
+export function readSkills(skillDirs, { readText = (p) => readFileSync(p, 'utf8'), listDir = (d) => readdirSync(d), exists = existsSync, instance } = {}) {
   const seen = new Set();
   const out = [];
   for (const dir of skillDirs || []) {
@@ -60,6 +65,7 @@ export function readSkills(skillDirs, { readText = (p) => readFileSync(p, 'utf8'
         const id = m.id || name;
         if (seen.has(id)) continue;
         seen.add(id);
+        if (instance !== undefined && unavailableReason(skillRequires(m), instance)) continue;
         out.push({
           id,
           name: m.name || id,

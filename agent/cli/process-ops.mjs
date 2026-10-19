@@ -128,10 +128,12 @@ export async function main(argv, deps = {}) {
       const existing = await db.read(docPath(id), { strict: true });
       const fields = { id, updated_by: ACTOR, updated_at: at, status: 'active', created_at: existing?.created_at || at };
       // A stored playbook replaces an installed one whole, so the first write over an installed
-      // playbook starts from its fields: changing only the narrative must not blank its name.
+      // playbook starts from its fields: changing only the narrative must not blank its name, and its
+      // recall phrases come along, or the rewrite would stop matching the planner's keyword hint.
       const base = existing ? {} : (installedById(id) || {});
       for (const key of ['name', 'description']) if (opts[key] || base[key]) fields[key] = opts[key] || base[key];
       if (narrative || base.narrative) fields.narrative = narrative || base.narrative;
+      if (Array.isArray(base.intent_keywords) && base.intent_keywords.length) fields.intent_keywords = base.intent_keywords;
       const tags = opts.tags.split(',').map((t) => t.trim()).filter(Boolean);
       if (tags.length || opts.project) fields.scope = { project_id: opts.project || null, tags };
       const mask = Object.keys(fields);
