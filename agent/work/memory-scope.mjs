@@ -51,6 +51,16 @@ export function fenceMemoryTask({ stepType = 'standard', taskAgent } = {}) {
 }
 
 /**
+ * Causal contrastive guidance for memory consolidation: attributes candidate lessons
+ * by comparing clean first-attempt checkpoints against replanned or failed checkpoints.
+ *
+ * @returns {string}
+ */
+export function contrastiveConsolidationGuidance() {
+  return 'When evaluating candidate lessons from recent sessions, contrast checkpoints that passed on the first attempt against checkpoints that needed a re-plan or failed: classify each candidate practice as helped (present in clean passes, absent in failures), hurt (triggered replans or verifier rejections), or confounded (mixed evidence — hold in working memory rather than promoting to Core Memory).';
+}
+
+/**
  * The plan of a memory-scoped mission: one checkpoint whose one task is the whole cycle, run by
  * temporal-memory in a single pass.
  *
@@ -75,6 +85,7 @@ export function memoryMissionPlan(envelope, { unmet = '' } = {}) {
     `Run the whole cycle in ONE pass, yourself, with your memory tools: ${instruction}`,
     'Do every step of the PROCESS below, in order — gather, triage, retire and promote, rewrite working memory, review Deep Truths — then write the report.',
     'There is no other task to hand anything to, and memory writes only MEMORY.md and consolidation_report.md: keep your triage in your own working context, never in a file of your own.',
+    contrastiveConsolidationGuidance(),
     'Write consolidation_report.md LAST, from what you actually did: every retirement, promotion and Deep-Truth change with its id and reason, and the final MEMORY.md character count. The report is the outcome the verifier checks.',
     'Changing nothing is a valid outcome: when nothing in working memory needs to change, leave MEMORY.md as it is and say so in the report.',
     missed ? `\nThe last attempt did not satisfy all of the criteria. Address every one of these this time:\n${missed}` : '',

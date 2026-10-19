@@ -1,0 +1,17 @@
+{
+  "id": "p-harness-benchmark",
+  "name": "Evaluate Stage 1 and Stage 2 benchmark suites and harvest failures",
+  "description": "Run multi-trial benchmark evaluations across Stage 1 and Stage 2 roles and harvest failed trajectories into replayable regression fixtures.",
+  "narrative": "1. Inspect the benchmark task suites with `harness-eval --action suites --stage all --json`.\n2. Execute multi-trial evaluation with `harness-eval --action evaluate --stage stage1 --trials 2 --json` and `harness-eval --action evaluate --stage stage2 --trials 2 --json`.\n3. When failed trajectories are present, run `harness-eval --action harvest --json` to extract sanitized regression fixtures.\n4. Feed the resulting bottleneck signature into `harness-cycle --action diagnose --json` for targeted remediation.",
+  "intent_keywords": [
+    "benchmark",
+    "loop b",
+    "stage1",
+    "stage2",
+    "harvest failures",
+    "pass@k",
+    "evaluate role"
+  ],
+  "status": "active",
+  "version": 1
+}

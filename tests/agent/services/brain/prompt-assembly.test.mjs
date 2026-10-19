@@ -189,9 +189,12 @@ test('plan requests carry the plan-structuring skill; a single checkpoint re-pla
   const one = singleCheckpointInstruction({
     target: { n: 2, outcome: 'Docs edited', accept_criteria: 'ids identified and edits applied', tasks: [{ task: 'Edit doc 1AbC' }] },
     skillDoc: 'SKILL', failureNote: '- ids identified: not shown', idRule: '## Known Resources\n- doc: "A" = 1AbD',
+    diagnosis: { lens: 'INV', signals: ['resource_id_mismatch'], guidance: 'Execution mechanics (CP2): copy verified IDs.' },
   });
   assert.ok(one.startsWith('[PLAN STRUCTURING — SINGLE CHECKPOINT]'));
   assert.match(one, /## Checkpoint 2 — outcome \(FIXED, do not reword\)\nDocs edited/);
+  assert.match(one, /## Failure Diagnosis \(INV vs\. DOM\): INV/);
+  assert.match(one, /Signals: resource_id_mismatch/);
   assert.match(one, /every one needs a task/);
   assert.ok(one.indexOf('## Known Resources') < one.indexOf('## Tasks that were tried'), 'the ids sit right before the tried tasks');
   assert.match(one, /EXACTLY ONE checkpoint/);

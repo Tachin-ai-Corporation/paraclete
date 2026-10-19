@@ -62,6 +62,7 @@ test('each kind of role gets a request in its area that changes nothing', () => 
   assert.match(smokeRequest({ role: 'project-manager', workspace: true, doc: 'https://docs.google.com/document/d/abc/edit' }).text,
     /summarize it in three bullet points: https:\/\/docs\.google\.com\/document\/d\/abc\/edit$/);
   assert.match(smokeRequest({ role: 'software-engineer', repo: 'your-org/paraclete' }).text, /clone https:\/\/github\.com\/your-org\/paraclete from GitHub/);
+  assert.match(smokeRequest({ role: 'paraclete-h2' }).text, /^Read only, change nothing: run harness-eval --action suites --stage stage1/);
   for (const request of Object.values(SMOKE_REQUESTS)) {
     assert.match(request.text, /change nothing|^Find out/, 'every request is read-only');
     for (const source of request.expect) assert.doesNotThrow(() => new RegExp(source, 'i'));

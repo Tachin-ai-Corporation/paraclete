@@ -64,12 +64,13 @@ images stay, and `install/uninstall.sh` deletes them only with `--purge`.
 | [`data-engineer`](data-engineer/) | no | BigQuery with dry runs and byte caps, loads through staging; BigQuery User and Data Editor |
 | [`security-engineer`](security-engineer/) | no | A read-only IAM and exposure audit; Security Reviewer, Cloud Asset Viewer, Org Policy Viewer and Storage Bucket Viewer; a weekly security review |
 | [`web-master`](web-master/) | no | Firebase Hosting changes through preview channels, custom domains, site audits with Lighthouse, read-only gcloud |
+| [`paraclete-h2`](paraclete-h2/) | no | Dual-loop harness evolution (`harness-cycle`), Stage 1/2 benchmark evaluation and failure harvesting (`harness-eval`), and Pareto promotion gate verification (`harness-promote`) |
 
 ## Status
 
 `generic/` is complete. Build plan phase 8 adds the other roles. Done: the Workspace roles
 (`executive-assistant`, `project-manager`, `finance-analyst`, `legal-advisor`, `designer`), and the roles
 without a Workspace account (`devops-engineer`, `software-engineer`, `qa-engineer`, `data-engineer`,
-`security-engineer`, `web-master`). A role's `setup.npm` and `setup.pip` packages are pinned to exact
+`security-engineer`, `web-master`, `paraclete-h2`). A role's `setup.npm` and `setup.pip` packages are pinned to exact
 versions and installed by `install/bootstrap.sh` (npm globally as root, pip for the `paraclete` user;
 `install/README.md` says why).

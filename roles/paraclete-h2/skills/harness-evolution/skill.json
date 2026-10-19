@@ -1,0 +1,8 @@
+{
+  "id": "harness-evolution",
+  "name": "Paraclete-H2 Loop A Harness Evolution",
+  "version": 1,
+  "when_to_use": "Diagnosing agent trajectories across the four harness lenses (Context, Sub-Agents, Tools, Scaffolding), validating mutable harness surface boundaries and immutable spine invariants, proposing single-lens mutations in isolated git worktrees, and running evolutionary optimization cycles.",
+  "organs": ["prefrontal", "motor", "cerebellum"],
+  "commands": ["harness-cycle"]
+}

@@ -16,6 +16,7 @@ instance.
 | `release.mjs` | Cuts a release from main's head by pushing its version tag, and writes a release's notes for `.github/workflows/release.yml` |
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
+| `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`) |
 
 ## The dev loop commands
 
@@ -62,5 +63,16 @@ on `PATH`, or `CLOUDSDK_ROOT_DIR`, and honor `CLOUDSDK_PYTHON`.
 
 **What it changes.** One annotated tag in this clone and on `origin`, and only without `--dry-run`.
 `notes` and `check` only read.
+
+## Continual harness improvement (`dev/harness2/`)
+
+`dev/harness2/cli.mjs` runs the offline evolutionary harness optimizer (Loop A) and version-aware
+trajectory harvester (Loop B → Loop A):
+
+- `dev/harness2/surface.mjs` and `dev/harness2/validate.mjs`: the 8-component mutable surface (`c1..c8`), immutable spine guards, contract ceiling checks, and the 24,000-character assembled organ prompt budget gate.
+- `dev/harness2/trajectory.mjs` and `dev/harness2/substrate.mjs`: multi-organ trajectory extraction, 3D scoring (`capability`, `reliability`, `efficiency`), Tier-1 hermetic evaluation (`tests/fakes/firestore-server.mjs` and `tests/fakes/gcs-server.mjs`), and Tier-2 canary evaluation.
+- `dev/harness2/lenses.mjs`, `dev/harness2/recursion.mjs`, and `dev/harness2/selection.mjs`: Dual-Lens mutation proposers (`INV` and `DOM`), within-generation recursion with regression revert, Pareto frontier selection, and cross-lens synthesis.
+- `dev/harness2/library.mjs`, `dev/harness2/harvest.mjs`, `dev/harness2/promote.mjs`, and `dev/harness2/live-runner.mjs`: candidate lineage archiving, version-filtered trajectory harvesting, isolated git worktree mutations (`--live`), and promotion readiness reports.
+- `roles/paraclete-h2`: the self-hosting harness engineer role (`harness-cycle`, `harness-eval`, `harness-promote`) that equips a single Paraclete agent to run Loop A and Loop B end to end.
 
 Their tests are in `tests/dev/`, against fake programs and the Firestore fake in `tests/fakes/`.

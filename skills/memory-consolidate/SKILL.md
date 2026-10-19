@@ -108,6 +108,12 @@ what you keep by value so that recall later surfaces the best of it first.
     - **Weight by value.** Set `--importance` high, toward 1.0, for a lesson that recurred across
       sessions, led to a success, or is load-bearing; leave routine facts at the default. Always set
       `--tags` with the topic, so recall can find high-value lessons by subject.
+    - **Contrast clean passes against replans.** Before promoting a lesson about a project or playbook,
+      compare missions where checkpoints passed on the first attempt against missions that needed a
+      re-plan or failed: promote practices that clearly `helped` (associated with first-attempt pass) or
+      forward warnings for patterns that `hurt` (triggered verifier rejection or repeated re-tasking).
+      Leave `confounded` patterns (mixed outcomes across sessions) in working memory until further
+      sessions disambiguate them.
     - **Never promote a failure as a verdict.** A failed mission promotes only as a forward lesson,
       "when <situation>, <do this>", never as "<task> is impossible". Feasibility is decided when the
       work runs, against the tools of that day; a stored "it can't be done" outlives the conditions

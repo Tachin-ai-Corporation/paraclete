@@ -1,0 +1,27 @@
+{
+  "id": "paraclete-h2",
+  "title": "Paraclete-H2 Harness Engineer",
+  "summary": "Continuously improves the capability, reliability, and efficiency of Paraclete agents through the dual-loop Paraclete-H2 architecture: diagnoses execution trajectories across the four harness lenses (Context, Sub-Agents, Tools, Scaffolding), proposes and validates bounded harness mutations in isolated git worktrees, evaluates Stage 1 and Stage 2 benchmark suites, harvests failed runs into regression fixtures, and promotes Pareto-dominant candidates.",
+  "version": 1,
+  "workspace": false,
+  "skills": [
+    "harness-evolution",
+    "harness-benchmark",
+    "harness-release"
+  ],
+  "gcp_roles": [
+    "roles/logging.viewer",
+    "roles/storage.objectUser",
+    "roles/storage.bucketViewer",
+    "roles/cloudbuild.builds.editor"
+  ],
+  "resource_roles": [
+    { "role": "roles/iam.serviceAccountUser", "on": "agent-account" },
+    { "role": "roles/artifactregistry.writer", "on": "agent-repository" }
+  ],
+  "setup": {
+    "apt": ["gh", "python3-venv"],
+    "pip": [],
+    "npm": []
+  }
+}

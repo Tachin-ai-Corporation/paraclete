@@ -1,0 +1,8 @@
+{
+  "id": "harness-benchmark",
+  "name": "Paraclete-H2 Loop B Benchmark and Failure Harvesting",
+  "version": 1,
+  "when_to_use": "Evaluating Stage 1 (self-hosting paraclete-h2 and builder roles) and Stage 2 (domain target roles) benchmark suites across multiple trials, measuring capability, pass@k reliability, and token/turn/cost efficiency, or harvesting failed trajectories into replayable regression fixtures.",
+  "organs": ["motor", "cerebellum"],
+  "commands": ["harness-eval"]
+}

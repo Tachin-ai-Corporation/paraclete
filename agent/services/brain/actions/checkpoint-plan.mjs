@@ -11,7 +11,7 @@
 // before anything pins them. Called by the decide loop in envelope-runner.mjs.
 
 import {
-  applyReplan, buildSpine, firstIncompleteIndex, passedThisRun, rebuildFromSpine, spineSummary,
+  applyReplan, buildSpine, diagnoseCheckpointFailure, firstIncompleteIndex, passedThisRun, rebuildFromSpine, spineSummary,
 } from '../../../work/checkpoint-spine.mjs';
 import { ApprovalNotRaised, VALID_TASK_ORGANS } from '../../../work/checkpoint-executor.mjs';
 import { extractCheckpoints } from '../../../work/plan-utils.mjs';
@@ -229,8 +229,10 @@ export async function handleCheckpointPlan(ctx, deps) {
     log('INFO', `checkpoint_plan: scoped re-plan of CP${target.n} (spine ${spineSummary(envelope._cp_spine)}); passed checkpoints keep their verdicts`);
     try {
       const failureNote = (priorResults || []).filter(isFailedVerdictNote).slice(-1)[0]?.result || decision.failure_summary || '';
+      const diagnosis = diagnoseCheckpointFailure({ target, failureNote, taskRows: priorResults });
+      log('INFO', `[TELEMETRY] replan_diagnosis mission=${envelope.id} cp=${target.n} lens=${diagnosis.lens} signals=${diagnosis.signals.join(',') || 'none'}`);
       const res = await askPlanner(singleCheckpointInstruction({
-        target, skillDoc: deps.planSkill ? deps.planSkill() : '', capabilityMap, failureNote, idRule,
+        target, skillDoc: deps.planSkill ? deps.planSkill() : '', capabilityMap, failureNote, idRule, diagnosis,
       }));
       let fresh = null;
       if (res?.success && res.output) {
@@ -245,7 +247,7 @@ export async function handleCheckpointPlan(ctx, deps) {
       const tasks = fresh?.[0]?.tasks || [];
       if (tasks.length > 0) {
         const { spine: next, criteriaChanged, revisionRefused } = applyReplan(envelope._cp_spine, scopedIdx, tasks, {
-          newCriteria: fresh[0].accept_criteria, pinCriteria: true, maxCriteriaRevisions: settings.maxCriteriaRevisions, now: store.iso(),
+          newCriteria: fresh[0].accept_criteria, pinCriteria: true, maxCriteriaRevisions: settings.maxCriteriaRevisions, now: store.iso(), lens: diagnosis.lens,
         });
         envelope._cp_spine = next;
         const rebuilt = rebuildFromSpine(next);

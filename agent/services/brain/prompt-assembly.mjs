@@ -537,9 +537,10 @@ export function planInstruction({ goal, brief = null, skillDoc = '', capabilityM
  * @param {string} [p.capabilityMap]
  * @param {string} [p.failureNote] - what the verifier found unmet
  * @param {string} [p.idRule]
+ * @param {{lens: string, signals?: string[], guidance: string}|null} [p.diagnosis] - dual-lens failure classification
  * @returns {string}
  */
-export function singleCheckpointInstruction({ target, skillDoc = '', capabilityMap: map = '', failureNote = '', idRule = '' }) {
+export function singleCheckpointInstruction({ target, skillDoc = '', capabilityMap: map = '', failureNote = '', idRule = '', diagnosis = null }) {
   return [
     '[PLAN STRUCTURING — SINGLE CHECKPOINT]',
     'Structure the TASKS for exactly one checkpoint. Do not re-plan the mission and do',
@@ -554,6 +555,12 @@ export function singleCheckpointInstruction({ target, skillDoc = '', capabilityM
     '',
     '## Acceptance criteria (FIXED — plan tasks that satisfy these as written)',
     toStr(target.accept_criteria) || '(none stated)',
+    '',
+    diagnosis && diagnosis.lens ? [
+      `## Failure Diagnosis (INV vs. DOM): ${diagnosis.lens}`,
+      diagnosis.signals?.length ? `Signals: ${diagnosis.signals.join(', ')}` : '',
+      diagnosis.guidance || '',
+    ].filter(Boolean).join('\n') : '',
     '',
     // A checklist, not a narrative. The verifier reports one bullet per unmet clause; a re-plan once
     // tasked only one of two clauses, and with the criteria pinned it failed the same way three times.

@@ -1,0 +1,15 @@
+{
+  "id": "p-harness-promote",
+  "name": "Verify Pareto gates and promote a winning harness candidate",
+  "description": "Verify structural, test, and Pareto dominance gates for a winning harness candidate and prepare a pull request or canary rollout.",
+  "narrative": "1. Run `harness-cycle --action validate --repo . --json` and `node --test` on the candidate checkout.\n2. Run `harness-promote --action verify --repo . --stage stage1 --trials 2 --json` to confirm all five promotion gates pass (`structuralValid`, `unitTestsPassed`, `integrationTestsPassed`, `paretoDominant`, `noCapabilityRegression`).\n3. Generate the promotion report with `harness-promote --action report --repo . --stage stage1 --trials 2 --json`.\n4. Open a pull request with `gh pr create` or deploy a canary revision and monitor runtime logs.",
+  "intent_keywords": [
+    "promote harness",
+    "canary release",
+    "promotion gate",
+    "pareto gate",
+    "harness report"
+  ],
+  "status": "active",
+  "version": 1
+}

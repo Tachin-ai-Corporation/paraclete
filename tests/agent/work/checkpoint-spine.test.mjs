@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildSpine, firstIncompleteIndex, markCheckpoint, applyReplan, rebuildFromSpine, spineSummary,
-  finalizeBlockedBySpine, passedThisRun, isVerified,
+  finalizeBlockedBySpine, passedThisRun, isVerified, diagnoseCheckpointFailure,
 } from '../../../agent/work/checkpoint-spine.mjs';
 
 const PLAN = [
@@ -289,5 +289,48 @@ describe('isVerified: complete is verified, because a failed milestone halts', (
     assert.equal(isVerified({ status: 'failed' }), false);
     assert.equal(isVerified(null), false);
     assert.equal(isVerified({ status: 'complete' }), true);
+  });
+});
+
+describe('diagnoseCheckpointFailure: dual-lens (INV vs DOM) failure routing', () => {
+  it('routes tool errors, timeouts, and missing evidence floor to INV', () => {
+    const d1 = diagnoseCheckpointFailure({
+      target: { n: 2 },
+      failureNote: '[ERROR] Command failed with exit code 1: file not found',
+    });
+    assert.equal(d1.lens, 'INV');
+    assert.ok(d1.signals.includes('tool_or_command_error'));
+    assert.match(d1.guidance, /Execution mechanics \(CP2\)/);
+
+    const d2 = diagnoseCheckpointFailure({
+      target: { n: 1 },
+      failureNote: 'Verifier rejected: no tool evidence / evidence floor unmet',
+    });
+    assert.equal(d2.lens, 'INV');
+    assert.ok(d2.signals.includes('missing_readback_evidence'));
+  });
+
+  it('routes clean-execution adversarial or criteria rejections to DOM', () => {
+    const d = diagnoseCheckpointFailure({
+      target: { n: 3 },
+      failureNote: '[CHECKPOINT VERIFICATION FAILED] adversarial probe found missing clause in summary',
+      taskRows: [{ agent: 'motor', result: 'Draft written', success: true }],
+    });
+    assert.equal(d.lens, 'DOM');
+    assert.ok(d.signals.includes('domain_or_criteria_rejection'));
+    assert.match(d.guidance, /Domain & criteria coverage \(CP3\)/);
+  });
+
+  it('routes combined mechanical and domain failures to BOTH and records replan_lens on spine', () => {
+    const d = diagnoseCheckpointFailure({
+      target: { n: 2 },
+      failureNote: '[CHECKPOINT VERIFICATION FAILED] adversarial check failed and unverified resource id used',
+      taskRows: [{ agent: 'motor', result: '[ERROR] Command failed', failure_type: 'tool_error' }],
+    });
+    assert.equal(d.lens, 'BOTH');
+
+    const s = buildSpine(PLAN, { now: 'T0' });
+    const { spine } = applyReplan(s, 1, [{ agent: 'motor', task: 'retry' }], { now: 'T1', lens: d.lens });
+    assert.equal(spine[1].replan_lens, 'BOTH');
   });
 });

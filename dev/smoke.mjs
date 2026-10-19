@@ -75,6 +75,11 @@ export const SMOKE_REQUESTS = Object.freeze({
     text: 'Read only, change nothing: fetch https://example.com and report its HTTP status code and its page title.',
     expect: ['200', 'example domain'],
   },
+  'paraclete-h2': {
+    about: 'a read-only check of the harness evolution tools',
+    text: 'Read only, change nothing: run harness-eval --action suites --stage stage1 and report the number of Stage 1 benchmark tasks.',
+    expect: ['stage1', 'tasks|benchmark'],
+  },
 });
 
 /** What a Workspace role is asked: its own calendar, or a Doc when one is given. */

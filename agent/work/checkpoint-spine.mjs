@@ -143,9 +143,76 @@ export function applyReplan(spine, index, newTasks, opts = {}) {
       criteria_revisions: revisions,
       status: 'pending',                                 // re-planned, so runnable again
       replanned_at: now,
+      ...(opts.lens ? { replan_lens: opts.lens } : {}),
     }
     : s));
   return { spine: next, criteriaChanged, revisionRefused };
+}
+
+/**
+ * Classify a checkpoint failure into Harness²'s two orthogonal diagnostic lenses:
+ * - `INV` (Domain-Invariant Execution/Mechanics): tool errors, timeouts, unverified/mistyped
+ *   resource IDs, or missing read-back evidence.
+ * - `DOM` (Domain-Specific Craft/Premise): adversarial verification rejection, incomplete domain
+ *   coverage, or flawed task framing when tool execution itself succeeded cleanly.
+ * - `BOTH`: when both mechanical and domain-craft failure signatures are present.
+ *
+ * Pure and deterministic: no LLM call required.
+ *
+ * @param {object} [p]
+ * @param {object} [p.target]      - spine entry being re-planned
+ * @param {string} [p.failureNote] - verifier rejection note or failure summary
+ * @param {Array}  [p.taskRows]    - prior task results for this mission/checkpoint
+ * @returns {{ lens: 'INV' | 'DOM' | 'BOTH', signals: string[], guidance: string }}
+ */
+export function diagnoseCheckpointFailure({ target = {}, failureNote = '', taskRows = [] } = {}) {
+  const note = String(failureNote || '');
+  const rows = Array.isArray(taskRows) ? taskRows : [];
+  const signals = [];
+  let invHits = 0;
+  let domHits = 0;
+
+  if (/\[ERROR\]|Command failed|timedOut|ETIMEDOUT|exit code [1-9]/i.test(note)) {
+    invHits += 1;
+    signals.push('tool_or_command_error');
+  }
+  if (/evidence floor|no tool evidence|read-back|unverified|no readback/i.test(note)) {
+    invHits += 1;
+    signals.push('missing_readback_evidence');
+  }
+  if (/unverified resource|invented id|mistyped id|not found: 404|404 Not Found/i.test(note)) {
+    invHits += 1;
+    signals.push('resource_id_mismatch');
+  }
+
+  for (const r of rows) {
+    const rText = typeof r?.result === 'string' ? r.result : '';
+    if (r?.timedOut || r?.failure_type === 'tool_error' || /\[ERROR\]|Command failed/i.test(rText)) {
+      invHits += 1;
+      if (!signals.includes('task_tool_error')) signals.push('task_tool_error');
+    }
+  }
+
+  if (/adversarial|probe|caveat|contradict|incomplete|missing clause|format|structure|assumption/i.test(note)) {
+    domHits += 1;
+    signals.push('domain_or_criteria_rejection');
+  }
+  if (note.includes('[CHECKPOINT VERIFICATION FAILED]') && invHits === 0) {
+    domHits += 1;
+    if (!signals.includes('verifier_criteria_unmet')) signals.push('verifier_criteria_unmet');
+  }
+
+  const lens = invHits > 0 && domHits > 0 ? 'BOTH' : invHits > 0 ? 'INV' : 'DOM';
+  const cpLabel = target?.n ? `CP${target.n}` : 'this checkpoint';
+
+  const guidance =
+    lens === 'INV'
+      ? `Execution mechanics (${cpLabel}): fix tool invocation, copy verified IDs character-for-character from Known Resources, and include explicit read-back verification before completing the task.`
+      : lens === 'DOM'
+        ? `Domain & criteria coverage (${cpLabel}): tool calls ran cleanly, but the output missed domain requirements or verifier probes. Restructure tasks so every unmet acceptance clause and edge case is directly satisfied.`
+        : `Both execution mechanics and domain coverage failed (${cpLabel}): first resolve tool/ID errors using Known Resources and read-back verification, then ensure every unmet acceptance clause is covered.`;
+
+  return { lens, signals, guidance };
 }
 
 /**

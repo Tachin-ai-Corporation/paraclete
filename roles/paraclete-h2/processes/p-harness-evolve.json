@@ -1,0 +1,17 @@
+{
+  "id": "p-harness-evolve",
+  "name": "Run a Loop A harness evolution cycle",
+  "description": "Diagnose execution trajectories across the four lenses, propose bounded mutations, validate invariants, and select Pareto-dominant harness improvements.",
+  "narrative": "1. Validate the target repository checkout with `harness-cycle --action validate --repo . --json`.\n2. Run four-lens bottleneck diagnosis on the target stage with `harness-cycle --action diagnose --stage stage1 --trials 2 --json`.\n3. Isolate a single primary lens (`context`, `sub_agents`, `tools`, or `scaffolding`) in a dedicated git branch or worktree.\n4. Run the evolutionary cycle with `harness-cycle --action run --stage stage1 --iterations 3 --candidates 2 --trials 2 --json` and verify tests with `node --test`.\n5. Verify promotion gates with `harness-promote --action verify --stage stage1 --trials 2 --json` before preparing a pull request.",
+  "intent_keywords": [
+    "harness2",
+    "loop a",
+    "evolve harness",
+    "lens diagnosis",
+    "pareto",
+    "harness cycle",
+    "optimize harness"
+  ],
+  "status": "active",
+  "version": 1
+}

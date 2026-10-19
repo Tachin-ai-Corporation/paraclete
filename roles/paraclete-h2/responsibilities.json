@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "responsibilities": [
+    {
+      "id": "r-harness-evolution-cycle",
+      "name": "Scheduled Harness Evolution and Benchmark Cycle",
+      "schedule": "0 6 * * 1",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 360,
+      "processRef": "p-harness-evolve",
+      "instruction": "Run a scheduled Paraclete-H2 evaluation and evolution cycle across Stage 1 and Stage 2 benchmark suites. Diagnose four-lens bottlenecks, run bounded evolutionary iterations, verify promotion gates, and record winning patterns in the pattern library.",
+      "success_criteria": "Surface validation passed, Stage 1 and Stage 2 benchmark suites were evaluated across multiple trials, four-lens bottlenecks were diagnosed, candidate iterations were scored against the baseline, and a promotion report was emitted with explicit gate verdicts.",
+      "context": {
+        "purpose": "Continuous dual-loop harness optimization keeps capability and pass@k reliability climbing while driving token, turn, and cost overhead down across every role.",
+        "process": [
+          "STEP 1 - VALIDATE: run `harness-cycle --action validate --repo . --json` to confirm the checkout respects all immutable spine boundaries and contract bounds.",
+          "STEP 2 - DIAGNOSE: run `harness-cycle --action diagnose --stage stage1 --trials 2 --json` and `harness-eval --action evaluate --stage stage2 --trials 2 --json` to rank bottlenecks across Context, Sub-Agents, Tools, and Scaffolding.",
+          "STEP 3 - EVOLVE: run `harness-cycle --action run --stage stage1 --iterations 3 --candidates 2 --trials 2 --json` to evaluate single-lens candidate mutations and update the pattern library.",
+          "STEP 4 - VERIFY PROMOTION GATES: run `harness-promote --action verify --repo . --stage stage1 --trials 2 --json` and `harness-promote --action report --repo . --stage stage1 --trials 2 --json`."
+        ],
+        "prior_learnings": "Always isolate each candidate iteration to a single primary lens so capability, reliability, and efficiency deltas can be cleanly attributed. Never promote a candidate with a capability regression on any benchmark task."
+      }
+    },
+    {
+      "id": "r-failure-harvest",
+      "name": "Scheduled Failure Trajectory Harvest",
+      "schedule": "0 */6 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 240,
+      "processRef": "p-harness-benchmark",
+      "instruction": "Harvest recent failed or retried execution trajectories into sanitized regression benchmark fixtures and diagnose their primary four-lens bottleneck.",
+      "success_criteria": "Recent failed trajectories were inspected, PII and secrets were scrubbed, replayable benchmark task fixtures were emitted, and the primary lens bottleneck was recorded.",
+      "context": {
+        "purpose": "Every production or canary failure becomes a permanent regression fixture so the harness never repeats the same failure mode twice.",
+        "process": [
+          "STEP 1 - HARVEST: run `harness-eval --action harvest --stage all --json` to extract sanitized benchmark fixtures from failed trajectories.",
+          "STEP 2 - DIAGNOSE: run `harness-cycle --action diagnose --stage all --trials 2 --json` to classify the failure modes across Context, Sub-Agents, Tools, and Scaffolding.",
+          "STEP 3 - VERIFY SUITE: run `harness-eval --action suites --stage all --json` to confirm suite coverage across Stage 1 and Stage 2 roles."
+        ],
+        "prior_learnings": "Sanitize all credentials, emails, and project identifiers before writing harvested tasks to disk."
+      }
+    }
+  ]
+}

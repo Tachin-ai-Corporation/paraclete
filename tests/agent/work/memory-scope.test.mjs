@@ -4,7 +4,7 @@
 // later checkpoint found nothing, and the mission blocked. A memory mission is one pass.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { MEMORY_SCOPE, isMemoryScoped, fenceMemoryTask, memoryMissionPlan } from '../../../agent/work/memory-scope.mjs';
+import { MEMORY_SCOPE, isMemoryScoped, fenceMemoryTask, memoryMissionPlan, contrastiveConsolidationGuidance } from '../../../agent/work/memory-scope.mjs';
 
 describe('a memory-scoped mission dispatches no other hand', () => {
   it('recognizes the scope stamp', () => {
@@ -57,7 +57,9 @@ describe('a memory mission is one pass by the memory authority', () => {
     assert.match(task, /session-summary --hours 24 --limit 20/, 'the process steps travel with the task');
     assert.match(task, /writes only MEMORY\.md and consolidation_report\.md/);
     assert.match(task, /never in a file of your own/, 'no plan file to hand forward');
+    assert.match(task, /contrast checkpoints that passed on the first attempt/, 'carries causal contrastive guidance');
     assert.match(task, /Changing nothing is a valid outcome/);
+    assert.match(contrastiveConsolidationGuidance(), /helped.*hurt.*confounded/);
   });
 
   it("the checkpoint is judged on the mission's own success criteria, not a planner's", () => {
