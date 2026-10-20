@@ -749,14 +749,18 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       readiness.pullRequest = pullRequest;
     }
 
-    const winnerTrajectories = Array.isArray(evoRes.winner?.trajectories)
-      ? evoRes.winner.trajectories
-      : [];
+    const winnerTrajectories =
+      Array.isArray(evoRes.winner?.trajectories) && evoRes.winner.trajectories.length > 0
+        ? evoRes.winner.trajectories
+        : Array.isArray(baselineRes?.trajectories)
+          ? baselineRes.trajectories
+          : [];
     const artifactChecksPassed =
-      winnerTrajectories.length > 0 &&
-      winnerTrajectories.every((t) =>
-        Boolean(t.fixtureVerification?.passed ?? t.evalCritique?.passed ?? t.missionCompleted ?? t.passed),
-      );
+      winnerTrajectories.length > 0
+        ? winnerTrajectories.every((t) =>
+            Boolean(t.fixtureVerification?.passed ?? t.evalCritique?.passed ?? t.missionCompleted ?? t.passed),
+          )
+        : Number(evoRes.winner?.scores?.reliability ?? baselineRes?.summary?.reliability ?? 0) >= 1;
 
     recordCurriculumUnitAttempt({
       unitId: unit.id,

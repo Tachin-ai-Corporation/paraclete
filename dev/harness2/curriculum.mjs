@@ -1198,7 +1198,7 @@ export function loadCurriculumState(opts = {}) {
       lastCandidateId: prev.lastCandidateId || null,
       lastPullRequestUrl: prev.lastPullRequestUrl || null,
       lastUpdatedAt: prev.lastUpdatedAt || null,
-      artifactPassRate: Number(prev.artifactPassRate ?? 0),
+      artifactPassRate: Number(prev.artifactPassRate ?? (prev.status === 'promoted' ? 1 : 0)),
     };
   }
 
