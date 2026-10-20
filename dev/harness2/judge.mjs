@@ -301,13 +301,22 @@ export function buildJudgePacket({
   }
   if (workspaceDir && fs.existsSync(workspaceDir) && Object.keys(boundedArtifacts).length === 0) {
     try {
-      const entries = fs.readdirSync(workspaceDir, { withFileTypes: true }).slice(0, 10);
-      for (const entry of entries) {
-        if (entry.isFile()) {
-          const full = path.join(workspaceDir, entry.name);
-          boundedArtifacts[entry.name] = fs.readFileSync(full, 'utf8').slice(0, 3000);
+      const collectDir = (dirPath, prefix = '') => {
+        if (Object.keys(boundedArtifacts).length >= 16) return;
+        const entries = fs.readdirSync(dirPath, { withFileTypes: true }).slice(0, 16);
+        for (const entry of entries) {
+          if (Object.keys(boundedArtifacts).length >= 16) break;
+          if (entry.name.startsWith('.')) continue;
+          const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+          const full = path.join(dirPath, entry.name);
+          if (entry.isDirectory()) {
+            collectDir(full, rel);
+          } else if (entry.isFile()) {
+            boundedArtifacts[rel] = fs.readFileSync(full, 'utf8').slice(0, 3000);
+          }
         }
-      }
+      };
+      collectDir(workspaceDir);
     } catch {
       // ignore unreadable workspace dir
     }

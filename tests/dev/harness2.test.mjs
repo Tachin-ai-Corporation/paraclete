@@ -86,6 +86,16 @@ import {
   provisionGcpLab,
 } from '../../dev/harness2/live-runner.mjs';
 import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
+import {
+  CURRICULUM_TRACKS,
+  MASTER_CURRICULUM_UNITS,
+  getCurriculumUnitById,
+  materializeCurriculumArtifacts,
+  verifyUnitArtifacts,
+  selectNextCurriculumUnit,
+  recordCurriculumUnitAttempt,
+  getCurriculumCoverageReport,
+} from '../../dev/harness2/curriculum.mjs';
 import { start as startFirestoreFake } from '../fakes/firestore-server.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { COLLECTIONS } from '../../agent/storage/collections.mjs';
@@ -1241,6 +1251,94 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     const cliRole = await runCli(['scaffold-role', '--id', 'qa-lead', '--title', 'QA Lead']);
     assert.equal(cliRole.ok, true);
     assert.equal(cliRole.scaffold.roleDir, 'roles/qa-lead');
+  });
+
+  it('Master Curriculum Playbook: 24 units across 6 organs, 7 engineering roles, 11 specialist roles + artifact verification + stateful progression', async () => {
+    // 1. Verify 24 curriculum units cover all 3 tracks, all 6 organs, and all 18 roles
+    assert.equal(Object.keys(CURRICULUM_TRACKS).length, 3);
+    assert.equal(MASTER_CURRICULUM_UNITS.length, 24);
+
+    const organsCovered = new Set(
+      MASTER_CURRICULUM_UNITS.filter((u) => u.track === 'organs').map((u) => u.organ),
+    );
+    assert.deepEqual(
+      [...organsCovered].sort(),
+      ['cerebellum', 'cortex', 'motor', 'prefrontal', 'temporal-memory', 'temporal-research'],
+    );
+
+    const rolesCovered = new Set(MASTER_CURRICULUM_UNITS.map((u) => u.role));
+    for (const r of rolesForStage('stage2', { repoRoot: process.cwd() })) {
+      assert.equal(rolesCovered.has(r), true, `Expected curriculum to cover installed role ${r}`);
+    }
+
+    // 2. Verify artifact materialization and verification for unmaterialized vs materialized across all 24 units
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'paraclete-curriculum-units-'));
+    try {
+      for (const unit of MASTER_CURRICULUM_UNITS) {
+        const wsBase = join(tmpRoot, `${unit.id}-base`);
+        const wsEvo = join(tmpRoot, `${unit.id}-evo`);
+        const fixture = getTaskFixture(unit.task.id);
+        fixture.seedWorkspace(wsBase);
+        fixture.seedWorkspace(wsEvo);
+        fixture.applyReferenceSolution(wsEvo);
+        materializeCurriculumArtifacts(wsEvo, unit, { evolved: true });
+
+        const verifyBase = verifyUnitArtifacts(wsBase, unit);
+        const verifyEvo = verifyUnitArtifacts(wsEvo, unit);
+        assert.equal(
+          verifyBase.passed,
+          false,
+          `Expected unmaterialized workspace to fail artifact verification for ${unit.id}`,
+        );
+        assert.equal(
+          verifyEvo.passed,
+          true,
+          `Expected materialized workspace to pass artifact verification for ${unit.id}`,
+        );
+      }
+
+      // 3. Verify stateful cursor progression and coverage report
+      const statePath = join(tmpRoot, 'curriculum-state.json');
+      const firstSel = selectNextCurriculumUnit({ statePath });
+      assert.equal(firstSel.unit.id, 'unit-organ-cortex');
+
+      recordCurriculumUnitAttempt({
+        unitId: firstSel.unit.id,
+        baselineScores: { capability: 0.72, reliability: 0.9, efficiency: 0.8, fitness: 0.79 },
+        winnerScores: { capability: 0.96, reliability: 0.95, efficiency: 0.85, fitness: 0.94 },
+        promoted: true,
+        artifactChecksPassed: true,
+        prUrl: 'https://github.com/halstonblase/paraclete/pull/2',
+        statePath,
+      });
+
+      const nextSel = selectNextCurriculumUnit({ statePath });
+      assert.equal(nextSel.unit.id, 'unit-organ-prefrontal');
+
+      const cov = getCurriculumCoverageReport({ statePath });
+      assert.equal(cov.totalUnits, 24);
+      assert.equal(cov.completedUnits, 1);
+      assert.equal(cov.nextUnitId, 'unit-organ-prefrontal');
+
+      // 4. Verify CLI `curriculum --status` and `curriculum --unit <id>`
+      const cliStatus = await runCli(['curriculum', '--status', '--state-path', statePath]);
+      assert.equal(cliStatus.ok, true);
+      assert.equal(cliStatus.coverage.completedUnits, 1);
+
+      const cliExec = await runCli([
+        'curriculum',
+        '--unit',
+        'unit-role-software-engineer',
+        '--state-path',
+        statePath,
+      ]);
+      assert.equal(cliExec.ok, true);
+      assert.equal(cliExec.curriculumUnit.id, 'unit-role-software-engineer');
+      assert.equal(cliExec.curriculumUnit.role, 'software-engineer');
+      assert.ok(cliExec.winnerScores.capability >= cliExec.baselineScores.capability);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 });
 

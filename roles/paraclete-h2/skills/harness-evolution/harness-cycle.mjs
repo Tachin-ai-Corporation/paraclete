@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--state-path <path>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'scaffold-skill', 'scaffold-role']);
+const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 const VALID_LENSES = new Set(['context', 'sub_agents', 'tools', 'scaffolding']);
 
@@ -18,6 +18,10 @@ function parseArgs(argv) {
     stage: 'stage1',
     role: null,
     id: null,
+    unit: null,
+    track: null,
+    status: false,
+    statePath: null,
     iterations: 2,
     candidates: 2,
     trials: 2,
@@ -27,6 +31,8 @@ function parseArgs(argv) {
     judgeCommittee: false,
     includeHarvested: false,
     expandCurriculum: false,
+    apply: false,
+    pushPr: false,
     library: null,
     out: null,
     json: false,
@@ -40,6 +46,10 @@ function parseArgs(argv) {
     else if (arg === '--stage') opts.stage = argv[++i] || 'stage1';
     else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--id') opts.id = argv[++i] || null;
+    else if (arg === '--unit') opts.unit = argv[++i] || null;
+    else if (arg === '--track') opts.track = argv[++i] || null;
+    else if (arg === '--status') opts.status = true;
+    else if (arg === '--state-path') opts.statePath = path.resolve(argv[++i] || '');
     else if (arg === '--iterations') opts.iterations = Number(argv[++i] || 2);
     else if (arg === '--candidates') opts.candidates = Number(argv[++i] || 2);
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
@@ -49,6 +59,8 @@ function parseArgs(argv) {
     else if (arg === '--judge-committee') opts.judgeCommittee = true;
     else if (arg === '--include-harvested') opts.includeHarvested = true;
     else if (arg === '--expand-curriculum') opts.expandCurriculum = true;
+    else if (arg === '--apply') opts.apply = true;
+    else if (arg === '--push-pr') opts.pushPr = true;
     else if (arg === '--library') opts.library = path.resolve(argv[++i] || '');
     else if (arg === '--out') opts.out = path.resolve(argv[++i] || '');
     else if (arg === '--json') opts.json = true;
@@ -255,6 +267,33 @@ export async function main(argv, deps = {}) {
       `Loop A complete: bestCandidate=${payload.bestCandidateId} (fitness=${payload.bestSummary.fitness})`,
     );
     return 0;
+  }
+
+  if (opts.action === 'curriculum') {
+    const cliArgs = [
+      'curriculum',
+      ...(opts.unit ? ['--unit', opts.unit] : []),
+      ...(opts.track ? ['--track', opts.track] : []),
+      ...(opts.status ? ['--status'] : []),
+      ...(opts.statePath ? ['--state-path', opts.statePath] : []),
+      ...(opts.live ? ['--live'] : []),
+      ...(opts.vertex ? ['--vertex'] : []),
+      ...(opts.judgeCommittee ? ['--judge-committee'] : []),
+      ...(opts.apply ? ['--apply'] : []),
+      ...(opts.pushPr ? ['--push-pr'] : []),
+    ];
+    const result = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
+    const payload = {
+      ok: Boolean(result.ok),
+      action: 'curriculum',
+      ...result,
+    };
+    writeOut(opts.out, payload);
+    const summaryText = opts.status
+      ? `Curriculum coverage: ${result.coverage?.completedUnits || 0}/${result.coverage?.totalUnits || 0} completed`
+      : `Curriculum unit ${result.curriculumUnit?.id || 'unknown'} complete (promoted=${Boolean(result.readiness?.ready)})`;
+    emit(stdout, payload, opts.json, summaryText);
+    return result.ok ? 0 : 1;
   }
 
   return 0;

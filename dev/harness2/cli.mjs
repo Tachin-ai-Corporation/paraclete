@@ -32,6 +32,11 @@ import {
   provisionGcpLab,
   runInProcessBrainRollout,
 } from './live-runner.mjs';
+import {
+  getCurriculumCoverageReport,
+  recordCurriculumUnitAttempt,
+  selectNextCurriculumUnit,
+} from './curriculum.mjs';
 
 export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 
@@ -50,6 +55,8 @@ Subcommands:
                                    Filter and distill Loop B trajectories into Loop A benchmarks
   promote  [--stage stage1|stage2] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
                                    Verify candidate readiness, optionally apply patches, push branch, and open PR
+  curriculum [--status] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
+                                   Step through the Master Curriculum Playbook across organs, roles, and skills
   scaffold-skill --id <skill-id> [--role <role>] [--name <title>] [--command <cmd>]
                                    Generate a compliant skill package scaffold (skill.json, SKILL.md, <cmd>.mjs)
   scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
@@ -323,6 +330,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             judgeOptions: deps.judgeOptions,
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
+            targetMutablePath: flags['target-path'] || deps.targetMutablePath,
           })
         : undefined,
       evaluateCandidate: liveEvaluate,
@@ -338,6 +346,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
                   contracts: invSnap.contracts,
                   cachedOrgans: invSnap.cachedOrgans,
                   organPromptTokens: domSnap.organPromptTokens,
+                  organPrompts: domSnap.organPrompts || invSnap.organPrompts,
+                  isEvolved: Boolean(invSnap.isEvolved || domSnap.isEvolved),
                 });
               } else if (invSnap || domSnap) {
                 mergedSnapshots.set(r, invSnap || domSnap);
@@ -589,6 +599,165 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       application,
       pullRequest,
       report: formatPromotionReport(readiness),
+    };
+  }
+
+  if (subcommand === 'curriculum') {
+    const statePath = typeof flags['state-path'] === 'string' ? flags['state-path'] : undefined;
+    if (flags.status) {
+      return {
+        ok: true,
+        credo: CAPABILITY_CREDO.name,
+        coverage: getCurriculumCoverageReport({ statePath, fs: deps.fs }),
+      };
+    }
+
+    const selection = selectNextCurriculumUnit({
+      unitId: typeof flags.unit === 'string' ? flags.unit : undefined,
+      track: typeof flags.track === 'string' ? flags.track : undefined,
+      statePath,
+      fs: deps.fs,
+    });
+    const unit = selection.unit;
+    if (!unit) {
+      return { ok: false, error: 'Unknown curriculum unit or track.' };
+    }
+
+    const useFrontierJudge = Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
+    const judgeCommittee =
+      typeof flags['judge-committee'] === 'string'
+        ? parseCommitteeSpec(flags['judge-committee'])
+        : DEFAULT_JUDGE_COMMITTEE;
+
+    const unitDeps = {
+      ...deps,
+      tasks: [unit.task],
+      targetMutablePath: unit.targetMutablePath,
+    };
+
+    const baselineRes = flags.live
+      ? await evaluateLiveTarget({
+          stage: unit.stage,
+          role: unit.role,
+          repoRoot: deps.repoRoot,
+          useFrontierJudge,
+          judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+          judgeOptions: deps.judgeOptions,
+          deps: unitDeps,
+        })
+      : await runTier1Evaluation({
+          stage: unit.stage,
+          role: unit.role,
+          deps: unitDeps,
+        });
+
+    const evoRes = await runCli(
+      [
+        'evolve',
+        '--stage',
+        unit.stage,
+        '--role',
+        unit.role,
+        '--target-path',
+        unit.targetMutablePath,
+        '--generations',
+        String(flags.generations || 1),
+        '--recursion',
+        String(flags.recursion || 1),
+        ...(flags.live ? ['--live'] : []),
+        ...(flags.vertex ? ['--vertex'] : []),
+        ...(useFrontierJudge
+          ? [
+              '--judge-committee',
+              typeof flags['judge-committee'] === 'string'
+                ? flags['judge-committee']
+                : DEFAULT_JUDGE_COMMITTEE.join(','),
+            ]
+          : []),
+      ],
+      unitDeps,
+    );
+
+    const readiness = evaluatePromotionReadiness({
+      candidate: evoRes.winner,
+      baselineScores: baselineRes.summary,
+      validationResult: baselineRes.validation,
+    });
+
+    let application = null;
+    if (flags.apply) {
+      application = applyPromotedCandidate({
+        candidate: evoRes.winner,
+        readiness,
+        repoRoot: deps.repoRoot || process.cwd(),
+        branch: typeof flags.branch === 'string' ? flags.branch : `harness2/curriculum-${unit.id}`,
+        runTests: Boolean(flags['run-tests']),
+        execGit: deps.execGit,
+        validate: deps.validate,
+      });
+      readiness.application = application;
+    }
+
+    let pullRequest = null;
+    if (flags['push-pr']) {
+      pullRequest = pushAndCreatePullRequest({
+        candidate: evoRes.winner,
+        readiness,
+        application,
+        repoRoot: deps.repoRoot || process.cwd(),
+        branch: typeof flags.branch === 'string' ? flags.branch : `harness2/curriculum-${unit.id}`,
+        dryRun: Boolean(flags['dry-run']),
+        execGit: deps.execGit,
+        execGh: deps.execGh,
+      });
+      readiness.pullRequest = pullRequest;
+    }
+
+    const winnerTrajectories = Array.isArray(evoRes.winner?.trajectories)
+      ? evoRes.winner.trajectories
+      : [];
+    const artifactChecksPassed =
+      winnerTrajectories.length > 0 &&
+      winnerTrajectories.every((t) => Boolean(t.fixtureVerification?.passed ?? t.passed));
+
+    recordCurriculumUnitAttempt({
+      unitId: unit.id,
+      baselineScores: baselineRes.summary,
+      winnerScores: evoRes.winner?.scores || baselineRes.summary,
+      promoted: Boolean(readiness.ready),
+      artifactChecksPassed,
+      prUrl: pullRequest?.prUrl || null,
+      advanceCursor: flags.unit ? false : true,
+      statePath,
+      fs: deps.fs,
+    });
+
+    const coverage = getCurriculumCoverageReport({ statePath, fs: deps.fs });
+
+    return {
+      ok: true,
+      credo: CAPABILITY_CREDO.name,
+      curriculumUnit: {
+        id: unit.id,
+        order: unit.order,
+        track: unit.track,
+        organ: unit.organ,
+        role: unit.role,
+        skill: unit.skill,
+        stage: unit.stage,
+        title: unit.title,
+        targetMutablePath: unit.targetMutablePath,
+        requiredArtifacts: unit.requiredArtifacts,
+      },
+      baselineScores: baselineRes.summary,
+      winnerScores: evoRes.winner?.scores || null,
+      winnerId: evoRes.winner?.id || null,
+      touchedPaths: evoRes.winner?.touchedPaths || [],
+      artifactChecksPassed,
+      readiness,
+      application,
+      pullRequest,
+      coverage,
     };
   }
 

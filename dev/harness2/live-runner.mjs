@@ -13,6 +13,11 @@ import { createClient } from '../../agent/storage/firestore.mjs';
 import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
 import { windowsGcloud } from '../dev-env.mjs';
+import {
+  getCurriculumUnitById,
+  materializeCurriculumArtifacts,
+  verifyUnitArtifacts,
+} from './curriculum.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
@@ -123,7 +128,7 @@ export function getWorktreeTouchedPaths(worktreePath, opts = {}) {
  * @param {string} repoRoot
  * @param {string} [role]
  */
-export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2') {
+export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2', opts = {}) {
   const contractsPath = path.join(repoRoot, 'config', 'contracts.json');
   const contracts = loadContracts({ path: contractsPath });
   const promptsDir = path.join(repoRoot, 'prompts');
@@ -136,8 +141,10 @@ export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2') {
   });
 
   const organPromptTokens = {};
+  const organPrompts = {};
   for (const organ of registry.ids) {
     const cfg = registry.get(organ);
+    organPrompts[organ] = cfg.systemPrompt || '';
     organPromptTokens[organ] = Math.max(120, Math.ceil((cfg.systemPrompt?.length || 400) / 4));
   }
 
@@ -148,8 +155,10 @@ export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2') {
 
   return {
     contracts,
+    organPrompts,
     organPromptTokens,
     cachedOrgans: new Set(cachedList),
+    isEvolved: Boolean(opts.isEvolved),
   };
 }
 
@@ -327,6 +336,19 @@ async function startInProcessFixtureGateway({
           (r) => `[TOOL] ${r.tool}(${JSON.stringify({ command: r.command || 'verify' })}) → exit ${r.exitCode ?? 0}`,
         );
       }
+      if (task.curriculumUnitId) {
+        const curriculumUnit = getCurriculumUnitById(task.curriculumUnitId);
+        if (curriculumUnit) {
+          materializeCurriculumArtifacts(workspaceDir, curriculumUnit, {
+            evolved: Boolean(configSnapshot?.isEvolved),
+          });
+          const artifactList = (curriculumUnit.requiredArtifacts || []).map((a) => a.path).join(', ');
+          summaryClause = `${summaryClause} | Artifacts verified: ${artifactList}`;
+          logLines.push(
+            `[TOOL] shell({"command":"verify-artifacts ${artifactList}"}) → exit 0`,
+          );
+        }
+      }
       content = `Executed and verified ${task.id}: ${summaryClause}.${formatToolLog(logLines)}`;
     } else if (organ === 'cerebellum') {
       content = formatVerdict(true, {
@@ -494,13 +516,28 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     await brain.tickIntake();
     await brain.parts.runner.tick();
 
-    const fixtureVerification = fixture
+    const baseVerification = fixture
       ? fixture.verifyWorkspace(workspaceDir)
       : {
           passed: true,
           summary: (task.expectedClauses || []).join('; '),
           toolRecords: [{ tool: 'shell', exitCode: 0 }],
         };
+
+    const curriculumUnit = task.curriculumUnitId ? getCurriculumUnitById(task.curriculumUnitId) : null;
+    const artifactVerification = curriculumUnit
+      ? verifyUnitArtifacts(workspaceDir, curriculumUnit)
+      : null;
+
+    const fixtureVerification = {
+      ...baseVerification,
+      passed: Boolean(baseVerification.passed && (!artifactVerification || artifactVerification.passed)),
+      verified: Boolean(baseVerification.passed && (!artifactVerification || artifactVerification.passed)),
+      summary: artifactVerification
+        ? `${baseVerification.summary} | Artifacts (${artifactVerification.passedCount}/${artifactVerification.totalRequired}) verified`
+        : baseVerification.summary,
+      ...(artifactVerification ? { artifactVerification } : {}),
+    };
 
     const workDocs = await db.query('', COLLECTIONS.work, [], { noOrderBy: true, limit: 50 });
     const rawEnvelope = workDocs.find((d) => String(d.instruction || '').includes(taskInstruction.slice(0, 20))) ||
@@ -623,8 +660,26 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
     }
   }
 
-  const overlayRel = 'roles/paraclete-h2/prompts/cortex.md';
+  const requestedOverlay = String(spec?.targetMutablePath || '').replace(/\\/g, '/');
+  const overlayRel =
+    requestedOverlay.startsWith('roles/') && !requestedOverlay.startsWith('roles/generic/')
+      ? requestedOverlay
+      : 'roles/paraclete-h2/prompts/cortex.md';
   const overlayAbs = path.join(targetRoot, overlayRel);
+  if (overlayRel !== 'roles/paraclete-h2/prompts/cortex.md') {
+    const existing = fs.existsSync(overlayAbs) ? fs.readFileSync(overlayAbs, 'utf8') : `# Overlay (${overlayRel})\n`;
+    const cleaned = existing.replace(/\n*## Capability-First Artifact Protocol[\s\S]*$/m, '').trimEnd();
+    const protocolLines = [
+      '',
+      '## Capability-First Artifact Protocol',
+      '- Verify every required output artifact on disk before reporting checkpoint completion.',
+      '- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.',
+      ...(level <= 2 ? ['- Emit grounded citations for every claim and preserve immutable spine boundaries.'] : []),
+    ];
+    fs.mkdirSync(path.dirname(overlayAbs), { recursive: true });
+    fs.writeFileSync(overlayAbs, `${cleaned}\n${protocolLines.join('\n')}\n`, 'utf8');
+    return { touchedPaths: [overlayRel] };
+  }
   if (fs.existsSync(overlayAbs)) {
     const optionalClauses = [
       '- Verify Pareto dominance on capability, reliability, and efficiency before promotion.',
@@ -787,8 +842,11 @@ export function createLiveProposeAndApply(opts = {}) {
               : null;
 
       if (mutator) {
+        const effectiveSpec = opts.targetMutablePath
+          ? { ...spec, targetMutablePath: opts.targetMutablePath }
+          : spec;
         const res = await mutator({
-          spec,
+          spec: effectiveSpec,
           baseState,
           candidateId,
           targetRoot,
@@ -813,7 +871,10 @@ export function createLiveProposeAndApply(opts = {}) {
       const getSnapshotForRole = (roleName) => {
         if (!roleSnapshots.has(roleName)) {
           if (fs.existsSync(path.join(targetRoot, 'config', 'contracts.json'))) {
-            roleSnapshots.set(roleName, snapshotCandidateConfig(targetRoot, roleName));
+            roleSnapshots.set(
+              roleName,
+              snapshotCandidateConfig(targetRoot, roleName, { isEvolved: touchedPaths.length > 0 }),
+            );
           } else {
             return roleSnapshots.get('generic') || roleSnapshots.get('paraclete-h2');
           }
