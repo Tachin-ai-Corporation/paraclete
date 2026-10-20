@@ -89,12 +89,16 @@ import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '
 import {
   CURRICULUM_TRACKS,
   MASTER_CURRICULUM_UNITS,
+  getAllCurriculumUnits,
   getCurriculumUnitById,
   materializeCurriculumArtifacts,
   verifyUnitArtifacts,
   selectNextCurriculumUnit,
   recordCurriculumUnitAttempt,
   getCurriculumCoverageReport,
+  scanCurriculumCoverageGaps,
+  synthesizeNextCurriculumEpoch,
+  formatCurriculumProposalMarkdown,
 } from '../../dev/harness2/curriculum.mjs';
 import { start as startFirestoreFake } from '../fakes/firestore-server.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
@@ -1336,6 +1340,113 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       assert.equal(cliExec.curriculumUnit.id, 'unit-role-software-engineer');
       assert.equal(cliExec.curriculumUnit.role, 'software-engineer');
       assert.ok(cliExec.winnerScores.capability >= cliExec.baselineScores.capability);
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('Next-Epoch Curriculum Synthesizer: scanCurriculumCoverageGaps, synthesizeNextCurriculumEpoch, automatic epoch rollover, and cli --suggest', async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'paraclete-curriculum-suggest-'));
+    try {
+      const statePath = join(tmpRoot, 'curriculum-state.json');
+      const proposalJsonPath = join(tmpRoot, 'proposed-curriculum.json');
+      const proposalMdPath = join(tmpRoot, 'CURRICULUM_PROPOSAL.md');
+      const harvestedSuitePath = join(tmpRoot, 'harvested-tasks.json');
+
+      // Seed a harvested Loop B production failure trajectory
+      writeFileSync(
+        harvestedSuitePath,
+        JSON.stringify(
+          [
+            {
+              id: 'prod-loopb-timeout-401',
+              role: 'devops-engineer',
+              organFocus: 'cerebellum',
+              skillFocus: 'systemd-ops',
+              failureMode: 'tool_timeout_unverified_service',
+              goal: 'Guard against unverified systemd restart exit status in prod-loopb-timeout-401.',
+              expectedClauses: ['diagnose prod-loopb-timeout-401', 'verify service status'],
+            },
+          ],
+          null,
+          2,
+        ),
+        'utf8',
+      );
+
+      // Step through all 24 Epoch 1 units:
+      // - 1st unit ('unit-organ-cortex') evaluated without promotion (triggers remediation signal)
+      // - remaining 23 units promoted with high capability >= 0.98 (triggers tier_escalation signal)
+      for (let i = 0; i < MASTER_CURRICULUM_UNITS.length; i += 1) {
+        const u = MASTER_CURRICULUM_UNITS[i];
+        const isLast = i === MASTER_CURRICULUM_UNITS.length - 1;
+        recordCurriculumUnitAttempt(
+          {
+            unitId: u.id,
+            baselineScores: { capability: 0.82, reliability: 0.9, efficiency: 0.8, fitness: 0.83 },
+            winnerScores:
+              i === 0
+                ? { capability: 0.84, reliability: 0.88, efficiency: 0.8, fitness: 0.84 }
+                : { capability: 0.985, reliability: 0.97, efficiency: 0.89, fitness: 0.97 },
+            promoted: i !== 0,
+            artifactPassRate: i === 0 ? 0.5 : 1,
+            statePath,
+            proposalJsonPath,
+            proposalMdPath,
+            harvestedSuitePath,
+            autoSuggest: isLast,
+          },
+          {
+            statePath,
+            proposalJsonPath,
+            proposalMdPath,
+            harvestedSuitePath,
+          },
+        );
+      }
+
+      // Because the 24th unit completed all pending Epoch 1 units, automatic epoch rollover
+      // should have synthesized Epoch 2 and queued new pending units!
+      const postRolloverReport = getCurriculumCoverageReport({ statePath });
+      assert.equal(postRolloverReport.epoch, 2);
+      assert.equal(postRolloverReport.baselineUnitsCount, 24);
+      assert.ok(postRolloverReport.dynamicUnitsCount > 0, 'Expected synthesized Epoch 2 dynamic units');
+      assert.equal(postRolloverReport.completedUnits, 24);
+      assert.equal(postRolloverReport.pendingUnits, postRolloverReport.dynamicUnitsCount);
+      assert.equal(postRolloverReport.proposalsCount, 1);
+      assert.ok(postRolloverReport.nextUnitId.startsWith('unit-epoch2-'));
+
+      // Verify every synthesized unit has a valid mutable path and materializes + passes artifact verification
+      const allUnits = getAllCurriculumUnits({ state: { dynamicUnits: JSON.parse(readFileSync(proposalJsonPath, 'utf8')).proposedUnits } });
+      const epoch2Units = allUnits.filter((u) => u.epoch === 2);
+      assert.ok(epoch2Units.length >= 4);
+      const sourcesPresent = new Set(epoch2Units.map((u) => u.source));
+      assert.ok(sourcesPresent.has('coverage_gap'), 'Expected coverage_gap units in Epoch 2');
+      assert.ok(sourcesPresent.has('remediation'), 'Expected remediation unit for unit-organ-cortex in Epoch 2');
+      assert.ok(sourcesPresent.has('harvested_failure'), 'Expected harvested_failure unit in Epoch 2');
+
+      for (const dynUnit of epoch2Units) {
+        const pathCheck = classifySurfacePath(dynUnit.targetMutablePath, { stage: 'stage2', allowNewRoles: true });
+        assert.equal(pathCheck.allowed, true, `Dynamic unit ${dynUnit.id} targetMutablePath ${dynUnit.targetMutablePath} must be mutable`);
+        const ws = join(tmpRoot, `ws-${dynUnit.id}`);
+        materializeCurriculumArtifacts(ws, dynUnit, { evolved: true });
+        const verified = verifyUnitArtifacts(ws, dynUnit);
+        assert.equal(verified.passed, true, `Dynamic unit ${dynUnit.id} artifacts failed verification: ${JSON.stringify(verified)}`);
+      }
+
+      // Verify on-demand CLI `curriculum --suggest --max-units 6`
+      const suggestCli = await runCli([
+        'curriculum',
+        '--suggest',
+        '--max-units',
+        '6',
+        '--state-path',
+        statePath,
+      ]);
+      assert.equal(suggestCli.ok, true);
+      assert.equal(suggestCli.suggestedEpoch, 3);
+      assert.equal(suggestCli.proposedUnitsCount, 6);
+      assert.ok(suggestCli.markdown.includes('# Paraclete-H² Autonomous Curriculum Proposal — Epoch 3'));
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }

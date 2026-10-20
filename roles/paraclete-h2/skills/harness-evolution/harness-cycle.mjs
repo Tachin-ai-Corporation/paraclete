@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--state-path <path>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -21,6 +21,8 @@ function parseArgs(argv) {
     unit: null,
     track: null,
     status: false,
+    suggest: false,
+    maxUnits: null,
     statePath: null,
     iterations: 2,
     candidates: 2,
@@ -49,6 +51,8 @@ function parseArgs(argv) {
     else if (arg === '--unit') opts.unit = argv[++i] || null;
     else if (arg === '--track') opts.track = argv[++i] || null;
     else if (arg === '--status') opts.status = true;
+    else if (arg === '--suggest') opts.suggest = true;
+    else if (arg === '--max-units') opts.maxUnits = Number(argv[++i] || 8);
     else if (arg === '--state-path') opts.statePath = path.resolve(argv[++i] || '');
     else if (arg === '--iterations') opts.iterations = Number(argv[++i] || 2);
     else if (arg === '--candidates') opts.candidates = Number(argv[++i] || 2);
@@ -275,6 +279,8 @@ export async function main(argv, deps = {}) {
       ...(opts.unit ? ['--unit', opts.unit] : []),
       ...(opts.track ? ['--track', opts.track] : []),
       ...(opts.status ? ['--status'] : []),
+      ...(opts.suggest ? ['--suggest'] : []),
+      ...(opts.maxUnits ? ['--max-units', String(opts.maxUnits)] : []),
       ...(opts.statePath ? ['--state-path', opts.statePath] : []),
       ...(opts.live ? ['--live'] : []),
       ...(opts.vertex ? ['--vertex'] : []),
@@ -291,7 +297,9 @@ export async function main(argv, deps = {}) {
     writeOut(opts.out, payload);
     const summaryText = opts.status
       ? `Curriculum coverage: ${result.coverage?.completedUnits || 0}/${result.coverage?.totalUnits || 0} completed`
-      : `Curriculum unit ${result.curriculumUnit?.id || 'unknown'} complete (promoted=${Boolean(result.readiness?.ready)})`;
+      : opts.suggest
+        ? `Synthesized Curriculum Epoch ${result.suggestedEpoch}: ${result.proposedUnitsCount} units queued`
+        : `Curriculum unit ${result.curriculumUnit?.id || 'unknown'} complete (promoted=${Boolean(result.readiness?.ready)})`;
     emit(stdout, payload, opts.json, summaryText);
     return result.ok ? 0 : 1;
   }

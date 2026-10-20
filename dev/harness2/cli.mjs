@@ -36,6 +36,7 @@ import {
   getCurriculumCoverageReport,
   recordCurriculumUnitAttempt,
   selectNextCurriculumUnit,
+  synthesizeNextCurriculumEpoch,
 } from './curriculum.mjs';
 
 export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
@@ -55,8 +56,8 @@ Subcommands:
                                    Filter and distill Loop B trajectories into Loop A benchmarks
   promote  [--stage stage1|stage2] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
                                    Verify candidate readiness, optionally apply patches, push branch, and open PR
-  curriculum [--status] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
-                                   Step through the Master Curriculum Playbook across organs, roles, and skills
+  curriculum [--status] [--suggest] [--max-units <n>] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
+                                   Step through the Master Curriculum Playbook or synthesize the next curriculum epoch
   scaffold-skill --id <skill-id> [--role <role>] [--name <title>] [--command <cmd>]
                                    Generate a compliant skill package scaffold (skill.json, SKILL.md, <cmd>.mjs)
   scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
@@ -618,9 +619,36 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       };
     }
 
+    if (flags.suggest) {
+      const maxUnits = flags['max-units'] ? Number(flags['max-units']) : 8;
+      const synthesized = synthesizeNextCurriculumEpoch({
+        repoRoot: deps.repoRoot || process.cwd(),
+        statePath,
+        maxUnits,
+        registerInState: true,
+        fs: deps.fs,
+      });
+      const coverage = getCurriculumCoverageReport({ statePath, state: synthesized.state, fs: deps.fs });
+      return {
+        ok: true,
+        credo: CAPABILITY_CREDO.name,
+        suggestedEpoch: synthesized.proposal.epoch,
+        proposedUnitsCount: synthesized.proposal.proposedUnits.length,
+        countsBySource: synthesized.proposal.countsBySource,
+        proposalJsonPath: synthesized.proposalJsonPath,
+        proposalMdPath: synthesized.proposalMdPath,
+        proposal: synthesized.proposal,
+        markdown: synthesized.markdown,
+        coverage,
+      };
+    }
+
     const selection = selectNextCurriculumUnit({
       unitId: typeof flags.unit === 'string' ? flags.unit : undefined,
       track: typeof flags.track === 'string' ? flags.track : undefined,
+      stage: typeof flags.stage === 'string' ? flags.stage : undefined,
+      role: typeof flags.role === 'string' ? flags.role : undefined,
+      organ: typeof flags.organ === 'string' ? flags.organ : undefined,
       statePath,
       fs: deps.fs,
     });
@@ -734,10 +762,13 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       unitId: unit.id,
       baselineScores: baselineRes.summary,
       winnerScores: evoRes.winner?.scores || baselineRes.summary,
+      winnerId: evoRes.winner?.id || null,
       promoted: Boolean(readiness.ready),
       artifactChecksPassed,
+      artifactPassRate: artifactChecksPassed ? 1 : 0,
       prUrl: pullRequest?.prUrl || null,
       advanceCursor: flags.unit ? false : true,
+      repoRoot: deps.repoRoot || process.cwd(),
       statePath,
       fs: deps.fs,
     });
