@@ -1832,7 +1832,50 @@ export function synthesizeNextCurriculumEpoch(opts = {}) {
     }
   }
 
-  // Signal 4: Uncovered Role x Organ overlays & Tier-2 Adversarial Escalation for saturated units
+  // Signal 4: Tier-2 Adversarial Escalation for saturated units & Uncovered Role x Organ overlays
+  const maxTier2Slots = Math.max(1, Math.floor(maxUnits * 0.35));
+  let tier2Added = 0;
+  for (const esc of gaps.tierEscalationCandidates) {
+    if (proposedUnits.length >= maxUnits || tier2Added >= maxTier2Slots) break;
+    const base = esc.unit;
+    const nextOrgan = base.organ === 'cortex' ? 'cerebellum' : base.organ === 'motor' ? 'prefrontal' : 'cortex';
+    const candidatePath = base.targetMutablePath.startsWith('roles/')
+      ? `roles/${base.role}/prompts/${nextOrgan}.md`
+      : base.targetMutablePath;
+    const unitId = `unit-epoch${nextEpoch}-tier2-${base.role}-${nextOrgan}`;
+    const slug = `${base.role}_${nextOrgan}_TIER2`.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+    const beforeLen = proposedUnits.length;
+    tryAddUnit({
+      id: unitId,
+      epoch: nextEpoch,
+      source: 'tier_escalation',
+      rationale: `Unit '${base.id}' saturated Epoch ${nextEpoch - 1} (S_cap=${esc.bestCap.toFixed(4)}); escalating '${base.role}' to Tier-2 multi-fault adversarial verification on '${nextOrgan}'.`,
+      track: base.track,
+      stage: base.stage,
+      role: base.role,
+      organ: nextOrgan,
+      skill: base.skill,
+      targetMutablePath: candidatePath,
+      title: `${base.title} — Tier-2 Multi-Fault Adversarial Escalation (Epoch ${nextEpoch})`,
+      requiredArtifacts: [
+        ...(base.requiredArtifacts || []),
+        {
+          path: `TIER2_ADVERSARIAL_${slug}.json`,
+          description: `Tier-2 multi-fault adversarial stress-test ledger for ${base.role}`,
+          requiredJsonKeys: ['unitId', 'role', 'organ', 'adversarialFaultsInjected', 'zeroHallucinationVerified'],
+        },
+      ],
+      task: {
+        ...base.task,
+        curriculumUnitId: unitId,
+        organFocus: nextOrgan,
+        category: 'tier2_adversarial_escalation',
+        goal: `${base.task.goal} Execute Tier-2 adversarial boundary probes and emit TIER2_ADVERSARIAL_${slug}.json.`,
+      },
+    });
+    if (proposedUnits.length > beforeLen) tier2Added += 1;
+  }
+
   for (const ro of gaps.uncoveredRoleOrgans) {
     if (proposedUnits.length >= maxUnits) break;
     const isStage1 = STAGE1_BUILDER_ROLES.includes(ro.role);
@@ -1876,45 +1919,6 @@ export function synthesizeNextCurriculumEpoch(opts = {}) {
           `emit ${ro.role}-${ro.organ}-audit.json`,
           `author ${slug}_VERIFICATION.md`,
         ],
-      },
-    });
-  }
-
-  for (const esc of gaps.tierEscalationCandidates) {
-    if (proposedUnits.length >= maxUnits) break;
-    const base = esc.unit;
-    const nextOrgan = base.organ === 'cortex' ? 'cerebellum' : base.organ === 'motor' ? 'prefrontal' : 'cortex';
-    const candidatePath = base.targetMutablePath.startsWith('roles/')
-      ? `roles/${base.role}/prompts/${nextOrgan}.md`
-      : base.targetMutablePath;
-    const unitId = `unit-epoch${nextEpoch}-tier2-${base.role}-${nextOrgan}`;
-    const slug = `${base.role}_${nextOrgan}_TIER2`.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
-    tryAddUnit({
-      id: unitId,
-      epoch: nextEpoch,
-      source: 'tier_escalation',
-      rationale: `Unit '${base.id}' saturated Epoch ${nextEpoch - 1} (S_cap=${esc.bestCap.toFixed(4)}); escalating '${base.role}' to Tier-2 multi-fault adversarial verification on '${nextOrgan}'.`,
-      track: base.track,
-      stage: base.stage,
-      role: base.role,
-      organ: nextOrgan,
-      skill: base.skill,
-      targetMutablePath: candidatePath,
-      title: `${base.title} — Tier-2 Multi-Fault Adversarial Escalation (Epoch ${nextEpoch})`,
-      requiredArtifacts: [
-        ...(base.requiredArtifacts || []),
-        {
-          path: `TIER2_ADVERSARIAL_${slug}.json`,
-          description: `Tier-2 multi-fault adversarial stress-test ledger for ${base.role}`,
-          requiredJsonKeys: ['unitId', 'role', 'organ', 'adversarialFaultsInjected', 'zeroHallucinationVerified'],
-        },
-      ],
-      task: {
-        ...base.task,
-        curriculumUnitId: unitId,
-        organFocus: nextOrgan,
-        category: 'tier2_adversarial_escalation',
-        goal: `${base.task.goal} Execute Tier-2 adversarial boundary probes and emit TIER2_ADVERSARIAL_${slug}.json.`,
       },
     });
   }
