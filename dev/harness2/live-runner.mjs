@@ -177,7 +177,7 @@ async function startInProcessFixtureGateway({
     const previewChars = configSnapshot.contracts?.brain?.result_preview_chars ?? 3000;
     const budgetFactor = Math.min(
       1.15,
-      Math.max(0.75, (maxSteps / 25) * 0.5 + (previewChars / 3000) * 0.5),
+      Math.max(0.55, (maxSteps / 25) * 0.5 + (previewChars / 3000) * 0.5),
     );
     const promptTokenCount = Math.round(basePrompt * budgetFactor);
     const candidatesTokenCount = Math.max(40, Math.round((outputChars / 4) * budgetFactor));
@@ -611,10 +611,12 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
         raw.vertex.gemini_explicit_cache = true;
       }
       if (raw.organs && typeof raw.organs === 'object') {
-        raw.organs.max_steps = Math.max(18, 25 - level);
+        const currentSteps = Number(raw.organs.max_steps) || 25;
+        raw.organs.max_steps = Math.max(15, Math.min(currentSteps - stepIndex, 25 - level));
       }
       if (raw.brain && typeof raw.brain === 'object') {
-        raw.brain.result_preview_chars = Math.max(2100, 3000 - level * 150);
+        const currentPreview = Number(raw.brain.result_preview_chars) || 3000;
+        raw.brain.result_preview_chars = Math.max(1650, Math.min(currentPreview - stepIndex * 150, 3000 - level * 150));
       }
       fs.writeFileSync(contractsPath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8');
       return { touchedPaths: ['config/contracts.json'] };

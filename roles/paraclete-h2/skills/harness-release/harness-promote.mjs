@@ -61,12 +61,15 @@ function parseArgs(argv) {
 async function loadHarness2Modules(repoDir) {
   const h2Dir = path.join(repoDir, 'dev', 'harness2');
   if (! fs.existsSync(path.join(h2Dir, 'promote.mjs'))) return null;
-  const [validate, substrate, promote] = await Promise.all([
+  const [validate, substrate, promote, cli] = await Promise.all([
     import(pathToFileURL(path.join(h2Dir, 'validate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'substrate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'promote.mjs')).href),
+    fs.existsSync(path.join(h2Dir, 'cli.mjs'))
+      ? import(pathToFileURL(path.join(h2Dir, 'cli.mjs')).href)
+      : Promise.resolve(null),
   ]);
-  return { validate, substrate, promote };
+  return { validate, substrate, promote, cli };
 }
 
 function writeOut(outPath, payload) {
@@ -104,6 +107,51 @@ export async function main(argv, deps = {}) {
   }
 
   const normalizedStage = opts.stage === 'all' ? 'stage2' : opts.stage;
+  if (opts.live && typeof h2.cli?.runCli === 'function') {
+    const cliArgs = [
+      'promote',
+      '--stage',
+      normalizedStage,
+      '--live',
+      ...(opts.vertex ? ['--vertex'] : []),
+      ...(opts.judgeCommittee ? ['--judge-committee'] : []),
+      ...(opts.apply ? ['--apply'] : []),
+      ...(opts.pushPr ? ['--push-pr'] : []),
+      ...(opts.branch ? ['--branch', opts.branch] : []),
+      ...(opts.dryRun ? ['--dry-run'] : []),
+      ...(opts.role ? ['--role', opts.role] : []),
+    ];
+    const cliRes = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
+    const readiness = cliRes.readiness || { ready: Boolean(cliRes.ok), blockers: [] };
+    const candidateId = readiness.candidateId || 'live-winner';
+    const markdown = cliRes.report || h2.promote.formatPromotionReport(readiness);
+    const payload = {
+      ok: Boolean(cliRes.ok),
+      promotable: Boolean(readiness.ready),
+      action: opts.action,
+      stage: opts.stage,
+      candidateId,
+      readiness,
+      ...(cliRes.application ? { application: cliRes.application } : {}),
+      ...(cliRes.pullRequest ? { pullRequest: cliRes.pullRequest } : {}),
+      markdown,
+    };
+    writeOut(opts.out, payload);
+    if (opts.action === 'report' && ! opts.json) {
+      stdout.write(`${markdown}\n`);
+    } else {
+      emit(
+        stdout,
+        payload,
+        opts.json,
+        readiness.ready
+          ? `Promotion gates passed for ${payload.candidateId}`
+          : `Promotion blocked for ${payload.candidateId}: ${(readiness.blockers || []).join('; ')}`,
+      );
+    }
+    return payload.ok ? 0 : 1;
+  }
+
   const surfaceCheck = h2.validate.validateCandidateWorkspace({
     repoRoot: opts.repo,
     stage: normalizedStage,
