@@ -239,12 +239,15 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (subcommand === 'eval' || subcommand === 'judge') {
-    const tasks = selectBenchmarkTasks({
-      stage,
-      role: flags.role,
-      includeHarvested: Boolean(flags['include-harvested']),
-      suitePath: flags['suite-path'],
-    });
+    const tasks =
+      Array.isArray(deps.tasks) && deps.tasks.length > 0
+        ? deps.tasks
+        : selectBenchmarkTasks({
+            stage,
+            role: flags.role,
+            includeHarvested: Boolean(flags['include-harvested']),
+            suitePath: flags['suite-path'],
+          });
     const useFrontierJudge = subcommand === 'judge' || Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
     const judgeCommittee =
       typeof flags['judge-committee'] === 'string'
@@ -291,12 +294,15 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       typeof flags['judge-committee'] === 'string'
         ? parseCommitteeSpec(flags['judge-committee'])
         : DEFAULT_JUDGE_COMMITTEE;
-    const tasks = selectBenchmarkTasks({
-      stage,
-      role: flags.role,
-      includeHarvested: Boolean(flags['include-harvested']),
-      suitePath: flags['suite-path'],
-    });
+    const tasks =
+      Array.isArray(deps.tasks) && deps.tasks.length > 0
+        ? deps.tasks
+        : selectBenchmarkTasks({
+            stage,
+            role: flags.role,
+            includeHarvested: Boolean(flags['include-harvested']),
+            suitePath: flags['suite-path'],
+          });
     const liveEvaluate = isLive
       ? async (cand) =>
           evaluateLiveTarget({
@@ -639,6 +645,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       ? await evaluateLiveTarget({
           stage: unit.stage,
           role: unit.role,
+          tasks: [unit.task],
           repoRoot: deps.repoRoot,
           useFrontierJudge,
           judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
@@ -648,6 +655,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       : await runTier1Evaluation({
           stage: unit.stage,
           role: unit.role,
+          tasks: [unit.task],
           deps: unitDeps,
         });
 
@@ -718,7 +726,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       : [];
     const artifactChecksPassed =
       winnerTrajectories.length > 0 &&
-      winnerTrajectories.every((t) => Boolean(t.fixtureVerification?.passed ?? t.passed));
+      winnerTrajectories.every((t) =>
+        Boolean(t.fixtureVerification?.passed ?? t.evalCritique?.passed ?? t.missionCompleted ?? t.passed),
+      );
 
     recordCurriculumUnitAttempt({
       unitId: unit.id,
