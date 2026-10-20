@@ -4,8 +4,8 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 
 ## Commands
 
-- `harness-promote --action verify [--repo <dir>] [--stage <stage1|stage2|all>] [--trials <n>] [--out <path>] [--json]` — run structural validation, baseline-vs-candidate evaluation, and promotion gate checks.
-- `harness-promote --action report [--repo <dir>] [--stage <stage1|stage2|all>] [--trials <n>] [--out <path>] [--json]` — generate a formatted markdown and JSON promotion report for pull requests and canary rollout review.
+- `harness-promote --action verify [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--judge-committee] [--out <path>] [--json]` — run structural validation, baseline-vs-candidate evaluation, and Capability-First promotion gate checks.
+- `harness-promote --action report [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]` — generate a formatted markdown and JSON promotion report, optionally applying patches and opening a GitHub PR.
 
 ## Workflow
 

@@ -284,3 +284,78 @@ export function synthesizeBenchmarkCandidatesFromHarvest(trajectories = [], opts
     };
   });
 }
+
+/**
+ * Progressive Curriculum Expansion (Loop B -> Loop A):
+ * When a role saturates its current benchmark suite (`capability >= saturationThreshold`),
+ * synthesize a harder multi-checkpoint specialist job task for that role so its job
+ * capability ceiling continuously rises rather than plateauing on easy tasks.
+ *
+ * @param {object} evalResult
+ * @param {object} [opts]
+ * @param {number} [opts.saturationThreshold] - Default `0.98`
+ * @param {number} [opts.curriculumTier]      - Escalation tier number (default `2`)
+ * @param {boolean} [opts.persist]            - Persist synthesized tasks to `suitePath`
+ * @param {string} [opts.suitePath]
+ * @returns {{ saturatedRoles: string[], synthesizedTasks: object[], persisted: object|null }}
+ */
+export function expandCurriculumForSaturatedRoles(evalResult = {}, opts = {}) {
+  const saturationThreshold = opts.saturationThreshold ?? 0.98;
+  const tierLevel = Number(opts.curriculumTier ?? 2) || 2;
+  const perTrajectory = evalResult?.summary?.perTrajectory || [];
+  const byRoleObj = evalResult?.summary?.byRole || {};
+  const byRole = new Map();
+
+  for (const item of perTrajectory) {
+    const role = item.role || 'generic';
+    if (!byRole.has(role)) byRole.set(role, []);
+    byRole.get(role).push(Number(item.capability ?? 0));
+  }
+  for (const [role, scores] of Object.entries(byRoleObj)) {
+    if (!byRole.has(role) && scores && typeof scores === 'object') {
+      byRole.set(role, [Number(scores.capability ?? 0)]);
+    }
+  }
+
+  const existingIds = new Set(
+    opts.suitePath ? loadPersistedBenchmarkTasks({ suitePath: opts.suitePath }).map((t) => t.id) : [],
+  );
+  const saturatedRoles = [];
+  const synthesizedTasks = [];
+
+  for (const [role, caps] of byRole.entries()) {
+    if (caps.length === 0) continue;
+    const meanCap = caps.reduce((a, b) => a + b, 0) / caps.length;
+    if (meanCap >= saturationThreshold) {
+      saturatedRoles.push(role);
+      const taskId = `curriculum-${role}-t${tierLevel}`;
+      if (!existingIds.has(taskId)) {
+        synthesizedTasks.push({
+          id: taskId,
+          role,
+          curriculumTier: tierLevel,
+          goal: `Execute a Tier-${tierLevel} adversarial ${role} specialist workflow: audit multi-source domain inputs for boundary anomalies, cross-verify every derived metric with independent tool read-back evidence, and emit a zero-hallucination remediation artifact.`,
+          expectedClauses: [
+            `audit multi-source ${role} inputs`,
+            'isolate boundary and edge-case anomalies',
+            'cross-verify metrics with read-back evidence',
+            'emit grounded remediation artifact',
+          ],
+          tier: 'tier1',
+        });
+      }
+    }
+  }
+
+  const persisted =
+    opts.persist && synthesizedTasks.length > 0
+      ? saveHarvestedBenchmarkTasks(synthesizedTasks, { suitePath: opts.suitePath, append: true })
+      : null;
+
+  return {
+    saturatedRoles,
+    synthesizedTasks,
+    persisted,
+    persistence: persisted,
+  };
+}

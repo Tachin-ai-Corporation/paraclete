@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--trials <n>] [--out <path>] [--json]';
+export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['verify', 'report']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -15,7 +15,15 @@ function parseArgs(argv) {
     action: 'verify',
     repo: process.cwd(),
     stage: 'stage1',
+    role: null,
     trials: 2,
+    live: false,
+    vertex: false,
+    judgeCommittee: false,
+    apply: false,
+    branch: null,
+    pushPr: false,
+    dryRun: false,
     out: null,
     json: false,
     help: false,
@@ -26,7 +34,15 @@ function parseArgs(argv) {
     else if (arg === '--action') opts.action = argv[++i] || '';
     else if (arg === '--repo') opts.repo = path.resolve(argv[++i] || '.');
     else if (arg === '--stage') opts.stage = argv[++i] || 'stage1';
+    else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
+    else if (arg === '--live') opts.live = true;
+    else if (arg === '--vertex') opts.vertex = true;
+    else if (arg === '--judge-committee') opts.judgeCommittee = true;
+    else if (arg === '--apply') opts.apply = true;
+    else if (arg === '--branch') opts.branch = argv[++i] || null;
+    else if (arg === '--push-pr') opts.pushPr = true;
+    else if (arg === '--dry-run') opts.dryRun = true;
     else if (arg === '--out') opts.out = path.resolve(argv[++i] || '');
     else if (arg === '--json') opts.json = true;
     else return { error: `unknown argument: ${arg}` };
@@ -107,6 +123,29 @@ export async function main(argv, deps = {}) {
     baselineScores: evalRes.summary,
     validation: surfaceCheck,
   });
+  let application = null;
+  if (opts.apply && typeof h2.promote.applyPromotedCandidate === 'function') {
+    application = h2.promote.applyPromotedCandidate({
+      candidate,
+      readiness,
+      repoRoot: opts.repo,
+      branch: opts.branch,
+      runTests: false,
+    });
+    readiness.application = application;
+  }
+  let pullRequest = null;
+  if (opts.pushPr && typeof h2.promote.pushAndCreatePullRequest === 'function') {
+    pullRequest = h2.promote.pushAndCreatePullRequest({
+      candidate,
+      readiness,
+      application,
+      repoRoot: opts.repo,
+      branch: opts.branch,
+      dryRun: opts.dryRun,
+    });
+    readiness.pullRequest = pullRequest;
+  }
   const markdown = h2.promote.formatPromotionReport(readiness);
 
   const payload = {
@@ -116,6 +155,8 @@ export async function main(argv, deps = {}) {
     stage: opts.stage,
     candidateId: candidate.id,
     readiness,
+    ...(application ? { application } : {}),
+    ...(pullRequest ? { pullRequest } : {}),
     markdown,
   };
 

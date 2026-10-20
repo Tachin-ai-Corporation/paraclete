@@ -14,6 +14,7 @@ import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
 import { windowsGcloud } from '../dev-env.mjs';
 import { getTaskFixture } from './fixtures.mjs';
+import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
 import { rolesForStage } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
@@ -550,11 +551,25 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       tool_records: fixtureVerification.toolRecords || [{ tool: 'shell', exitCode: fixtureVerification.passed ? 0 : 1 }],
     }));
 
-    const evalCritique = {
-      passed: Boolean(fixtureVerification.passed && envelope.status === 'completed'),
-      rubricScore: fixtureVerification.passed && envelope.status === 'completed' ? 1.0 : 0.3,
-      failureReasons: fixtureVerification.passed ? [] : [fixtureVerification.summary],
-    };
+    const judgePacket = buildJudgePacket({
+      task,
+      envelope,
+      tasks,
+      workspaceDir,
+      fixtureVerification,
+    });
+
+    const useFrontierJudge = Boolean(opts.useFrontierJudge || opts.judgeCommittee || opts.judgeOptions);
+    const evalCritique = useFrontierJudge
+      ? await evaluateWithFrontierCommittee(judgePacket, {
+          committee: opts.judgeCommittee || DEFAULT_JUDGE_COMMITTEE,
+          ...(opts.judgeOptions || {}),
+        })
+      : {
+          passed: Boolean(fixtureVerification.passed && envelope.status === 'completed'),
+          rubricScore: fixtureVerification.passed && envelope.status === 'completed' ? 1.0 : 0.3,
+          failureReasons: fixtureVerification.passed ? [] : [fixtureVerification.summary],
+        };
 
     return {
       envelope,
@@ -563,6 +578,7 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       usageRecords,
       evalCritique,
       fixtureVerification,
+      judgePacket,
     };
   } finally {
     await gateway.stop();
@@ -617,6 +633,7 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
       '# Role Overlay: Paraclete-H² (`cortex`)',
       '',
       'Operate as the unified Harness Engineer for Loop A (evolution) and Loop B (harvesting).',
+      'Credo: Capability overrides all other metrics and must never regress; optimize efficiency only after capability.',
       'Attribute every failure to a single diagnostic lens before mutating:',
       '- `INV` (`c1_contracts`, `c2_base_prompts`, `c3_shared_skills`, `c4_generic_role`): mechanical loop, tool, or token budget issues.',
       '- `DOM` (`c5_role_overlays`, `c6_role_skills`, `c7_role_processes`, `c8_role_memory`): role rubric or domain workflow gaps.',
@@ -809,6 +826,9 @@ export function createLiveProposeAndApply(opts = {}) {
               configSnapshot: getSnapshotForRole(task.role || 'paraclete-h2'),
               gatewayUrl: opts.gatewayUrl,
               gatewayToken: opts.gatewayToken,
+              useFrontierJudge: opts.useFrontierJudge,
+              judgeCommittee: opts.judgeCommittee,
+              judgeOptions: opts.judgeOptions,
             })
         : undefined;
 
@@ -864,6 +884,9 @@ export async function evaluateLiveTarget(opts = {}) {
       repoRoot,
       gatewayUrl: opts.gatewayUrl,
       gatewayToken: opts.gatewayToken,
+      useFrontierJudge: opts.useFrontierJudge,
+      judgeCommittee: opts.judgeCommittee,
+      judgeOptions: opts.judgeOptions,
     });
 
   const evalRes = await runTier1Evaluation({

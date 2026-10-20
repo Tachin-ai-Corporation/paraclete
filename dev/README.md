@@ -70,8 +70,9 @@ on `PATH`, or `CLOUDSDK_ROOT_DIR`, and honor `CLOUDSDK_PYTHON`.
 trajectory harvester (Loop B → Loop A):
 
 - `dev/harness2/surface.mjs` and `dev/harness2/validate.mjs`: the 8-component mutable surface (`c1..c8`), immutable spine guards, contract ceiling checks, and the 24,000-character assembled organ prompt budget gate.
+- `dev/harness2/judge.mjs`: Frontier Model Committee judge (`vertex-google/gemini-4-argon` and `vertex-anthropic/claude-opus-5-5`, extensible via `registerJudgeAdapter`) scoring blind rollout dossiers across 5 weighted dimensions (`clauseScore`, `craftScore`, `groundingScore`, `rigorScore`, `clarityScore`) with hard-fixture gating and pairwise tie-breaking.
 - `dev/harness2/trajectory.mjs` and `dev/harness2/substrate.mjs`: multi-organ trajectory extraction, 3D scoring (`capability`, `reliability`, `efficiency`), Tier-1 hermetic evaluation (`tests/fakes/firestore-server.mjs` and `tests/fakes/gcs-server.mjs`), and Tier-2 canary evaluation.
-- `dev/harness2/lenses.mjs`, `dev/harness2/recursion.mjs`, and `dev/harness2/selection.mjs`: Dual-Lens mutation proposers (`INV` and `DOM`), within-generation recursion with regression revert, Pareto frontier selection, and cross-lens synthesis.
+- `dev/harness2/lenses.mjs`, `dev/harness2/recursion.mjs`, and `dev/harness2/selection.mjs`: Capability-First Credo (`CAPABILITY_CREDO`: capability overrides all other metrics and cannot regress; reliability and efficiency are optimized only after capability), Dual-Lens mutation proposers (`INV` and `DOM`), within-generation recursion with regression revert, Pareto frontier selection, and cross-lens synthesis.
 - `dev/harness2/library.mjs`, `dev/harness2/harvest.mjs`, `dev/harness2/promote.mjs`, and `dev/harness2/live-runner.mjs`: candidate lineage archiving, version-filtered trajectory harvesting, isolated git worktree mutations (`--live`), and promotion readiness reports.
 - `roles/paraclete-h2`: the self-hosting harness engineer role (`harness-cycle`, `harness-eval`, `harness-promote`) that equips a single Paraclete agent to run Loop A and Loop B end to end.
 

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-eval --action <evaluate|harvest|suites> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--input <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-eval --action <evaluate|harvest|suites> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--judge-committee] [--include-harvested] [--expand-curriculum] [--persist] [--input <path>] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['evaluate', 'harvest', 'suites']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -18,6 +18,10 @@ function parseArgs(argv) {
     role: null,
     trials: 2,
     live: false,
+    judgeCommittee: false,
+    includeHarvested: false,
+    expandCurriculum: false,
+    persist: false,
     input: null,
     out: null,
     json: false,
@@ -32,6 +36,10 @@ function parseArgs(argv) {
     else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--judge-committee') opts.judgeCommittee = true;
+    else if (arg === '--include-harvested') opts.includeHarvested = true;
+    else if (arg === '--expand-curriculum') opts.expandCurriculum = true;
+    else if (arg === '--persist') opts.persist = true;
     else if (arg === '--input') opts.input = path.resolve(argv[++i] || '');
     else if (arg === '--out') opts.out = path.resolve(argv[++i] || '');
     else if (arg === '--json') opts.json = true;
@@ -113,13 +121,18 @@ export async function main(argv, deps = {}) {
   }
 
   if (opts.action === 'evaluate') {
-    const tasks = h2.substrate.selectBenchmarkTasks({ stage: normalizedStage, role: opts.role || undefined });
+    const tasks = h2.substrate.selectBenchmarkTasks({
+      stage: normalizedStage,
+      role: opts.role || undefined,
+      includeHarvested: opts.includeHarvested,
+    });
     const result = opts.live && h2.liveRunner?.evaluateLiveTarget
       ? await h2.liveRunner.evaluateLiveTarget({
           repoRoot: opts.repo,
           stage: normalizedStage,
           role: opts.role || undefined,
           tasks,
+          useFrontierJudge: opts.judgeCommittee,
         })
       : await h2.substrate.runTier1Evaluation({
           stage: normalizedStage,
@@ -153,18 +166,30 @@ export async function main(argv, deps = {}) {
         ? h2.harvest.loadMissionsFromInput(opts.input)
         : JSON.parse(fs.readFileSync(opts.input, 'utf8'));
     } else {
-      const sim = await h2.substrate.runTier1Evaluation({ stage: normalizedStage });
+      const sim = await h2.substrate.runTier1Evaluation({ stage: normalizedStage, role: opts.role || undefined });
       rawTrajectories = sim.trajectories;
     }
     const harvested = h2.harvest.harvestMissionTrajectories(rawTrajectories, {
       role: opts.role || null,
     });
     const tasks = h2.harvest.synthesizeBenchmarkCandidatesFromHarvest(harvested.accepted);
+    let curriculumExpansion = null;
+    if (opts.expandCurriculum && typeof h2.harvest.expandCurriculumForSaturatedRoles === 'function') {
+      const evalSim = await h2.substrate.runTier1Evaluation({ stage: normalizedStage, role: opts.role || undefined });
+      curriculumExpansion = h2.harvest.expandCurriculumForSaturatedRoles(evalSim, {
+        persist: opts.persist,
+      });
+      tasks.push(...curriculumExpansion.synthesizedTasks);
+    }
+    if (opts.persist && typeof h2.harvest.saveHarvestedBenchmarkTasks === 'function') {
+      h2.harvest.saveHarvestedBenchmarkTasks(tasks);
+    }
     const payload = {
       ok: true,
       action: 'harvest',
       inputCount: rawTrajectories.length,
       harvestedCount: tasks.length,
+      ...(curriculumExpansion ? { curriculumExpansion } : {}),
       tasks,
     };
     writeOut(opts.out, payload);

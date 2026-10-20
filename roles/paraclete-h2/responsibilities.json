@@ -45,6 +45,30 @@
         ],
         "prior_learnings": "Sanitize all credentials, emails, and project identifiers before writing harvested tasks to disk."
       }
+    },
+    {
+      "id": "r-harness-closed-loop",
+      "name": "Autonomous Loop B and Loop A Continuous Repository Improvement",
+      "schedule": "0 4 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 360,
+      "processRef": "p-harness-closed-loop",
+      "instruction": "Execute the unified Loop B + Loop A closed-loop harness optimization cycle on the GCP lab environment. Harvest failed and retried trajectories into sanitized regression fixtures, expand the benchmark curriculum for saturated roles, evaluate all active roles with the Frontier Model Committee, evolve single-lens candidates under the Capability-First Credo, and open verified pull requests against the primary repository.",
+      "success_criteria": "Repository surface invariants passed, failed trajectories were harvested and saturated roles received harder curriculum tasks, Frontier Model Committee baseline and candidate scores were computed across active roles, capability-first lexicographic selection verified zero capability regression, and any Pareto-dominant winner was applied to a promotion branch with a pull request report.",
+      "context": {
+        "purpose": "Ensure the primary Paraclete repository continuously improves the job capability, reliability, and efficiency of every deployed role while expanding skill and role coverage as existing benchmarks saturate.",
+        "process": [
+          "STEP 1 - VALIDATE: run `harness-cycle --action validate --repo . --json` to confirm the candidate repository checkout respects all immutable spine boundaries and contract bounds.",
+          "STEP 2 - LOOP B HARVEST & CURRICULUM: run `harness-eval --action harvest --stage all --expand-curriculum --persist --json` to turn recent failures into regression fixtures and synthesize harder tasks for roles at or above 0.98 capability.",
+          "STEP 3 - COMMITTEE BASELINE & DIAGNOSIS: run `harness-eval --action evaluate --stage all --trials 2 --live --judge-committee --include-harvested --json` and `harness-cycle --action diagnose --stage all --trials 2 --live --judge-committee --json`.",
+          "STEP 4 - LOOP A EVOLUTION: run `harness-cycle --action run --stage all --iterations 2 --candidates 2 --trials 2 --live --vertex --judge-committee --include-harvested --expand-curriculum --json` to evolve and score candidates under the Capability-First Credo.",
+          "STEP 5 - PROMOTE TO PRIMARY REPO: run `harness-promote --action verify --repo . --stage all --trials 2 --live --vertex --judge-committee --apply --push-pr --json` to verify all gates and open a pull request on the primary repository."
+        ],
+        "prior_learnings": "Capability scored by the Frontier Model Committee (`vertex-google/gemini-4-argon` and `vertex-anthropic/claude-opus-5-5`) overrides all other metrics. Never accept a candidate with any capability regression, and only optimize reliability or efficiency when capability is strictly improved or preserved."
+      }
     }
   ]
 }

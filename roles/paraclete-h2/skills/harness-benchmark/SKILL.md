@@ -5,8 +5,8 @@ Evaluate Stage 1 (self-hosting `paraclete-h2` and builder roles) and Stage 2 (ta
 ## Commands
 
 - `harness-eval --action suites [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--json]` — list benchmark tasks for Stage 1, Stage 2, or a specific target role.
-- `harness-eval --action evaluate [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--out <path>] [--json]` — evaluate capability, reliability (`pass@k`), and efficiency (`tokens`, `turns`, `cost`) across benchmark tasks.
-- `harness-eval --action harvest [--repo <dir>] [--input <path>] [--out <path>] [--json]` — harvest failed execution traces from a JSON trajectory dump into sanitized benchmark tasks.
+- `harness-eval --action evaluate [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--judge-committee] [--include-harvested] [--out <path>] [--json]` — evaluate capability, reliability (`pass@k`), and efficiency (`tokens`, `turns`, `cost`) across benchmark tasks with the Frontier Model Committee.
+- `harness-eval --action harvest [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--expand-curriculum] [--persist] [--input <path>] [--out <path>] [--json]` — harvest failed execution traces and synthesize progressive curriculum tasks for saturated roles.
 
 ## Workflow
 

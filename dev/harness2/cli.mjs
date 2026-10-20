@@ -1,20 +1,27 @@
 // dev/harness2/cli.mjs: Command-line entrypoint for Paraclete-H² (validate, eval, evolve, harvest, promote).
 
 import { pathToFileURL } from 'node:url';
-import { PARACLETE_SURFACE, rolesForStage } from './surface.mjs';
+import { PARACLETE_SURFACE, rolesForStage, buildSkillScaffold, buildRoleScaffold } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
 import { runTier1Evaluation, runTier2CanaryEvaluation, selectBenchmarkTasks } from './substrate.mjs';
 import { selectLensForTrajectories } from './lenses.mjs';
 import { runWithinGenerationRecursion } from './recursion.mjs';
-import { synthesizeCrossLensCandidate } from './selection.mjs';
+import { CAPABILITY_CREDO, synthesizeCrossLensCandidate } from './selection.mjs';
 import { createLineageLibrary } from './library.mjs';
-import { evaluatePromotionReadiness, formatPromotionReport, applyPromotedCandidate } from './promote.mjs';
+import {
+  evaluatePromotionReadiness,
+  formatPromotionReport,
+  applyPromotedCandidate,
+  pushAndCreatePullRequest,
+} from './promote.mjs';
+import { DEFAULT_JUDGE_COMMITTEE, JUDGE_DIMENSIONS, parseCommitteeSpec } from './judge.mjs';
 import {
   harvestMissionTrajectories,
   loadMissionsFromInput,
   loadMissionsFromFirestore,
   saveHarvestedBenchmarkTasks,
   synthesizeBenchmarkCandidatesFromHarvest,
+  expandCurriculumForSaturatedRoles,
 } from './harvest.mjs';
 import {
   buildGcpLabPlan,
@@ -31,16 +38,22 @@ export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 Subcommands:
   surface                          Print the 8-component Paraclete mutable surface (c1..c8)
   validate [--stage stage1|stage2] Run structural, contract, and prompt budget validation
-  eval     [--stage stage1|stage2] [--role <role>] [--live] [--vertex] [--include-harvested] [--suite-path <path>]
+  eval     [--stage stage1|stage2] [--role <role>] [--live] [--vertex] [--judge-committee [models]] [--include-harvested] [--suite-path <path>]
                                    Run Tier-1 hermetic or live target benchmark evaluation
+  judge    [--stage stage1|stage2] [--role <role>] [--judge-committee [models]]
+                                   Score target harness rollouts with the Frontier Model Committee (gemini-4-argon + claude-opus-5-5)
   canary   [--agent <vm-name>] [--stage stage1|stage2] [--role <role>]
                                    Run Tier-2 canary evaluation with read-only smoke check
-  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--vertex] [--include-harvested]
-                                   Execute Loop A dual-lens evolutionary harness optimization
-  harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>]
+  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
+                                   Execute Loop A dual-lens evolutionary harness optimization (Capability-First Credo)
+  harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>] [--expand-curriculum]
                                    Filter and distill Loop B trajectories into Loop A benchmarks
-  promote  [--stage stage1|stage2] [--live] [--vertex] [--apply] [--branch <branch>]
-                                   Verify candidate readiness, optionally apply patches, and print promotion report
+  promote  [--stage stage1|stage2] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
+                                   Verify candidate readiness, optionally apply patches, push branch, and open PR
+  scaffold-skill --id <skill-id> [--role <role>] [--name <title>] [--command <cmd>]
+                                   Generate a compliant skill package scaffold (skill.json, SKILL.md, <cmd>.mjs)
+  scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
+                                   Generate a compliant specialist role package scaffold (role.json, README.md, prompts/, responsibilities.json)
   lab-plan [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
                                    Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
   lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--dry-run]
@@ -218,24 +231,38 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     return res;
   }
 
-  if (subcommand === 'eval') {
+  if (subcommand === 'eval' || subcommand === 'judge') {
     const tasks = selectBenchmarkTasks({
       stage,
       role: flags.role,
       includeHarvested: Boolean(flags['include-harvested']),
       suitePath: flags['suite-path'],
     });
-    const evalRes = flags.live
+    const useFrontierJudge = subcommand === 'judge' || Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
+    const judgeCommittee =
+      typeof flags['judge-committee'] === 'string'
+        ? parseCommitteeSpec(flags['judge-committee'])
+        : DEFAULT_JUDGE_COMMITTEE;
+    const isLive = subcommand === 'judge' || Boolean(flags.live) || useFrontierJudge;
+    const evalRes = isLive
       ? await evaluateLiveTarget({
           stage,
           role: flags.role,
           tasks,
+          useFrontierJudge,
+          judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+          judgeOptions: deps.judgeOptions,
           gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
           gatewayToken: flags['gateway-token'] || deps.gatewayToken,
           deps,
         })
       : await runTier1Evaluation({ stage, role: flags.role, tasks, deps });
-    return { ok: true, ...evalRes };
+    return {
+      ok: true,
+      credo: CAPABILITY_CREDO.name,
+      ...(useFrontierJudge ? { committee: judgeCommittee, dimensions: JUDGE_DIMENSIONS } : {}),
+      ...evalRes,
+    };
   }
 
   if (subcommand === 'canary') {
@@ -252,6 +279,11 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   if (subcommand === 'evolve') {
     const isLive = Boolean(flags.live);
     const useVertex = Boolean(flags.vertex);
+    const useFrontierJudge = Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
+    const judgeCommittee =
+      typeof flags['judge-committee'] === 'string'
+        ? parseCommitteeSpec(flags['judge-committee'])
+        : DEFAULT_JUDGE_COMMITTEE;
     const tasks = selectBenchmarkTasks({
       stage,
       role: flags.role,
@@ -266,6 +298,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             tasks,
             touchedPaths: cand?.touchedPaths || [],
             runTaskRollout: cand?.runTaskRollout,
+            useFrontierJudge,
+            judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+            judgeOptions: deps.judgeOptions,
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
             deps,
@@ -283,6 +318,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             useWorktree: true,
             useVertex,
             vertexGenerate: deps.vertexGenerate,
+            useFrontierJudge,
+            judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+            judgeOptions: deps.judgeOptions,
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
           })
@@ -310,6 +348,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
                 ? async (task, substrateCtx) =>
                     runInProcessBrainRollout(task, substrateCtx, {
                       configSnapshot: mergedSnapshots.get(task.role || 'paraclete-h2'),
+                      useFrontierJudge,
+                      judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+                      judgeOptions: deps.judgeOptions,
                       gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
                       gatewayToken: flags['gateway-token'] || deps.gatewayToken,
                     })
@@ -340,7 +381,22 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           }
         : undefined,
     });
-    return { ok: true, ...res };
+    let curriculumExpansion = null;
+    if (flags['expand-curriculum']) {
+      curriculumExpansion = expandCurriculumForSaturatedRoles(
+        { summary: res.winner?.scores },
+        {
+          persist: Boolean(flags.persist),
+          suitePath: flags['suite-path'],
+        },
+      );
+    }
+    return {
+      ok: true,
+      credo: CAPABILITY_CREDO.name,
+      ...(curriculumExpansion ? { curriculumExpansion } : {}),
+      ...res,
+    };
   }
 
   if (subcommand === 'harvest') {
@@ -363,6 +419,15 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       role: flags.role || null,
     });
     const tasks = synthesizeBenchmarkCandidatesFromHarvest(harvested.accepted);
+    let curriculumExpansion = null;
+    if (flags['expand-curriculum']) {
+      const baseEval = await runTier1Evaluation({ stage, role: flags.role, deps });
+      curriculumExpansion = expandCurriculumForSaturatedRoles(baseEval, {
+        persist: Boolean(flags.persist || flags['suite-path']),
+        suitePath: flags['suite-path'],
+      });
+      tasks.push(...curriculumExpansion.synthesizedTasks);
+    }
     let persistence = null;
     if (flags.persist || flags['suite-path']) {
       persistence = saveHarvestedBenchmarkTasks(tasks, {
@@ -370,15 +435,49 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         fs: deps.fs,
       });
     }
-    return { ok: true, harvested, synthesizedTasks: tasks, persistence };
+    return {
+      ok: true,
+      harvested,
+      synthesizedTasks: tasks,
+      ...(curriculumExpansion ? { curriculumExpansion } : {}),
+      persistence,
+    };
+  }
+
+  if (subcommand === 'scaffold-skill') {
+    const scaffold = buildSkillScaffold({
+      skillId: flags.id || 'custom-skill',
+      role: flags.role || null,
+      name: flags.name,
+      whenToUse: flags['when-to-use'],
+      commandName: flags.command,
+    });
+    return { ok: true, scaffold };
+  }
+
+  if (subcommand === 'scaffold-role') {
+    const scaffold = buildRoleScaffold({
+      roleId: flags.id || 'specialist-role',
+      title: flags.title,
+      summary: flags.summary,
+    });
+    return { ok: true, scaffold };
   }
 
   if (subcommand === 'promote') {
+    const useFrontierJudge = Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
+    const judgeCommittee =
+      typeof flags['judge-committee'] === 'string'
+        ? parseCommitteeSpec(flags['judge-committee'])
+        : DEFAULT_JUDGE_COMMITTEE;
     if (flags.live) {
       const baselineRes = await evaluateLiveTarget({
         stage,
         role: flags.role,
         repoRoot: deps.repoRoot,
+        useFrontierJudge,
+        judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+        judgeOptions: deps.judgeOptions,
         deps,
       });
       const evoRes = await runCli(
@@ -392,6 +491,14 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           String(flags.recursion || 2),
           '--live',
           ...(flags.vertex ? ['--vertex'] : []),
+          ...(useFrontierJudge
+            ? [
+                '--judge-committee',
+                typeof flags['judge-committee'] === 'string'
+                  ? flags['judge-committee']
+                  : DEFAULT_JUDGE_COMMITTEE.join(','),
+              ]
+            : []),
           ...(flags.role ? ['--role', flags.role] : []),
         ],
         deps,
@@ -414,10 +521,25 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         });
         readiness.application = application;
       }
+      let pullRequest = null;
+      if (flags['push-pr']) {
+        pullRequest = pushAndCreatePullRequest({
+          candidate: evoRes.winner,
+          readiness,
+          application,
+          repoRoot: deps.repoRoot || process.cwd(),
+          branch: typeof flags.branch === 'string' ? flags.branch : null,
+          dryRun: Boolean(flags['dry-run']),
+          execGit: deps.execGit,
+          execGh: deps.execGh,
+        });
+        readiness.pullRequest = pullRequest;
+      }
       return {
         ok: readiness.ready && (!application || application.applied),
         readiness,
         application,
+        pullRequest,
         report: formatPromotionReport(readiness),
       };
     }
@@ -447,10 +569,25 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       });
       readiness.application = application;
     }
+    let pullRequest = null;
+    if (flags['push-pr']) {
+      pullRequest = pushAndCreatePullRequest({
+        candidate,
+        readiness,
+        application,
+        repoRoot: deps.repoRoot || process.cwd(),
+        branch: typeof flags.branch === 'string' ? flags.branch : null,
+        dryRun: Boolean(flags['dry-run']),
+        execGit: deps.execGit,
+        execGh: deps.execGh,
+      });
+      readiness.pullRequest = pullRequest;
+    }
     return {
       ok: readiness.ready && (!application || application.applied),
       readiness,
       application,
+      pullRequest,
       report: formatPromotionReport(readiness),
     };
   }

@@ -1,0 +1,17 @@
+{
+  "id": "p-harness-closed-loop",
+  "name": "Run the unified Loop B + Loop A closed-loop harness cycle",
+  "description": "Execute the full autonomous Loop B and Loop A cycle on a GCP lab VM: harvest production and canary failures, expand the benchmark curriculum for saturated roles, diagnose four-lens bottlenecks with the Frontier Model Committee, evolve single-lens candidates under the Capability-First Credo, and promote winning branches as GitHub pull requests against the primary repository.",
+  "narrative": "1. Validate the candidate repository checkout with `harness-cycle --action validate --repo . --json`.\n2. Run Loop B failure harvesting and curriculum expansion with `harness-eval --action harvest --stage all --expand-curriculum --persist --json`.\n3. Evaluate baseline benchmark suites with the Frontier Model Committee via `harness-eval --action evaluate --stage all --trials 2 --live --judge-committee --include-harvested --json`.\n4. Diagnose four-lens bottlenecks across roles with `harness-cycle --action diagnose --stage all --trials 2 --live --judge-committee --json`.\n5. Run Loop A recursive evolution under the Capability-First Credo with `harness-cycle --action run --stage all --iterations 2 --candidates 2 --trials 2 --live --vertex --judge-committee --include-harvested --expand-curriculum --json`.\n6. Verify promotion gates and open a pull request against the primary repository with `harness-promote --action verify --repo . --stage all --trials 2 --live --vertex --judge-committee --apply --push-pr --json`.",
+  "intent_keywords": [
+    "closed loop",
+    "autonomous loop",
+    "loop a and b",
+    "frontier committee",
+    "capability credo",
+    "expand curriculum",
+    "continuous improvement"
+  ],
+  "status": "active",
+  "version": 1
+}

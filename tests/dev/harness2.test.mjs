@@ -13,6 +13,8 @@ import {
   classifySurfacePath,
   isContractKeyTunable,
   rolesForStage,
+  buildSkillScaffold,
+  buildRoleScaffold,
 } from '../../dev/harness2/surface.mjs';
 import {
   validateTouchedPaths,
@@ -37,16 +39,30 @@ import {
 } from '../../dev/harness2/lenses.mjs';
 import { runWithinGenerationRecursion } from '../../dev/harness2/recursion.mjs';
 import {
+  CAPABILITY_CREDO,
   isNonRegression,
+  compareCapabilityFirst,
+  isBetterUnderCapabilityCredo,
   dominates,
   computeParetoFrontier,
   synthesizeCrossLensCandidate,
 } from '../../dev/harness2/selection.mjs';
+import {
+  DEFAULT_JUDGE_COMMITTEE,
+  JUDGE_DIMENSIONS,
+  parseCommitteeSpec,
+  registerJudgeAdapter,
+  buildJudgePacket,
+  combineHardGateWithCommitteeScore,
+  evaluateWithFrontierCommittee,
+  judgePairwiseWithCommittee,
+} from '../../dev/harness2/judge.mjs';
 import { createLineageLibrary } from '../../dev/harness2/library.mjs';
 import {
   evaluatePromotionReadiness,
   formatPromotionReport,
   applyPromotedCandidate,
+  pushAndCreatePullRequest,
 } from '../../dev/harness2/promote.mjs';
 import {
   harvestMissionTrajectories,
@@ -55,6 +71,7 @@ import {
   saveHarvestedBenchmarkTasks,
   loadPersistedBenchmarkTasks,
   synthesizeBenchmarkCandidatesFromHarvest,
+  expandCurriculumForSaturatedRoles,
 } from '../../dev/harness2/harvest.mjs';
 import { parseCliArgs, runCli, runEvolutionLoop } from '../../dev/harness2/cli.mjs';
 import {
@@ -893,6 +910,337 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     assert.equal(statusRes.vms[0].role, 'paraclete-h2');
     assert.equal(statusRes.vms[1].name, 'paraclete-h2-canary');
     assert.equal(statusRes.vms[1].role, 'software-engineer');
+  });
+
+  it('Frontier Model Committee Judge (gemini-4-argon + claude-opus-5-5) and Capability-First Credo', async () => {
+    // 1. Default committee includes gemini-4-argon and claude-opus-5-5, and supports custom adapters
+    assert.deepEqual(DEFAULT_JUDGE_COMMITTEE, [
+      'vertex-google/gemini-4-argon',
+      'vertex-anthropic/claude-opus-5-5',
+    ]);
+    assert.equal(Object.keys(JUDGE_DIMENSIONS).length, 5);
+    assert.deepEqual(
+      parseCommitteeSpec('vertex-google/gemini-4-argon, vertex-anthropic/claude-opus-5-5, custom-provider/frontier-x').map(
+        (m) => m.model,
+      ),
+      ['vertex-google/gemini-4-argon', 'vertex-anthropic/claude-opus-5-5', 'custom-provider/frontier-x'],
+    );
+
+    // 2. Hard-gate combination: broken deterministic fixture caps rubricScore at <= 0.35 even if LLM gives 1.0
+    assert.ok(
+      combineHardGateWithCommitteeScore({ committeeScore: 1.0, fixtureVerification: { passed: false } }).rubricScore <=
+        0.35,
+    );
+    assert.equal(
+      combineHardGateWithCommitteeScore({ committeeScore: 1.0, fixtureVerification: { passed: true } }).rubricScore,
+      1.0,
+    );
+
+    // 3. Build blind judge packet and run multi-model committee (Google + Anthropic + custom extensible adapter)
+    const ws = mkdtempSync(join(tmpdir(), 'paraclete-judge-ws-'));
+    try {
+      writeFileSync(join(ws, 'paginator.mjs'), 'export function paginate(items) { return items; }\n', 'utf8');
+      const packet = buildJudgePacket({
+        task: {
+          id: 'se-01-pagination-off-by-one',
+          role: 'software-engineer',
+          instruction: 'Diagnose and fix the off-by-one boundary defect in paginator.mjs and verify with node --test.',
+          expectedClauses: ['fix boundary defect', 'run node --test and cite passing output'],
+        },
+        envelope: {
+          status: 'completed',
+          checkpoint_spine: [
+            {
+              n: 1,
+              goal: 'fix boundary defect and run node --test',
+              status: 'done',
+              result_summary: 'Fixed boundary defect in paginator.mjs and ran node --test (0 failures).',
+            },
+          ],
+        },
+        tasks: [
+          {
+            id: 't1',
+            checkpoint_n: 1,
+            status: 'completed',
+            tool_records: [{ tool: 'shell', command: 'node --test', exitCode: 0, stdout: 'pass 2 / fail 0' }],
+          },
+        ],
+        workspaceDir: ws,
+        fixtureVerification: { passed: true, summary: 'All paginator tests pass' },
+      });
+
+      assert.equal(packet.taskSpec.taskId, 'se-01-pagination-off-by-one');
+      assert.equal(Object.keys(packet.workspaceArtifacts).length, 1);
+
+      const seenRequests = [];
+      const mockFetch = async (url, init) => {
+        const body = JSON.parse(init.body);
+        seenRequests.push({ url, body });
+        if (url.includes('gemini-4-argon')) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                candidates: [
+                  {
+                    content: {
+                      parts: [
+                        {
+                          text: JSON.stringify({
+                            clauseScore: 0.96,
+                            craftScore: 0.92,
+                            groundingScore: 0.95,
+                            rigorScore: 0.90,
+                            clarityScore: 0.94,
+                            passed: true,
+                            diagnosticLensHint: 'DOM',
+                            failureReasons: [],
+                            improvementPrescription: 'Keep test citation concise',
+                          }),
+                        },
+                      ],
+                    },
+                  },
+                ],
+              }),
+          };
+        }
+        if (url.includes('claude-opus-5-5')) {
+          // Verify claude-opus-5-5 omits temperature per contracts.json / anthropic-step.mjs
+          assert.equal('temperature' in body, false);
+          return {
+            ok: true,
+            status: 200,
+            text: async () =>
+              JSON.stringify({
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      clauseScore: 0.92,
+                      craftScore: 0.88,
+                      groundingScore: 0.91,
+                      rigorScore: 0.86,
+                      clarityScore: 0.90,
+                      passed: true,
+                      diagnosticLensHint: 'DOM',
+                      failureReasons: [],
+                      improvementPrescription: 'Add edge-case assertion for empty array',
+                    }),
+                  },
+                ],
+              }),
+          };
+        }
+        throw new Error(`unexpected URL: ${url}`);
+      };
+
+      // Also test extensibility via registerJudgeAdapter
+      registerJudgeAdapter('ext-frontier', async ({ member }) => ({
+        clauseScore: 0.94,
+        craftScore: 0.90,
+        groundingScore: 0.93,
+        rigorScore: 0.88,
+        clarityScore: 0.92,
+        passed: true,
+        diagnosticLensHint: 'DOM',
+        failureReasons: [],
+        improvementPrescription: `Verified by ${member.model}`,
+      }));
+
+      const committeeCritique = await evaluateWithFrontierCommittee(packet, {
+        committee: [
+          'vertex-google/gemini-4-argon',
+          'vertex-anthropic/claude-opus-5-5',
+          'ext-frontier/model-next',
+        ],
+        projectId: 'paraclete-h2-lab',
+        getAccessToken: async () => 'fake-token',
+        fetch: mockFetch,
+      });
+
+      assert.equal(seenRequests.length, 2);
+      assert.equal(committeeCritique.committeeModels.length, 3);
+      assert.equal(committeeCritique.passed, true);
+      assert.ok(committeeCritique.committeeScore > 0.88 && committeeCritique.committeeScore <= 1.0);
+      assert.ok(committeeCritique.rubricScore > 0.9);
+      assert.equal(committeeCritique.diagnosticLensHint, 'DOM');
+      assert.ok(committeeCritique.improvementPrescription.includes('Keep test citation concise'));
+      assert.ok(committeeCritique.agreement.maxDisagreement < 0.06);
+
+      // Pairwise comparison across the committee
+      const pairwise = await judgePairwiseWithCommittee(
+        { task: { id: 'se-01-pagination-off-by-one' }, packetA: packet, packetB: packet },
+        {
+          committee: ['vertex-google/gemini-4-argon', 'vertex-anthropic/claude-opus-5-5'],
+          projectId: 'paraclete-h2-lab',
+          getAccessToken: async () => 'fake-token',
+          fetch: mockFetch,
+        },
+      );
+      assert.equal(pairwise.winner, 'TIE');
+    } finally {
+      rmSync(ws, { recursive: true, force: true });
+    }
+
+    // 4. Capability-First Credo: capability strictly overrides efficiency and scalar fitness
+    assert.equal(CAPABILITY_CREDO.priorityOrder[0], 'capability');
+    const highCapLowEff = {
+      id: 'high-cap',
+      scores: { capability: 0.95, reliability: 0.85, efficiency: 0.50, fitness: 0.80 },
+    };
+    const lowCapHighEff = {
+      id: 'low-cap-high-eff',
+      scores: { capability: 0.91, reliability: 0.95, efficiency: 0.99, fitness: 0.94 },
+    };
+    // Even though lowCapHighEff has higher fitness (0.94 vs 0.80) and efficiency (0.99 vs 0.50),
+    // highCapLowEff MUST win under Capability-First Credo!
+    assert.equal(compareCapabilityFirst(highCapLowEff, lowCapHighEff) < 0, true);
+    assert.equal(
+      isBetterUnderCapabilityCredo(highCapLowEff.scores, lowCapHighEff.scores),
+      true,
+    );
+    assert.equal(
+      isBetterUnderCapabilityCredo(lowCapHighEff.scores, highCapLowEff.scores),
+      false,
+    );
+
+    const orderedFrontier = computeParetoFrontier([lowCapHighEff, highCapLowEff]);
+    assert.equal(orderedFrontier[0].id, 'high-cap');
+
+    // 5. CLI `judge` subcommand and `evolve --live --judge-committee`
+    const cliJudge = await runCli(['judge', '--stage', 'stage1', '--role', 'paraclete-h2']);
+    assert.equal(cliJudge.ok, true);
+    assert.equal(cliJudge.credo, 'CAPABILITY_FIRST');
+    assert.deepEqual(cliJudge.committee, DEFAULT_JUDGE_COMMITTEE);
+    assert.ok(cliJudge.summary.capability > 0.85);
+  });
+
+  it('Autonomous Primary-Repo Loop: Skill/Role Scaffolding, Curriculum Expansion, and GitHub PR Creation', async () => {
+    // 1. Skill & Role Scaffolding + allowNewRoles surface classification
+    const skillScaffold = buildSkillScaffold({
+      skillId: 'log-correlation',
+      role: 'site-reliability-engineer',
+      name: 'Log Correlation',
+    });
+    assert.equal(skillScaffold.baseDir, 'roles/site-reliability-engineer/skills/log-correlation');
+    assert.ok(skillScaffold.filePatches['roles/site-reliability-engineer/skills/log-correlation/skill.json']);
+    assert.ok(skillScaffold.filePatches['roles/site-reliability-engineer/skills/log-correlation/SKILL.md']);
+    assert.ok(skillScaffold.filePatches['roles/site-reliability-engineer/skills/log-correlation/log-correlation-cli.mjs']);
+
+    const roleScaffold = buildRoleScaffold({
+      roleId: 'finops-analyst',
+      title: 'FinOps Analyst',
+    });
+    assert.equal(roleScaffold.roleDir, 'roles/finops-analyst');
+    assert.ok(roleScaffold.filePatches['roles/finops-analyst/role.json']);
+    assert.ok(roleScaffold.filePatches['roles/finops-analyst/README.md']);
+    assert.ok(roleScaffold.filePatches['roles/finops-analyst/prompts/cortex.md']);
+
+    // Verify allowNewRoles allows scaffolding a brand-new role directory
+    assert.equal(
+      validateTouchedPaths(['roles/finops-analyst/role.json'], { stage: 'stage1', allowNewRoles: false }).ok,
+      false,
+    );
+    assert.equal(
+      validateTouchedPaths(['roles/finops-analyst/role.json', 'roles/finops-analyst/README.md'], {
+        stage: 'stage1',
+        allowNewRoles: true,
+      }).ok,
+      true,
+    );
+    assert.equal(
+      classifySurfacePath('roles/finops-analyst/README.md', { stage: 'stage2', allowNewRoles: true }).allowed,
+      true,
+    );
+
+    // 2. Progressive Curriculum Expansion for saturated roles (S_cap >= 0.98)
+    const tmpDir = mkdtempSync(join(tmpdir(), 'paraclete-curriculum-'));
+    try {
+      const suitePath = join(tmpDir, 'harvested-tasks.json');
+      const expansion = expandCurriculumForSaturatedRoles(
+        {
+          summary: {
+            byRole: {
+              'software-engineer': { capability: 0.99, reliability: 1.0, efficiency: 0.85 },
+              'data-analyst': { capability: 0.85, reliability: 0.9, efficiency: 0.8 },
+            },
+          },
+        },
+        { persist: true, suitePath },
+      );
+      assert.deepEqual(expansion.saturatedRoles, ['software-engineer']);
+      assert.equal(expansion.synthesizedTasks.length, 1);
+      assert.equal(expansion.synthesizedTasks[0].role, 'software-engineer');
+      assert.equal(expansion.persistence.count, 1);
+
+      // Re-running with same tier does not duplicate the task
+      const secondExpansion = expandCurriculumForSaturatedRoles(
+        {
+          summary: {
+            byRole: {
+              'software-engineer': { capability: 0.99, reliability: 1.0, efficiency: 0.85 },
+            },
+          },
+        },
+        { persist: true, suitePath },
+      );
+      assert.equal(secondExpansion.synthesizedTasks.length, 0);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+
+    // 3. Automated GitHub Branch Push & PR Creation (dryRun + injected execGit / execGh)
+    const readiness = evaluatePromotionReadiness({
+      candidate: {
+        id: 'gen3-winner',
+        lens: 'DOM',
+        stage: 'stage2',
+        touchedPaths: ['roles/software-engineer/prompts/cortex.md'],
+        scores: { capability: 0.96, reliability: 0.95, efficiency: 0.84, fitness: 0.935 },
+      },
+      baselineScores: { capability: 0.90, reliability: 0.92, efficiency: 0.80, fitness: 0.888 },
+    });
+    assert.equal(readiness.ready, true);
+
+    const gitCalls = [];
+    const ghCalls = [];
+    const prRes = pushAndCreatePullRequest({
+      candidate: {
+        id: 'gen3-winner',
+        lens: 'DOM',
+        stage: 'stage2',
+        touchedPaths: ['roles/software-engineer/prompts/cortex.md'],
+        scores: { capability: 0.96, reliability: 0.95, efficiency: 0.84, fitness: 0.935 },
+      },
+      readiness,
+      branch: 'h2/promote-gen3-winner',
+      execGit: (args) => {
+        gitCalls.push(args);
+        if (args[0] === 'status') return ' M roles/software-engineer/prompts/cortex.md\n';
+        return 'ok';
+      },
+      execGh: (args) => {
+        ghCalls.push(args);
+        return 'https://github.com/org/paraclete/pull/42\n';
+      },
+    });
+    assert.equal(prRes.created, true);
+    assert.equal(prRes.prUrl, 'https://github.com/org/paraclete/pull/42');
+    assert.ok(gitCalls.some((c) => c[0] === 'commit'));
+    assert.ok(gitCalls.some((c) => c[0] === 'push'));
+    assert.equal(ghCalls.length, 1);
+
+    // 4. Verify CLI `scaffold-skill` and `scaffold-role`
+    const cliSkill = await runCli(['scaffold-skill', '--id', 'trace-analyzer', '--role', 'software-engineer']);
+    assert.equal(cliSkill.ok, true);
+    assert.equal(cliSkill.scaffold.baseDir, 'roles/software-engineer/skills/trace-analyzer');
+
+    const cliRole = await runCli(['scaffold-role', '--id', 'qa-lead', '--title', 'QA Lead']);
+    assert.equal(cliRole.ok, true);
+    assert.equal(cliRole.scaffold.roleDir, 'roles/qa-lead');
   });
 });
 

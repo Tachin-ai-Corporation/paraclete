@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface> [--repo <dir>] [--stage <stage1|stage2|all>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--library <path>] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface']);
+const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 const VALID_LENSES = new Set(['context', 'sub_agents', 'tools', 'scaffolding']);
 
@@ -16,11 +16,17 @@ function parseArgs(argv) {
     action: 'run',
     repo: process.cwd(),
     stage: 'stage1',
+    role: null,
+    id: null,
     iterations: 2,
     candidates: 2,
     trials: 2,
     lens: null,
     live: false,
+    vertex: false,
+    judgeCommittee: false,
+    includeHarvested: false,
+    expandCurriculum: false,
     library: null,
     out: null,
     json: false,
@@ -32,11 +38,17 @@ function parseArgs(argv) {
     else if (arg === '--action') opts.action = argv[++i] || '';
     else if (arg === '--repo') opts.repo = path.resolve(argv[++i] || '.');
     else if (arg === '--stage') opts.stage = argv[++i] || 'stage1';
+    else if (arg === '--role') opts.role = argv[++i] || null;
+    else if (arg === '--id') opts.id = argv[++i] || null;
     else if (arg === '--iterations') opts.iterations = Number(argv[++i] || 2);
     else if (arg === '--candidates') opts.candidates = Number(argv[++i] || 2);
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--lens') opts.lens = argv[++i] || null;
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--vertex') opts.vertex = true;
+    else if (arg === '--judge-committee') opts.judgeCommittee = true;
+    else if (arg === '--include-harvested') opts.includeHarvested = true;
+    else if (arg === '--expand-curriculum') opts.expandCurriculum = true;
     else if (arg === '--library') opts.library = path.resolve(argv[++i] || '');
     else if (arg === '--out') opts.out = path.resolve(argv[++i] || '');
     else if (arg === '--json') opts.json = true;
@@ -149,14 +161,38 @@ export async function main(argv, deps = {}) {
     return report.ok ? 0 : 1;
   }
 
+  if (opts.action === 'scaffold-skill') {
+    const scaffold = h2.surface.buildSkillScaffold({
+      skillId: opts.id || 'custom-skill',
+      role: opts.role || null,
+    });
+    const payload = { ok: true, action: 'scaffold-skill', scaffold };
+    writeOut(opts.out, payload);
+    emit(stdout, payload, opts.json, `Scaffolded skill ${scaffold.baseDir}`);
+    return 0;
+  }
+
+  if (opts.action === 'scaffold-role') {
+    const scaffold = h2.surface.buildRoleScaffold({
+      roleId: opts.id || opts.role || 'specialist-role',
+    });
+    const payload = { ok: true, action: 'scaffold-role', scaffold };
+    writeOut(opts.out, payload);
+    emit(stdout, payload, opts.json, `Scaffolded role ${scaffold.roleDir}`);
+    return 0;
+  }
+
   if (opts.action === 'diagnose') {
     const evalResult = opts.live && h2.liveRunner?.evaluateLiveTarget
       ? await h2.liveRunner.evaluateLiveTarget({
           repoRoot: opts.repo,
           stage: normalizedStage,
+          role: opts.role || undefined,
+          useFrontierJudge: opts.judgeCommittee,
         })
       : await h2.substrate.runTier1Evaluation({
           stage: normalizedStage,
+          role: opts.role || undefined,
         });
     const routing = h2.lenses.selectLensForTrajectories(evalResult.trajectories);
     const proposalSpec = h2.lenses.buildMutationProposalSpec({
@@ -188,11 +224,17 @@ export async function main(argv, deps = {}) {
   if (opts.action === 'run') {
     const result = await h2.cli.runEvolutionLoop({
       stage: normalizedStage,
+      role: opts.role || undefined,
       generations: opts.iterations,
       recursionSteps: opts.candidates,
       archivePath: opts.library || undefined,
       proposeAndApply: opts.live && h2.liveRunner?.createLiveProposeAndApply
-        ? h2.liveRunner.createLiveProposeAndApply({ repoRoot: opts.repo, stage: normalizedStage })
+        ? h2.liveRunner.createLiveProposeAndApply({
+            repoRoot: opts.repo,
+            stage: normalizedStage,
+            useVertex: opts.vertex,
+            useFrontierJudge: opts.judgeCommittee,
+          })
         : undefined,
     });
     const payload = {

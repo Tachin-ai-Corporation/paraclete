@@ -49,7 +49,11 @@ export function validateTouchedPaths(touchedPaths = [], opts = {}) {
   const allowedSet = Array.isArray(opts.allowedComponents) ? new Set(opts.allowedComponents) : null;
 
   for (const relPath of touchedPaths) {
-    const info = classifySurfacePath(relPath, { stage: opts.stage });
+    const info = classifySurfacePath(relPath, {
+      stage: opts.stage,
+      allowedRoles: opts.allowedRoles,
+      allowNewRoles: opts.allowNewRoles,
+    });
     classifications.push({ path: relPath, ...info });
     if (!info.allowed) {
       violations.push(`${relPath}: ${info.reason}`);
@@ -215,6 +219,8 @@ export function validateCandidateWorkspace(opts = {}) {
 
   const pathCheck = validateTouchedPaths(opts.touchedPaths || [], {
     stage: opts.stage,
+    allowedRoles: opts.allowedRoles,
+    allowNewRoles: opts.allowNewRoles,
     allowedComponents: opts.allowedComponents,
   });
   if (!pathCheck.ok) violations.push(...pathCheck.violations);

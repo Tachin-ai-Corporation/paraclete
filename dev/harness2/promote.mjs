@@ -3,11 +3,19 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isNonRegression } from './selection.mjs';
+import { CAPABILITY_CREDO, isNonRegression } from './selection.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
 
 function defaultExecGit(args, cwd) {
   return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function defaultExecGh(args, cwd) {
+  return execFileSync('gh', args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -66,12 +74,20 @@ export function evaluatePromotionReadiness(opts = {}) {
     }
   }
 
+  const deltaCapability =
+    baselineScores && typeof candidate.scores?.capability === 'number' && typeof baselineScores.capability === 'number'
+      ? Number((candidate.scores.capability - baselineScores.capability).toFixed(4))
+      : 0;
+
   return {
     ready: reasons.length === 0,
     reasons,
+    credo: CAPABILITY_CREDO.name,
     summary: {
       candidateId: candidate.id || 'candidate',
       lens: candidate.lens || null,
+      credo: CAPABILITY_CREDO.name,
+      deltaCapability,
       touchedPaths: candidate.touchedPaths || [],
       tier1Scores: candidate.scores,
       tier2Scores: tier2Result?.summary || null,
@@ -185,9 +201,10 @@ export function formatPromotionReport(readiness) {
     `# Paraclete-H² Candidate Promotion Report (${s.candidateId || 'unknown'})`,
     '',
     `- **Status**: ${readiness.ready ? 'READY FOR PROMOTION' : 'BLOCKED'}`,
+    `- **Credo**: ${s.credo || CAPABILITY_CREDO.name} (capability overrides all other metrics; zero regression tolerated)`,
     `- **Lens**: ${s.lens || 'SYN'}`,
     `- **Touched Files**: ${(s.touchedPaths || []).length > 0 ? s.touchedPaths.map((p) => `\`${p}\``).join(', ') : 'none'}`,
-    `- **Tier-1 Scores**: capability=${t1.capability ?? 0}, reliability=${t1.reliability ?? 0}, efficiency=${t1.efficiency ?? 0}, fitness=${t1.fitness ?? 0}`,
+    `- **Tier-1 Scores**: capability=${t1.capability ?? 0} (delta=${s.deltaCapability >= 0 ? `+${s.deltaCapability}` : (s.deltaCapability ?? 0)}), reliability=${t1.reliability ?? 0}, efficiency=${t1.efficiency ?? 0}, fitness=${t1.fitness ?? 0}`,
   ];
 
   if (s.tier2Scores) {
@@ -209,6 +226,18 @@ export function formatPromotionReport(readiness) {
     );
   }
 
+  if (readiness.pullRequest) {
+    const pr = readiness.pullRequest;
+    lines.push(
+      '',
+      '## Primary Repo Pull Request',
+      `- **Pushed**: ${Boolean(pr.pushed)}`,
+      `- **Branch**: \`${pr.branch || 'none'}\``,
+      ...(pr.prUrl ? [`- **Pull Request URL**: ${pr.prUrl}`] : []),
+      ...(pr.reason ? [`- **Detail**: ${pr.reason}`] : []),
+    );
+  }
+
   if (!readiness.ready && Array.isArray(readiness.reasons) && readiness.reasons.length > 0) {
     lines.push('', '## Blocking Reasons');
     for (const r of readiness.reasons) {
@@ -217,4 +246,99 @@ export function formatPromotionReport(readiness) {
   }
 
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * Commit applied candidate changes on `branch`, push to `remote` (`origin`),
+ * and open a GitHub Pull Request (`gh pr create`) against `baseBranch` (`main`)
+ * with the full Frontier Model Committee + Capability-First Credo promotion report.
+ *
+ * @param {object} opts
+ * @param {object} opts.candidate
+ * @param {object} opts.readiness
+ * @param {object} [opts.application]
+ * @param {string} [opts.repoRoot]
+ * @param {string} [opts.branch]
+ * @param {string} [opts.baseBranch]
+ * @param {string} [opts.remote]
+ * @param {boolean} [opts.dryRun]
+ * @param {Function} [opts.execGit]
+ * @param {Function} [opts.execGh]
+ */
+export function pushAndCreatePullRequest(opts = {}) {
+  const {
+    candidate,
+    readiness,
+    application = null,
+    repoRoot = process.cwd(),
+    baseBranch = 'main',
+    remote = 'origin',
+    dryRun = false,
+    execGit = defaultExecGit,
+    execGh = defaultExecGh,
+  } = opts;
+
+  if (!readiness?.ready) {
+    return {
+      pushed: false,
+      branch: null,
+      prUrl: null,
+      reason: 'Candidate is not ready for promotion',
+    };
+  }
+
+  const branch = opts.branch || application?.branch || `h2/promote-${candidate?.id || 'winner'}`;
+  const touched = application?.appliedPaths?.length
+    ? application.appliedPaths
+    : candidate?.touchedPaths || Object.keys(candidate?.filePatches || {});
+
+  const title = `paraclete-h2(${candidate?.lens || 'SYN'}): promote ${candidate?.id || 'winner'} (ΔS_cap=${readiness.summary?.deltaCapability >= 0 ? `+${readiness.summary?.deltaCapability}` : (readiness.summary?.deltaCapability ?? 0)})`;
+  const body = formatPromotionReport(readiness);
+
+  if (dryRun) {
+    return {
+      pushed: false,
+      dryRun: true,
+      branch,
+      baseBranch,
+      remote,
+      title,
+      touchedPaths: touched,
+      prUrl: `https://github.com/example/paraclete/pull/dry-run-${branch}`,
+      reason: 'Dry-run mode: git push and gh pr create skipped',
+    };
+  }
+
+  try {
+    execGit(['checkout', '-B', branch], repoRoot);
+    if (touched.length > 0) {
+      execGit(['add', '--', ...touched], repoRoot);
+    }
+    execGit(['commit', '--allow-empty', '-m', title], repoRoot);
+    execGit(['push', '-u', remote, branch], repoRoot);
+    const prUrl = execGh(
+      ['pr', 'create', '--base', baseBranch, '--head', branch, '--title', title, '--body', body],
+      repoRoot,
+    );
+    return {
+      pushed: true,
+      created: true,
+      branch,
+      baseBranch,
+      remote,
+      title,
+      prUrl: String(prUrl || '').trim(),
+      reason: 'Committed, pushed branch, and opened GitHub Pull Request',
+    };
+  } catch (err) {
+    return {
+      pushed: false,
+      branch,
+      baseBranch,
+      remote,
+      title,
+      prUrl: null,
+      reason: `Failed to push or create PR: ${err.message}`,
+    };
+  }
 }

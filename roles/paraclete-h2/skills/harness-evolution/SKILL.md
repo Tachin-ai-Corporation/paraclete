@@ -6,8 +6,10 @@ Drive Loop A of the Paraclete-H2 architecture across the four harness lenses (`c
 
 - `harness-cycle --action surface [--repo <dir>] [--json]` — inspect the mutable harness surface and immutable spine boundaries in a target checkout.
 - `harness-cycle --action validate [--repo <dir>] [--json]` — validate candidate mutations against immutable spine paths, `config/contracts.json` bounds, and role package invariants.
-- `harness-cycle --action diagnose [--repo <dir>] [--stage <stage1|stage2|all>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--json]` — evaluate trajectories and rank four-lens bottlenecks (`context`, `sub_agents`, `tools`, `scaffolding`).
-- `harness-cycle --action run [--repo <dir>] [--stage <stage1|stage2|all>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--library <path>] [--out <path>] [--json]` — run the outer `diagnose -> propose -> validate -> evaluate -> select -> archive` loop.
+- `harness-cycle --action diagnose [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--judge-committee] [--json]` — evaluate trajectories with the Frontier Model Committee and rank four-lens bottlenecks (`context`, `sub_agents`, `tools`, `scaffolding`).
+- `harness-cycle --action run [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--library <path>] [--out <path>] [--json]` — run the outer `diagnose -> propose -> validate -> evaluate -> select -> archive` loop under the Capability-First Credo.
+- `harness-cycle --action scaffold-skill --id <skill-id> [--role <role-id>] [--json]` — generate a compliant new skill package (`skill.json`, `SKILL.md`, `<cmd>.mjs`).
+- `harness-cycle --action scaffold-role --id <role-id> [--json]` — generate a compliant new specialist role package (`role.json`, `README.md`, `prompts/*.md`, `responsibilities.json`).
 
 ## Workflow
 

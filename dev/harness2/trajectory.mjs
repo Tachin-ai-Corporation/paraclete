@@ -2,14 +2,16 @@
 
 /**
  * Default normalizing budgets for computing scalar Fitness(H) from a 3D score vector.
+ * Under the Capability-First Credo, selection and promotion rank candidates lexicographically
+ * by capability first (`compareCapabilityFirst`), and scalar `fitness` weights capability highest.
  */
 export const DEFAULT_SCORE_BUDGETS = Object.freeze({
   tokenBudget: 120_000,
   latencyBudgetMs: 180_000,
   weights: Object.freeze({
-    capability: 0.55,
-    reliability: 0.30,
-    efficiency: 0.15,
+    capability: 0.65,
+    reliability: 0.25,
+    efficiency: 0.10,
   }),
 });
 
@@ -48,7 +50,7 @@ function sumTokens(usageRecords = []) {
  * @param {object[]} [input.tasks]  Subcollection docs from `missions/<id>/tasks`
  * @param {object[]} [input.usageRecords]  Optional token usage records across organ turns
  * @param {object[]} [input.telemetry]  Optional parsed telemetry events
- * @param {object} [input.evalCritique]  Optional external rubric evaluation `{ passed, rubricScore, failureReasons }`
+ * @param {object} [input.evalCritique]  Optional external or Frontier Committee rubric evaluation
  * @returns {object} ParacleteTrajectory
  */
 export function extractTrajectory({
@@ -197,6 +199,10 @@ export function extractTrajectory({
  * Score a single `ParacleteTrajectory` across capability, reliability, and efficiency,
  * returning both the 3D vector and scalar fitness.
  *
+ * When a Frontier Model Committee `evalCritique` is attached, `rubricScore` reflects the
+ * 5-dimension committee consensus gated by deterministic fixture verification, and a failed
+ * hard fixture caps `capability` at `<= 0.35`.
+ *
  * @param {object} trajectory  Output of `extractTrajectory()`
  * @param {object} [budgets]   Normalizing budgets and weights
  * @returns {{ capability: number, reliability: number, efficiency: number, fitness: number, metrics: object }}
@@ -209,7 +215,10 @@ export function scoreTrajectory(trajectory, budgets = DEFAULT_SCORE_BUDGETS) {
   const cpCount = Math.max(1, Number(trajectory.checkpointCount) || 1);
   const cpCompletionRate = clamp01((Number(trajectory.verifiedCheckpointsCount) || 0) / cpCount);
   const rubricScore = clamp01(Number(trajectory.evalCritique?.rubricScore ?? (trajectory.missionCompleted ? 1 : 0)));
-  const capability = clamp01(0.7 * rubricScore + 0.3 * cpCompletionRate);
+  const rawCapability = clamp01(0.7 * rubricScore + 0.3 * cpCompletionRate);
+  const hardGateFailed =
+    trajectory.evalCritique?.hardGateApplied === true && trajectory.evalCritique?.hardGatePassed === false;
+  const capability = hardGateFailed ? Math.min(0.35, rawCapability) : rawCapability;
 
   const firstAttemptPassRate =
     trajectory.checkpointCount > 0
@@ -255,6 +264,13 @@ export function scoreTrajectory(trajectory, budgets = DEFAULT_SCORE_BUDGETS) {
     efficiency: Number(efficiency.toFixed(4)),
     fitness: Number(fitness.toFixed(4)),
     metrics: {
+      rubricScore: Number(rubricScore.toFixed(4)),
+      committeeScore:
+        typeof trajectory.evalCritique?.committeeScore === 'number'
+          ? Number(trajectory.evalCritique.committeeScore.toFixed(4))
+          : null,
+      committeeModels: trajectory.evalCritique?.committeeModels || null,
+      judgeDimensions: trajectory.evalCritique?.dimensions || null,
       cpCompletionRate: Number(cpCompletionRate.toFixed(4)),
       firstAttemptPassRate: Number(firstAttemptPassRate.toFixed(4)),
       toolErrorFreeRate: Number(toolErrorFreeRate.toFixed(4)),

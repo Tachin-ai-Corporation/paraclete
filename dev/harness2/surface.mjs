@@ -193,9 +193,10 @@ export const PARACLETE_SURFACE = Object.freeze({
   c7_role_manifests: Object.freeze({
     id: 'c7_role_manifests',
     name: 'role-manifests',
-    description: 'Role metadata, processes, and responsibilities in roles/<role>/',
+    description: 'Role metadata, README, processes, and responsibilities in roles/<role>/',
     patterns: [
       'roles/<role>/role.json',
+      'roles/<role>/README.md',
       'roles/<role>/processes/<id>.json',
       'roles/<role>/responsibilities.json',
     ],
@@ -280,11 +281,13 @@ export function classifySurfacePath(relPath, opts = {}) {
     const role = parts[1];
     if (!role) return { allowed: false, component: null, family: null, reason: 'missing role name' };
     const effectiveAllowedRoles =
-      Array.isArray(opts.allowedRoles) && opts.allowedRoles.length > 0
-        ? opts.allowedRoles
-        : opts.stage === 'stage1' || opts.stage === 'builder'
-          ? STAGE1_BUILDER_ROLES
-          : null;
+      opts.allowNewRoles === true
+        ? null
+        : Array.isArray(opts.allowedRoles) && opts.allowedRoles.length > 0
+          ? opts.allowedRoles
+          : opts.stage === 'stage1' || opts.stage === 'builder'
+            ? STAGE1_BUILDER_ROLES
+            : null;
     if (effectiveAllowedRoles && !effectiveAllowedRoles.includes(role)) {
       return {
         allowed: false,
@@ -321,11 +324,12 @@ export function classifySurfacePath(relPath, opts = {}) {
       return { allowed: false, component: null, family: null, role, reason: `unsupported file '${file}' in role skill directory` };
     }
 
-    // c7_role_manifests: processes, responsibilities, role.json
+    // c7_role_manifests: processes, responsibilities, role.json, README.md
     if (
       /^roles\/([a-z0-9-]+)\/processes\/([a-z0-9-]+)\.json$/.test(norm) ||
       /^roles\/([a-z0-9-]+)\/responsibilities\.json$/.test(norm) ||
-      /^roles\/([a-z0-9-]+)\/role\.json$/.test(norm)
+      /^roles\/([a-z0-9-]+)\/role\.json$/.test(norm) ||
+      /^roles\/([a-z0-9-]+)\/README\.md$/.test(norm)
     ) {
       return { allowed: true, component: 'c7_role_manifests', family: 'c7_role_manifests', role };
     }
@@ -370,4 +374,174 @@ export function rolesForStage(stage = 'stage1', opts = {}) {
     } catch { /* fall back to DEFAULT_ROLES */ }
   }
   return [...DEFAULT_ROLES];
+}
+
+/**
+ * Build a compliant file-patch map (`{ [relPath]: content }`) for a new or updated
+ * skill package (either shared in `skills/<skillId>/` or role-scoped in `roles/<role>/skills/<skillId>/`).
+ *
+ * @param {object} opts
+ * @param {string} opts.skillId       Kebab-case skill ID
+ * @param {string} [opts.role]        Optional role ID (omit for shared `skills/<skillId>`)
+ * @param {string} [opts.name]        Human-readable skill title
+ * @param {string} [opts.whenToUse]   Routing description (>= 20 chars)
+ * @param {string[]} [opts.organs]    Organs allowlist (default: `['prefrontal', 'motor', 'cerebellum']`)
+ * @param {string} [opts.commandName] Executable CLI command name (kebab-case)
+ * @param {string[]} [opts.steps]     Ordered procedure steps for `SKILL.md`
+ * @returns {{ baseDir: string, touchedPaths: string[], filePatches: Record<string, string> }}
+ */
+export function buildSkillScaffold(opts = {}) {
+  const skillId = String(opts.skillId || 'custom-skill').trim();
+  const role = opts.role ? String(opts.role).trim() : null;
+  const baseDir = role ? `roles/${role}/skills/${skillId}` : `skills/${skillId}`;
+  const name = opts.name || `Skill ${skillId}`;
+  const whenToUse =
+    opts.whenToUse && opts.whenToUse.trim().length >= 20
+      ? opts.whenToUse.trim()
+      : `Executing structured ${skillId} workflows and verifying outputs with deterministic read-back checks.`;
+  const organs =
+    Array.isArray(opts.organs) && opts.organs.length > 0
+      ? opts.organs.filter((o) => ORGANS_ALLOWLIST.includes(o))
+      : ['prefrontal', 'motor', 'cerebellum'];
+  const commandName = opts.commandName ? String(opts.commandName).trim() : `${skillId}-cli`;
+  const steps =
+    Array.isArray(opts.steps) && opts.steps.length > 0
+      ? opts.steps
+      : [
+          `Run \`${commandName} --action check --json\` to inspect current workspace state.`,
+          `Run \`${commandName} --action execute --json\` and verify the resulting output artifact.`,
+        ];
+
+  const skillJson = {
+    id: skillId,
+    name,
+    version: 1,
+    when_to_use: whenToUse,
+    organs,
+    commands: [commandName],
+  };
+
+  const skillMd = [
+    `# ${name}`,
+    '',
+    whenToUse,
+    '',
+    '## Commands',
+    '',
+    `- \`${commandName} --action <check|execute> [--input <path>] [--out <path>] [--json]\` — run ${name} operations with deterministic JSON output.`,
+    '',
+    '## Workflow',
+    '',
+    ...steps.map((s, idx) => `${idx + 1}. ${s}`),
+    '',
+  ].join('\n');
+
+  const cmdMjs = [
+    '#!/usr/bin/env node',
+    `// ${baseDir}/${commandName}.mjs: CLI helper for ${name}.`,
+    '',
+    "import { pathToFileURL } from 'node:url';",
+    '',
+    `export const USAGE = '${commandName} --action <check|execute> [--input <path>] [--out <path>] [--json]';`,
+    '',
+    'export async function main(argv = [], deps = {}) {',
+    '  const stdout = deps.stdout || process.stdout;',
+    '  if (argv.includes("--help") || argv.includes("-h")) {',
+    '    stdout.write(`Usage: ${USAGE}\\n`);',
+    '    return 0;',
+    '  }',
+    '  const payload = { ok: true, skill: ' + JSON.stringify(skillId) + ', command: ' + JSON.stringify(commandName) + ', argv };',
+    '  stdout.write(`${JSON.stringify(payload, null, 2)}\\n`);',
+    '  return 0;',
+    '}',
+    '',
+    'if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {',
+    '  main(process.argv.slice(2)).then((code) => { process.exitCode = code; });',
+    '}',
+    '',
+  ].join('\n');
+
+  const filePatches = {
+    [`${baseDir}/skill.json`]: `${JSON.stringify(skillJson, null, 2)}\n`,
+    [`${baseDir}/SKILL.md`]: skillMd,
+    [`${baseDir}/${commandName}.mjs`]: cmdMjs,
+  };
+
+  return {
+    baseDir,
+    touchedPaths: Object.keys(filePatches),
+    filePatches,
+  };
+}
+
+/**
+ * Build a compliant file-patch map (`{ [relPath]: content }`) for a complete new role package
+ * (`roles/<roleId>/role.json`, `README.md`, `prompts/*.md`, `processes/*.json`, `responsibilities.json`).
+ *
+ * @param {object} opts
+ * @param {string} opts.roleId
+ * @param {string} opts.title
+ * @param {string} opts.summary
+ * @param {string[]} [opts.skills]
+ * @param {string[]} [opts.gcpRoles]
+ * @param {Record<string, string>} [opts.prompts]
+ * @returns {{ roleDir: string, touchedPaths: string[], filePatches: Record<string, string> }}
+ */
+export function buildRoleScaffold(opts = {}) {
+  const roleId = String(opts.roleId || 'specialist-role').trim();
+  const title = opts.title || `Paraclete ${roleId}`;
+  const summary =
+    opts.summary ||
+    `Specialist Paraclete role (${title}) evolved by the Paraclete-H2 autonomous harness loop with domain verification and grounded execution.`;
+  const roleDir = `roles/${roleId}`;
+
+  const roleJson = {
+    id: roleId,
+    title,
+    summary,
+    version: 1,
+    workspace: false,
+    skills: Array.isArray(opts.skills) ? opts.skills : [],
+    gcp_roles: Array.isArray(opts.gcpRoles) ? opts.gcpRoles : ['roles/logging.viewer'],
+    setup: {
+      apt: [],
+      pip: [],
+      npm: [],
+    },
+  };
+
+  const readmeMd = [
+    `# roles/${roleId}/`,
+    '',
+    `${title} — ${summary}`,
+    '',
+  ].join('\n');
+
+  const defaultPrompts = {
+    cortex: `# ${title} — Cortex Overlay\n\nDecompose missions into verifiable domain checkpoints with explicit read-back artifacts.\n`,
+    prefrontal: `# ${title} — Prefrontal Overlay\n\nPlan concrete tool steps and verification probes before mutating state.\n`,
+    motor: `# ${title} — Motor Overlay\n\nExecute grounded commands, inspect real outputs, and record verified resource identifiers.\n`,
+    cerebellum: `# ${title} — Cerebellum Overlay\n\nVerify every checkpoint claim against tool read-back evidence before marking done.\n`,
+    'temporal-memory': `# ${title} — Temporal Memory Overlay\n\nRetain durable domain patterns and verified resource identifiers.\n`,
+    'temporal-research': `# ${title} — Temporal Research Overlay\n\nGather primary documentation and ground every synthesis claim in cited sources.\n`,
+    ...(opts.prompts || {}),
+  };
+
+  const filePatches = {
+    [`${roleDir}/role.json`]: `${JSON.stringify(roleJson, null, 2)}\n`,
+    [`${roleDir}/README.md`]: readmeMd,
+    [`${roleDir}/responsibilities.json`]: `${JSON.stringify({ version: 1, responsibilities: [] }, null, 2)}\n`,
+  };
+
+  for (const organ of ORGANS_ALLOWLIST) {
+    if (defaultPrompts[organ]) {
+      filePatches[`${roleDir}/prompts/${organ}.md`] = defaultPrompts[organ];
+    }
+  }
+
+  return {
+    roleDir,
+    touchedPaths: Object.keys(filePatches),
+    filePatches,
+  };
 }

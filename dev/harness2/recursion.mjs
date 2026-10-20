@@ -1,7 +1,7 @@
-// dev/harness2/recursion.mjs: Within-Generation Recursion Controller with regression revert and directional escalation.
+// dev/harness2/recursion.mjs: Within-Generation Recursion Controller with Capability-First Credo, regression revert, and directional escalation.
 
 import { buildMutationProposalSpec } from './lenses.mjs';
-import { isNonRegression } from './selection.mjs';
+import { isNonRegression, isBetterUnderCapabilityCredo } from './selection.mjs';
 
 /**
  * Run up to `maxSteps` within-generation recursive refinement steps for a single
@@ -12,8 +12,12 @@ import { isNonRegression } from './selection.mjs';
  * 2. Call `proposeAndApply(spec, parentState)` to generate a candidate state.
  * 3. Validate the candidate via `validateCandidate(candidateState)`. If invalid, revert immediately.
  * 4. Evaluate the candidate on the benchmark subset via `evaluateCandidate(candidateState)`.
- * 5. Compare against the current best state in this generation:
- *    - If non-regressing and strictly higher fitness, advance `currentBest` to `candidateState`.
+ * 5. Compare against the current best state in this generation under the Capability-First Credo:
+ *    - Capability can NEVER regress (`isNonRegression`).
+ *    - Any candidate that strictly improves `capability` (while respecting the reliability guard)
+ *      wins immediately, even if efficiency decreased.
+ *    - Only when `capability` is at least equal to `currentBest` do reliability/efficiency gains
+ *      advance `currentBest`.
  *    - Otherwise, revert to `currentBest` and append a reflection entry so step `r+1` escalates.
  *
  * @param {object} opts
@@ -55,6 +59,7 @@ export async function runWithinGenerationRecursion(opts = {}) {
         escalationMode: spec.escalationMode,
         hypothesis: candidate.hypothesis || `step-${step}`,
         accepted: false,
+        deltaCapability: null,
         deltaFitness: null,
         revertReason: `validation_failed: ${validation.violations.join('; ')}`,
       });
@@ -64,12 +69,17 @@ export async function runWithinGenerationRecursion(opts = {}) {
     const evalResult = await opts.evaluateCandidate(candidate);
     const candidateScores = evalResult.summary;
     const baseScores = currentBest.scores;
-    const deltaFitness = Number(((candidateScores.fitness ?? 0) - (baseScores.fitness ?? 0)).toFixed(4));
+    const deltaCapability = Number(
+      ((candidateScores.capability ?? 0) - (baseScores.capability ?? 0)).toFixed(4),
+    );
+    const deltaFitness = Number(
+      ((candidateScores.fitness ?? 0) - (baseScores.fitness ?? 0)).toFixed(4),
+    );
 
     const passesGuard = isNonRegression(candidateScores, baseScores);
-    const improvesFitness = deltaFitness > 0;
+    const improvesUnderCredo = isBetterUnderCapabilityCredo(candidateScores, baseScores);
 
-    if (passesGuard && improvesFitness) {
+    if (passesGuard && improvesUnderCredo) {
       currentBest = {
         ...candidate,
         scores: candidateScores,
@@ -81,6 +91,7 @@ export async function runWithinGenerationRecursion(opts = {}) {
         escalationMode: spec.escalationMode,
         hypothesis: candidate.hypothesis || `step-${step}`,
         accepted: true,
+        deltaCapability,
         deltaFitness,
         scores: candidateScores,
         revertReason: null,
@@ -91,13 +102,14 @@ export async function runWithinGenerationRecursion(opts = {}) {
       }
       const reason = !passesGuard
         ? 'regressed_capability_or_reliability'
-        : `non_improving_fitness (delta=${deltaFitness})`;
+        : `non_improving_capability_or_fitness (deltaCap=${deltaCapability}, deltaFit=${deltaFitness})`;
       history.push({
         step,
         lens,
         escalationMode: spec.escalationMode,
         hypothesis: candidate.hypothesis || `step-${step}`,
         accepted: false,
+        deltaCapability,
         deltaFitness,
         scores: candidateScores,
         revertReason: reason,
