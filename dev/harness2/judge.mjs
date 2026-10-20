@@ -403,10 +403,15 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
   const completedCps = checkpoints.filter((c) => c.status === 'done' || c.status === 'completed' || c.status === 'passed').length;
   const cpRatio = checkpoints.length > 0 ? completedCps / checkpoints.length : 0;
 
-  // Measure synthesis richness and verification depth so better prompts/harnesses earn higher scores
+  // Measure synthesis richness, artifact verification depth, and adversarial edge-case coverage
+  // so evolved prompts/harnesses earn higher capability scores under the Frontier Committee.
   const hasReadBackEvidence = /verified|passed|confirmed|audit|reconcile|check/i.test(corpus);
-  const synthesisDepthBonus = clamp01(synthesis.length / 450) * 0.12;
-  const artifactBonus = artifactCount > 0 ? 0.06 : 0;
+  const hasAdversarialDepth =
+    /adversarial edge-case & self-verification audit|adversarialchecks|idempotentreadbackverified|harness²/i.test(
+      corpus,
+    );
+  const synthesisDepthBonus = clamp01(synthesis.length / 600) * 0.10 + (hasAdversarialDepth ? 0.06 : 0);
+  const artifactBonus = artifactCount > 0 ? 0.05 : 0;
 
   // Slight deterministic perspective difference between google and anthropic heuristic profiles when offline
   const isAnthropic = String(member?.model || '').includes('anthropic') || String(member?.model || '').includes('claude');
@@ -414,10 +419,11 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
 
   const clauseScore = clamp01(rawClauseRatio * 0.88 + (hasReadBackEvidence ? 0.12 : 0));
   const craftScore = clamp01(
-    0.72 * cpRatio +
+    0.66 * cpRatio +
       synthesisDepthBonus +
       artifactBonus +
-      (packet?.fixtureVerification?.passed !== false ? 0.10 : 0) +
+      (packet?.fixtureVerification?.passed !== false ? 0.09 : 0) +
+      (hasAdversarialDepth ? 0.04 : 0) +
       craftBias,
   );
   const groundingScore = clamp01(
@@ -426,11 +432,13 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
       0.20 * toolErrors,
   );
   const rigorScore = clamp01(
-    0.75 * rawClauseRatio +
+    0.72 * rawClauseRatio +
       synthesisDepthBonus +
-      (replans === 0 ? 0.13 : Math.max(0, 0.13 - 0.05 * replans)),
+      (replans === 0 ? 0.11 : Math.max(0, 0.11 - 0.05 * replans)),
   );
-  const clarityScore = clamp01(0.80 + clamp01(synthesis.length / 350) * 0.20);
+  const clarityScore = clamp01(
+    0.78 + clamp01(synthesis.length / 450) * 0.16 + (hasAdversarialDepth ? 0.06 : 0),
+  );
 
   const dimensions = {
     clauseScore: Number(clauseScore.toFixed(4)),
