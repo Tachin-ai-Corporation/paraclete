@@ -608,6 +608,11 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
   const overlayRel = 'roles/paraclete-h2/prompts/cortex.md';
   const overlayAbs = path.join(targetRoot, overlayRel);
   if (fs.existsSync(overlayAbs)) {
+    const optionalClauses = [
+      '- Verify Pareto dominance on capability, reliability, and efficiency before promotion.',
+      '- Archive candidate lineage and reject stale platform versions during harvesting.',
+      '- Keep all assembled organ prompts within the 24,000-character budget.',
+    ];
     const conciseLines = [
       '# Role Overlay: Paraclete-H² (`cortex`)',
       '',
@@ -615,12 +620,9 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
       'Attribute every failure to a single diagnostic lens before mutating:',
       '- `INV` (`c1_contracts`, `c2_base_prompts`, `c3_shared_skills`, `c4_generic_role`): mechanical loop, tool, or token budget issues.',
       '- `DOM` (`c5_role_overlays`, `c6_role_skills`, `c7_role_processes`, `c8_role_memory`): role rubric or domain workflow gaps.',
-      `Never mutate immutable spine modules. Enforce Tier-1 validation before rollout (level ${level}).`,
+      ...optionalClauses.slice(0, Math.max(0, 4 - Math.min(4, level))),
+      'Never mutate immutable spine modules. Enforce Tier-1 validation before rollout.',
     ];
-    const pad = Math.max(0, (4 - Math.min(4, level)) * 40);
-    if (pad > 0) {
-      conciseLines.push(`<!-- pad:${'x'.repeat(pad)} -->`);
-    }
     fs.writeFileSync(overlayAbs, `${conciseLines.join('\n')}\n`, 'utf8');
     return { touchedPaths: [overlayRel] };
   }

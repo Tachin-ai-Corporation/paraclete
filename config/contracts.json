@@ -2,7 +2,6 @@
   "_comment": "Every value used in more than one place. Read by config/contracts.mjs, which validates it at service start. Keys starting with _ are documentation. Instance values (project, role, bucket, paths) are not here: they are written at install to /etc/paraclete/instance.json (config/instance.mjs). Settings a dashboard admin changes (effort, Claude on or off) live in Firestore config/settings.",
   "_bounds": "A bound exists to stop an unbounded blowup, not to save money: every budget is sized for the work to succeed, then bounded, and every cap announces itself so an organ can re-derive instead of assuming it saw everything. Two ceilings are storage limits, enforced by config/contracts.mjs: brain.context_token_budget <= 125000, because accumulated context persists on the envelope (a Firestore document, 1 MiB) at about 4 characters per token; and compaction.working_budget_tokens <= brain.context_token_budget. Nothing here may become unbounded.",
   "version": 1,
-
   "vertex": {
     "location": "global",
     "anthropic_location": "us-east5",
@@ -37,12 +36,13 @@
     "anthropic_cache_message_breakpoints": true,
     "anthropic_session_affinity": true,
     "_anthropic_temperature_comment": "The Claude models a request may send a temperature to (model ids without the provider). The newer Opus models reject any sampling setting, and leaving it out is valid for every model, so a model not listed gets none.",
-    "anthropic_temperature_models": ["claude-opus-4-6"],
-    "gemini_explicit_cache": false,
+    "anthropic_temperature_models": [
+      "claude-opus-4-6"
+    ],
+    "gemini_explicit_cache": true,
     "gemini_explicit_cache_ttl_seconds": 3600,
     "gemini_tool_image_placement": "function-response"
   },
-
   "gateway": {
     "port": 18789,
     "bind": "127.0.0.1",
@@ -58,12 +58,10 @@
     "retry_max": 3,
     "retry_base_delay_ms": 2000
   },
-
   "organs": {
     "_comment": "Tool-call budget for one organ turn in the gateway. Distinct from brain.max_iterations, the mission's decide-loop cap. A full coding task (read, edit, serve and check, diff, commit) needs more than 12 steps.",
-    "max_steps": 25
+    "max_steps": 22
   },
-
   "tools": {
     "_comment": "A tool result is context: bound it, announce the bound, and never let a binary file reach a model.",
     "output_chars": 80000,
@@ -88,7 +86,6 @@
       "terminal_arg_chars": 4000
     }
   },
-
   "brain": {
     "_comment": "The brain service's mission loop.",
     "poll_interval_ms": 3000,
@@ -96,9 +93,11 @@
     "gateway_timeout_ms": 300000,
     "claim_stale_ms": 600000,
     "context_token_budget": 125000,
-    "result_preview_chars": 3000,
+    "result_preview_chars": 2550,
     "context_slice_chars": 2000,
-    "respond_reads": ["recent_work"],
+    "respond_reads": [
+      "recent_work"
+    ],
     "_verify_comment": "The verifier's first look uses compact result packets (every tool result, not the organ's prose); full motor output is kept for the one re-verification that a missing-evidence failure or a known-truncated view triggers. verify_prompt_max_chars bounds the whole prompt, which keeps Gemini clear of malformed tool calls on very large prompts.",
     "ctx_verify_input": 60000,
     "ctx_verify_prior": 16000,
@@ -115,7 +114,6 @@
     "_transition_guard_comment": "Every envelope status change goes through agent/work/work-transitions.mjs. enforce refuses an illegal change; observe only logs it.",
     "transition_guard": "enforce"
   },
-
   "archival": {
     "_comment": "The periodic sweep (agent/work/archival.mjs). A timed wait is never cancelled before its resume time; waiting_timeout_hours applies only to waits without one, and must exceed brain.wait_max_minutes.",
     "interval_ms": 3600000,
@@ -125,7 +123,6 @@
     "waiting_timeout_hours": 48,
     "active_timeout_hours": 12
   },
-
   "ears": {
     "firestore_poll_ms": 3000,
     "gchat_poll_ms": 5000,
@@ -142,7 +139,6 @@
       "temperature": 0
     }
   },
-
   "mouth": {
     "poll_ms": 5000,
     "llm_enabled": true,
@@ -151,21 +147,24 @@
     "temperature": 0.1,
     "status_updates": {
       "enabled": true,
-      "schedule_ms": [10000, 300000, 600000, 1800000, 7200000]
+      "schedule_ms": [
+        10000,
+        300000,
+        600000,
+        1800000,
+        7200000
+      ]
     }
   },
-
   "chat": {
     "reply_in_thread": true
   },
-
   "delivery": {
     "_comment": "Mouth retry discipline: exponential backoff between failed attempts, then delivery_status 'failed' after max_attempts.",
     "max_attempts": 8,
     "retry_backoff_base_seconds": 5,
     "retry_backoff_max_seconds": 600
   },
-
   "conversation": {
     "max_turns": 12,
     "budget_chars": 20000,
@@ -176,7 +175,6 @@
     "summary_max_chars": 1200,
     "turn_retention_days": 14
   },
-
   "compaction": {
     "checkpoint_digest_chars": 12000,
     "trigger_pct": 0.7,
@@ -187,15 +185,15 @@
     "digest_max_chars": 16000,
     "learnings_max_entries": 5
   },
-
   "session": {
     "enabled": true,
     "idle_ttl_minutes": 30,
     "max_sessions": 16,
     "miss_circuit_breaker": 3,
-    "excluded_organs": ["cerebellum"]
+    "excluded_organs": [
+      "cerebellum"
+    ]
   },
-
   "organ_context": {
     "packet_summary_chars": 4000,
     "list_summary_top_k": 8,
@@ -205,26 +203,38 @@
     "hydrate_max_refs_per_mission": 16,
     "blackboard_max_chars": 40000
   },
-
   "projects": {
     "context_max_tokens": 2000,
     "promotion_auto": false,
     "archive_completed_after_days": 30
   },
-
   "utility": {
     "_comment": "The fast model the services call directly for small jobs.",
     "model": "gemini-3.8-flash",
     "location": "global",
-    "max_tokens": { "summarize": 1024, "title": 60, "schema": 8192, "notification": 2048 },
-    "temperature": { "summarize": 0.3, "title": 0.3, "schema": 0.1, "notification": 0.2 },
-    "context_budgets": { "agent_step": 24000, "cortex_step": 12000, "dispatch_success": 12000, "dispatch_failure": 12000 },
+    "max_tokens": {
+      "summarize": 1024,
+      "title": 60,
+      "schema": 8192,
+      "notification": 2048
+    },
+    "temperature": {
+      "summarize": 0.3,
+      "title": 0.3,
+      "schema": 0.1,
+      "notification": 0.2
+    },
+    "context_budgets": {
+      "agent_step": 24000,
+      "cortex_step": 12000,
+      "dispatch_success": 12000,
+      "dispatch_failure": 12000
+    },
     "timeout_ms": 30000,
     "enforce_schema_timeout_ms": 15000,
     "enforce_schema_max_attempts": 2,
     "disable_thinking": true
   },
-
   "memory": {
     "working_memory_target_chars": 2000,
     "working_memory_hard_cap_chars": 8000,
@@ -234,14 +244,12 @@
       "recall_limit": 40
     }
   },
-
   "git": {
     "_comment": "The git artifact store: repositories as bundles in the instance's bucket, under prefix.",
     "prefix": "git/",
     "default_branch": "main",
     "max_push_retries": 5
   },
-
   "files": {
     "_comment": "Files going out to people and coming in from them, in the instance's bucket under prefix (out/ and in/). max_mb caps a file the agent hands back; max_upload_mb caps one a person uploads from the dashboard (straight to the bucket through a signed URL, valid signed_url_minutes); fetch_max_mb caps what file-get downloads from a link. tool_timeout_seconds bounds one conversion (LibreOffice, pandoc, Chromium); it stays under the shell tool's tools.timeout_ms, which would otherwise stop the command first.",
     "prefix": "files/",
@@ -252,21 +260,18 @@
     "tool_timeout_seconds": 110,
     "inbox_retention_days": 30
   },
-
   "responsibility_store": {
     "_comment": "The agent's own responsibilities, merged over the role packages' installed defaults every refresh_ms. min_interval_minutes is the floor between two runs of a schedule the agent writes; max_own caps the responsibilities it owns outright.",
     "refresh_ms": 60000,
     "min_interval_minutes": 15,
     "max_own": 25
   },
-
   "control": {
     "_comment": "The control service (agent/services/control): how often it polls for dashboard commands, how long it waits for a restarted gateway to be ready, and the longest an upgrade may run.",
     "poll_ms": 5000,
     "gateway_ready_timeout_ms": 30000,
     "upgrade_max_seconds": 1800
   },
-
   "dashboard": {
     "_comment": "The dashboard on Cloud Run, built and deployed the same way by install/install.sh and dev/deploy.mjs (both through install/lib/dashboard.mjs) and by the dashboard's own upgrade (dashboard/lib/server/upgrade.mjs). service: one CPU, 1 GiB and at most three instances, scaling to zero; ingress all, because IAP stands in front of the URL itself. image_name is the image inside the instance's Artifact Registry repository, tagged with the commit it was built from. build_config_path is where each commit keeps the Cloud Build steps that build it; build_timeout_seconds bounds one build (the build config names no timeout of its own). release_check_ttl_seconds is how long the dashboard keeps GitHub's list of releases before asking again: GitHub answers 60 unauthenticated requests an hour per address.",
     "service": {
@@ -280,12 +285,10 @@
     "build_timeout_seconds": 1200,
     "release_check_ttl_seconds": 3600
   },
-
   "effort": {
     "_comment": "The dashboard's effort setting, stored in Firestore config/settings. One of low, medium, high, max.",
     "default": "medium"
   },
-
   "versioning": {
     "_comment": "The commit and release version format. A release is a tag in this format (agent/release/versions.mjs parses and orders them; a test keeps it equal to canonical_regex). The control service's upgrade and the installer check refs against canonical_regex.",
     "commit_format": "v{YYYY}.{MM}.{DD}.{index}.{subindex}: description",
