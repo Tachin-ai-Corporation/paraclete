@@ -1,8 +1,13 @@
 // dev/harness2/harvest.mjs: Version-aware Loop B → Loop A trajectory harvester.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { COLLECTIONS } from '../../agent/storage/collections.mjs';
+import { createClient } from '../../agent/storage/firestore.mjs';
 import { extractTrajectory, scoreTrajectory } from './trajectory.mjs';
+
+export const DEFAULT_HARVEST_SUITE_PATH = path.join(os.tmpdir(), 'paraclete-h2', 'harvested-suite.json');
 
 function readJsonSafe(filePath, readFile) {
   try {
@@ -18,6 +23,7 @@ function normalizeParsedPayload(parsed) {
   if (Array.isArray(parsed.trajectories)) return parsed.trajectories;
   if (Array.isArray(parsed.missions)) return parsed.missions;
   if (Array.isArray(parsed.documents)) return parsed.documents;
+  if (Array.isArray(parsed.tasks) && parsed.updatedAt) return parsed.tasks;
   if (parsed.envelope || parsed.id || parsed.missionId) return [parsed];
   return [];
 }
@@ -67,6 +73,113 @@ export function loadMissionsFromInput(inputPath, deps = {}) {
     }
   }
   return results;
+}
+
+/**
+ * Pull recent mission envelopes, checkpoints, and tasks directly from a live or
+ * emulated Firestore instance (`COLLECTIONS.work`) for Loop B harvesting.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.projectId]
+ * @param {string} [opts.firestoreHost]
+ * @param {number} [opts.limit]
+ * @param {object} [opts.db]
+ * @param {Function} [opts.getAccessToken]
+ * @param {Function} [opts.fetch]
+ * @returns {Promise<object[]>}
+ */
+export async function loadMissionsFromFirestore(opts = {}) {
+  const client =
+    opts.db ||
+    createClient({
+      projectId: opts.projectId || 'paraclete-h2-lab',
+      firestoreHost: opts.firestoreHost,
+      getAccessToken: opts.getAccessToken || (async () => 'h2-harvest-token'),
+      fetch: opts.fetch || globalThis.fetch,
+      logger: () => {},
+    });
+
+  const docs = await client.query('', COLLECTIONS.work, [], {
+    limit: opts.limit || 200,
+    noOrderBy: true,
+  });
+
+  const envelopes = [];
+  const checkpointsByMission = new Map();
+  const tasksByMission = new Map();
+
+  for (const doc of docs || []) {
+    const parentId = doc.envelope_id || doc.mission_id || null;
+    if (doc.type === 'task' || Array.isArray(doc.tool_records)) {
+      if (parentId) {
+        if (!tasksByMission.has(parentId)) tasksByMission.set(parentId, []);
+        tasksByMission.get(parentId).push(doc);
+      }
+    } else if (doc.type === 'checkpoint' || (parentId && typeof doc.checkpoint_n === 'number')) {
+      if (parentId) {
+        if (!checkpointsByMission.has(parentId)) checkpointsByMission.set(parentId, []);
+        checkpointsByMission.get(parentId).push(doc);
+      }
+    } else {
+      envelopes.push(doc);
+    }
+  }
+
+  return envelopes.map((env) => ({
+    envelope: env,
+    checkpoints: checkpointsByMission.get(env.id) || [],
+    tasks: tasksByMission.get(env.id) || [],
+    usageRecords: env.usage_records || [],
+  }));
+}
+
+/**
+ * Persist synthesized Loop B benchmark candidate tasks so `selectBenchmarkTasks`
+ * can dynamically include them in subsequent Loop A evolution passes.
+ *
+ * @param {object[]} tasks
+ * @param {object} [opts]
+ * @param {string} [opts.suitePath]
+ * @param {boolean} [opts.append]
+ */
+export function saveHarvestedBenchmarkTasks(tasks = [], opts = {}) {
+  const suitePath = opts.suitePath || DEFAULT_HARVEST_SUITE_PATH;
+  const append = opts.append !== false;
+  const existing = append ? loadPersistedBenchmarkTasks({ suitePath }) : [];
+  const byId = new Map();
+  for (const t of existing) {
+    if (t?.id) byId.set(t.id, t);
+  }
+  for (const t of tasks) {
+    if (t?.id) byId.set(t.id, t);
+  }
+  const merged = [...byId.values()];
+  fs.mkdirSync(path.dirname(suitePath), { recursive: true });
+  fs.writeFileSync(
+    suitePath,
+    `${JSON.stringify({ updatedAt: new Date().toISOString(), count: merged.length, tasks: merged }, null, 2)}\n`,
+    'utf8',
+  );
+  return { suitePath, count: merged.length, tasks: merged };
+}
+
+/**
+ * Load persisted harvested benchmark tasks from disk.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.suitePath]
+ * @param {string} [opts.role]
+ * @returns {object[]}
+ */
+export function loadPersistedBenchmarkTasks(opts = {}) {
+  const suitePath = opts.suitePath || DEFAULT_HARVEST_SUITE_PATH;
+  if (!fs.existsSync(suitePath)) return [];
+  const parsed = readJsonSafe(suitePath, fs.readFileSync);
+  const list = Array.isArray(parsed?.tasks) ? parsed.tasks : Array.isArray(parsed) ? parsed : [];
+  if (opts.role) {
+    return list.filter((t) => t.role === opts.role);
+  }
+  return list;
 }
 
 /**

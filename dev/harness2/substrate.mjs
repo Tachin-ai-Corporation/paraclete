@@ -2,6 +2,7 @@
 
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
 import { start as startGcsFake } from '../../tests/fakes/gcs-server.mjs';
+import { loadPersistedBenchmarkTasks } from './harvest.mjs';
 import { extractTrajectory, scoreTrajectory, aggregateTrajectoryScores } from './trajectory.mjs';
 
 /**
@@ -129,11 +130,14 @@ export const BENCHMARK_TASK_SUITES = Object.freeze({
 });
 
 /**
- * Select benchmark tasks for a given stage and optional role filter.
+ * Select benchmark tasks for a given stage, optional role filter, and optional
+ * persisted Loop B harvested benchmark suite.
  *
  * @param {object} [opts]
  * @param {'stage1' | 'stage2'} [opts.stage]
  * @param {string} [opts.role]
+ * @param {boolean} [opts.includeHarvested]
+ * @param {string} [opts.suitePath]
  * @returns {object[]}
  */
 export function selectBenchmarkTasks(opts = {}) {
@@ -142,6 +146,21 @@ export function selectBenchmarkTasks(opts = {}) {
     stage === 'stage2'
       ? [...BENCHMARK_TASK_SUITES.stage1, ...BENCHMARK_TASK_SUITES.stage2]
       : [...BENCHMARK_TASK_SUITES.stage1];
+
+  if (opts.includeHarvested || opts.suitePath) {
+    const existingIds = new Set(pool.map((t) => t.id));
+    const harvested = loadPersistedBenchmarkTasks({
+      suitePath: opts.suitePath,
+      role: opts.role,
+    });
+    for (const h of harvested) {
+      if (h?.id && !existingIds.has(h.id)) {
+        pool.push(h);
+        existingIds.add(h.id);
+      }
+    }
+  }
+
   if (opts.role) {
     return pool.filter((t) => t.role === opts.role);
   }

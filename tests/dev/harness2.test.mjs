@@ -43,10 +43,17 @@ import {
   synthesizeCrossLensCandidate,
 } from '../../dev/harness2/selection.mjs';
 import { createLineageLibrary } from '../../dev/harness2/library.mjs';
-import { evaluatePromotionReadiness, formatPromotionReport } from '../../dev/harness2/promote.mjs';
+import {
+  evaluatePromotionReadiness,
+  formatPromotionReport,
+  applyPromotedCandidate,
+} from '../../dev/harness2/promote.mjs';
 import {
   harvestMissionTrajectories,
   loadMissionsFromInput,
+  loadMissionsFromFirestore,
+  saveHarvestedBenchmarkTasks,
+  loadPersistedBenchmarkTasks,
   synthesizeBenchmarkCandidatesFromHarvest,
 } from '../../dev/harness2/harvest.mjs';
 import { parseCliArgs, runCli, runEvolutionLoop } from '../../dev/harness2/cli.mjs';
@@ -57,8 +64,12 @@ import {
   getWorktreeTouchedPaths,
   createLiveProposeAndApply,
   evaluateLiveTarget,
+  proposeVertexMutation,
 } from '../../dev/harness2/live-runner.mjs';
-import { STAGE1_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
+import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
+import { start as startFirestoreFake } from '../fakes/firestore-server.mjs';
+import { createClient } from '../../agent/storage/firestore.mjs';
+import { COLLECTIONS } from '../../agent/storage/collections.mjs';
 import { main as runHarnessCycle } from '../../roles/paraclete-h2/skills/harness-evolution/harness-cycle.mjs';
 import { main as runHarnessEval } from '../../roles/paraclete-h2/skills/harness-benchmark/harness-eval.mjs';
 import { main as runHarnessPromote } from '../../roles/paraclete-h2/skills/harness-release/harness-promote.mjs';
@@ -526,6 +537,265 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     assert.equal(cliRes.ok, true);
     assert.equal(cliRes.plan.vms.length, 2);
   });
+
+  it('Step 1: materializes promoted candidate filePatches via applyPromotedCandidate and rolls back on failure', async () => {
+    const tmpRepo = mkdtempSync(join(tmpdir(), 'paraclete-promote-apply-'));
+    try {
+      const targetRel = 'roles/paraclete-h2/prompts/cortex.md';
+      mkdirSync(join(tmpRepo, 'roles', 'paraclete-h2', 'prompts'), { recursive: true });
+      writeFileSync(join(tmpRepo, targetRel), '# Original Cortex Overlay\n', 'utf8');
+
+      const gitCalls = [];
+      const mockExecGit = (args) => {
+        gitCalls.push(args);
+        return '';
+      };
+
+      const candidate = {
+        id: 'cand-win-1',
+        lens: 'DOM',
+        stage: 'stage1',
+        touchedPaths: [targetRel],
+        filePatches: {
+          [targetRel]: '# Promoted Cortex Overlay\nConcise rule.\n',
+        },
+        scores: { capability: 1, reliability: 1, efficiency: 0.85, composite: 0.96 },
+      };
+
+      const readiness = evaluatePromotionReadiness({
+        candidate,
+        baselineScores: { capability: 1, reliability: 1, efficiency: 0.72, composite: 0.92 },
+      });
+      assert.equal(readiness.ready, true);
+
+      const applied = applyPromotedCandidate({
+        candidate,
+        readiness,
+        repoRoot: tmpRepo,
+        branch: 'h2/promote-cand-win-1',
+        execGit: mockExecGit,
+        validate: () => ({ ok: true }),
+      });
+
+      assert.equal(applied.applied, true);
+      assert.equal(applied.branch, 'h2/promote-cand-win-1');
+      assert.deepEqual(applied.appliedPaths, [targetRel]);
+      assert.equal(readFileSync(join(tmpRepo, targetRel), 'utf8'), '# Promoted Cortex Overlay\nConcise rule.\n');
+      assert.deepEqual(gitCalls[0], ['checkout', '-B', 'h2/promote-cand-win-1']);
+
+      // Verify automatic rollback when post-apply validation fails
+      const badCandidate = {
+        ...candidate,
+        filePatches: {
+          [targetRel]: '# Corrupted Overlay\n',
+        },
+      };
+      const rolledBack = applyPromotedCandidate({
+        candidate: badCandidate,
+        readiness,
+        repoRoot: tmpRepo,
+        validate: () => ({ ok: false, violations: ['simulated validation failure'] }),
+      });
+      assert.equal(rolledBack.applied, false);
+      assert.ok(rolledBack.reason.includes('Post-apply validation failed'));
+      assert.equal(readFileSync(join(tmpRepo, targetRel), 'utf8'), '# Promoted Cortex Overlay\nConcise rule.\n');
+
+      // Also test CLI promote --apply
+      const cliRes = await runCli(['promote', '--stage', 'stage1', '--apply', '--branch', 'h2/cli-promote'], {
+        repoRoot: tmpRepo,
+        candidate,
+        baselineScores: { capability: 1, reliability: 1, efficiency: 0.72, composite: 0.92 },
+        execGit: mockExecGit,
+        validate: () => ({ ok: true }),
+      });
+      assert.equal(cliRes.ok, true);
+      assert.equal(cliRes.application.applied, true);
+      assert.ok(cliRes.report.includes('## Applied Promotion'));
+    } finally {
+      rmSync(tmpRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('Step 2: seeds all 10 Stage 2 specialist workspace fixtures and passes Stage 2 live evaluation', async () => {
+    const stage2Ids = Object.keys(STAGE2_FIXTURES);
+    assert.equal(stage2Ids.length, 10);
+    assert.equal(Object.keys(ALL_FIXTURES).length, 16);
+
+    for (const id of stage2Ids) {
+      const fx = getTaskFixture(id);
+      assert.ok(fx, `Stage 2 fixture missing for ${id}`);
+      const ws = mkdtempSync(join(tmpdir(), `paraclete-fx2-${id}-`));
+      try {
+        fx.seedWorkspace(ws);
+        const before = fx.verifyWorkspace(ws);
+        assert.equal(before.passed, false, `expected broken Stage 2 fixture ${id} to fail before repair`);
+        fx.applyReferenceSolution(ws);
+        const after = fx.verifyWorkspace(ws);
+        assert.equal(after.passed, true, `expected Stage 2 fixture ${id} to pass after applyReferenceSolution`);
+      } finally {
+        rmSync(ws, { recursive: true, force: true });
+      }
+    }
+
+    const stage2Tasks = selectBenchmarkTasks({ stage: 'stage2' });
+    assert.equal(stage2Tasks.length, 16);
+    const stage2Sample = stage2Tasks.filter((t) =>
+      ['gen-01-grounded-synthesis', 'da-01-cohort-variance', 'sec-01-iam-least-privilege'].includes(t.id),
+    );
+    const stage2Live = await evaluateLiveTarget({ stage: 'stage2', tasks: stage2Sample });
+    assert.equal(stage2Live.trajectories.length, 3);
+    assert.equal(stage2Live.summary.capability, 1);
+    assert.equal(stage2Live.summary.reliability, 1);
+  });
+
+  it('Step 3: ingests live Firestore trajectories and persists harvested benchmark tasks for selectBenchmarkTasks', async () => {
+    const fakeFs = await startFirestoreFake({ projectId: 'paraclete-h2-harvest-test' });
+    const tmpDir = mkdtempSync(join(tmpdir(), 'paraclete-harvest-suite-'));
+    const suitePath = join(tmpDir, 'harvested-suite.json');
+    try {
+      const db = createClient({
+        projectId: 'paraclete-h2-harvest-test',
+        firestoreHost: fakeFs.origin,
+        getAccessToken: async () => 'fake-token',
+        logger: () => {},
+      });
+      const missionId = 'm-fs-live-01';
+      await db.write(`${COLLECTIONS.work}/${missionId}`, {
+        id: missionId,
+        role: 'software-engineer',
+        platform_version: 'v2026.10.19.2.0',
+        status: 'failed',
+        instruction: 'Fix flaky pagination boundary when offset equals total count',
+        checkpoint_spine: [
+          {
+            n: 1,
+            goal: 'Verify offset boundary condition in paginator',
+            status: 'failed',
+            replan_count: 2,
+          },
+        ],
+      });
+
+      const harvestRes = await runCli(
+        [
+          'harvest',
+          '--project',
+          'paraclete-h2-harvest-test',
+          '--version',
+          'v2026.10.19.2.0',
+          '--persist',
+          '--suite-path',
+          suitePath,
+        ],
+        {
+          firestoreHost: fakeFs.origin,
+          getAccessToken: async () => 'fake-token',
+        },
+      );
+
+      assert.equal(harvestRes.ok, true);
+      assert.equal(harvestRes.harvested.acceptedCount, 1);
+      assert.equal(harvestRes.synthesizedTasks.length, 1);
+      assert.equal(harvestRes.persistence.count, 1);
+
+      const persisted = loadPersistedBenchmarkTasks({ suitePath });
+      assert.equal(persisted.length, 1);
+      assert.equal(persisted[0].sourceMissionId, missionId);
+
+      const mergedTasks = selectBenchmarkTasks({
+        stage: 'stage1',
+        includeHarvested: true,
+        suitePath,
+      });
+      assert.equal(mergedTasks.length, 7);
+      assert.ok(mergedTasks.some((t) => t.sourceMissionId === missionId));
+    } finally {
+      await fakeFs.stop();
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('Step 4: proposes candidate mutations via proposeVertexMutation (--vertex) with clean offline fallback', async () => {
+    const tmpTarget = mkdtempSync(join(tmpdir(), 'paraclete-vertex-mut-'));
+    try {
+      const overlayRel = 'roles/paraclete-h2/prompts/cortex.md';
+      mkdirSync(join(tmpTarget, 'roles', 'paraclete-h2', 'prompts'), { recursive: true });
+      writeFileSync(join(tmpTarget, overlayRel), '# Baseline Overlay\n', 'utf8');
+
+      // 1. Vertex generator returns structured JSON patch
+      const vertexRes = await proposeVertexMutation({
+        spec: {
+          lens: 'DOM',
+          escalationMode: 'refine',
+          feedbackPrompt: 'Tighten cortex overlay.',
+        },
+        baseState: { id: 'gen0', generation: 0 },
+        targetRoot: tmpTarget,
+        vertexGenerate: async () =>
+          '```json\n' +
+          JSON.stringify({
+            hypothesis: 'Vertex tightened cortex overlay prompt',
+            patches: {
+              [overlayRel]: '# Vertex Mutated Overlay\nEnforce strict lens attribution.\n',
+            },
+          }) +
+          '\n```',
+      });
+
+      assert.equal(vertexRes.source, 'vertex');
+      assert.deepEqual(vertexRes.touchedPaths, [overlayRel]);
+      assert.equal(vertexRes.hypothesis, 'Vertex tightened cortex overlay prompt');
+      assert.ok(readFileSync(join(tmpTarget, overlayRel), 'utf8').includes('Vertex Mutated Overlay'));
+
+      // 2. Offline / throwing generator falls back cleanly to applyDefaultCandidateMutation
+      const fallbackRes = await proposeVertexMutation({
+        spec: {
+          lens: 'DOM',
+          escalationMode: 'pivot',
+          priorAttemptsSummary: [{ step: 1 }],
+        },
+        baseState: { id: 'gen0', generation: 0 },
+        targetRoot: tmpTarget,
+        vertexGenerate: async () => {
+          throw new Error('offline in hermetic test');
+        },
+      });
+      assert.equal(fallbackRes.source, 'fallback');
+      assert.deepEqual(fallbackRes.touchedPaths, [overlayRel]);
+
+      // 3. Run evolve --live --vertex with injected vertexGenerate
+      const evoVertex = await runCli(
+        [
+          'evolve',
+          '--stage',
+          'stage1',
+          '--role',
+          'paraclete-h2',
+          '--generations',
+          '1',
+          '--recursion',
+          '1',
+          '--live',
+          '--vertex',
+        ],
+        {
+          vertexGenerate: async (_prompt, spec) => {
+            if (spec.lens === 'DOM') {
+              return JSON.stringify({
+                hypothesis: 'Vertex DOM concise overlay',
+                patches: {
+                  [overlayRel]: '# Role Overlay: Paraclete-H² (`cortex`)\nConcise Vertex overlay.\n',
+                },
+              });
+            }
+            throw new Error('use default INV mutation');
+          },
+        },
+      );
+      assert.equal(evoVertex.ok, true);
+      assert.equal(evoVertex.winner.scores.capability, 1);
+    } finally {
+      rmSync(tmpTarget, { recursive: true, force: true });
+    }
+  });
 });
-
-

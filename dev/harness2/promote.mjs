@@ -1,7 +1,18 @@
 // dev/harness2/promote.mjs: Promote a winning Pareto candidate after Tier-1 and Tier-2 canary verification.
 
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { isNonRegression } from './selection.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
+
+function defaultExecGit(args, cwd) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
 
 /**
  * Verify whether a winning candidate is eligible for promotion (PR / release cut)
@@ -69,6 +80,98 @@ export function evaluatePromotionReadiness(opts = {}) {
 }
 
 /**
+ * Materialize a promotion-ready winning candidate's `filePatches` onto `repoRoot`
+ * (optionally checking out `branch` first) and run `validateCandidateWorkspace`.
+ * Rolls back all touched files automatically if post-apply validation fails.
+ *
+ * @param {object} opts
+ * @param {object} opts.candidate
+ * @param {object} opts.readiness
+ * @param {string} [opts.repoRoot]
+ * @param {string} [opts.branch]
+ * @param {boolean} [opts.runTests]
+ * @param {Function} [opts.execGit]
+ * @param {Function} [opts.validate]
+ */
+export function applyPromotedCandidate(opts = {}) {
+  const {
+    candidate,
+    readiness,
+    repoRoot = process.cwd(),
+    branch = null,
+    runTests = false,
+    execGit = defaultExecGit,
+    validate = validateCandidateWorkspace,
+  } = opts;
+
+  if (!readiness?.ready) {
+    return {
+      applied: false,
+      reason: 'Candidate is not ready for promotion',
+      appliedPaths: [],
+      branch: null,
+    };
+  }
+
+  const patches = candidate?.filePatches || {};
+  const relPaths = Object.keys(patches);
+  if (relPaths.length === 0) {
+    return {
+      applied: false,
+      reason: 'Candidate has no filePatches to apply',
+      appliedPaths: [],
+      branch: null,
+    };
+  }
+
+  if (branch) {
+    execGit(['checkout', '-B', branch], repoRoot);
+  }
+
+  const backups = new Map();
+  for (const relPath of relPaths) {
+    const absPath = path.join(repoRoot, relPath);
+    backups.set(relPath, fs.existsSync(absPath) ? fs.readFileSync(absPath, 'utf8') : null);
+    fs.mkdirSync(path.dirname(absPath), { recursive: true });
+    const normalized = String(patches[relPath]).replace(/\r\n/g, '\n');
+    fs.writeFileSync(absPath, normalized, 'utf8');
+  }
+
+  const validation = validate({
+    repoRoot,
+    touchedPaths: relPaths,
+    stage: candidate.stage || 'stage1',
+    runTests: Boolean(runTests),
+  });
+
+  if (!validation.ok) {
+    for (const [relPath, original] of backups.entries()) {
+      const absPath = path.join(repoRoot, relPath);
+      if (original === null) {
+        fs.rmSync(absPath, { force: true });
+      } else {
+        fs.writeFileSync(absPath, original, 'utf8');
+      }
+    }
+    return {
+      applied: false,
+      reason: `Post-apply validation failed: ${(validation.violations || []).join('; ')}`,
+      appliedPaths: [],
+      branch: branch || null,
+      validation,
+    };
+  }
+
+  return {
+    applied: true,
+    reason: 'Applied candidate filePatches and verified workspace',
+    appliedPaths: relPaths,
+    branch: branch || null,
+    validation,
+  };
+}
+
+/**
  * Format a concise Markdown promotion report suitable for a pull request description
  * or operator console output.
  *
@@ -91,6 +194,18 @@ export function formatPromotionReport(readiness) {
     const t2 = s.tier2Scores;
     lines.push(
       `- **Tier-2 Canary Scores**: capability=${t2.capability ?? 0}, reliability=${t2.reliability ?? 0}, efficiency=${t2.efficiency ?? 0}, fitness=${t2.fitness ?? 0}`,
+    );
+  }
+
+  if (readiness.application) {
+    const app = readiness.application;
+    lines.push(
+      '',
+      '## Applied Promotion',
+      `- **Applied**: ${Boolean(app.applied)}`,
+      ...(app.branch ? [`- **Branch**: \`${app.branch}\``] : []),
+      `- **Materialized Files**: ${(app.appliedPaths || []).length > 0 ? app.appliedPaths.map((p) => `\`${p}\``).join(', ') : 'none'}`,
+      ...(app.reason ? [`- **Detail**: ${app.reason}`] : []),
     );
   }
 

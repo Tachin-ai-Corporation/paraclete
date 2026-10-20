@@ -8,8 +8,14 @@ import { selectLensForTrajectories } from './lenses.mjs';
 import { runWithinGenerationRecursion } from './recursion.mjs';
 import { synthesizeCrossLensCandidate } from './selection.mjs';
 import { createLineageLibrary } from './library.mjs';
-import { evaluatePromotionReadiness, formatPromotionReport } from './promote.mjs';
-import { harvestMissionTrajectories, loadMissionsFromInput, synthesizeBenchmarkCandidatesFromHarvest } from './harvest.mjs';
+import { evaluatePromotionReadiness, formatPromotionReport, applyPromotedCandidate } from './promote.mjs';
+import {
+  harvestMissionTrajectories,
+  loadMissionsFromInput,
+  loadMissionsFromFirestore,
+  saveHarvestedBenchmarkTasks,
+  synthesizeBenchmarkCandidatesFromHarvest,
+} from './harvest.mjs';
 import {
   buildGcpLabPlan,
   createDevCanaryRunner,
@@ -23,16 +29,16 @@ export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 Subcommands:
   surface                          Print the 8-component Paraclete mutable surface (c1..c8)
   validate [--stage stage1|stage2] Run structural, contract, and prompt budget validation
-  eval     [--stage stage1|stage2] [--role <role>] [--live]
+  eval     [--stage stage1|stage2] [--role <role>] [--live] [--vertex] [--include-harvested] [--suite-path <path>]
                                    Run Tier-1 hermetic or live target benchmark evaluation
   canary   [--agent <vm-name>] [--stage stage1|stage2] [--role <role>]
                                    Run Tier-2 canary evaluation with read-only smoke check
-  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live]
+  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--vertex] [--include-harvested]
                                    Execute Loop A dual-lens evolutionary harness optimization
-  harvest  [--input <path>] [--version <ver>] [--min-version <ver>] [--role <role>]
+  harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>]
                                    Filter and distill Loop B trajectories into Loop A benchmarks
-  promote  [--stage stage1|stage2] [--live]
-                                   Verify candidate readiness and print promotion report
+  promote  [--stage stage1|stage2] [--live] [--vertex] [--apply] [--branch <branch>]
+                                   Verify candidate readiness, optionally apply patches, and print promotion report
   lab-plan [--project <id>] [--zone <zone>]
                                    Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
 `;
@@ -207,9 +213,21 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (subcommand === 'eval') {
-    const tasks = selectBenchmarkTasks({ stage, role: flags.role });
+    const tasks = selectBenchmarkTasks({
+      stage,
+      role: flags.role,
+      includeHarvested: Boolean(flags['include-harvested']),
+      suitePath: flags['suite-path'],
+    });
     const evalRes = flags.live
-      ? await evaluateLiveTarget({ stage, role: flags.role, tasks, deps })
+      ? await evaluateLiveTarget({
+          stage,
+          role: flags.role,
+          tasks,
+          gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
+          gatewayToken: flags['gateway-token'] || deps.gatewayToken,
+          deps,
+        })
       : await runTier1Evaluation({ stage, role: flags.role, tasks, deps });
     return { ok: true, ...evalRes };
   }
@@ -227,13 +245,23 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
 
   if (subcommand === 'evolve') {
     const isLive = Boolean(flags.live);
+    const useVertex = Boolean(flags.vertex);
+    const tasks = selectBenchmarkTasks({
+      stage,
+      role: flags.role,
+      includeHarvested: Boolean(flags['include-harvested']),
+      suitePath: flags['suite-path'],
+    });
     const liveEvaluate = isLive
       ? async (cand) =>
           evaluateLiveTarget({
             stage,
             role: flags.role,
+            tasks,
             touchedPaths: cand?.touchedPaths || [],
             runTaskRollout: cand?.runTaskRollout,
+            gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
+            gatewayToken: flags['gateway-token'] || deps.gatewayToken,
             deps,
           })
       : undefined;
@@ -243,12 +271,21 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       role: flags.role,
       generations: flags.generations ? Number(flags.generations) : 1,
       recursionSteps: flags.recursion ? Number(flags.recursion) : 2,
-      proposeAndApply: isLive ? createLiveProposeAndApply({ stage, useWorktree: true }) : undefined,
+      proposeAndApply: isLive
+        ? createLiveProposeAndApply({
+            stage,
+            useWorktree: true,
+            useVertex,
+            vertexGenerate: deps.vertexGenerate,
+            gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
+            gatewayToken: flags['gateway-token'] || deps.gatewayToken,
+          })
+        : undefined,
       evaluateCandidate: liveEvaluate,
       mergeAndEvaluate: isLive
         ? async (invCandidate, domCandidate, parentState) => {
             const mergedSnapshots = new Map();
-            const roles = ['paraclete-h2', 'software-engineer', 'qa-engineer', 'devops-engineer'];
+            const roles = new Set(['paraclete-h2', ...rolesForStage(stage)]);
             for (const r of roles) {
               const invSnap = invCandidate?.roleSnapshots?.get(r);
               const domSnap = domCandidate?.roleSnapshots?.get(r);
@@ -267,6 +304,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
                 ? async (task, substrateCtx) =>
                     runInProcessBrainRollout(task, substrateCtx, {
                       configSnapshot: mergedSnapshots.get(task.role || 'paraclete-h2'),
+                      gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
+                      gatewayToken: flags['gateway-token'] || deps.gatewayToken,
                     })
                 : invCandidate?.runTaskRollout;
             const touchedPaths = [
@@ -299,21 +338,43 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (subcommand === 'harvest') {
-    const rawMissions = flags.input
-      ? loadMissionsFromInput(flags.input, deps)
-      : (deps.rawMissions || []);
+    let rawMissions = [];
+    if (flags.input) {
+      rawMissions = loadMissionsFromInput(flags.input, deps);
+    } else if (flags.project || deps.firestoreHost) {
+      rawMissions = await loadMissionsFromFirestore({
+        projectId: flags.project || deps.projectId,
+        firestoreHost: flags['firestore-host'] || deps.firestoreHost,
+        limit: flags.limit ? Number(flags.limit) : 100,
+        getAccessToken: deps.getAccessToken,
+      });
+    } else {
+      rawMissions = deps.rawMissions || [];
+    }
     const harvested = harvestMissionTrajectories(rawMissions, {
       targetVersion: flags.version || null,
       minPlatformVersion: flags['min-version'] || null,
       role: flags.role || null,
     });
     const tasks = synthesizeBenchmarkCandidatesFromHarvest(harvested.accepted);
-    return { ok: true, harvested, synthesizedTasks: tasks };
+    let persistence = null;
+    if (flags.persist || flags['suite-path']) {
+      persistence = saveHarvestedBenchmarkTasks(tasks, {
+        suitePath: flags['suite-path'],
+        fs: deps.fs,
+      });
+    }
+    return { ok: true, harvested, synthesizedTasks: tasks, persistence };
   }
 
   if (subcommand === 'promote') {
     if (flags.live) {
-      const baselineRes = await evaluateLiveTarget({ stage, role: flags.role, deps });
+      const baselineRes = await evaluateLiveTarget({
+        stage,
+        role: flags.role,
+        repoRoot: deps.repoRoot,
+        deps,
+      });
       const evoRes = await runCli(
         [
           'evolve',
@@ -324,6 +385,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           '--recursion',
           String(flags.recursion || 2),
           '--live',
+          ...(flags.vertex ? ['--vertex'] : []),
           ...(flags.role ? ['--role', flags.role] : []),
         ],
         deps,
@@ -333,15 +395,29 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         baselineScores: baselineRes.summary,
         validationResult: baselineRes.validation,
       });
+      let application = null;
+      if (flags.apply) {
+        application = applyPromotedCandidate({
+          candidate: evoRes.winner,
+          readiness,
+          repoRoot: deps.repoRoot || process.cwd(),
+          branch: typeof flags.branch === 'string' ? flags.branch : null,
+          runTests: Boolean(flags['run-tests']),
+          execGit: deps.execGit,
+          validate: deps.validate,
+        });
+        readiness.application = application;
+      }
       return {
-        ok: readiness.ready,
+        ok: readiness.ready && (!application || application.applied),
         readiness,
+        application,
         report: formatPromotionReport(readiness),
       };
     }
 
     const evalRes = await runTier1Evaluation({ stage, role: flags.role, deps });
-    const candidate = {
+    const candidate = deps.candidate || {
       id: flags.candidate || 'candidate-head',
       lens: 'SYN',
       stage,
@@ -350,11 +426,25 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     };
     const readiness = evaluatePromotionReadiness({
       candidate,
-      baselineScores: evalRes.summary,
+      baselineScores: deps.baselineScores || evalRes.summary,
     });
+    let application = null;
+    if (flags.apply) {
+      application = applyPromotedCandidate({
+        candidate,
+        readiness,
+        repoRoot: deps.repoRoot || process.cwd(),
+        branch: typeof flags.branch === 'string' ? flags.branch : null,
+        runTests: Boolean(flags['run-tests']),
+        execGit: deps.execGit,
+        validate: deps.validate,
+      });
+      readiness.application = application;
+    }
     return {
-      ok: readiness.ready,
+      ok: readiness.ready && (!application || application.applied),
       readiness,
+      application,
       report: formatPromotionReport(readiness),
     };
   }

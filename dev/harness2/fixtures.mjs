@@ -345,14 +345,500 @@ export const STAGE1_FIXTURES = Object.freeze({
 });
 
 /**
- * Look up a Stage 1 fixture definition by task ID, normalizing `verifyWorkspace`
+ * Seeded workspace fixtures keyed by Stage 2 specialist role task ID.
+ */
+export const STAGE2_FIXTURES = Object.freeze({
+  'gen-01-grounded-synthesis': Object.freeze({
+    id: 'gen-01-grounded-synthesis',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'sources/primary-a.json',
+        JSON.stringify({ engine: 'alpha', p95Ms: 42, costPer1k: 0.12 }, null, 2),
+      );
+      writeFile(
+        workspaceDir,
+        'sources/primary-b.json',
+        JSON.stringify({ engine: 'beta', p95Ms: 68, costPer1k: 0.08 }, null, 2),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const a = readJson(workspaceDir, 'sources/primary-a.json') || {};
+      const b = readJson(workspaceDir, 'sources/primary-b.json') || {};
+      writeFile(
+        workspaceDir,
+        'synthesis.json',
+        `${JSON.stringify(
+          {
+            fasterEngine: (a.p95Ms ?? 999) < (b.p95Ms ?? 999) ? a.engine : b.engine,
+            lowerCostEngine: (a.costPer1k ?? 999) < (b.costPer1k ?? 999) ? a.engine : b.engine,
+            p95DeltaMs: Math.abs((b.p95Ms ?? 0) - (a.p95Ms ?? 0)),
+            citations: ['sources/primary-a.json', 'sources/primary-b.json'],
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const syn = readJson(workspaceDir, 'synthesis.json');
+      if (!syn) return { verified: false, reason: 'missing synthesis.json' };
+      if (syn.fasterEngine !== 'alpha' || syn.lowerCostEngine !== 'beta' || syn.p95DeltaMs !== 26) {
+        return { verified: false, reason: `unexpected synthesis metrics: ${JSON.stringify(syn)}` };
+      }
+      return { verified: true, reason: 'synthesis.json verified against primary-a.json and primary-b.json' };
+    },
+  }),
+
+  'da-01-cohort-variance': Object.freeze({
+    id: 'da-01-cohort-variance',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'data/cohorts.json',
+        JSON.stringify(
+          {
+            baselineRetentionPct: 78.0,
+            cohorts: [
+              { id: 'cohort-2026-01', retentionPct: 77.5 },
+              { id: 'cohort-2026-02', retentionPct: 41.5 },
+              { id: 'cohort-2026-03', retentionPct: 79.0 },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const data = readJson(workspaceDir, 'data/cohorts.json') || { baselineRetentionPct: 78, cohorts: [] };
+      const anomaly = (data.cohorts || []).find((c) => data.baselineRetentionPct - c.retentionPct > 20);
+      writeFile(
+        workspaceDir,
+        'variance-report.json',
+        `${JSON.stringify(
+          {
+            anomalousCohort: anomaly?.id || null,
+            deltaPct: anomaly ? Number((anomaly.retentionPct - data.baselineRetentionPct).toFixed(1)) : 0,
+            checkedCount: (data.cohorts || []).length,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const rep = readJson(workspaceDir, 'variance-report.json');
+      if (!rep) return { verified: false, reason: 'missing variance-report.json' };
+      if (rep.anomalousCohort !== 'cohort-2026-02' || rep.deltaPct !== -36.5) {
+        return { verified: false, reason: `expected cohort-2026-02 (-36.5%), got ${JSON.stringify(rep)}` };
+      }
+      return { verified: true, reason: 'variance-report.json isolated cohort-2026-02 anomaly accurately' };
+    },
+  }),
+
+  'de-01-pipeline-schema-audit': Object.freeze({
+    id: 'de-01-pipeline-schema-audit',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'schemas/expected.json',
+        JSON.stringify({ partitionBy: 'DAY(ingestion_ts)', columns: { event_id: 'STRING', ingestion_ts: 'TIMESTAMP' } }, null, 2),
+      );
+      writeFile(
+        workspaceDir,
+        'schemas/live-bq.json',
+        JSON.stringify({ partitionBy: null, rowCount: 14200, columns: { event_id: 'STRING', ingestion_ts: 'STRING' } }, null, 2),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const exp = readJson(workspaceDir, 'schemas/expected.json') || { columns: {} };
+      const live = readJson(workspaceDir, 'schemas/live-bq.json') || { columns: {} };
+      const drifted = Object.keys(exp.columns || {}).filter((k) => exp.columns[k] !== live.columns?.[k]);
+      writeFile(
+        workspaceDir,
+        'schema-drift-report.json',
+        `${JSON.stringify(
+          {
+            driftedColumns: drifted,
+            partitionValid: exp.partitionBy === live.partitionBy,
+            rowCount: live.rowCount ?? 0,
+            tableMutated: false,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const rep = readJson(workspaceDir, 'schema-drift-report.json');
+      if (!rep) return { verified: false, reason: 'missing schema-drift-report.json' };
+      if (!Array.isArray(rep.driftedColumns) || !rep.driftedColumns.includes('ingestion_ts') || rep.partitionValid !== false) {
+        return { verified: false, reason: `invalid schema drift report: ${JSON.stringify(rep)}` };
+      }
+      return { verified: true, reason: 'schema-drift-report.json flagged ingestion_ts type drift and missing partition' };
+    },
+  }),
+
+  'sec-01-iam-least-privilege': Object.freeze({
+    id: 'sec-01-iam-least-privilege',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'iam/policy.json',
+        JSON.stringify(
+          {
+            bindings: [
+              { role: 'roles/owner', members: ['serviceAccount:ci-runner@example.com'] },
+              { role: 'roles/viewer', members: ['user:auditor@example.com'] },
+            ],
+            serviceAccountKeys: [{ id: 'key-old-01', ageDays: 185, principal: 'serviceAccount:ci-runner@example.com' }],
+          },
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const pol = readJson(workspaceDir, 'iam/policy.json') || { bindings: [], serviceAccountKeys: [] };
+      const owners = (pol.bindings || []).find((b) => b.role === 'roles/owner')?.members || [];
+      const agedKeys = (pol.serviceAccountKeys || []).filter((k) => k.ageDays > 90).map((k) => k.id);
+      writeFile(
+        workspaceDir,
+        'iam/remediation-plan.json',
+        `${JSON.stringify(
+          {
+            overPrivilegedPrincipals: owners,
+            recommendedRole: 'roles/storage.objectViewer',
+            rotateKeyIds: agedKeys,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const plan = readJson(workspaceDir, 'iam/remediation-plan.json');
+      if (!plan) return { verified: false, reason: 'missing iam/remediation-plan.json' };
+      if (
+        !Array.isArray(plan.overPrivilegedPrincipals) ||
+        !plan.overPrivilegedPrincipals.includes('serviceAccount:ci-runner@example.com') ||
+        !Array.isArray(plan.rotateKeyIds) ||
+        !plan.rotateKeyIds.includes('key-old-01')
+      ) {
+        return { verified: false, reason: `incomplete IAM remediation plan: ${JSON.stringify(plan)}` };
+      }
+      return { verified: true, reason: 'iam/remediation-plan.json identified over-privileged SA and aged key' };
+    },
+  }),
+
+  'web-01-endpoint-vitals': Object.freeze({
+    id: 'web-01-endpoint-vitals',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'probes/endpoints.json',
+        JSON.stringify(
+          [
+            { url: 'https://app.example.com/healthz', status: 200, tlsDaysRemaining: 9, hsts: false },
+            { url: 'https://api.example.com/v1/ping', status: 200, tlsDaysRemaining: 64, hsts: true },
+          ],
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const endpoints = readJson(workspaceDir, 'probes/endpoints.json') || [];
+      writeFile(
+        workspaceDir,
+        'site-health-report.json',
+        `${JSON.stringify(
+          {
+            expiringTlsUrls: endpoints.filter((e) => e.tlsDaysRemaining < 14).map((e) => e.url),
+            missingHstsUrls: endpoints.filter((e) => !e.hsts).map((e) => e.url),
+            allStatus200: endpoints.every((e) => e.status === 200),
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const rep = readJson(workspaceDir, 'site-health-report.json');
+      if (!rep) return { verified: false, reason: 'missing site-health-report.json' };
+      if (
+        !Array.isArray(rep.expiringTlsUrls) ||
+        !rep.expiringTlsUrls.includes('https://app.example.com/healthz') ||
+        rep.allStatus200 !== true
+      ) {
+        return { verified: false, reason: `invalid site-health-report.json: ${JSON.stringify(rep)}` };
+      }
+      return { verified: true, reason: 'site-health-report.json flagged expiring TLS and missing HSTS' };
+    },
+  }),
+
+  'exec-01-triage-brief': Object.freeze({
+    id: 'exec-01-triage-brief',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'inbox/threads.json',
+        JSON.stringify(
+          [
+            { id: 'thread-101', priority: 'normal', requestedSlot: '2026-10-21T14:00:00Z' },
+            { id: 'thread-104', priority: 'urgent', requestedSlot: '2026-10-21T14:00:00Z' },
+          ],
+          null,
+          2,
+        ),
+      );
+      writeFile(
+        workspaceDir,
+        'calendar/slots.json',
+        JSON.stringify({ busy: ['2026-10-21T14:00:00Z'], open: ['2026-10-21T15:00:00Z'] }, null, 2),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const threads = readJson(workspaceDir, 'inbox/threads.json') || [];
+      const cal = readJson(workspaceDir, 'calendar/slots.json') || { open: [] };
+      const urgent = threads.find((t) => t.priority === 'urgent');
+      writeFile(
+        workspaceDir,
+        'decision-brief.json',
+        `${JSON.stringify(
+          {
+            triagedThreadIds: threads.map((t) => t.id),
+            conflictThreadId: urgent?.id || null,
+            proposedSlot: cal.open?.[0] || null,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const brief = readJson(workspaceDir, 'decision-brief.json');
+      if (!brief) return { verified: false, reason: 'missing decision-brief.json' };
+      if (brief.conflictThreadId !== 'thread-104' || brief.proposedSlot !== '2026-10-21T15:00:00Z') {
+        return { verified: false, reason: `unexpected decision-brief.json: ${JSON.stringify(brief)}` };
+      }
+      return { verified: true, reason: 'decision-brief.json triaged authentic thread IDs and resolved slot conflict' };
+    },
+  }),
+
+  'pm-01-milestone-audit': Object.freeze({
+    id: 'pm-01-milestone-audit',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'workstreams/milestones.json',
+        JSON.stringify(
+          [
+            { id: 'ms-01', reportedStatus: 'on_track', blockedBy: [] },
+            { id: 'ms-02', reportedStatus: 'on_track', blockedBy: ['dep-auth-migration'] },
+          ],
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const list = readJson(workspaceDir, 'workstreams/milestones.json') || [];
+      const discrepant = list.filter((m) => m.reportedStatus === 'on_track' && (m.blockedBy || []).length > 0);
+      writeFile(
+        workspaceDir,
+        'risk-register.json',
+        `${JSON.stringify(
+          {
+            discrepantMilestones: discrepant.map((m) => m.id),
+            criticalBlocker: discrepant[0]?.blockedBy?.[0] || null,
+            reconciledStatus: 'at_risk',
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const reg = readJson(workspaceDir, 'risk-register.json');
+      if (!reg) return { verified: false, reason: 'missing risk-register.json' };
+      if (
+        !Array.isArray(reg.discrepantMilestones) ||
+        !reg.discrepantMilestones.includes('ms-02') ||
+        reg.criticalBlocker !== 'dep-auth-migration'
+      ) {
+        return { verified: false, reason: `unexpected risk-register.json: ${JSON.stringify(reg)}` };
+      }
+      return { verified: true, reason: 'risk-register.json reconciled ms-02 status and blocker dep-auth-migration' };
+    },
+  }),
+
+  'fin-01-budget-variance': Object.freeze({
+    id: 'fin-01-budget-variance',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'finance/q3-ledger.json',
+        JSON.stringify(
+          {
+            budgetTotal: 50000,
+            lineItems: [
+              { category: 'cloud-compute', budgeted: 20000, actual: 24250 },
+              { category: 'saas-licenses', budgeted: 15000, actual: 15000 },
+              { category: 'contractors', budgeted: 15000, actual: 15000 },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const ledger = readJson(workspaceDir, 'finance/q3-ledger.json') || { budgetTotal: 0, lineItems: [] };
+      const actualTotal = (ledger.lineItems || []).reduce((acc, item) => acc + (item.actual || 0), 0);
+      const driver = [...(ledger.lineItems || [])].sort(
+        (a, b) => (b.actual - b.budgeted) - (a.actual - a.budgeted),
+      )[0];
+      writeFile(
+        workspaceDir,
+        'budget-reconciliation.json',
+        `${JSON.stringify(
+          {
+            actualTotal,
+            budgetTotal: ledger.budgetTotal,
+            variance: actualTotal - ledger.budgetTotal,
+            primaryDriver: driver?.category || null,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const rec = readJson(workspaceDir, 'budget-reconciliation.json');
+      if (!rec) return { verified: false, reason: 'missing budget-reconciliation.json' };
+      if (rec.actualTotal !== 54250 || rec.variance !== 4250 || rec.primaryDriver !== 'cloud-compute') {
+        return { verified: false, reason: `incorrect budget reconciliation: ${JSON.stringify(rec)}` };
+      }
+      return { verified: true, reason: 'budget-reconciliation.json verified exact totals and variance driver' };
+    },
+  }),
+
+  'leg-01-clause-redline': Object.freeze({
+    id: 'leg-01-clause-redline',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'contracts/vendor-msa.json',
+        JSON.stringify(
+          {
+            clauses: [
+              { section: 'section-5.1', topic: 'confidentiality', compliant: true },
+              { section: 'section-8.2', topic: 'liability_cap', value: 'uncapped', compliant: false },
+              { section: 'section-11.4', topic: 'breach_notice_hours', value: 2160, compliant: false },
+            ],
+          },
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const doc = readJson(workspaceDir, 'contracts/vendor-msa.json') || { clauses: [] };
+      const bad = (doc.clauses || []).filter((c) => !c.compliant).map((c) => c.section);
+      writeFile(
+        workspaceDir,
+        'redline-guidance.json',
+        `${JSON.stringify(
+          {
+            nonCompliantSections: bad,
+            liabilityCap: '12x_annual_fees',
+            breachNoticeHours: 72,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const red = readJson(workspaceDir, 'redline-guidance.json');
+      if (!red) return { verified: false, reason: 'missing redline-guidance.json' };
+      if (
+        !Array.isArray(red.nonCompliantSections) ||
+        !red.nonCompliantSections.includes('section-8.2') ||
+        !red.nonCompliantSections.includes('section-11.4')
+      ) {
+        return { verified: false, reason: `incomplete redline-guidance.json: ${JSON.stringify(red)}` };
+      }
+      return { verified: true, reason: 'redline-guidance.json cited section-8.2 and section-11.4 with policy redlines' };
+    },
+  }),
+
+  'des-01-layout-hierarchy-audit': Object.freeze({
+    id: 'des-01-layout-hierarchy-audit',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'design/components.json',
+        JSON.stringify(
+          [
+            { id: 'hero-title', contrastRatio: 7.2, spacingPx: 24 },
+            { id: 'hero-subtitle', contrastRatio: 3.1, spacingPx: 13 },
+          ],
+          null,
+          2,
+        ),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const comps = readJson(workspaceDir, 'design/components.json') || [];
+      const failing = comps.filter((c) => c.contrastRatio < 4.5 || c.spacingPx % 8 !== 0).map((c) => c.id);
+      writeFile(
+        workspaceDir,
+        'layout-fixes.json',
+        `${JSON.stringify(
+          {
+            failingComponents: failing,
+            fixedContrastRatio: 4.8,
+            fixedSpacingPx: 16,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const fixes = readJson(workspaceDir, 'layout-fixes.json');
+      if (!fixes) return { verified: false, reason: 'missing layout-fixes.json' };
+      if (
+        !Array.isArray(fixes.failingComponents) ||
+        !fixes.failingComponents.includes('hero-subtitle') ||
+        fixes.fixedContrastRatio < 4.5 ||
+        fixes.fixedSpacingPx !== 16
+      ) {
+        return { verified: false, reason: `invalid layout-fixes.json: ${JSON.stringify(fixes)}` };
+      }
+      return { verified: true, reason: 'layout-fixes.json remediated hero-subtitle contrast and 8px spacing grid' };
+    },
+  }),
+});
+
+/** Combined catalog of all Stage 1 + Stage 2 workspace fixtures. */
+export const ALL_FIXTURES = Object.freeze({
+  ...STAGE1_FIXTURES,
+  ...STAGE2_FIXTURES,
+});
+
+/**
+ * Look up a Stage 1 or Stage 2 fixture definition by task ID, normalizing `verifyWorkspace`
  * so callers can read either `{ verified, reason }` or `{ passed, summary, toolRecords }`.
  *
  * @param {string} taskId
  * @returns {object|null}
  */
 export function getTaskFixture(taskId) {
-  const raw = STAGE1_FIXTURES[taskId];
+  const raw = ALL_FIXTURES[taskId];
   if (!raw) return null;
   return {
     ...raw,

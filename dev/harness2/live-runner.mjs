@@ -14,6 +14,7 @@ import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
+import { rolesForStage } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
 
 function defaultExecGit(args, cwd) {
@@ -367,13 +368,15 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     fixture.seedWorkspace(workspaceDir);
   }
 
-  const gateway = await startInProcessFixtureGateway({
-    task,
-    fixture,
-    workspaceDir,
-    configSnapshot,
-    usageRecords,
-  });
+  const gateway = opts.gatewayUrl
+    ? { url: opts.gatewayUrl, token: opts.gatewayToken || 'h2-live-token', stop: async () => {} }
+    : await startInProcessFixtureGateway({
+        task,
+        fixture,
+        workspaceDir,
+        configSnapshot,
+        usageRecords,
+      });
 
   const firestoreOrigin =
     substrateCtx.firestore?.origin ||
@@ -610,6 +613,99 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
 }
 
 /**
+ * Propose and apply a candidate harness mutation using a real Vertex AI LLM generator
+ * (`vertexGenerate` or `createVertexText`), falling back cleanly to `applyDefaultCandidateMutation`
+ * when Vertex AI is unavailable or returns an unparseable response.
+ *
+ * @param {object} opts
+ * @param {object} opts.spec
+ * @param {object} opts.baseState
+ * @param {string} opts.targetRoot
+ * @param {Function} [opts.vertexGenerate]  Async `(prompt: string, spec: object) => Promise<string | { patches?: Record<string,string>, hypothesis?: string }>`
+ * @param {Function} [opts.fallback]
+ * @returns {Promise<{ touchedPaths: string[], hypothesis?: string, source: 'vertex' | 'fallback' }>}
+ */
+export async function proposeVertexMutation(opts = {}) {
+  const { spec, baseState, targetRoot, vertexGenerate } = opts;
+  const fallback = opts.fallback || applyDefaultCandidateMutation;
+
+  if (baseState?.filePatches && typeof baseState.filePatches === 'object') {
+    for (const [relPath, content] of Object.entries(baseState.filePatches)) {
+      const abs = path.join(targetRoot, relPath);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content, 'utf8');
+    }
+  }
+
+  const prompt = [
+    spec?.feedbackPrompt || `Propose a ${spec?.lens || 'INV'} harness mutation.`,
+    '',
+    'Return ONLY a JSON object with this schema:',
+    '{"hypothesis":"string","patches":{"<repo-relative-path>":"<full-file-content>"}}',
+  ].join('\n');
+
+  let generator = vertexGenerate;
+  if (!generator && (process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT)) {
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+    const vt = createVertexText({
+      projectId,
+      region: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
+      logger: () => {},
+    });
+    generator = async (promptText) => {
+      if (typeof vt.generateText === 'function') {
+        const res = await vt.generateText({ prompt: promptText });
+        return typeof res === 'string' ? res : res?.text || '';
+      }
+      throw new Error('vertexText.generateText unavailable');
+    };
+  }
+
+  if (typeof generator === 'function') {
+    try {
+      const rawOut = await generator(prompt, spec);
+      let parsed = null;
+      if (rawOut && typeof rawOut === 'object') {
+        parsed = rawOut;
+      } else if (typeof rawOut === 'string') {
+        const stripped = rawOut
+          .trim()
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```$/i, '');
+        parsed = JSON.parse(stripped);
+      }
+      if (parsed && parsed.patches && typeof parsed.patches === 'object') {
+        const touchedPaths = [];
+        for (const [relPath, content] of Object.entries(parsed.patches)) {
+          const cleanRel = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
+          if (!cleanRel || cleanRel.includes('..') || typeof content !== 'string') continue;
+          const abs = path.join(targetRoot, cleanRel);
+          fs.mkdirSync(path.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, content, 'utf8');
+          touchedPaths.push(cleanRel);
+        }
+        if (touchedPaths.length > 0) {
+          return {
+            touchedPaths,
+            hypothesis: parsed.hypothesis || `${spec?.lens || 'INV'} vertex mutation`,
+            source: 'vertex',
+          };
+        }
+      }
+    } catch {
+      // Fall through to deterministic fallback mutation when offline or on parse error
+    }
+  }
+
+  const fb = await fallback({ spec, baseState, targetRoot });
+  return {
+    touchedPaths: fb?.touchedPaths || [],
+    hypothesis: fb?.hypothesis || `${spec?.lens || 'INV'} (${spec?.escalationMode || 'refine'}) live candidate`,
+    source: 'fallback',
+  };
+}
+
+/**
  * Build a live `proposeAndApply` callback for `runEvolutionLoop` that creates an
  * isolated worktree (or uses a custom `applyMutation` hook), records touched paths,
  * and binds a candidate `runTaskRollout` reflecting the mutated workspace state.
@@ -618,6 +714,8 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
  * @param {string} [opts.repoRoot]
  * @param {string} [opts.stage]
  * @param {boolean} [opts.useWorktree]
+ * @param {boolean} [opts.useVertex]
+ * @param {Function} [opts.vertexGenerate]
  * @param {Function} [opts.applyMutation]
  * @param {Function} [opts.execGit]
  */
@@ -630,6 +728,7 @@ export function createLiveProposeAndApply(opts = {}) {
     const candidateId = `${baseState.id}-${spec.lens.toLowerCase()}-${stepIndex}`;
 
     let touchedPaths = [];
+    let mutationHypothesis = `${spec.lens} (${spec.escalationMode}) live candidate`;
     let worktreeInfo = null;
     if (opts.useWorktree) {
       worktreeInfo = createIsolatedWorktree({
@@ -644,9 +743,11 @@ export function createLiveProposeAndApply(opts = {}) {
       const mutator =
         typeof opts.applyMutation === 'function'
           ? opts.applyMutation
-          : worktreeInfo
-            ? applyDefaultCandidateMutation
-            : null;
+          : opts.useVertex
+            ? (args) => proposeVertexMutation({ ...args, vertexGenerate: opts.vertexGenerate })
+            : worktreeInfo
+              ? applyDefaultCandidateMutation
+              : null;
 
       if (mutator) {
         const res = await mutator({
@@ -658,6 +759,9 @@ export function createLiveProposeAndApply(opts = {}) {
         touchedPaths = Array.isArray(res?.touchedPaths)
           ? res.touchedPaths
           : (worktreeInfo ? getWorktreeTouchedPaths(targetRoot, { execGit: opts.execGit }) : []);
+        if (res?.hypothesis) {
+          mutationHypothesis = res.hypothesis;
+        }
       }
 
       const filePatches = { ...(baseState?.filePatches || {}) };
@@ -675,7 +779,8 @@ export function createLiveProposeAndApply(opts = {}) {
         }
         return roleSnapshots.get(roleName);
       };
-      for (const r of ['paraclete-h2', 'software-engineer', 'qa-engineer', 'devops-engineer']) {
+      const stageRoles = new Set(['paraclete-h2', ...rolesForStage(stage, { repoRoot: targetRoot })]);
+      for (const r of stageRoles) {
         getSnapshotForRole(r);
       }
 
@@ -684,6 +789,8 @@ export function createLiveProposeAndApply(opts = {}) {
             runInProcessBrainRollout(task, substrateCtx, {
               repoRoot,
               configSnapshot: getSnapshotForRole(task.role || 'paraclete-h2'),
+              gatewayUrl: opts.gatewayUrl,
+              gatewayToken: opts.gatewayToken,
             })
         : undefined;
 
@@ -697,7 +804,7 @@ export function createLiveProposeAndApply(opts = {}) {
         filePatches,
         roleSnapshots,
         worktreePath: worktreeInfo?.worktreePath || null,
-        hypothesis: `${spec.lens} (${spec.escalationMode}) live candidate`,
+        hypothesis: mutationHypothesis,
         runTaskRollout,
       };
     } finally {
@@ -718,6 +825,8 @@ export function createLiveProposeAndApply(opts = {}) {
  * @param {string} [opts.role]
  * @param {object[]} [opts.tasks]
  * @param {Function} [opts.runTaskRollout]
+ * @param {string} [opts.gatewayUrl]
+ * @param {string} [opts.gatewayToken]
  * @param {object} [opts.deps]
  */
 export async function evaluateLiveTarget(opts = {}) {
@@ -733,7 +842,11 @@ export async function evaluateLiveTarget(opts = {}) {
   });
 
   const defaultRollout = (task, substrateCtx) =>
-    runInProcessBrainRollout(task, substrateCtx, { repoRoot });
+    runInProcessBrainRollout(task, substrateCtx, {
+      repoRoot,
+      gatewayUrl: opts.gatewayUrl,
+      gatewayToken: opts.gatewayToken,
+    });
 
   const evalRes = await runTier1Evaluation({
     stage,
