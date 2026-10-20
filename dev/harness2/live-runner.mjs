@@ -1216,8 +1216,23 @@ export function provisionGcpLab(opts = {}) {
     recordStep('service-account', 'exists', plan.serviceAccountEmail);
   }
 
+  const execIamWithRetry = (args, maxAttempts = 5) => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return execGcloud(args);
+      } catch (err) {
+        const msg = String(err?.stderr || err?.message || '');
+        if (attempt < maxAttempts && msg.includes('does not exist')) {
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+
   for (const role of plan.projectRoles) {
-    execGcloud([
+    execIamWithRetry([
       'projects',
       'add-iam-policy-binding',
       plan.projectId,
@@ -1227,7 +1242,7 @@ export function provisionGcpLab(opts = {}) {
       '--quiet',
     ]);
   }
-  execGcloud([
+  execIamWithRetry([
     'iam',
     'service-accounts',
     'add-iam-policy-binding',
