@@ -16,7 +16,7 @@ import { windowsGcloud } from '../dev-env.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
-import { rolesForStage } from './surface.mjs';
+import { DEFAULT_ROLES, rolesForStage } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
 
 function defaultExecGit(args, cwd) {
@@ -812,11 +812,20 @@ export function createLiveProposeAndApply(opts = {}) {
       const roleSnapshots = new Map();
       const getSnapshotForRole = (roleName) => {
         if (!roleSnapshots.has(roleName)) {
-          roleSnapshots.set(roleName, snapshotCandidateConfig(targetRoot, roleName));
+          if (fs.existsSync(path.join(targetRoot, 'config', 'contracts.json'))) {
+            roleSnapshots.set(roleName, snapshotCandidateConfig(targetRoot, roleName));
+          } else {
+            return roleSnapshots.get('generic') || roleSnapshots.get('paraclete-h2');
+          }
         }
         return roleSnapshots.get(roleName);
       };
-      const stageRoles = new Set(['paraclete-h2', ...rolesForStage(stage, { repoRoot: targetRoot })]);
+      const stageRoles = new Set([
+        'generic',
+        'paraclete-h2',
+        ...DEFAULT_ROLES,
+        ...rolesForStage(stage, { repoRoot: targetRoot }),
+      ]);
       for (const r of stageRoles) {
         getSnapshotForRole(r);
       }
