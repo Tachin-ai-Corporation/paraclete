@@ -21,6 +21,8 @@ import {
   createDevCanaryRunner,
   createLiveProposeAndApply,
   evaluateLiveTarget,
+  inspectGcpLabStatus,
+  provisionGcpLab,
   runInProcessBrainRollout,
 } from './live-runner.mjs';
 
@@ -39,8 +41,12 @@ Subcommands:
                                    Filter and distill Loop B trajectories into Loop A benchmarks
   promote  [--stage stage1|stage2] [--live] [--vertex] [--apply] [--branch <branch>]
                                    Verify candidate readiness, optionally apply patches, and print promotion report
-  lab-plan [--project <id>] [--zone <zone>]
+  lab-plan [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
                                    Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
+  lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--dry-run]
+                                   Provision the two-tier GCP lab (paraclete-h2-driver + paraclete-h2-canary)
+  lab-status [--project <id>] [--zone <zone>]
+                                   Inspect the live status of the two-tier GCP lab VMs
 `;
 
 export function parseCliArgs(argv = []) {
@@ -454,8 +460,36 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       projectId: flags.project,
       zone: flags.zone,
       region: flags.region,
+      organizationId: flags.org,
+      billingAccount: flags.billing,
     });
     return { ok: true, plan };
+  }
+
+  if (subcommand === 'lab-provision') {
+    return provisionGcpLab({
+      projectId: flags.project,
+      zone: flags.zone,
+      region: flags.region,
+      organizationId: flags.org,
+      billingAccount: flags.billing,
+      repo: flags.repo,
+      commit: flags.commit,
+      release: flags.release,
+      dryRun: Boolean(flags['dry-run']),
+      execGcloud: deps.execGcloud,
+      execGit: deps.execGit,
+      onStep: deps.onStep,
+    });
+  }
+
+  if (subcommand === 'lab-status') {
+    return inspectGcpLabStatus({
+      projectId: flags.project,
+      zone: flags.zone,
+      region: flags.region,
+      execGcloud: deps.execGcloud,
+    });
   }
 
   return { ok: true, usage: USAGE };

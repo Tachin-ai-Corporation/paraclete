@@ -64,7 +64,9 @@ import {
   getWorktreeTouchedPaths,
   createLiveProposeAndApply,
   evaluateLiveTarget,
+  inspectGcpLabStatus,
   proposeVertexMutation,
+  provisionGcpLab,
 } from '../../dev/harness2/live-runner.mjs';
 import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
 import { start as startFirestoreFake } from '../fakes/firestore-server.mjs';
@@ -798,4 +800,99 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       rmSync(tmpTarget, { recursive: true, force: true });
     }
   });
+
+  it('Step 5: provisions and inspects the two-tier GCP lab via provisionGcpLab, inspectGcpLabStatus, and CLI', async () => {
+    const gcloudCalls = [];
+    const mockExecGcloud = (args) => {
+      gcloudCalls.push(args);
+      if (args[0] === 'projects' && args[1] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'billing' && args[1] === 'projects' && args[2] === 'describe') {
+        return 'False';
+      }
+      if (args[0] === 'iam' && args[1] === 'service-accounts' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'firestore' && args[1] === 'databases' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'storage' && args[1] === 'buckets' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'compute' && args[1] === 'networks' && args[2] === 'describe') {
+        return 'default';
+      }
+      if (args[0] === 'compute' && args[1] === 'firewall-rules' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
+      if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'list') {
+        return JSON.stringify([
+          {
+            name: 'paraclete-h2-driver',
+            status: 'RUNNING',
+            machineType: 'zones/us-central1-a/machineTypes/e2-standard-8',
+            zone: 'zones/us-central1-a',
+            metadata: {
+              items: [
+                { key: 'paraclete-role', value: 'paraclete-h2' },
+                { key: 'paraclete-agent-name', value: 'Paraclete-H2-Driver' },
+              ],
+            },
+            networkInterfaces: [{ networkIP: '10.128.0.10' }],
+          },
+          {
+            name: 'paraclete-h2-canary',
+            status: 'RUNNING',
+            machineType: 'zones/us-central1-a/machineTypes/e2-standard-4',
+            zone: 'zones/us-central1-a',
+            metadata: {
+              items: [
+                { key: 'paraclete-role', value: 'software-engineer' },
+                { key: 'paraclete-agent-name', value: 'Paraclete-H2-Canary' },
+              ],
+            },
+            networkInterfaces: [{ networkIP: '10.128.0.11' }],
+          },
+        ]);
+      }
+      return 'ok';
+    };
+
+    const dryRunRes = await runCli(
+      ['lab-provision', '--project', 'paraclete-h2-lab', '--org', '100000000001', '--billing', '000000-000000-000000', '--dry-run'],
+      { execGcloud: mockExecGcloud },
+    );
+    assert.equal(dryRunRes.ok, true);
+    assert.equal(dryRunRes.dryRun, true);
+    assert.equal(gcloudCalls.length, 0);
+
+    const provRes = provisionGcpLab({
+      projectId: 'paraclete-h2-lab',
+      organizationId: '100000000001',
+      billingAccount: '000000-000000-000000',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      execGcloud: mockExecGcloud,
+    });
+    assert.equal(provRes.ok, true);
+    assert.equal(provRes.dryRun, false);
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'project' && s.status === 'created'));
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'billing' && s.status === 'linked'));
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-driver' && s.status === 'created'));
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-canary' && s.status === 'created'));
+
+    const statusRes = await runCli(['lab-status', '--project', 'paraclete-h2-lab'], {
+      execGcloud: mockExecGcloud,
+    });
+    assert.equal(statusRes.ok, true);
+    assert.equal(statusRes.vms.length, 2);
+    assert.equal(statusRes.vms[0].name, 'paraclete-h2-driver');
+    assert.equal(statusRes.vms[0].role, 'paraclete-h2');
+    assert.equal(statusRes.vms[1].name, 'paraclete-h2-canary');
+    assert.equal(statusRes.vms[1].role, 'software-engineer');
+  });
 });
+

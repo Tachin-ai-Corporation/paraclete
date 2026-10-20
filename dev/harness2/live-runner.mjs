@@ -12,6 +12,7 @@ import { COLLECTIONS, SUBCOLLECTIONS } from '../../agent/storage/collections.mjs
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
+import { windowsGcloud } from '../dev-env.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
 import { rolesForStage } from './surface.mjs';
@@ -20,6 +21,21 @@ import { validateCandidateWorkspace } from './validate.mjs';
 function defaultExecGit(args, cwd) {
   return execFileSync('git', args, {
     cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function defaultExecGcloud(args) {
+  if (process.platform === 'win32') {
+    const { file, args: prefix, env } = windowsGcloud({ env: process.env });
+    return execFileSync(file, [...prefix, ...args], {
+      env,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  }
+  return execFileSync('gcloud', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
@@ -917,6 +933,26 @@ export function createDevCanaryRunner(opts = {}) {
   };
 }
 
+const PARACLETE_STARTUP_SCRIPT = `#!/bin/bash
+# paraclete startup script, written by install/install.sh. Fetches install/bootstrap.sh from the
+# repository and commit in this VM's metadata and runs it as root in the unit paraclete-bootstrap.
+# Read its output with: journalctl -u paraclete-bootstrap
+set -euo pipefail
+attribute() {
+  curl --fail --silent --show-error --retry 5 --retry-connrefused -H 'Metadata-Flavor: Google' \\
+    "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"
+}
+repo="$(attribute paraclete-repo)"
+ref="$(attribute paraclete-ref)"
+install -d -m 0700 /run/paraclete-bootstrap
+curl --fail --silent --show-error --location --retry 10 --retry-delay 6 --retry-all-errors \\
+  --output /run/paraclete-bootstrap/bootstrap.sh \\
+  "https://raw.githubusercontent.com/\${repo}/\${ref}/install/bootstrap.sh"
+exec systemd-run --unit=paraclete-bootstrap --collect --wait --quiet --setenv=HOME=/root \\
+  --property=StandardOutput=journal --property=StandardError=journal \\
+  /bin/bash /run/paraclete-bootstrap/bootstrap.sh
+`;
+
 /**
  * Generate the two-tier GCP lab (`paraclete-h2-lab`) provisioning plan and exact commands
  * for `paraclete-h2-driver` (`e2-standard-8`) and `paraclete-h2-canary` (`e2-standard-4`).
@@ -925,41 +961,600 @@ export function createDevCanaryRunner(opts = {}) {
  * @param {string} [opts.projectId]
  * @param {string} [opts.zone]
  * @param {string} [opts.region]
+ * @param {string} [opts.organizationId]
+ * @param {string} [opts.billingAccount]
  */
 export function buildGcpLabPlan(opts = {}) {
   const projectId = opts.projectId || 'paraclete-h2-lab';
   const region = opts.region || 'us-central1';
   const zone = opts.zone || `${region}-a`;
+  const bucket = `${projectId}-paraclete`;
+  const serviceAccountId = 'paraclete-agent';
+  const serviceAccountEmail = [serviceAccountId, `${projectId}.iam.gserviceaccount.com`].join('@');
+
+  const apis = [
+    'compute.googleapis.com',
+    'run.googleapis.com',
+    'firestore.googleapis.com',
+    'iam.googleapis.com',
+    'iamcredentials.googleapis.com',
+    'aiplatform.googleapis.com',
+    'artifactregistry.googleapis.com',
+    'cloudbuild.googleapis.com',
+    'secretmanager.googleapis.com',
+    'storage.googleapis.com',
+    'iap.googleapis.com',
+    'drive.googleapis.com',
+    'cloudresourcemanager.googleapis.com',
+  ];
+
+  const projectRoles = [
+    'roles/aiplatform.user',
+    'roles/datastore.user',
+    'roles/logging.logWriter',
+    'roles/monitoring.metricWriter',
+    'roles/logging.viewer',
+    'roles/storage.objectUser',
+    'roles/storage.bucketViewer',
+    'roles/cloudbuild.builds.editor',
+  ];
 
   return {
     projectId,
     region,
     zone,
+    organizationId: opts.organizationId || null,
+    billingAccount: opts.billingAccount || null,
+    bucket,
+    serviceAccountId,
+    serviceAccountEmail,
+    apis,
+    projectRoles,
     vms: [
       {
         name: 'paraclete-h2-driver',
         machineType: 'e2-standard-8',
         role: 'paraclete-h2',
+        agentName: 'Paraclete-H2-Driver',
         tier: 'Tier-1 Evolution Driver (Loop A + Loop B Harvester)',
         bootDiskGb: 100,
+        bootDiskType: 'pd-ssd',
+        imageFamily: 'debian-12',
+        imageProject: 'debian-cloud',
       },
       {
         name: 'paraclete-h2-canary',
         machineType: 'e2-standard-4',
         role: 'software-engineer',
+        agentName: 'Paraclete-H2-Canary',
         tier: 'Tier-2 Canary Target (Real Vertex AI + Firestore + systemd)',
         bootDiskGb: 50,
+        bootDiskType: 'pd-balanced',
+        imageFamily: 'debian-12',
+        imageProject: 'debian-cloud',
       },
     ],
     commands: [
-      `gcloud projects create ${projectId} --name="Paraclete H2 Evolution Lab"`,
+      `gcloud projects create ${projectId} --name="Paraclete H2 Evolution Lab"${opts.organizationId ? ` --organization=${opts.organizationId}` : ''}`,
+      ...(opts.billingAccount
+        ? [`gcloud billing projects link ${projectId} --billing-account=${opts.billingAccount}`]
+        : []),
       `gcloud config set project ${projectId}`,
-      `gcloud services enable compute.googleapis.com aiplatform.googleapis.com firestore.googleapis.com storage.googleapis.com secretmanager.googleapis.com`,
-      `gcloud compute instances create paraclete-h2-driver --project=${projectId} --zone=${zone} --machine-type=e2-standard-8 --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud --boot-disk-size=100GB --scopes=cloud-platform`,
-      `gcloud compute instances create paraclete-h2-canary --project=${projectId} --zone=${zone} --machine-type=e2-standard-4 --image-family=ubuntu-2404-lts-amd64 --image-project=ubuntu-os-cloud --boot-disk-size=50GB --scopes=cloud-platform`,
-      `gcloud compute ssh paraclete-h2-driver --zone=${zone} --command="sudo bash install/install.sh --role paraclete-h2 --agent-id paraclete-h2-driver --project ${projectId}"`,
-      `gcloud compute ssh paraclete-h2-canary --zone=${zone} --command="sudo bash install/install.sh --role software-engineer --agent-id paraclete-h2-canary --project ${projectId}"`,
+      `gcloud services enable ${apis.join(' ')} --project=${projectId}`,
+      `gcloud compute instances create paraclete-h2-driver --project=${projectId} --zone=${zone} --machine-type=e2-standard-8 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-ssd --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
+      `gcloud compute instances create paraclete-h2-canary --project=${projectId} --zone=${zone} --machine-type=e2-standard-4 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=50GB --boot-disk-type=pd-balanced --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
+      `node dev/harness2/cli.mjs lab-status --project ${projectId} --zone ${zone}`,
       `node dev/harness2/cli.mjs canary --agent paraclete-h2-canary --role paraclete-h2`,
     ],
   };
 }
+
+/**
+ * Resolve the current repository's GitHub `owner/name` and 40-character HEAD commit SHA.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot]
+ * @param {Function} [opts.execGit]
+ */
+function resolveRepoAndCommit(opts = {}) {
+  const cwd = opts.repoRoot || process.cwd();
+  const execGit = opts.execGit || defaultExecGit;
+  let repo = opts.repo || null;
+  if (!repo) {
+    try {
+      const remoteUrl = execGit(['remote', 'get-url', 'origin'], cwd);
+      const m = /^(?:https:\/\/(?:[^@/]+@)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/.exec(
+        String(remoteUrl).trim(),
+      );
+      if (m) repo = `${m[1]}/${m[2]}`;
+    } catch {
+      repo = null;
+    }
+  }
+  let commit = opts.commit || null;
+  if (!commit) {
+    try {
+      commit = execGit(['rev-parse', 'HEAD'], cwd);
+    } catch {
+      commit = null;
+    }
+  }
+  return {
+    repo,
+    commit,
+    release: opts.release || 'main',
+  };
+}
+
+/**
+ * Provision the two-tier GCP lab (`paraclete-h2-lab`) idempotently:
+ * 1. Create or verify the GCP project (and optional organization parent).
+ * 2. Link the billing account if billing is not yet enabled.
+ * 3. Enable required Google Cloud APIs.
+ * 4. Ensure `paraclete-agent` service account and project/self IAM bindings.
+ * 5. Ensure Native-mode Firestore `(default)` database in `region`.
+ * 6. Ensure GCS bucket `gs://<project>-paraclete` and grant `roles/storage.objectAdmin`.
+ * 7. Ensure VPC network and IAP SSH ingress/deny firewall rules.
+ * 8. Create or update `paraclete-h2-driver` (`e2-standard-8`) and `paraclete-h2-canary` (`e2-standard-4`).
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.projectId]
+ * @param {string} [opts.region]
+ * @param {string} [opts.zone]
+ * @param {string} [opts.organizationId]
+ * @param {string} [opts.billingAccount]
+ * @param {string} [opts.repo]
+ * @param {string} [opts.commit]
+ * @param {string} [opts.release]
+ * @param {boolean} [opts.dryRun]
+ * @param {Function} [opts.execGcloud]
+ * @param {Function} [opts.execGit]
+ * @param {Function} [opts.onStep]
+ */
+export function provisionGcpLab(opts = {}) {
+  const plan = buildGcpLabPlan(opts);
+  const dryRun = Boolean(opts.dryRun);
+  const execGcloud = opts.execGcloud || defaultExecGcloud;
+  const onStep = typeof opts.onStep === 'function' ? opts.onStep : () => {};
+  const { repo, commit, release } = resolveRepoAndCommit(opts);
+
+  if (dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      plan,
+      repo,
+      commit,
+      release,
+      stepsExecuted: [],
+    };
+  }
+
+  const stepsExecuted = [];
+  const recordStep = (step, status, detail = '') => {
+    const entry = { step, status, detail };
+    stepsExecuted.push(entry);
+    onStep(entry);
+  };
+
+  // 1. Ensure project exists
+  let projectExists = false;
+  try {
+    const num = execGcloud(['projects', 'describe', plan.projectId, '--format=value(projectNumber)']);
+    projectExists = Boolean(num);
+  } catch {
+    projectExists = false;
+  }
+  if (!projectExists) {
+    const createArgs = ['projects', 'create', plan.projectId, '--name=Paraclete H2 Evolution Lab', '--quiet'];
+    if (plan.organizationId) {
+      createArgs.push(`--organization=${plan.organizationId}`);
+    }
+    execGcloud(createArgs);
+    recordStep('project', 'created', plan.projectId);
+  } else {
+    recordStep('project', 'exists', plan.projectId);
+  }
+
+  // 2. Ensure billing is linked
+  let billingEnabled = false;
+  try {
+    const enabled = execGcloud(['billing', 'projects', 'describe', plan.projectId, '--format=value(billingEnabled)']);
+    billingEnabled = /^true$/i.test(String(enabled).trim());
+  } catch {
+    billingEnabled = false;
+  }
+  if (!billingEnabled && plan.billingAccount) {
+    execGcloud([
+      'billing',
+      'projects',
+      'link',
+      plan.projectId,
+      `--billing-account=${plan.billingAccount}`,
+      '--quiet',
+    ]);
+    recordStep('billing', 'linked', plan.billingAccount);
+  } else {
+    recordStep('billing', billingEnabled ? 'enabled' : 'skipped', plan.billingAccount || '');
+  }
+
+  // 3. Enable APIs (in batches of 10 per Service Usage limit)
+  for (let i = 0; i < plan.apis.length; i += 10) {
+    const batch = plan.apis.slice(i, i + 10);
+    execGcloud(['services', 'enable', ...batch, `--project=${plan.projectId}`, '--quiet']);
+  }
+  recordStep('apis', 'enabled', `${plan.apis.length} APIs`);
+
+  // 4. Service account & IAM bindings
+  let saExists = false;
+  try {
+    const email = execGcloud([
+      'iam',
+      'service-accounts',
+      'describe',
+      plan.serviceAccountEmail,
+      `--project=${plan.projectId}`,
+      '--format=value(email)',
+    ]);
+    saExists = Boolean(email);
+  } catch {
+    saExists = false;
+  }
+  if (!saExists) {
+    execGcloud([
+      'iam',
+      'service-accounts',
+      'create',
+      plan.serviceAccountId,
+      `--project=${plan.projectId}`,
+      '--display-name=paraclete agent',
+      '--description=The paraclete agent: its VMs run as this account.',
+      '--quiet',
+    ]);
+    recordStep('service-account', 'created', plan.serviceAccountEmail);
+  } else {
+    recordStep('service-account', 'exists', plan.serviceAccountEmail);
+  }
+
+  for (const role of plan.projectRoles) {
+    execGcloud([
+      'projects',
+      'add-iam-policy-binding',
+      plan.projectId,
+      `--member=serviceAccount:${plan.serviceAccountEmail}`,
+      `--role=${role}`,
+      '--condition=None',
+      '--quiet',
+    ]);
+  }
+  execGcloud([
+    'iam',
+    'service-accounts',
+    'add-iam-policy-binding',
+    plan.serviceAccountEmail,
+    `--project=${plan.projectId}`,
+    `--member=serviceAccount:${plan.serviceAccountEmail}`,
+    '--role=roles/iam.serviceAccountUser',
+    '--condition=None',
+    '--quiet',
+  ]);
+  recordStep('iam', 'bound', `${plan.projectRoles.length} project roles`);
+
+  // 5. Firestore Native database
+  let fsType = '';
+  try {
+    fsType = execGcloud([
+      'firestore',
+      'databases',
+      'describe',
+      '--database=(default)',
+      `--project=${plan.projectId}`,
+      '--format=value(type)',
+    ]);
+  } catch {
+    fsType = '';
+  }
+  if (!fsType) {
+    execGcloud([
+      'firestore',
+      'databases',
+      'create',
+      '--database=(default)',
+      `--location=${plan.region}`,
+      '--type=firestore-native',
+      `--project=${plan.projectId}`,
+      '--quiet',
+    ]);
+    recordStep('firestore', 'created', plan.region);
+  } else {
+    recordStep('firestore', 'exists', fsType);
+  }
+
+  // 6. GCS bucket
+  let bucketExists = false;
+  try {
+    const bName = execGcloud([
+      'storage',
+      'buckets',
+      'describe',
+      `gs://${plan.bucket}`,
+      `--project=${plan.projectId}`,
+      '--format=value(name)',
+    ]);
+    bucketExists = Boolean(bName);
+  } catch {
+    bucketExists = false;
+  }
+  if (!bucketExists) {
+    execGcloud([
+      'storage',
+      'buckets',
+      'create',
+      `gs://${plan.bucket}`,
+      `--project=${plan.projectId}`,
+      `--location=${plan.region}`,
+      '--uniform-bucket-level-access',
+      '--public-access-prevention',
+      '--quiet',
+    ]);
+    recordStep('bucket', 'created', `gs://${plan.bucket}`);
+  } else {
+    recordStep('bucket', 'exists', `gs://${plan.bucket}`);
+  }
+  execGcloud([
+    'storage',
+    'buckets',
+    'add-iam-policy-binding',
+    `gs://${plan.bucket}`,
+    `--member=serviceAccount:${plan.serviceAccountEmail}`,
+    '--role=roles/storage.objectAdmin',
+    '--quiet',
+  ]);
+
+  // 7. Network & IAP SSH firewall rules
+  let networkName = 'default';
+  try {
+    const net = execGcloud([
+      'compute',
+      'networks',
+      'describe',
+      'default',
+      `--project=${plan.projectId}`,
+      '--format=value(name)',
+    ]);
+    if (!net) networkName = 'paraclete';
+  } catch {
+    networkName = 'paraclete';
+  }
+  if (networkName === 'paraclete') {
+    let customNetExists = false;
+    try {
+      customNetExists = Boolean(
+        execGcloud([
+          'compute',
+          'networks',
+          'describe',
+          'paraclete',
+          `--project=${plan.projectId}`,
+          '--format=value(name)',
+        ]),
+      );
+    } catch {
+      customNetExists = false;
+    }
+    if (!customNetExists) {
+      execGcloud([
+        'compute',
+        'networks',
+        'create',
+        'paraclete',
+        '--subnet-mode=auto',
+        '--description=Created by the paraclete installer',
+        `--project=${plan.projectId}`,
+        '--quiet',
+      ]);
+    }
+  }
+
+  let allowRuleExists = false;
+  try {
+    allowRuleExists = Boolean(
+      execGcloud([
+        'compute',
+        'firewall-rules',
+        'describe',
+        'paraclete-allow-iap-ssh',
+        `--project=${plan.projectId}`,
+        '--format=value(name)',
+      ]),
+    );
+  } catch {
+    allowRuleExists = false;
+  }
+  if (!allowRuleExists) {
+    execGcloud([
+      'compute',
+      'firewall-rules',
+      'create',
+      'paraclete-allow-iap-ssh',
+      `--network=${networkName}`,
+      '--direction=INGRESS',
+      '--action=ALLOW',
+      '--rules=tcp:22',
+      '--source-ranges=35.235.240.0/20',
+      '--target-tags=paraclete',
+      '--priority=1000',
+      '--description=SSH to the paraclete VMs through Identity-Aware Proxy only',
+      `--project=${plan.projectId}`,
+      '--quiet',
+    ]);
+  }
+
+  let denyRuleExists = false;
+  try {
+    denyRuleExists = Boolean(
+      execGcloud([
+        'compute',
+        'firewall-rules',
+        'describe',
+        'paraclete-deny-ingress',
+        `--project=${plan.projectId}`,
+        '--format=value(name)',
+      ]),
+    );
+  } catch {
+    denyRuleExists = false;
+  }
+  if (!denyRuleExists) {
+    execGcloud([
+      'compute',
+      'firewall-rules',
+      'create',
+      'paraclete-deny-ingress',
+      `--network=${networkName}`,
+      '--direction=INGRESS',
+      '--action=DENY',
+      '--rules=all',
+      '--source-ranges=0.0.0.0/0',
+      '--target-tags=paraclete',
+      '--priority=65000',
+      '--description=Nothing else reaches the paraclete VMs',
+      `--project=${plan.projectId}`,
+      '--quiet',
+    ]);
+  }
+  recordStep('network', 'ready', networkName);
+
+  // 8. Provision both VMs (`paraclete-h2-driver` + `paraclete-h2-canary`)
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-h2-lab-'));
+  const startupFile = path.join(tmpDir, 'startup-script.sh');
+  fs.writeFileSync(startupFile, PARACLETE_STARTUP_SCRIPT, 'utf8');
+
+  try {
+    for (const vm of plan.vms) {
+      let vmExists = false;
+      try {
+        const existingName = execGcloud([
+          'compute',
+          'instances',
+          'describe',
+          vm.name,
+          `--zone=${plan.zone}`,
+          `--project=${plan.projectId}`,
+          '--format=value(name)',
+        ]);
+        vmExists = Boolean(existingName);
+      } catch {
+        vmExists = false;
+      }
+
+      const metadataItems = [
+        ...(repo ? [`paraclete-repo=${repo}`] : []),
+        ...(commit ? [`paraclete-ref=${commit}`] : []),
+        `paraclete-release=${release}`,
+        `paraclete-role=${vm.role}`,
+        `paraclete-agent-name=${vm.agentName}`,
+        `paraclete-bucket=${plan.bucket}`,
+      ].join(',');
+
+      if (!vmExists) {
+        execGcloud([
+          'compute',
+          'instances',
+          'create',
+          vm.name,
+          `--zone=${plan.zone}`,
+          `--project=${plan.projectId}`,
+          `--machine-type=${vm.machineType}`,
+          `--boot-disk-size=${vm.bootDiskGb}GB`,
+          `--boot-disk-type=${vm.bootDiskType}`,
+          `--image-family=${vm.imageFamily}`,
+          `--image-project=${vm.imageProject}`,
+          `--service-account=${plan.serviceAccountEmail}`,
+          '--scopes=cloud-platform,https://www.googleapis.com/auth/drive',
+          `--network=${networkName}`,
+          '--tags=paraclete',
+          '--shielded-secure-boot',
+          '--shielded-vtpm',
+          '--shielded-integrity-monitoring',
+          `--metadata=${metadataItems}`,
+          `--metadata-from-file=startup-script=${startupFile}`,
+          '--quiet',
+        ]);
+        recordStep(`vm:${vm.name}`, 'created', `${vm.machineType} (${vm.role})`);
+      } else {
+        execGcloud([
+          'compute',
+          'instances',
+          'add-metadata',
+          vm.name,
+          `--zone=${plan.zone}`,
+          `--project=${plan.projectId}`,
+          `--metadata=${metadataItems}`,
+          `--metadata-from-file=startup-script=${startupFile}`,
+          '--quiet',
+        ]);
+        recordStep(`vm:${vm.name}`, 'updated', `${vm.machineType} (${vm.role})`);
+      }
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  return {
+    ok: true,
+    dryRun: false,
+    plan,
+    repo,
+    commit,
+    release,
+    stepsExecuted,
+  };
+}
+
+/**
+ * Inspect the live status of `paraclete-h2-driver` and `paraclete-h2-canary` in GCP.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.projectId]
+ * @param {string} [opts.zone]
+ * @param {string} [opts.region]
+ * @param {Function} [opts.execGcloud]
+ */
+export function inspectGcpLabStatus(opts = {}) {
+  const plan = buildGcpLabPlan(opts);
+  const execGcloud = opts.execGcloud || defaultExecGcloud;
+  const raw = execGcloud([
+    'compute',
+    'instances',
+    'list',
+    `--project=${plan.projectId}`,
+    '--format=json',
+  ]);
+  const list = raw ? JSON.parse(raw) : [];
+  const vms = list.map((inst) => {
+    const items = inst?.metadata?.items || [];
+    const meta = (key) => items.find((i) => i.key === key)?.value || null;
+    const machineTypeParts = String(inst.machineType || '').split('/');
+    const zoneParts = String(inst.zone || '').split('/');
+    return {
+      name: inst.name,
+      status: inst.status,
+      machineType: machineTypeParts[machineTypeParts.length - 1] || null,
+      zone: zoneParts[zoneParts.length - 1] || null,
+      role: meta('paraclete-role'),
+      agentName: meta('paraclete-agent-name'),
+      commit: meta('paraclete-ref'),
+      internalIp: inst?.networkInterfaces?.[0]?.networkIP || null,
+      externalIp: inst?.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP || null,
+    };
+  });
+
+  return {
+    ok: true,
+    projectId: plan.projectId,
+    zone: plan.zone,
+    vms,
+  };
+}
+
