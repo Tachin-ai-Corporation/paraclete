@@ -38,6 +38,11 @@ import {
   selectNextCurriculumUnit,
   synthesizeNextCurriculumEpoch,
 } from './curriculum.mjs';
+import {
+  REPORT_STANDARD_VERSION,
+  buildLoopStatusReport,
+  formatLoopStatusReportMarkdown,
+} from './report.mjs';
 
 export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 
@@ -58,6 +63,8 @@ Subcommands:
                                    Verify candidate readiness, optionally apply patches, push branch, and open PR
   curriculum [--status] [--suggest] [--max-units <n>] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
                                    Step through the Master Curriculum Playbook or synthesize the next curriculum epoch
+  report   [--markdown] [--project <id>] [--state-path <path>] [--archive-path <path>] [--suite-path <path>]
+                                   Generate the standardized Paraclete-H² Autonomous Loop & GCP Cost Status Report
   scaffold-skill --id <skill-id> [--role <role>] [--name <title>] [--command <cmd>]
                                    Generate a compliant skill package scaffold (skill.json, SKILL.md, <cmd>.mjs)
   scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
@@ -803,6 +810,33 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       application,
       pullRequest,
       coverage,
+    };
+  }
+
+  if (subcommand === 'report') {
+    const statusReport = buildLoopStatusReport({
+      repoRoot: deps.repoRoot || process.cwd(),
+      projectId: flags.project || deps.projectId,
+      statePath: typeof flags['state-path'] === 'string' ? flags['state-path'] : deps.statePath,
+      harvestedSuitePath: typeof flags['suite-path'] === 'string' ? flags['suite-path'] : deps.harvestedSuitePath,
+      instances: deps.instances,
+      disks: deps.disks,
+      missions: deps.missions,
+      pullRequests: deps.pullRequests,
+      alerts: deps.alerts,
+      schedules: deps.schedules,
+      billingAccountName: deps.billingAccountName,
+      billingEnabled: deps.billingEnabled,
+      nowIso: deps.nowIso,
+      fs: deps.fs,
+    });
+    const markdown = formatLoopStatusReportMarkdown(statusReport);
+    return {
+      ok: true,
+      standardVersion: REPORT_STANDARD_VERSION,
+      statusReport,
+      markdown,
+      ...(flags.markdown ? { report: markdown } : {}),
     };
   }
 

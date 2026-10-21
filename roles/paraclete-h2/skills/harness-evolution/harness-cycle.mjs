@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|report|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--markdown] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'scaffold-skill', 'scaffold-role']);
+const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'report', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 const VALID_LENSES = new Set(['context', 'sub_agents', 'tools', 'scaffolding']);
 
@@ -24,6 +24,7 @@ function parseArgs(argv) {
     suggest: false,
     maxUnits: null,
     statePath: null,
+    markdown: false,
     iterations: 2,
     candidates: 2,
     trials: 2,
@@ -54,6 +55,7 @@ function parseArgs(argv) {
     else if (arg === '--suggest') opts.suggest = true;
     else if (arg === '--max-units') opts.maxUnits = Number(argv[++i] || 8);
     else if (arg === '--state-path') opts.statePath = path.resolve(argv[++i] || '');
+    else if (arg === '--markdown') opts.markdown = true;
     else if (arg === '--iterations') opts.iterations = Number(argv[++i] || 2);
     else if (arg === '--candidates') opts.candidates = Number(argv[++i] || 2);
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
@@ -300,6 +302,27 @@ export async function main(argv, deps = {}) {
       : opts.suggest
         ? `Synthesized Curriculum Epoch ${result.suggestedEpoch}: ${result.proposedUnitsCount} units queued`
         : `Curriculum unit ${result.curriculumUnit?.id || 'unknown'} complete (promoted=${Boolean(result.readiness?.ready)})`;
+    emit(stdout, payload, opts.json, summaryText);
+    return result.ok ? 0 : 1;
+  }
+
+  if (opts.action === 'report') {
+    const cliArgs = [
+      'report',
+      ...(opts.statePath ? ['--state-path', opts.statePath] : []),
+      ...(opts.library ? ['--archive-path', opts.library] : []),
+      ...(opts.markdown ? ['--markdown'] : []),
+    ];
+    const result = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
+    const payload = {
+      ok: Boolean(result.ok),
+      action: 'report',
+      ...result,
+    };
+    writeOut(opts.out, payload);
+    const summaryText = opts.markdown
+      ? result.markdown
+      : `Paraclete-H2 Status Report (${result.standardVersion}): ${result.statusReport?.curriculum?.completedUnits || 0}/${result.statusReport?.curriculum?.totalUnits || 0} curriculum units, $${result.statusReport?.cost?.totals?.accruedToDateUsd || 0} accrued`;
     emit(stdout, payload, opts.json, summaryText);
     return result.ok ? 0 : 1;
   }

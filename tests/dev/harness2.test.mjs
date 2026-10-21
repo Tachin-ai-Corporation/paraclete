@@ -100,6 +100,12 @@ import {
   synthesizeNextCurriculumEpoch,
   formatCurriculumProposalMarkdown,
 } from '../../dev/harness2/curriculum.mjs';
+import {
+  REPORT_STANDARD_VERSION,
+  computeGcpCostEstimate,
+  buildLoopStatusReport,
+  formatLoopStatusReportMarkdown,
+} from '../../dev/harness2/report.mjs';
 import { start as startFirestoreFake } from '../fakes/firestore-server.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { COLLECTIONS } from '../../agent/storage/collections.mjs';
@@ -1447,6 +1453,136 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       assert.equal(suggestCli.suggestedEpoch, 3);
       assert.equal(suggestCli.proposedUnitsCount, 6);
       assert.ok(suggestCli.markdown.includes('# Paraclete-H² Autonomous Curriculum Proposal — Epoch 3'));
+    } finally {
+      rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('Standardized Loop & GCP Cost Status Report (report.mjs, cli report, and harness-cycle --action report)', async () => {
+    const tmpRoot = mkdtempSync(join(tmpdir(), 'paraclete-h2-report-'));
+    try {
+      const statePath = join(tmpRoot, 'curriculum-state.json');
+      const suitePath = join(tmpRoot, 'harvested-suite.json');
+
+      recordCurriculumUnitAttempt({
+        unitId: 'unit-organ-cortex',
+        baselineScores: { capability: 0.85, reliability: 0.9, efficiency: 0.8, fitness: 0.86 },
+        winnerScores: { capability: 1.0, reliability: 1.0, efficiency: 0.92, fitness: 0.985 },
+        promoted: true,
+        artifactPassRate: 1.0,
+        statePath,
+      });
+
+      const costEst = computeGcpCostEstimate({
+        billingAccountName: 'billingAccounts/000000-000000-000000',
+        billingEnabled: true,
+        nowIso: '2026-10-21T13:30:00Z',
+        instances: [
+          {
+            name: 'paraclete-h2-driver',
+            machineType: 'zones/us-central1-a/machineTypes/e2-standard-8',
+            status: 'RUNNING',
+            creationTimestamp: '2026-10-20T01:00:00Z',
+            networkInterfaces: [{ accessConfigs: [{ natIP: '198.51.100.10' }] }],
+          },
+          {
+            name: 'paraclete-h2-canary',
+            machineType: 'zones/us-central1-a/machineTypes/e2-standard-4',
+            status: 'RUNNING',
+            creationTimestamp: '2026-10-20T01:00:00Z',
+            networkInterfaces: [{ accessConfigs: [{ natIP: '198.51.100.11' }] }],
+          },
+        ],
+        disks: [
+          { name: 'paraclete-h2-driver', sizeGb: 100, type: 'pd-ssd' },
+          { name: 'paraclete-h2-canary', sizeGb: 50, type: 'pd-balanced' },
+        ],
+        missions: [
+          {
+            missionId: 'w-100',
+            responsibility: 'r-harness-closed-loop',
+            calls: 44,
+            input: 10_000_000,
+            cached: 8_000_000,
+            output: 80_000,
+            status: 'COMPLETE',
+          },
+          {
+            missionId: 'w-101',
+            responsibility: 'r-failure-harvest',
+            calls: 96,
+            input: 10_000_000,
+            cached: 8_000_000,
+            output: 170_000,
+            status: 'COMPLETE',
+          },
+        ],
+      });
+
+      assert.equal(costEst.vertexAi.cacheHitRate, 0.8);
+      assert.ok(costEst.vertexAi.cacheSavingsUsd > 20, 'Expected substantial context cache savings');
+      assert.ok(costEst.infrastructure.dailyUsd > 10 && costEst.infrastructure.dailyUsd < 12);
+      assert.ok(costEst.totals.accruedToDateUsd > 30);
+
+      const statusReport = buildLoopStatusReport({
+        projectId: 'example-h2-lab',
+        statePath,
+        harvestedSuitePath: suitePath,
+        nowIso: '2026-10-21T13:30:00Z',
+        instances: [
+          {
+            name: 'paraclete-h2-driver',
+            machineType: 'zones/us-central1-a/machineTypes/e2-standard-8',
+            status: 'RUNNING',
+            creationTimestamp: '2026-10-20T01:00:00Z',
+          },
+        ],
+        disks: [{ name: 'paraclete-h2-driver', sizeGb: 100, type: 'pd-ssd' }],
+        missions: [
+          {
+            timestamp: '2026-10-21T04:00:00Z',
+            responsibility: 'r-harness-closed-loop',
+            missionId: 'w-100',
+            calls: 44,
+            input: 10_000_000,
+            cached: 8_000_000,
+            output: 80_000,
+            status: 'COMPLETE',
+          },
+        ],
+      });
+
+      assert.equal(statusReport.standardVersion, REPORT_STANDARD_VERSION);
+      assert.equal(statusReport.curriculum.completedUnits, 1);
+      assert.equal(statusReport.curriculum.promotedUnits, 1);
+
+      const md = formatLoopStatusReportMarkdown(statusReport);
+      assert.ok(md.includes('# Paraclete-H² Autonomous Loop & GCP Cost Status Report'));
+      assert.ok(md.includes('## 1. Executive Summary Scorecard'));
+      assert.ok(md.includes('## 2. Master Curriculum Progress & Epoch Summary'));
+      assert.ok(md.includes('## 3. Loop A & Loop B Automation Cadence & Recent Executions'));
+      assert.ok(md.includes('## 4. GCP Infrastructure & Vertex AI Cost Analysis'));
+      assert.ok(md.includes('## 5. Operational Alerts, Self-Healing Diagnostics & Pull Requests'));
+
+      const cliRes = await runCli(['report', '--markdown', '--state-path', statePath]);
+      assert.equal(cliRes.ok, true);
+      assert.ok(cliRes.report.includes('Paraclete-H² Autonomous Loop & GCP Cost Status Report'));
+
+      let cycleOut = '';
+      const exitCode = await runHarnessCycle(
+        ['--action', 'report', '--state-path', statePath, '--json'],
+        {
+          stdout: {
+            write(chunk) {
+              cycleOut += chunk;
+            },
+          },
+        },
+      );
+      assert.equal(exitCode, 0);
+      const parsedCycle = JSON.parse(cycleOut);
+      assert.equal(parsedCycle.ok, true);
+      assert.equal(parsedCycle.standardVersion, REPORT_STANDARD_VERSION);
     } finally {
       rmSync(tmpRoot, { recursive: true, force: true });
     }
