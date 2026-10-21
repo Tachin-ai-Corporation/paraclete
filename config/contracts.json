@@ -60,7 +60,7 @@
   },
   "organs": {
     "_comment": "Tool-call budget for one organ turn in the gateway. Distinct from brain.max_iterations, the mission's decide-loop cap. A full coding task (read, edit, serve and check, diff, commit) needs more than 12 steps.",
-    "max_steps": 16
+    "max_steps": 19
   },
   "tools": {
     "_comment": "A tool result is context: bound it, announce the bound, and never let a binary file reach a model.",
@@ -93,7 +93,7 @@
     "gateway_timeout_ms": 300000,
     "claim_stale_ms": 600000,
     "context_token_budget": 125000,
-    "result_preview_chars": 1650,
+    "result_preview_chars": 2050,
     "context_slice_chars": 2000,
     "respond_reads": [
       "recent_work"

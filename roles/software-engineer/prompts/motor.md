@@ -15,3 +15,8 @@ says:
   output.
 - Install a project's dependencies with its own lockfile, in its own environment; never into the
   system's Python or with global npm installs.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
