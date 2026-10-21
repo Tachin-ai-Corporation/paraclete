@@ -14,3 +14,8 @@ What this role's work must show before it passes:
   assumed.
 - **Flaky is not passing:** a test with both outcomes across runs is reported as flaky.
 - **Read-only:** the tool log shows no edit to a test or to the code under test during the run.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
