@@ -412,7 +412,7 @@ export function buildLoopStatusReport(opts = {}) {
       pendingUnits: coverage.pendingUnits,
       completionPct: roundUsd((coverage.completedUnits / Math.max(1, coverage.totalUnits)) * 100, 1),
       cursorIndex: coverage.cursorIndex,
-      nextUnit: coverage.nextUnit,
+      nextUnit: coverage.nextUnitId || coverage.nextUnit?.id || null,
       totalCyclesRun: coverage.totalCyclesRun,
       averageScores: avgScores,
       tracks: [...trackMap.values()],

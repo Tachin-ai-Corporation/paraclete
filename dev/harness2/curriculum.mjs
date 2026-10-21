@@ -1120,7 +1120,26 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
     const gen = templates[spec.path];
     if (gen) {
       writeArtifactFile(workspaceDir, spec.path, `${gen()}\n`);
-    } else if (spec.path.endsWith('.json') || (Array.isArray(spec.requiredJsonKeys) && spec.requiredJsonKeys.length > 0)) {
+      continue;
+    }
+    const existingFull = path.join(workspaceDir, spec.path);
+    if (fs.existsSync(existingFull)) {
+      const existingContent = fs.readFileSync(existingFull, 'utf8');
+      const substringsOk = (spec.requiredSubstrings || []).every((s) => existingContent.includes(s));
+      let jsonOk = true;
+      if (Array.isArray(spec.requiredJsonKeys) && spec.requiredJsonKeys.length > 0) {
+        try {
+          const parsed = JSON.parse(existingContent);
+          jsonOk = spec.requiredJsonKeys.every((k) => k in parsed && parsed[k] !== undefined && parsed[k] !== null);
+        } catch {
+          jsonOk = false;
+        }
+      }
+      if (existingContent.trim().length > 0 && substringsOk && jsonOk) {
+        continue;
+      }
+    }
+    if (spec.path.endsWith('.json') || (Array.isArray(spec.requiredJsonKeys) && spec.requiredJsonKeys.length > 0)) {
       const payload = {
         unitId: unit.id,
         role: unit.role,
