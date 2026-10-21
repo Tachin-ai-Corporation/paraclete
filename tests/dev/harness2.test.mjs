@@ -63,6 +63,9 @@ import {
   formatPromotionReport,
   applyPromotedCandidate,
   pushAndCreatePullRequest,
+  mergeContractsJson,
+  mergePromptMarkdown,
+  resolveHarnessMergeConflict,
 } from '../../dev/harness2/promote.mjs';
 import {
   harvestMissionTrajectories,
@@ -1587,5 +1590,115 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('PR Conflict Resolution & Existing-Branch Update Fallback: mergeContractsJson, mergePromptMarkdown, resolveHarnessMergeConflict, and pushAndCreatePullRequest', () => {
+    // 1. 3-way merge of config/contracts.json (PR #2 vs PR #3 divergence from ancestor)
+    const ancestorContracts = {
+      vertex: { gemini_explicit_cache: true, models: { cortex: 'gemini-3.1-pro' } },
+      organs: { max_steps: 22 },
+      brain: { result_preview_chars: 2550, evidence_floor: true },
+    };
+    const mainContracts = {
+      vertex: { gemini_explicit_cache: true, models: { cortex: 'gemini-3.1-pro' } },
+      organs: { max_steps: 16 },
+      brain: { result_preview_chars: 1650, evidence_floor: true },
+    };
+    const prContracts = {
+      vertex: { gemini_explicit_cache: true, models: { cortex: 'gemini-3.1-pro' } },
+      organs: { max_steps: 21 },
+      brain: { result_preview_chars: 2400, evidence_floor: true },
+    };
+
+    const mergedContracts = mergeContractsJson(mainContracts, prContracts, ancestorContracts);
+    assert.equal(mergedContracts.mergedObject.organs.max_steps, 19);
+    assert.equal(mergedContracts.mergedObject.brain.result_preview_chars, 2050);
+    assert.equal(mergedContracts.mergedObject.brain.evidence_floor, true);
+    assert.deepEqual(mergedContracts.reconciledKeys, ['organs.max_steps', 'brain.result_preview_chars']);
+
+    // 2. Markdown prompt overlay conflict resolution deduplicates clauses and preserves sections
+    const baseMd = [
+      '# Role Overlay: Paraclete-H² (`cortex`)',
+      '',
+      '- Verify Pareto dominance on capability, reliability, and efficiency before promotion.',
+      'Never mutate immutable spine modules. Enforce Tier-1 validation before rollout.',
+    ].join('\n');
+    const headMd = [
+      '# Role Overlay: Paraclete-H² (`cortex`)',
+      '',
+      '- Verify Pareto dominance on capability, reliability, and efficiency before promotion.',
+      '- Keep all assembled organ prompts within the 24,000-character budget.',
+      'Never mutate immutable spine modules. Enforce Tier-1 validation before rollout.',
+      '',
+      '## Capability-First Artifact Protocol',
+      '- Verify every required output artifact on disk before reporting checkpoint completion.',
+    ].join('\n');
+
+    const mdConflict = resolveHarnessMergeConflict({
+      relPath: 'roles/paraclete-h2/prompts/cortex.md',
+      baseContent: baseMd,
+      headContent: headMd,
+    });
+    assert.equal(mdConflict.resolved, true);
+    assert.ok(mdConflict.mergedText.includes('Keep all assembled organ prompts within the 24,000-character budget.'));
+    assert.ok(mdConflict.mergedText.includes('## Capability-First Artifact Protocol'));
+
+    // 3. Immutable spine paths are strictly rejected by resolveHarnessMergeConflict
+    const spineReject = resolveHarnessMergeConflict({
+      relPath: 'agent/services/brain/runner.mjs',
+      baseContent: '// main',
+      headContent: '// pr',
+    });
+    assert.equal(spineReject.resolved, false);
+    assert.ok(spineReject.reason.includes('immutable or disallowed path'));
+
+    // 4. pushAndCreatePullRequest falls back to --force-with-lease and gh pr edit when updating an existing branch/PR
+    const readiness = evaluatePromotionReadiness({
+      candidate: {
+        id: 'unit-organ-motor-syn',
+        lens: 'SYN',
+        stage: 'stage1',
+        touchedPaths: ['roles/software-engineer/prompts/motor.md'],
+        scores: { capability: 0.995, reliability: 1.0, efficiency: 0.77, fitness: 0.96 },
+      },
+      baselineScores: { capability: 0.36, reliability: 0.5, efficiency: 0.75, fitness: 0.45 },
+    });
+    const seenGit = [];
+    const seenGh = [];
+    const updateRes = pushAndCreatePullRequest({
+      candidate: {
+        id: 'unit-organ-motor-syn',
+        lens: 'SYN',
+        stage: 'stage1',
+        touchedPaths: ['roles/software-engineer/prompts/motor.md'],
+        scores: { capability: 0.995, reliability: 1.0, efficiency: 0.77, fitness: 0.96 },
+      },
+      readiness,
+      branch: 'harness2/curriculum-unit-organ-motor',
+      execGit: (args) => {
+        seenGit.push(args);
+        if (args[0] === 'push' && args[1] === '-u') {
+          throw new Error('non-fast-forward');
+        }
+        return 'ok';
+      },
+      execGh: (args) => {
+        seenGh.push(args);
+        if (args[0] === 'pr' && args[1] === 'create') {
+          throw new Error('a pull request for branch already exists');
+        }
+        if (args[0] === 'pr' && args[1] === 'view') {
+          return 'https://github.com/org/paraclete/pull/3';
+        }
+        return 'ok';
+      },
+    });
+    assert.equal(updateRes.pushed, true);
+    assert.equal(updateRes.created, false);
+    assert.equal(updateRes.updated, true);
+    assert.equal(updateRes.prUrl, 'https://github.com/org/paraclete/pull/3');
+    assert.ok(seenGit.some((c) => c[0] === 'push' && c.includes('--force-with-lease')));
+    assert.ok(seenGh.some((c) => c[0] === 'pr' && c[1] === 'edit'));
+  });
 });
+
 

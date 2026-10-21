@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CAPABILITY_CREDO, isNonRegression } from './selection.mjs';
+import { classifySurfacePath } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
 
 function defaultExecGit(args, cwd) {
@@ -315,20 +316,35 @@ export function pushAndCreatePullRequest(opts = {}) {
       execGit(['add', '--', ...touched], repoRoot);
     }
     execGit(['commit', '--allow-empty', '-m', title], repoRoot);
-    execGit(['push', '-u', remote, branch], repoRoot);
-    const prUrl = execGh(
-      ['pr', 'create', '--base', baseBranch, '--head', branch, '--title', title, '--body', body],
-      repoRoot,
-    );
+    try {
+      execGit(['push', '-u', remote, branch], repoRoot);
+    } catch {
+      execGit(['push', '--force-with-lease', '-u', remote, branch], repoRoot);
+    }
+    let prUrl = null;
+    let created = true;
+    try {
+      prUrl = execGh(
+        ['pr', 'create', '--base', baseBranch, '--head', branch, '--title', title, '--body', body],
+        repoRoot,
+      );
+    } catch {
+      created = false;
+      execGh(['pr', 'edit', branch, '--title', title, '--body', body], repoRoot);
+      prUrl = execGh(['pr', 'view', branch, '--json', 'url', '--jq', '.url'], repoRoot);
+    }
     return {
       pushed: true,
-      created: true,
+      created,
+      updated: !created,
       branch,
       baseBranch,
       remote,
       title,
       prUrl: String(prUrl || '').trim(),
-      reason: 'Committed, pushed branch, and opened GitHub Pull Request',
+      reason: created
+        ? 'Committed, pushed branch, and opened GitHub Pull Request'
+        : 'Committed, force-with-lease pushed branch, and updated existing GitHub Pull Request',
     };
   } catch (err) {
     return {
@@ -341,4 +357,313 @@ export function pushAndCreatePullRequest(opts = {}) {
       reason: `Failed to push or create PR: ${err.message}`,
     };
   }
+}
+
+function clampNumber(val, min, max) {
+  return Math.max(min, Math.min(max, val));
+}
+
+function parseJsonObject(input) {
+  if (!input) return null;
+  if (typeof input === 'object') return structuredClone(input);
+  return JSON.parse(String(input));
+}
+
+/**
+ * Reconcile two concurrent `config/contracts.json` states (`baseRaw` on `main` vs `headRaw`
+ * on a promotion PR branch, optionally with 3-way `ancestorRaw` merge-base) while preserving
+ * all immutable keys from `baseRaw` and clamping numeric tunables strictly within Tier-1 bounds.
+ *
+ * @param {string | object} baseRaw
+ * @param {string | object} headRaw
+ * @param {string | object | null} [ancestorRaw]
+ * @param {object} [opts]
+ * @param {'balanced' | 'head' | 'base' | 'tighter'} [opts.strategy]
+ */
+export function mergeContractsJson(baseRaw, headRaw, ancestorRaw = null, opts = {}) {
+  const strategy = opts.strategy || 'balanced';
+  const baseObj = parseJsonObject(baseRaw) || {};
+  const headObj = parseJsonObject(headRaw) || {};
+  const ancObj = parseJsonObject(ancestorRaw);
+  const merged = structuredClone(baseObj);
+  const reconciledKeys = [];
+
+  if (merged.vertex || headObj.vertex) {
+    merged.vertex = { ...(merged.vertex || {}) };
+    const baseCache = merged.vertex.gemini_explicit_cache;
+    const headCache = headObj.vertex?.gemini_explicit_cache;
+    if (typeof baseCache === 'boolean' || typeof headCache === 'boolean') {
+      const nextCache = Boolean(baseCache || headCache);
+      if (nextCache !== baseCache || nextCache !== headCache) {
+        reconciledKeys.push('vertex.gemini_explicit_cache');
+      }
+      merged.vertex.gemini_explicit_cache = nextCache;
+    }
+  }
+
+  if (merged.organs || headObj.organs) {
+    merged.organs = { ...(merged.organs || {}) };
+    const baseSteps = Number(baseObj.organs?.max_steps);
+    const headSteps = Number(headObj.organs?.max_steps);
+    const ancSteps = Number(ancObj?.organs?.max_steps);
+    if (Number.isFinite(baseSteps) && Number.isFinite(headSteps)) {
+      let chosen = baseSteps;
+      if (baseSteps === headSteps) {
+        chosen = baseSteps;
+      } else if (Number.isFinite(ancSteps) && baseSteps === ancSteps && headSteps !== ancSteps) {
+        chosen = headSteps;
+      } else if (Number.isFinite(ancSteps) && headSteps === ancSteps && baseSteps !== ancSteps) {
+        chosen = baseSteps;
+      } else if (strategy === 'head') {
+        chosen = headSteps;
+      } else if (strategy === 'base') {
+        chosen = baseSteps;
+      } else if (strategy === 'tighter') {
+        chosen = Math.min(baseSteps, headSteps);
+      } else {
+        chosen = Math.round((baseSteps + headSteps) / 2);
+      }
+      merged.organs.max_steps = clampNumber(chosen, 15, 40);
+      if (baseSteps !== headSteps) {
+        reconciledKeys.push('organs.max_steps');
+      }
+    }
+  }
+
+  if (merged.brain || headObj.brain) {
+    merged.brain = { ...(merged.brain || {}) };
+    const basePreview = Number(baseObj.brain?.result_preview_chars);
+    const headPreview = Number(headObj.brain?.result_preview_chars);
+    const ancPreview = Number(ancObj?.brain?.result_preview_chars);
+    if (Number.isFinite(basePreview) && Number.isFinite(headPreview)) {
+      let chosen = basePreview;
+      if (basePreview === headPreview) {
+        chosen = basePreview;
+      } else if (Number.isFinite(ancPreview) && basePreview === ancPreview && headPreview !== ancPreview) {
+        chosen = headPreview;
+      } else if (Number.isFinite(ancPreview) && headPreview === ancPreview && basePreview !== ancPreview) {
+        chosen = basePreview;
+      } else if (strategy === 'head') {
+        chosen = headPreview;
+      } else if (strategy === 'base') {
+        chosen = basePreview;
+      } else if (strategy === 'tighter') {
+        chosen = Math.min(basePreview, headPreview);
+      } else {
+        chosen = Math.round((basePreview + headPreview) / 2 / 50) * 50;
+      }
+      merged.brain.result_preview_chars = clampNumber(chosen, 1500, 6000);
+      if (basePreview !== headPreview) {
+        reconciledKeys.push('brain.result_preview_chars');
+      }
+    }
+  }
+
+  return {
+    mergedObject: merged,
+    mergedText: `${JSON.stringify(merged, null, 2)}\n`,
+    reconciledKeys,
+  };
+}
+
+function splitMarkdownSections(mdText) {
+  const normalized = String(mdText || '').replace(/\r\n/g, '\n').trimEnd();
+  const lines = normalized.split('\n');
+  const sections = [];
+  let current = { heading: null, lines: [] };
+  for (const line of lines) {
+    if (/^##\s+/.test(line)) {
+      if (current.heading !== null || current.lines.length > 0) {
+        sections.push(current);
+      }
+      current = { heading: line.trim(), lines: [] };
+    } else {
+      current.lines.push(line);
+    }
+  }
+  if (current.heading !== null || current.lines.length > 0) {
+    sections.push(current);
+  }
+  return sections;
+}
+
+function mergeSectionLines(baseLines, headLines) {
+  const seenNonEmpty = new Set();
+  const footerLines = [];
+  const bodyLines = [];
+
+  const isFooterGuard = (line) => /^Never mutate immutable spine modules\./i.test(line.trim());
+
+  for (const rawLine of [...baseLines, ...headLines]) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      if (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] !== '') {
+        bodyLines.push('');
+      }
+      continue;
+    }
+    if (isFooterGuard(trimmed)) {
+      if (!footerLines.includes(rawLine)) {
+        footerLines.push(rawLine);
+      }
+      continue;
+    }
+    if (!seenNonEmpty.has(trimmed)) {
+      seenNonEmpty.add(trimmed);
+      bodyLines.push(rawLine);
+    }
+  }
+
+  while (bodyLines.length > 0 && bodyLines[bodyLines.length - 1] === '') {
+    bodyLines.pop();
+  }
+
+  return [...bodyLines, ...footerLines];
+}
+
+/**
+ * Reconcile two concurrent Markdown prompt / role overlay versions (`baseMd` vs `headMd`,
+ * optionally with `ancestorMd`) by preserving section structure, deduplicating bullet clauses,
+ * and enforcing the 24,000-character prompt budget.
+ *
+ * @param {string} baseMd
+ * @param {string} headMd
+ * @param {string | null} [ancestorMd]
+ */
+export function mergePromptMarkdown(baseMd, headMd, ancestorMd = null) {
+  const normBase = String(baseMd || '').replace(/\r\n/g, '\n');
+  const normHead = String(headMd || '').replace(/\r\n/g, '\n');
+  const normAnc = ancestorMd !== null && ancestorMd !== undefined ? String(ancestorMd).replace(/\r\n/g, '\n') : null;
+
+  if (normBase === normHead) {
+    return { mergedText: `${normBase.trimEnd()}\n`, charCount: normBase.trimEnd().length + 1 };
+  }
+  if (normAnc !== null && normBase === normAnc) {
+    return { mergedText: `${normHead.trimEnd()}\n`, charCount: normHead.trimEnd().length + 1 };
+  }
+  if (normAnc !== null && normHead === normAnc) {
+    return { mergedText: `${normBase.trimEnd()}\n`, charCount: normBase.trimEnd().length + 1 };
+  }
+
+  const baseSections = splitMarkdownSections(normBase);
+  const headSections = splitMarkdownSections(normHead);
+  const mergedSections = baseSections.map((s) => ({ heading: s.heading, lines: [...s.lines] }));
+
+  for (const hSec of headSections) {
+    const matchIdx = mergedSections.findIndex((bSec) => bSec.heading === hSec.heading);
+    if (matchIdx === -1) {
+      mergedSections.push({ heading: hSec.heading, lines: [...hSec.lines] });
+    } else {
+      mergedSections[matchIdx].lines = mergeSectionLines(mergedSections[matchIdx].lines, hSec.lines);
+    }
+  }
+
+  const renderedBlocks = mergedSections.map((sec) => {
+    const body = sec.lines.join('\n').trimEnd();
+    if (sec.heading) {
+      return body ? `${sec.heading}\n${body}` : sec.heading;
+    }
+    return body;
+  });
+
+  const mergedText = `${renderedBlocks.filter(Boolean).join('\n\n').trimEnd()}\n`;
+  return {
+    mergedText,
+    charCount: mergedText.length,
+  };
+}
+
+/**
+ * Resolve a merge conflict on a single Paraclete-H² file path under the Capability-First Credo:
+ * - Rejects any path outside the 8-component mutable surface (`c1..c8`).
+ * - Uses `mergeContractsJson` for `config/contracts.json`.
+ * - Uses `mergePromptMarkdown` for Markdown prompt / skill / role overlay files.
+ * - Uses top-level JSON key reconciliation for role/skill metadata `.json` files.
+ *
+ * @param {object} opts
+ * @param {string} opts.relPath
+ * @param {string} opts.baseContent
+ * @param {string} opts.headContent
+ * @param {string | null} [opts.ancestorContent]
+ * @param {'stage1' | 'stage2'} [opts.stage]
+ * @param {'balanced' | 'head' | 'base' | 'tighter'} [opts.strategy]
+ */
+export function resolveHarnessMergeConflict(opts = {}) {
+  const {
+    relPath,
+    baseContent = '',
+    headContent = '',
+    ancestorContent = null,
+    stage = 'stage2',
+    strategy = 'balanced',
+  } = opts;
+
+  const cleanPath = String(relPath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const surfaceCheck = classifySurfacePath(cleanPath, { stage, allowNewRoles: true });
+  if (!surfaceCheck.allowed) {
+    return {
+      resolved: false,
+      relPath: cleanPath,
+      component: surfaceCheck.component || null,
+      reason: `Refusing to resolve conflict on immutable or disallowed path '${cleanPath}': ${surfaceCheck.reason}`,
+    };
+  }
+
+  if (cleanPath === 'config/contracts.json') {
+    const res = mergeContractsJson(baseContent, headContent, ancestorContent, { strategy });
+    return {
+      resolved: true,
+      relPath: cleanPath,
+      component: surfaceCheck.component,
+      mergedText: res.mergedText,
+      reconciledKeys: res.reconciledKeys,
+    };
+  }
+
+  if (cleanPath.endsWith('.md')) {
+    const res = mergePromptMarkdown(baseContent, headContent, ancestorContent);
+    if (res.charCount > 24000) {
+      return {
+        resolved: false,
+        relPath: cleanPath,
+        component: surfaceCheck.component,
+        reason: `Merged prompt '${cleanPath}' exceeds 24,000-character budget (${res.charCount} chars)`,
+      };
+    }
+    return {
+      resolved: true,
+      relPath: cleanPath,
+      component: surfaceCheck.component,
+      mergedText: res.mergedText,
+      charCount: res.charCount,
+    };
+  }
+
+  if (cleanPath.endsWith('.json')) {
+    try {
+      const baseObj = parseJsonObject(baseContent) || {};
+      const headObj = parseJsonObject(headContent) || {};
+      const mergedObj = { ...baseObj, ...headObj };
+      return {
+        resolved: true,
+        relPath: cleanPath,
+        component: surfaceCheck.component,
+        mergedText: `${JSON.stringify(mergedObj, null, 2)}\n`,
+      };
+    } catch (err) {
+      return {
+        resolved: false,
+        relPath: cleanPath,
+        component: surfaceCheck.component,
+        reason: `Failed to parse JSON for '${cleanPath}': ${err.message}`,
+      };
+    }
+  }
+
+  return {
+    resolved: true,
+    relPath: cleanPath,
+    component: surfaceCheck.component,
+    mergedText: `${String(headContent || baseContent).replace(/\r\n/g, '\n').trimEnd()}\n`,
+  };
 }
