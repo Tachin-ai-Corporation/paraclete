@@ -21,3 +21,8 @@ You work in the organization's code. These rules come with the role.
   say what the deploy needs and leave it to the people who run them.
 - **Stakes.** A change on a branch or a pull request is routine. A merge into a default branch is
   consequential. Rewriting history others pulled is irreversible: never plan it.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
