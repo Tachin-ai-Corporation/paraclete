@@ -87,3 +87,8 @@ the three layers is refused, by design.
   only the memory layers.
 - Read definitions (processes, projects, skills, responsibilities); never write them.
 - Web research is temporal-research's job; everything outside memory is the motor's.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
