@@ -1,8 +1,11 @@
 // dev/harness2/promote.mjs: Promote a winning Pareto candidate after Tier-1 and Tier-2 canary verification.
+// A promotion's commit subject and pull request title start with the next version
+// (agent/release/versions.mjs), so a squash merge leaves main's head a commit dev/release.mjs can release.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isNewer, isVersion, parseVersion, versionFromText } from '../../agent/release/versions.mjs';
 import { CAPABILITY_CREDO, isNonRegression } from './selection.mjs';
 import { classifySurfacePath } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
@@ -250,9 +253,64 @@ export function formatPromotionReport(readiness) {
 }
 
 /**
+ * The version a promotion carries: the next change of the day after every version already known.
+ * The day is UTC, as on the repo's other versioned commits. A day after the newest version starts
+ * counting at 1; the newest version's own day (or a later one, when this clock is behind) counts on
+ * from it. Text that is not a version is ignored.
+ *
+ * @param {object} [p]
+ * @param {Iterable<string>} [p.subjects] commit subjects on the base branch
+ * @param {Iterable<string>} [p.tags]     tag names
+ * @param {Date} [p.now]
+ * @returns {string} `vYYYY.MM.DD.N.1`
+ */
+export function nextPromotionVersion({ subjects = [], tags = [], now = new Date() } = {}) {
+  const known = [
+    ...[...subjects].map(versionFromText),
+    ...[...tags].map((t) => String(t ?? '').trim()).filter(isVersion),
+  ].filter(Boolean);
+  const latest = known.reduce((a, b) => (a === null || isNewer(b, a) ? b : a), null);
+  const today = `v${now.toISOString().slice(0, 10).replaceAll('-', '.')}.1.1`;
+  if (latest === null || isNewer(today, latest)) return today;
+  const [year, month, day, index] = parseVersion(latest).parts;
+  const pad = (n) => String(n).padStart(2, '0');
+  return `v${year}.${pad(month)}.${pad(day)}.${index + 1}.1`;
+}
+
+/**
+ * The commit subjects of `<remote>/<baseBranch>` (of HEAD when that ref is missing, as in a clone
+ * with no remote) and the tag names, as `nextPromotionVersion` takes them. A read git refuses
+ * counts as nothing read.
+ */
+function readVersionSources({ execGit, repoRoot, remote, baseBranch }) {
+  const lines = (args) => {
+    try {
+      return String(execGit(args, repoRoot) ?? '').split(/\r?\n/);
+    } catch {
+      return null;
+    }
+  };
+  const subjects = lines(['log', '--format=%s', `${remote}/${baseBranch}`]) ?? lines(['log', '--format=%s', 'HEAD']) ?? [];
+  const tags = lines(['tag', '--list']) ?? [];
+  return { subjects, tags };
+}
+
+/** How a promotion's pull request must be merged for main to stay releasable. */
+export function promotionMergeNote(version) {
+  return [
+    '## Merging',
+    `Merge with **Squash and merge**, keeping the title as the commit subject. \`${version}: ...\` then becomes`,
+    "main's head, which `dev/release.mjs` can release. A merge commit's subject carries no version, and",
+    'release notes leave merge commits out.',
+  ].join('\n');
+}
+
+/**
  * Commit applied candidate changes on `branch`, push to `remote` (`origin`),
  * and open a GitHub Pull Request (`gh pr create`) against `baseBranch` (`main`)
  * with the full Frontier Model Committee + Capability-First Credo promotion report.
+ * It fetches `baseBranch` and the tags first, so the version in the commit subject and the title is
+ * newer than every one there; a dry run reads the local refs and fetches nothing.
  *
  * @param {object} opts
  * @param {object} opts.candidate
@@ -265,6 +323,7 @@ export function formatPromotionReport(readiness) {
  * @param {boolean} [opts.dryRun]
  * @param {Function} [opts.execGit]
  * @param {Function} [opts.execGh]
+ * @param {Date} [opts.now]
  */
 export function pushAndCreatePullRequest(opts = {}) {
   const {
@@ -277,6 +336,7 @@ export function pushAndCreatePullRequest(opts = {}) {
     dryRun = false,
     execGit = defaultExecGit,
     execGh = defaultExecGh,
+    now = new Date(),
   } = opts;
 
   if (!readiness?.ready) {
@@ -293,16 +353,25 @@ export function pushAndCreatePullRequest(opts = {}) {
     ? application.appliedPaths
     : candidate?.touchedPaths || Object.keys(candidate?.filePatches || {});
 
-  const title = `paraclete-h2(${candidate?.lens || 'SYN'}): promote ${candidate?.id || 'winner'} (ΔS_cap=${readiness.summary?.deltaCapability >= 0 ? `+${readiness.summary?.deltaCapability}` : (readiness.summary?.deltaCapability ?? 0)})`;
-  const body = formatPromotionReport(readiness);
+  const summary = `paraclete-h2(${candidate?.lens || 'SYN'}): promote ${candidate?.id || 'winner'} (ΔS_cap=${readiness.summary?.deltaCapability >= 0 ? `+${readiness.summary?.deltaCapability}` : (readiness.summary?.deltaCapability ?? 0)})`;
+  const versionedPromotion = () => {
+    const version = nextPromotionVersion({ ...readVersionSources({ execGit, repoRoot, remote, baseBranch }), now });
+    return {
+      version,
+      title: `${version}: ${summary}`,
+      body: `${formatPromotionReport(readiness)}\n${promotionMergeNote(version)}\n`,
+    };
+  };
 
   if (dryRun) {
+    const { version, title } = versionedPromotion();
     return {
       pushed: false,
       dryRun: true,
       branch,
       baseBranch,
       remote,
+      version,
       title,
       touchedPaths: touched,
       prUrl: `https://github.com/example/paraclete/pull/dry-run-${branch}`,
@@ -310,7 +379,11 @@ export function pushAndCreatePullRequest(opts = {}) {
     };
   }
 
+  let promotion = { version: null, title: summary };
   try {
+    execGit(['fetch', '--quiet', '--tags', remote, baseBranch], repoRoot);
+    promotion = versionedPromotion();
+    const { version, title, body } = promotion;
     execGit(['checkout', '-B', branch], repoRoot);
     if (touched.length > 0) {
       execGit(['add', '--', ...touched], repoRoot);
@@ -340,6 +413,7 @@ export function pushAndCreatePullRequest(opts = {}) {
       branch,
       baseBranch,
       remote,
+      version,
       title,
       prUrl: String(prUrl || '').trim(),
       reason: created
@@ -352,7 +426,8 @@ export function pushAndCreatePullRequest(opts = {}) {
       branch,
       baseBranch,
       remote,
-      title,
+      version: promotion.version,
+      title: promotion.title,
       prUrl: null,
       reason: `Failed to push or create PR: ${err.message}`,
     };
