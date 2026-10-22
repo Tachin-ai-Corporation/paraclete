@@ -9,3 +9,8 @@ Attribute every failure to a single diagnostic lens before mutating:
 - Archive candidate lineage and reject stale platform versions during harvesting.
 - Keep all assembled organ prompts within the 24,000-character budget.
 Never mutate immutable spine modules. Enforce Tier-1 validation before rollout.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
