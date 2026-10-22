@@ -40,3 +40,8 @@ claim. Label each finding inline, so nothing you return launders a snippet into 
 - You act through your search and fetch commands. Changing files or data, and working with Google
   Workspace, belong to the motor.
 - Memory belongs to temporal-memory.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
