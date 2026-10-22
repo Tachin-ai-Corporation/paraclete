@@ -3,8 +3,8 @@
 // than every version tag and not taken, and every CI check run on the head passed; then it pushes an
 // annotated tag (none with --dry-run), and a second run finishes a half-done one or says it is done.
 // The notes: a title line and one line per commit since the previous version tag (version order,
-// first parent, no merges, oldest first). The check: a tag is a release only when it is a version on
-// origin/main. These run against a fake git and gh, and then against real git in scratch repositories
+// first parent, each merge replaced by the commits it brought in, oldest first). The check: a tag is
+// a release only when it is a version on origin/main. These run against a fake git and gh, and then against real git in scratch repositories
 // with a bare one as origin; GitHub is always faked. The workflow is read as text: it checks the tag
 // first, tests read-only, and publishes with the notes this script writes.
 import { test, describe } from 'node:test';
@@ -111,7 +111,9 @@ function clone({
     if (line === 'tag --list') return { stdout: Object.keys(localTags).map((name) => `${name}\n`).join('') };
     const resolve = /^rev-parse --verify --quiet refs\/tags\/(.+)\^\{commit\}$/.exec(line);
     if (resolve) return localTags[resolve[1]] ? { stdout: `${localTags[resolve[1]]}\n` } : { code: 1 };
-    if (args[0] === 'log' && args.includes('--first-parent')) return { stdout: subjects.map((s) => `${s}\n`).join('') };
+    if (args[0] === 'log' && args.includes('--first-parent')) {
+      return { stdout: subjects.map((s, i) => `${String(i).padStart(40, '0')}\0${OTHER}\0${s}\n`).join('') };
+    }
     if (args[0] === 'tag') return tag;
     if (args[0] === 'push') return push;
     return undefined;
@@ -141,7 +143,7 @@ describe('cutting a release', () => {
     assert.match(deps.stdout.text, / {2}Changes in v2026\.10\.19\.1\.1 since v2026\.10\.18\.9\.4\n\n {2}- v2026\.10\.19\.1\.1: releases are cut from main\n/);
     assert.ok(deps.stdout.text.includes(`https://github.com/${REPO}/releases/tag/${VERSION}`));
     const notesLog = exec.callsTo('git').find((c) => c.args.includes('--first-parent'));
-    assert.deepEqual(notesLog.args, ['log', '--first-parent', '--no-merges', '--reverse', '--format=%s', `${OLD}..${HEAD}`, '--']);
+    assert.deepEqual(notesLog.args, ['log', '--first-parent', '--reverse', '--format=%H%x00%P%x00%s', `${OLD}..${HEAD}`, '--']);
   });
 
   test('--dry-run checks everything, shows the notes and changes nothing', async () => {
@@ -293,7 +295,7 @@ describe('notes and check, against real git', () => {
     return { dir, origin, git, c, exec, env };
   }
 
-  test('notes: one line per commit since the previous version tag, main only, merges left out, oldest first', async (t) => {
+  test('notes: one line per commit since the previous version tag, a merge as the commits it brought in, oldest first', async (t) => {
     const { exec } = history(t);
     const notes = async (tag) => {
       const deps = devDeps({ exec });
@@ -304,10 +306,39 @@ describe('notes and check, against real git', () => {
     assert.equal(await notes('v2026.10.17.9.1'), [
       'Changes in v2026.10.17.9.1 since v2026.10.17.1.1', '',
       '- v2026.10.17.2.1: the second, *as written*',
+      '- v2026.10.17.3.1: a commit on a branch',
       '- v2026.10.17.9.1: after the merge', '',
-    ].join('\n'), 'the branch commit and the merge are left out; the newer 10.1 is not the previous tag');
+    ].join('\n'), 'the branch commit stands where its merge is, the merge itself is left out; the newer 10.1 is not the previous tag');
     assert.equal(await notes('v2026.10.17.10.1'), 'Changes in v2026.10.17.10.1 since v2026.10.17.9.1\n\n- v2026.10.17.10.1: ten comes after nine\n');
     assert.equal(await notes('v2026.10.17.1.1'), 'Changes in v2026.10.17.1.1, the first release\n\n- v2026.10.17.1.1: the first commit\n');
+  });
+
+  test('notes: pull requests merged with merge commits show each commit once, in the order main took them', async (t) => {
+    const { git, exec } = history(t);
+    const commit = (subject) => git('commit', '--quiet', '--allow-empty', '-m', subject);
+    // pr-a opens from c5; main moves on; pr-b builds on pr-a and merges main in; then both are merged.
+    git('switch', '--quiet', '-c', 'pr-a');
+    commit('v2026.10.17.11.1: promotion a');
+    git('switch', '--quiet', MAIN);
+    commit('v2026.10.17.12.1: on main while a is open');
+    git('switch', '--quiet', '-c', 'pr-b', 'pr-a');
+    commit('v2026.10.17.13.1: b builds on a');
+    git('merge', '--quiet', '--no-ff', MAIN, '-m', "Merge branch 'main' into pr-b");
+    git('switch', '--quiet', MAIN);
+    git('merge', '--quiet', '--no-ff', 'pr-a', '-m', 'Merge pull request #1 from example/pr-a');
+    git('merge', '--quiet', '--no-ff', 'pr-b', '-m', 'Merge pull request #2 from example/pr-b');
+    commit('v2026.10.17.14.1: after both');
+    git('tag', 'v2026.10.17.14.1');
+
+    const deps = devDeps({ exec });
+    assert.equal(await main(['notes', 'v2026.10.17.14.1'], deps), 0, deps.stderr.text);
+    assert.equal(deps.stdout.text, [
+      'Changes in v2026.10.17.14.1 since v2026.10.17.10.1', '',
+      '- v2026.10.17.12.1: on main while a is open',
+      '- v2026.10.17.11.1: promotion a',
+      '- v2026.10.17.13.1: b builds on a',
+      '- v2026.10.17.14.1: after both', '',
+    ].join('\n'), 'no merge subject; a merges in by #1 only; main merged into pr-b is not brought in again');
   });
 
   test('notes refuses a tag that is not a version (2) or not in the clone (1)', async (t) => {

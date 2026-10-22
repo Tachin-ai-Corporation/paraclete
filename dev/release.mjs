@@ -13,9 +13,10 @@
 //
 // `notes <tag>` prints a release's notes: a title line, then one line per commit since the previous
 // version tag (the newest one older than this tag, in version order, never git's date order), each the
-// commit's subject as written, oldest first. Only main's own line of commits counts (first parent),
-// and merge commits are left out. `check <tag>` refuses a tag that is not a version or whose commit is
-// not on origin/main. The workflow runs both. Nothing here is installed on an instance.
+// commit's subject as written, oldest first. It follows main's own line of commits (first parent), and
+// a merge commit there stands for the commits it brought in, never for itself: a pull request merged
+// without squashing still shows its changes. `check <tag>` refuses a tag that is not a version or
+// whose commit is not on origin/main. The workflow runs both. Nothing here is installed on an instance.
 
 import { compareVersions, isVersion, versionFromText } from '../agent/release/versions.mjs';
 import { githubRepoFromUrl } from './deploy.mjs';
@@ -162,12 +163,33 @@ async function commitOf(ctx, ref) {
   return COMMIT.test(sha) ? sha : null;
 }
 
-/** The subjects of the commits after `from` up to `to`, main's own line only, no merges, oldest first. */
+/** Non-empty lines, each without its trailing whitespace. */
+const lines = (text) => text.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+
+/**
+ * The subjects of the commits after `from` up to `to`, oldest first. It walks main's own line (first
+ * parent). A merge commit on it is replaced by the commits it brought in, the ones its later parents
+ * reach and its first parent (and `from`) do not, no merges among them, in their own order. So the
+ * merge itself never appears, and no commit appears twice.
+ */
 async function subjectsBetween(ctx, from, to) {
-  const range = from ? [`${from}..${to}`] : [to];
-  const out = await gitOut(ctx, ['log', '--first-parent', '--no-merges', '--reverse', '--format=%s', ...range, '--'],
-    `git could not list the commits of ${from ? `${from}..${to}` : to}`);
-  return out.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
+  const range = from ? `${from}..${to}` : to;
+  const mainLine = await gitOut(ctx, ['log', '--first-parent', '--reverse', '--format=%H%x00%P%x00%s', range, '--'],
+    `git could not list the commits of ${range}`);
+  const subjects = [];
+  for (const entry of lines(mainLine)) {
+    const [sha, parentList = '', subject = ''] = entry.split('\0');
+    const [first, ...merged] = parentList.split(' ').filter(Boolean);
+    if (merged.length === 0) {
+      subjects.push(subject.trimEnd());
+      continue;
+    }
+    const brought = await gitOut(ctx,
+      ['log', '--no-merges', '--reverse', '--topo-order', '--format=%s', ...merged, `^${first}`, ...(from ? [`^${from}`] : []), '--'],
+      `git could not list the commits merged by ${sha}`);
+    subjects.push(...lines(brought));
+  }
+  return subjects.filter(Boolean);
 }
 
 /** The commit's check runs on GitHub, every page, through the GitHub CLI. */
