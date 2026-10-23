@@ -22,3 +22,8 @@ role.
   detail than needed into a report.
 - **Stakes.** An audit is routine: it reads. A remediation someone else runs carries its own stakes,
   which you state with it.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
