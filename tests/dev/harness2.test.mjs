@@ -2,6 +2,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -66,7 +67,10 @@ import {
   mergeContractsJson,
   mergePromptMarkdown,
   resolveHarnessMergeConflict,
+  nextPromotionVersion,
+  promotionMergeNote,
 } from '../../dev/harness2/promote.mjs';
+import { isNewer, versionFromText } from '../../agent/release/versions.mjs';
 import {
   harvestMissionTrajectories,
   loadMissionsFromInput,
@@ -1698,6 +1702,158 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     assert.equal(updateRes.prUrl, 'https://github.com/org/paraclete/pull/3');
     assert.ok(seenGit.some((c) => c[0] === 'push' && c.includes('--force-with-lease')));
     assert.ok(seenGh.some((c) => c[0] === 'pr' && c[1] === 'edit'));
+  });
+});
+
+describe('dev/harness2/promote.mjs: versioned promotions', () => {
+  const NOW = new Date('2026-10-22T23:30:00Z');
+  const CANDIDATE = {
+    id: 'unit-organ-motor',
+    lens: 'SYN',
+    stage: 'stage1',
+    touchedPaths: ['roles/software-engineer/prompts/motor.md'],
+    scores: { capability: 0.995, reliability: 1.0, efficiency: 0.77, fitness: 0.96 },
+  };
+  const readiness = () =>
+    evaluatePromotionReadiness({
+      candidate: CANDIDATE,
+      baselineScores: { capability: 0.36, reliability: 0.5, efficiency: 0.75, fitness: 0.45 },
+    });
+
+  it('the next version counts on from the newest version on the base branch or tagged', () => {
+    assert.equal(nextPromotionVersion({ now: NOW }), 'v2026.10.22.1.1');
+    // A day after the newest version starts at 1; the UTC date decides the day.
+    assert.equal(nextPromotionVersion({ subjects: ['v2026.10.19.3.1: hardening'], tags: ['v2026.10.19.3.1'], now: NOW }), 'v2026.10.22.1.1');
+    // The newest version's own day counts on, whatever the subindex; merge subjects are ignored.
+    assert.equal(
+      nextPromotionVersion({ subjects: ['Merge pull request #8 from a/b', 'v2026.10.22.2.3: x', 'v2026.10.21.9.1: y'], now: NOW }),
+      'v2026.10.22.3.1',
+    );
+    // A tag newer than every subject counts; a tag that is not a version does not.
+    assert.equal(nextPromotionVersion({ subjects: ['v2026.10.22.2.3: x'], tags: ['v2026.10.22.5.1', 'nightly'], now: NOW }), 'v2026.10.22.6.1');
+    // A clock behind the newest version still yields a newer one.
+    assert.equal(nextPromotionVersion({ subjects: ['v2026.10.23.4.2: later'], now: NOW }), 'v2026.10.23.5.1');
+    // Months and days keep two digits.
+    assert.equal(nextPromotionVersion({ now: new Date('2027-01-05T00:00:00Z') }), 'v2027.01.05.1.1');
+  });
+
+  it('fetches main and the tags, then commits and titles the pull request with a version newer than any there', () => {
+    const gitCalls = [];
+    const ghCalls = [];
+    const res = pushAndCreatePullRequest({
+      candidate: CANDIDATE,
+      readiness: readiness(),
+      branch: 'harness2/curriculum-unit-organ-motor',
+      now: NOW,
+      execGit: (args) => {
+        gitCalls.push(args);
+        if (args[0] === 'log') {
+          assert.equal(args.at(-1), 'origin/main');
+          return 'Merge pull request #8 from a/b\nv2026.10.22.1.1: make promotions releasable\nv2026.10.19.3.1: hardening';
+        }
+        if (args[0] === 'tag') return 'v2026.10.19.1.1\nv2026.10.19.3.1';
+        return '';
+      },
+      execGh: (args) => {
+        ghCalls.push(args);
+        return 'https://github.com/example/paraclete/pull/9\n';
+      },
+    });
+    assert.equal(res.pushed, true);
+    assert.equal(res.version, 'v2026.10.22.2.1');
+    assert.equal(res.title, 'v2026.10.22.2.1: paraclete-h2(SYN): promote unit-organ-motor (ΔS_cap=+0.635)');
+    assert.equal(versionFromText(res.title), res.version, 'dev/release.mjs reads the version from the subject');
+    assert.ok(isNewer(res.version, 'v2026.10.22.1.1'));
+
+    const order = gitCalls.map((c) => c[0]);
+    assert.ok(order.indexOf('fetch') < order.indexOf('log'), 'versions are read after the fetch');
+    assert.deepEqual(gitCalls.find((c) => c[0] === 'fetch'), ['fetch', '--quiet', '--tags', 'origin', 'main']);
+    assert.deepEqual(gitCalls.find((c) => c[0] === 'commit'), ['commit', '--allow-empty', '-m', res.title]);
+
+    const create = ghCalls.find((c) => c[1] === 'create');
+    assert.equal(create[create.indexOf('--title') + 1], res.title);
+    const body = create[create.indexOf('--body') + 1];
+    assert.ok(body.includes('Squash and merge'));
+    assert.ok(body.includes(promotionMergeNote(res.version)));
+  });
+
+  it('an updated pull request gets the fresh version in its title', () => {
+    const ghCalls = [];
+    const res = pushAndCreatePullRequest({
+      candidate: CANDIDATE,
+      readiness: readiness(),
+      branch: 'harness2/curriculum-unit-organ-motor',
+      now: NOW,
+      execGit: (args) => (args[0] === 'log' ? 'v2026.10.22.3.1: another promotion' : ''),
+      execGh: (args) => {
+        ghCalls.push(args);
+        if (args[1] === 'create') throw new Error('a pull request for branch already exists');
+        return 'https://github.com/example/paraclete/pull/9';
+      },
+    });
+    assert.equal(res.updated, true);
+    assert.equal(res.version, 'v2026.10.22.4.1');
+    const edit = ghCalls.find((c) => c[1] === 'edit');
+    assert.equal(edit[edit.indexOf('--title') + 1], res.title);
+  });
+
+  it('a failed fetch stops the promotion before anything is committed', () => {
+    const gitCalls = [];
+    const res = pushAndCreatePullRequest({
+      candidate: CANDIDATE,
+      readiness: readiness(),
+      now: NOW,
+      execGit: (args) => {
+        gitCalls.push(args);
+        if (args[0] === 'fetch') throw new Error('could not read from remote repository');
+        return '';
+      },
+      execGh: () => assert.fail('no pull request without a fetch'),
+    });
+    assert.equal(res.pushed, false);
+    assert.equal(res.version, null);
+    assert.match(res.reason, /could not read from remote/);
+    assert.deepEqual(gitCalls.map((c) => c[0]), ['fetch']);
+  });
+
+  it('a dry run reads the versions of a real clone without fetching, from HEAD when there is no remote', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'h2-version-'));
+    const gitConfig = join(scratch, 'gitconfig');
+    writeFileSync(gitConfig, '[user]\n  name = test\n  email = test@example.com\n[commit]\n  gpgsign = false\n[tag]\n  gpgsign = false\n');
+    const repo = join(scratch, 'repo');
+    mkdirSync(repo);
+    const calls = [];
+    const git = (args) => {
+      calls.push(args);
+      return execFileSync('git', args, {
+        cwd: repo,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1' },
+      }).trim();
+    };
+    try {
+      git(['init', '--quiet']);
+      git(['commit', '--allow-empty', '-m', 'v2026.10.21.2.1: an older change']);
+      git(['tag', 'v2026.10.21.2.1']);
+      git(['commit', '--allow-empty', '-m', 'v2026.10.22.1.1: make promotions releasable']);
+      calls.length = 0;
+
+      const res = pushAndCreatePullRequest({
+        candidate: CANDIDATE,
+        readiness: readiness(),
+        dryRun: true,
+        now: NOW,
+        execGit: git,
+        execGh: () => assert.fail('a dry run opens no pull request'),
+      });
+      assert.equal(res.dryRun, true);
+      assert.equal(res.version, 'v2026.10.22.2.1');
+      assert.ok(res.title.startsWith('v2026.10.22.2.1: paraclete-h2(SYN): promote unit-organ-motor'));
+      assert.ok(!calls.some((c) => ['fetch', 'checkout', 'commit', 'push'].includes(c[0])));
+    } finally {
+      rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 });
 

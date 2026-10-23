@@ -297,6 +297,11 @@ have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often b
 - Work on a branch per change.
 - Commit messages start with a version prefix: `vYYYY.MM.DD.N.N: what changed`. `N.N` counts the
   day's changes and their follow-ups. The dashboard reads the prefix to show versions.
+- Merge a pull request with **Squash and merge**, and give the pull request a title that starts with
+  its version. The squashed commit then lands on main with that version, so main's head stays
+  releasable. A merge commit's subject has no version, so `dev/release.mjs` refuses to release it,
+  and release notes leave merge commits out. The harness's promotion pull requests
+  (`dev/harness2/promote.mjs`) are titled this way.
 - Before pushing, run `npm test`.
 - Commit or push only when the developer has asked you to.
 - Releases are tags that maintainers cut after CI is green. Don't tag a release unless asked.
