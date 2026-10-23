@@ -1,4 +1,6 @@
-// dev/harness2/validate.mjs: Fast structural and contract validation gate for Loop A candidate mutations.
+// dev/harness2/validate.mjs: Fast structural and contract validation gate for Loop A candidate mutations,
+// and the lint on the text a promotion adds to product prompts (promptAdditionProblems, which
+// promote.mjs runs on the candidate's diff before it opens a pull request).
 
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -255,4 +257,76 @@ export function validateCandidateWorkspace(opts = {}) {
     promptCheck,
     testGate,
   };
+}
+
+/**
+ * The prompts every instance's agent reads: base organ prompts and role organ prompt appends, except
+ * the development role paraclete-h2's own, which is about the harness.
+ */
+const PRODUCT_PROMPT = /^(prompts\/[^/]+\.md|roles\/(?!paraclete-h2\/)[^/]+\/prompts\/[^/]+\.md)$/;
+
+/**
+ * Words that mean something only inside the harness. The agent reading a product prompt has no idea
+ * what they are, so an added line that uses one is the harness writing about itself.
+ */
+export const HARNESS_VOCABULARY = Object.freeze([
+  /immutable spine/i,
+  /\bTier-[12]\b/,
+  /ΔS/,
+  /\bc[1-8]_[a-z_]+\b/,
+  /\bc1\s*\.\.\s*c8\b/,
+  /Capability-First Credo/i,
+  /mutable surface/i,
+  /\bharness2\b/i,
+]);
+
+/**
+ * The lines each file gains, from `git diff --unified=0` output.
+ *
+ * @param {string} diffText
+ * @returns {Record<string, string[]>}
+ */
+export function addedLinesFromDiff(diffText) {
+  const added = {};
+  let file = null;
+  for (const line of String(diffText || '').split(/\r?\n/)) {
+    const header = /^\+\+\+ (?:b\/)?(.+)$/.exec(line);
+    if (header) {
+      file = header[1] === '/dev/null' ? null : header[1];
+      if (file) added[file] = added[file] || [];
+    } else if (file && line.startsWith('+')) {
+      added[file].push(line.slice(1));
+    }
+  }
+  return added;
+}
+
+/**
+ * What is wrong with the text a candidate adds to product prompts: harness vocabulary, or one block
+ * of two or more lines added identically to several prompts (one organ's or role's rule pasted
+ * everywhere, rather than a change written for each). Only added lines count, so text already in a
+ * prompt is never held against a new change.
+ *
+ * @param {Record<string, string[]>} addedByPath  addedLinesFromDiff's result
+ * @returns {string[]}
+ */
+export function promptAdditionProblems(addedByPath = {}) {
+  const problems = [];
+  const blocks = new Map();
+  for (const [path, lines] of Object.entries(addedByPath)) {
+    if (!PRODUCT_PROMPT.test(path)) continue;
+    for (const line of lines) {
+      const word = HARNESS_VOCABULARY.find((re) => re.test(line));
+      if (word) problems.push(`${path} adds harness vocabulary the agent has no meaning for (${word.exec(line)[0]}): ${line.trim()}`);
+    }
+    const text = lines.map((l) => l.trim()).filter(Boolean);
+    if (text.length >= 2) {
+      const key = text.join('\n');
+      blocks.set(key, [...(blocks.get(key) || []), path]);
+    }
+  }
+  for (const paths of blocks.values()) {
+    if (paths.length > 1) problems.push(`the same added block appears in ${paths.join(', ')}: write each prompt's change for that organ or role`);
+  }
+  return problems;
 }

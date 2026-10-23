@@ -207,15 +207,19 @@ export async function startTier1Substrate(deps = {}) {
  * @param {'stage1' | 'stage2'} [opts.stage]
  * @param {string} [opts.role]
  * @param {(task: object, ctx: object) => Promise<object>} [opts.runTaskRollout]
+ * @param {number} [opts.trials]  How many times each task runs (default 1)
  * @param {object} [opts.deps]
  */
 export async function runTier1Evaluation(opts = {}) {
   const tasks = opts.tasks || selectBenchmarkTasks({ stage: opts.stage, role: opts.role });
+  const trials = Math.max(1, Math.floor(Number(opts.trials) || 1));
+  const synthetic = typeof opts.runTaskRollout !== 'function';
   const substrate = await startTier1Substrate(opts.deps);
 
   try {
     const trajectories = [];
-    for (const task of tasks) {
+    const runs = Array.from({ length: trials }, (_, i) => tasks.map((task) => ({ task, trial: i + 1 }))).flat();
+    for (const { task, trial } of runs) {
       let rollout;
       if (typeof opts.runTaskRollout === 'function') {
         rollout = await opts.runTaskRollout(task, {
@@ -253,13 +257,16 @@ export async function runTier1Evaluation(opts = {}) {
         };
       }
 
-      const trajectory = extractTrajectory(rollout);
+      // Each run is tagged with its task and trial, and whether it was the synthetic dry run (which
+      // always completes, so it measures nothing): promotion evidence (evidence.mjs) groups by them.
+      const trajectory = { ...extractTrajectory(rollout), taskId: task.id, trial, synthetic };
       trajectories.push(trajectory);
     }
 
     const summary = aggregateTrajectoryScores(trajectories, opts.budgets);
     return {
       tier: 'tier1',
+      trials,
       trajectories,
       summary,
     };

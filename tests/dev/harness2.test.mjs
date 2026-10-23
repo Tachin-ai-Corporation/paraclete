@@ -22,7 +22,17 @@ import {
   validateContractsMutation,
   validatePromptBudgets,
   validateCandidateWorkspace,
+  addedLinesFromDiff,
+  promptAdditionProblems,
 } from '../../dev/harness2/validate.mjs';
+import {
+  DEFAULT_EVIDENCE_RULES,
+  EVIDENCE_SCHEMA,
+  buildPromotionEvidence,
+  formatEvidenceMarkdown,
+  judgeEvidence,
+  parseEvidenceBlock,
+} from '../../dev/harness2/evidence.mjs';
 import {
   extractTrajectory,
   scoreTrajectory,
@@ -119,6 +129,19 @@ import { COLLECTIONS } from '../../agent/storage/collections.mjs';
 import { main as runHarnessCycle } from '../../roles/paraclete-h2/skills/harness-evolution/harness-cycle.mjs';
 import { main as runHarnessEval } from '../../roles/paraclete-h2/skills/harness-benchmark/harness-eval.mjs';
 import { main as runHarnessPromote } from '../../roles/paraclete-h2/skills/harness-release/harness-promote.mjs';
+
+/**
+ * Evidence that passes its verdict: three real runs of one task on each side, the candidate clearly
+ * better, and the change proposed by a model. Options make it fail one rule at a time.
+ */
+function measuredEvidence(candidate, { source = 'vertex', base = [0.4, 0.42, 0.38], cand = [0.9, 0.92, 0.88], taskId = 'task-a' } = {}) {
+  const runs = (caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, synthetic: false, capability, missionId: `m-${taskId}-${i}` }));
+  return buildPromotionEvidence({
+    candidate: { ...candidate, proposal: { source, hypothesis: 'a measured change' } },
+    baselineTrajectories: runs(base),
+    candidateTrajectories: runs(cand),
+  });
+}
 
 describe('dev/harness2/surface.mjs', () => {
   it('defines the 8-component Paraclete mutable surface and stage role sets', () => {
@@ -1229,8 +1252,10 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         scores: { capability: 0.96, reliability: 0.95, efficiency: 0.84, fitness: 0.935 },
       },
       baselineScores: { capability: 0.90, reliability: 0.92, efficiency: 0.80, fitness: 0.888 },
+      evidence: measuredEvidence({ id: 'gen3-winner', lens: 'DOM', touchedPaths: ['roles/software-engineer/prompts/cortex.md'] }),
     });
     assert.equal(readiness.ready, true);
+    assert.equal(readiness.evidence.verdict.ok, true, readiness.evidence.verdict.problems.join('; '));
 
     const gitCalls = [];
     const ghCalls = [];
@@ -1665,6 +1690,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         scores: { capability: 0.995, reliability: 1.0, efficiency: 0.77, fitness: 0.96 },
       },
       baselineScores: { capability: 0.36, reliability: 0.5, efficiency: 0.75, fitness: 0.45 },
+      evidence: measuredEvidence({ id: 'unit-organ-motor-syn', lens: 'SYN', touchedPaths: ['roles/software-engineer/prompts/motor.md'] }),
     });
     const seenGit = [];
     const seenGh = [];
@@ -1718,6 +1744,7 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     evaluatePromotionReadiness({
       candidate: CANDIDATE,
       baselineScores: { capability: 0.36, reliability: 0.5, efficiency: 0.75, fitness: 0.45 },
+      evidence: measuredEvidence(CANDIDATE),
     });
 
   it('the next version counts on from the newest version on the base branch or tagged', () => {
@@ -1761,7 +1788,7 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     });
     assert.equal(res.pushed, true);
     assert.equal(res.version, 'v2026.10.22.2.1');
-    assert.equal(res.title, 'v2026.10.22.2.1: paraclete-h2(SYN): promote unit-organ-motor (ΔS_cap=+0.635)');
+    assert.equal(res.title, 'v2026.10.22.2.1: paraclete-h2(SYN): promote unit-organ-motor (ΔS_cap=+0.5, n=3)', 'the measured gain and runs');
     assert.equal(versionFromText(res.title), res.version, 'dev/release.mjs reads the version from the subject');
     assert.ok(isNewer(res.version, 'v2026.10.22.1.1'));
 
@@ -1775,6 +1802,10 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     const body = create[create.indexOf('--body') + 1];
     assert.ok(body.includes('Squash and merge'));
     assert.ok(body.includes(promotionMergeNote(res.version)));
+    const block = parseEvidenceBlock(body);
+    assert.equal(block.schema, EVIDENCE_SCHEMA, 'the body carries the evidence block a merger can check');
+    assert.equal(block.verdict.ok, true);
+    assert.deepEqual(block.trials, { baseline: 3, candidate: 3 });
   });
 
   it('an updated pull request gets the fresh version in its title', () => {
@@ -1813,7 +1844,7 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     assert.equal(res.pushed, false);
     assert.equal(res.version, null);
     assert.match(res.reason, /could not read from remote/);
-    assert.deepEqual(gitCalls.map((c) => c[0]), ['fetch']);
+    assert.deepEqual(gitCalls.map((c) => c[0]), ['diff', 'fetch'], 'the lint reads the diff, then the fetch fails');
   });
 
   it('a dry run reads the versions of a real clone without fetching, from HEAD when there is no remote', () => {
@@ -1857,4 +1888,157 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
   });
 });
 
+describe('dev/harness2/evidence.mjs: a promotion carries measured evidence', () => {
+  const CANDIDATE = { id: 'cand-1', lens: 'DOM', touchedPaths: ['roles/qa-engineer/prompts/cerebellum.md'] };
+
+  it('a model-proposed change, measured three times on each side and clearly better, passes', () => {
+    const evidence = measuredEvidence(CANDIDATE);
+    assert.equal(evidence.schema, EVIDENCE_SCHEMA);
+    assert.deepEqual(evidence.trials, { baseline: 3, candidate: 3 });
+    assert.equal(evidence.capability.delta, 0.5);
+    assert.ok(evidence.capability.noise > 0 && evidence.capability.noise < 0.05);
+    assert.deepEqual(evidence.perTask.map((t) => [t.taskId, t.baseline.n, t.candidate.n]), [['task-a', 3, 3]]);
+    assert.deepEqual(judgeEvidence(evidence), { ok: true, problems: [] });
+  });
+
+  it('each rule refuses on its own, naming why', () => {
+    const problems = (evidence) => judgeEvidence(evidence).problems.join(' | ');
+    assert.match(problems(measuredEvidence(CANDIDATE, { source: 'fallback' })), /came from 'fallback', not a model/);
+    assert.match(problems(measuredEvidence(CANDIDATE, { source: 'template' })), /came from 'template'/);
+    const unsourced = buildPromotionEvidence({ candidate: CANDIDATE, baselineTrajectories: [], candidateTrajectories: [] });
+    assert.match(problems(unsourced), /came from 'unknown'/);
+    assert.match(problems(unsourced), /no task was run/);
+    assert.match(problems(measuredEvidence(CANDIDATE, { base: [0.4, 0.4], cand: [0.9, 0.9] })), /ran only 2 time\(s\)/);
+    assert.match(problems(measuredEvidence(CANDIDATE, { base: [0.4, 0.4, 0.4], cand: [0.405, 0.405, 0.405] })), /below 0\.01/);
+    assert.match(problems(measuredEvidence(CANDIDATE, { base: [0.2, 0.6, 0.4], cand: [0.3, 0.7, 0.5] })), /within run-to-run noise/);
+    assert.equal(judgeEvidence(null).problems[0], 'no measured evidence');
+    assert.match(judgeEvidence({ schema: 'other/9' }).problems[0], /is not paraclete-h2-evidence\/1/);
+
+    // A task that got worse fails the promotion even when the average went up.
+    const runs = (taskId, caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, capability }));
+    const mixed = buildPromotionEvidence({
+      candidate: { ...CANDIDATE, proposal: { source: 'vertex' } },
+      baselineTrajectories: [...runs('a', [0.2, 0.2, 0.2]), ...runs('b', [0.9, 0.9, 0.9])],
+      candidateTrajectories: [...runs('a', [0.9, 0.9, 0.9]), ...runs('b', [0.7, 0.7, 0.7])],
+    });
+    assert.match(problems(mixed), /task b got worse: capability 0\.9 -> 0\.7/);
+
+    // A task measured on one side only cannot be compared.
+    const oneSided = buildPromotionEvidence({
+      candidate: { ...CANDIDATE, proposal: { source: 'vertex' } },
+      baselineTrajectories: runs('a', [0.2, 0.2, 0.2]),
+      candidateTrajectories: [...runs('a', [0.9, 0.9, 0.9]), ...runs('new', [1, 1, 1])],
+    });
+    assert.match(problems(oneSided), /tasks run on one side only: new/);
+  });
+
+  it('the synthetic dry run measures nothing, however many trials ran', async () => {
+    const tasks = selectBenchmarkTasks({ stage: 'stage1' }).slice(0, 2);
+    const res = await runTier1Evaluation({ tasks, trials: 3 });
+    assert.equal(res.trials, 3);
+    assert.equal(res.trajectories.length, tasks.length * 3);
+    assert.deepEqual([...new Set(res.trajectories.map((t) => t.trial))], [1, 2, 3]);
+    assert.ok(res.trajectories.every((t) => t.synthetic === true && tasks.some((k) => k.id === t.taskId)));
+    assert.ok(res.summary.perTrajectory.every((p) => p.taskId && p.synthetic === true));
+    const evidence = buildPromotionEvidence({
+      candidate: { ...CANDIDATE, proposal: { source: 'vertex' }, trajectories: res.trajectories },
+      baselineTrajectories: res.trajectories,
+    });
+    assert.match(judgeEvidence(evidence).problems.join(' | '), /synthetic dry run/);
+  });
+
+  it('the report shows the evidence and carries a block that reads back; without evidence it says so', () => {
+    const evidence = measuredEvidence(CANDIDATE);
+    const md = formatEvidenceMarkdown(evidence);
+    assert.match(md, /## Measured Evidence/);
+    assert.match(md, /\| `task-a` \| 0\.4 ± 0\.02 \(n=3\) \| 0\.9 ± 0\.02 \(n=3\) \| 0\.5 \|/);
+    assert.match(md, /\*\*Verdict\*\*: measured gain/);
+    assert.deepEqual(parseEvidenceBlock(md), { ...evidence, verdict: { ok: true, problems: [] } });
+    assert.equal(parseEvidenceBlock('no block here'), null);
+    assert.equal(parseEvidenceBlock('```json paraclete-h2-evidence\n{ not json\n```'), null);
+
+    const readiness = evaluatePromotionReadiness({
+      candidate: { ...CANDIDATE, scores: { capability: 0.9, reliability: 1, efficiency: 0.8, fitness: 0.9 } },
+      baselineScores: { capability: 0.4, reliability: 1, efficiency: 0.8, fitness: 0.6 },
+    });
+    assert.equal(readiness.evidence, null);
+    assert.match(formatPromotionReport(readiness), /- None: this candidate was not measured against the baseline/);
+  });
+
+  it('a live candidate records whether a model or the template proposed it', async () => {
+    const spec = { lens: 'DOM', escalationMode: 'focused', allowedComponents: ['c5_role_overlays'], priorAttemptsSummary: [] };
+    const fromModel = await createLiveProposeAndApply({
+      applyMutation: async () => ({ touchedPaths: [], source: 'vertex', hypothesis: 'tighten the verifier' }),
+    })(spec, { id: 'gen0' });
+    assert.deepEqual(fromModel.proposal, { source: 'vertex', hypothesis: 'tighten the verifier' });
+    const fromHook = await createLiveProposeAndApply({ applyMutation: async () => ({ touchedPaths: [] }) })(spec, { id: 'gen0' });
+    assert.equal(fromHook.proposal.source, 'custom');
+    const none = await createLiveProposeAndApply({})(spec, { id: 'gen0' });
+    assert.equal(none.proposal.source, 'none');
+    assert.equal(DEFAULT_EVIDENCE_RULES.refusedSources.includes('none'), true);
+  });
+});
+
+describe('dev/harness2/validate.mjs: the lint on text a promotion adds to product prompts', () => {
+  const DIFF = [
+    'diff --git a/prompts/temporal-memory.md b/prompts/temporal-memory.md',
+    '--- a/prompts/temporal-memory.md',
+    '+++ b/prompts/temporal-memory.md',
+    '@@ -87,0 +88,3 @@',
+    '+## Artifact Protocol',
+    '+- Verify every required output artifact on disk before reporting completion.',
+    '+- Preserve immutable spine boundaries.',
+    'diff --git a/roles/qa-engineer/prompts/cortex.md b/roles/qa-engineer/prompts/cortex.md',
+    '--- a/roles/qa-engineer/prompts/cortex.md',
+    '+++ b/roles/qa-engineer/prompts/cortex.md',
+    '@@ -10,0 +11,3 @@',
+    '+## Artifact Protocol',
+    '+- Verify every required output artifact on disk before reporting completion.',
+    '+- Preserve immutable spine boundaries.',
+    'diff --git a/roles/paraclete-h2/prompts/cortex.md b/roles/paraclete-h2/prompts/cortex.md',
+    '--- a/roles/paraclete-h2/prompts/cortex.md',
+    '+++ b/roles/paraclete-h2/prompts/cortex.md',
+    '@@ -3,0 +4,1 @@',
+    '+Never mutate immutable spine modules; enforce Tier-1 validation.',
+  ].join('\n');
+
+  it('reads the added lines per file from a diff', () => {
+    const added = addedLinesFromDiff(DIFF);
+    assert.deepEqual(Object.keys(added), ['prompts/temporal-memory.md', 'roles/qa-engineer/prompts/cortex.md', 'roles/paraclete-h2/prompts/cortex.md']);
+    assert.equal(added['prompts/temporal-memory.md'].length, 3);
+    assert.deepEqual(addedLinesFromDiff(''), {});
+  });
+
+  it('refuses harness vocabulary and one block pasted into several prompts, but not in the harness role', () => {
+    const problems = promptAdditionProblems(addedLinesFromDiff(DIFF));
+    assert.equal(problems.filter((p) => /harness vocabulary/.test(p)).length, 2, 'base and qa prompts; paraclete-h2 is the harness');
+    assert.ok(problems.some((p) => /prompts\/temporal-memory\.md adds harness vocabulary .*immutable spine/i.test(p)));
+    assert.ok(problems.some((p) => /the same added block appears in prompts\/temporal-memory\.md, roles\/qa-engineer\/prompts\/cortex\.md/.test(p)));
+    // A change written for one prompt, and one-line additions, pass.
+    assert.deepEqual(promptAdditionProblems({
+      'roles/qa-engineer/prompts/cerebellum.md': ['- A flaky test is reported as flaky, never as passing.', '- Quote the failing assertion.'],
+      'prompts/motor.md': ['- Quote the failing assertion.'],
+      'skills/files/SKILL.md': ['Mention the Tier-1 gate here, outside a prompt.'],
+    }), []);
+  });
+
+  it('the pull request gate refuses without evidence, with failing evidence, or with a failing lint, before any git write', () => {
+    const candidate = { id: 'cand-1', lens: 'DOM', stage: 'stage2', touchedPaths: ['prompts/temporal-memory.md'], scores: { capability: 0.9, reliability: 1, efficiency: 0.8, fitness: 0.9 } };
+    const baselineScores = { capability: 0.4, reliability: 1, efficiency: 0.8, fitness: 0.6 };
+    const attempt = (evidence, diff = '') => {
+      const calls = [];
+      const res = pushAndCreatePullRequest({
+        candidate,
+        readiness: evaluatePromotionReadiness({ candidate, baselineScores, evidence }),
+        execGit: (args) => { calls.push(args[0]); return args[0] === 'diff' ? diff : ''; },
+        execGh: () => assert.fail('no pull request'),
+      });
+      assert.ok(!calls.some((c) => ['fetch', 'checkout', 'add', 'commit', 'push'].includes(c)), calls.join(' '));
+      return res;
+    };
+    assert.match(attempt(undefined).reason, /^Not promoted: no measured evidence/);
+    assert.match(attempt(measuredEvidence(candidate, { source: 'fallback' })).reason, /^Not promoted: the change came from 'fallback'/);
+    assert.match(attempt(measuredEvidence(candidate), DIFF).reason, /^Not promoted: .*harness vocabulary/);
+  });
+});
 
