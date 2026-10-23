@@ -1,11 +1,12 @@
 // tests/dev/harness2.test.mjs: Unit tests for the Paraclete-H² continual harness improvement system.
 
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import {
   PARACLETE_SURFACE,
@@ -99,9 +100,24 @@ import {
   createLiveProposeAndApply,
   evaluateLiveTarget,
   inspectGcpLabStatus,
+  manageLabFollowMain,
   proposeVertexMutation,
   provisionGcpLab,
 } from '../../dev/harness2/live-runner.mjs';
+import {
+  FOLLOW_MAIN,
+  decodeFollowMainRemoteCommand,
+  followMainCommandFor,
+  followMainInstallScript,
+  followMainRemoteCommand,
+  followMainScript,
+  followMainUninstallScript,
+  followMainUnits,
+  parseFollowMainOutput,
+  parseIntervalMinutes,
+} from '../../dev/harness2/lab-updater.mjs';
+import { sshArgs } from '../../dev/dev-env.mjs';
+import { bash as bashProgram, needsBash } from '../install/harness.mjs';
 import { buildProposalPrompt, createVertexProposalGenerator } from '../../dev/harness2/proposer.mjs';
 import { loadContracts } from '../../config/contracts.mjs';
 import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
@@ -992,6 +1008,10 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       }
       if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'describe') {
         throw new Error('not found');
+      }
+      if (args[0] === 'compute' && args[1] === 'ssh') {
+        // The follow-main install step and status probe (lab-updater.mjs); their own tests are below.
+        return 'lab-follow-main.installed=changed\nlab-follow-main.timer_enabled=enabled\nlab-follow-main.timer_active=active';
       }
       if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'list') {
         return JSON.stringify([
@@ -2399,6 +2419,741 @@ describe('dev/harness2/validate.mjs: the lint on text a promotion adds to produc
     assert.match(attempt(undefined).reason, /^Not promoted: no measured evidence/);
     assert.match(attempt(measuredEvidence(candidate, { source: 'fallback' })).reason, /^Not promoted: the change came from 'fallback'/);
     assert.match(attempt(measuredEvidence(candidate), DIFF).reason, /^Not promoted: .*harness vocabulary/);
+  });
+});
+
+describe('dev/harness2/lab-updater.mjs and lab-follow-main.sh: the lab VMs follow main (lab only)', () => {
+  const DRIVER = { name: 'paraclete-h2-driver', harnessCheckout: FOLLOW_MAIN.harnessCheckout };
+  const CANARY = { name: 'paraclete-h2-canary', harnessCheckout: null };
+  const REPO = 'your-org/paraclete';
+  const OLD = '1'.repeat(40);
+  const NEW = '2'.repeat(40);
+  const TOKEN = 'lab-secret-token-0000';
+  const UPDATER = fileURLToPath(new URL('../../dev/harness2/lab-follow-main.sh', import.meta.url));
+  const posix = (path) => path.replace(/\\/g, '/');
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+  const sandboxes = [];
+  after(() => {
+    for (const dir of sandboxes) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Where a real program is, looked up before the shims go first on PATH. */
+  const realProgram = (name) => (bashProgram ? spawnSync(bashProgram, ['-c', `command -v ${name}`], { encoding: 'utf8' }).stdout.trim() : '');
+  const REAL_GIT = realProgram('git');
+  const REAL_STAT = realProgram('stat');
+
+  /** Fake VM programs. Each logs to $FAKE_LOG and answers from FAKE_* variables; git runs for real except ls-remote. */
+  const SHIMS = {
+    git: String.raw`printf 'git %s\n' "$*" >> "$FAKE_LOG"
+if [[ "$1" == ls-remote ]]; then
+  if [[ -n "$FAKE_MAIN_HEAD" ]]; then printf '%s\trefs/heads/main\n' "$FAKE_MAIN_HEAD"; fi
+  exit 0
+fi
+exec "$REAL_GIT" "$@"`,
+    runuser: String.raw`[[ "$1" == -u && "$3" == -- ]] || { echo 'runuser: unexpected arguments' >&2; exit 64; }
+printf 'runuser %s\n' "$2" >> "$FAKE_LOG"
+shift 3
+exec "$@"`,
+    getent: String.raw`[[ "$1" == passwd && "$2" == paraclete ]] || exit 2
+printf 'paraclete:x:999:999::%s:/usr/sbin/nologin\n' "$FAKE_HOME"`,
+    stat: String.raw`if [[ "$1" == -c && "$2" == %U ]]; then printf '%s\n' "$FAKE_OWNER"; exit 0; fi
+exec "$REAL_STAT" "$@"`,
+    pgrep: String.raw`printf 'pgrep %s\n' "$*" >> "$FAKE_LOG"
+if [[ -n "$FAKE_HARNESS_PID" ]]; then printf '%s\n' "$FAKE_HARNESS_PID"; exit 0; fi
+exit 1`,
+    flock: String.raw`for arg in "$@"; do if [[ -n "$FAKE_LOCKED" && "$arg" == "$FAKE_LOCKED" ]]; then exit 1; fi; done
+exit 0`,
+    curl: String.raw`printf 'curl %s\n' "$*" >> "$FAKE_LOG"
+exit 22`,
+    systemctl: String.raw`printf 'systemctl %s\n' "$*" >> "$FAKE_LOG"
+case "$1" in
+  is-enabled) printf '%s\n' "$FAKE_TIMER_ENABLED" ;;
+  is-active)
+    unit="$2" quiet=0
+    if [[ "$2" == --quiet ]]; then unit="$3" quiet=1; fi
+    if [[ "$unit" == *.service ]]; then state="$FAKE_SERVICE_ACTIVE"; else state="$FAKE_TIMER_ACTIVE"; fi
+    if (( !quiet )); then printf '%s\n' "$state"; fi
+    [[ "$state" == active ]]; exit ;;
+  show)
+    if [[ "$2" == --property=LastTriggerUSec ]]; then printf '%s\n' "$FAKE_LAST_RUN"; else printf '%s\n' "$FAKE_RESULT"; fi ;;
+esac
+exit 0`,
+    journalctl: String.raw`printf 'journalctl %s\n' "$*" >> "$FAKE_LOG"
+printf '%s\n' "$FAKE_LAST_LINE"`,
+  };
+
+  /** The VM's install/upgrade.sh: records its arguments and, unless told to fail, installs the commit. */
+  const FAKE_UPGRADE = String.raw`#!/usr/bin/env bash
+printf 'upgrade %s\n' "$*" >> "$FAKE_LOG"
+echo 'paraclete-upgrade: the fake upgrader ran'
+if [[ "$FAKE_UPGRADE_STATUS" != 0 ]]; then exit "$FAKE_UPGRADE_STATUS"; fi
+printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.json"
+`;
+
+  /** A fake lab VM in a directory: the install root, the data root, /run, /var/log, and the shims. */
+  function vmSandbox() {
+    const dir = mkdtempSync(join(tmpdir(), 'paraclete-lab-'));
+    sandboxes.push(dir);
+    const at = (rel = '') => posix(join(dir, rel));
+    for (const sub of ['bin', 'opt/paraclete/install', 'var/lib/paraclete/services/brain', 'var/log', 'run', 'home']) {
+      mkdirSync(join(dir, sub), { recursive: true });
+    }
+    for (const [name, body] of Object.entries(SHIMS)) {
+      writeFileSync(join(dir, 'bin', name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+    }
+    writeFileSync(join(dir, 'opt/paraclete/install/upgrade.sh'), FAKE_UPGRADE, { mode: 0o755 });
+    writeFileSync(join(dir, 'calls.log'), '');
+    const health = join(dir, 'var/lib/paraclete/services/brain/health.json');
+    const busyFile = join(dir, 'var/lib/paraclete/lab-follow-main.busy-since');
+    const calls = () => readFileSync(join(dir, 'calls.log'), 'utf8').split('\n').filter(Boolean);
+    const vm = {
+      dir,
+      at,
+      calls,
+      release(commit) {
+        writeFileSync(join(dir, 'opt/paraclete/release.json'), JSON.stringify({ version: null, ref: commit, commit, repo: REPO }));
+      },
+      installed: () => JSON.parse(readFileSync(join(dir, 'opt/paraclete/release.json'), 'utf8')).commit,
+      mission(id) {
+        writeFileSync(health, JSON.stringify({ service: 'brain', runner: { active_mission: id, since: id ? new Date().toISOString() : null, missions_run: 2 } }));
+      },
+      busySince: () => (existsSync(busyFile) ? readFileSync(busyFile, 'utf8').trim() : null),
+      setBusySince(secondsAgo) {
+        writeFileSync(busyFile, `${nowSeconds() - secondsAgo}\n`);
+      },
+      env(extra = {}) {
+        return {
+          ...process.env,
+          PATH: [join(dir, 'bin'), dirname(process.execPath), process.env.PATH].join(delimiter),
+          MSYS_NO_PATHCONV: '1',
+          T_SCRIPT: posix(UPDATER),
+          T_ROOT: at(),
+          REAL_GIT,
+          REAL_STAT,
+          FAKE_LOG: at('calls.log'),
+          FAKE_HOME: at('home'),
+          FAKE_OWNER: 'paraclete',
+          FAKE_MAIN_HEAD: '',
+          FAKE_HARNESS_PID: '',
+          FAKE_LOCKED: '',
+          FAKE_UPGRADE_STATUS: '0',
+          FAKE_TIMER_ENABLED: 'enabled',
+          FAKE_TIMER_ACTIVE: 'active',
+          FAKE_SERVICE_ACTIVE: 'inactive',
+          FAKE_LAST_RUN: '',
+          FAKE_RESULT: 'success',
+          FAKE_LAST_LINE: '',
+          ...extra,
+        };
+      },
+      /** Sources the updater, points its settings at this directory and runs main with args. */
+      run(args = [], extra = {}) {
+        const before = calls().length;
+        const words = Object.fromEntries(args.map((arg, i) => [`T_ARG_${i}`, arg]));
+        const snippet = [
+          'source "$T_SCRIPT"',
+          'INSTALL_ROOT="$T_ROOT/opt/paraclete"',
+          'DATA_ROOT="$T_ROOT/var/lib/paraclete"',
+          'LOCK_FILE="$T_ROOT/run/paraclete-lab-follow-main.lock"',
+          'BOOTSTRAP_LOCK="$T_ROOT/run/paraclete-bootstrap.lock"',
+          'UPGRADE_LOG="$T_ROOT/var/log/paraclete-lab-follow-main-upgrade.log"',
+          `main ${args.map((_, i) => `"$T_ARG_${i}"`).join(' ')}`,
+        ].join('; ');
+        const r = spawnSync(bashProgram, ['-c', snippet, FOLLOW_MAIN.unit], { encoding: 'utf8', env: vm.env({ ...words, ...extra }) });
+        return { status: r.status, stdout: r.stdout, stderr: r.stderr, line: r.stdout.trim(), calls: calls().slice(before) };
+      },
+      /** Runs a root script (an install or uninstall script) from a file, as the VM's root would. */
+      runScript(script, args = [], extra = {}) {
+        const before = calls().length;
+        const file = join(dir, `payload-${calls().length}-${Math.random().toString(36).slice(2)}.sh`);
+        writeFileSync(file, script);
+        const r = spawnSync(bashProgram, [posix(file), ...args], { encoding: 'utf8', env: vm.env(extra) });
+        rmSync(file, { force: true });
+        return { status: r.status, stdout: r.stdout, stderr: r.stderr, fields: parseFollowMainOutput(r.stdout), calls: calls().slice(before) };
+      },
+    };
+    return vm;
+  }
+
+  function gitIn(cwd, ...args) {
+    return execFileSync('git', ['-c', 'user.name=Lab Test', '-c', 'user.email=lab@example.com', '-c', 'commit.gpgsign=false', ...args], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  }
+
+  /** One origin for every checkout: main at its second commit. Made once, read only by the runs. */
+  let sharedOrigin = null;
+  function origin() {
+    if (sharedOrigin) return sharedOrigin;
+    const dir = mkdtempSync(join(tmpdir(), 'paraclete-lab-origin-'));
+    sandboxes.push(dir);
+    const path = join(dir, 'origin.git');
+    gitIn(dir, 'init', '--quiet', '--bare', '--initial-branch=main', path);
+    const work = join(dir, 'work');
+    gitIn(dir, 'clone', '--quiet', path, work);
+    writeFileSync(join(work, 'README.md'), 'one\n');
+    gitIn(work, 'add', 'README.md');
+    gitIn(work, 'commit', '--quiet', '-m', 'one');
+    const first = gitIn(work, 'rev-parse', 'HEAD');
+    writeFileSync(join(work, 'README.md'), 'two\n');
+    gitIn(work, 'commit', '--quiet', '-am', 'two');
+    gitIn(work, 'push', '--quiet', 'origin', 'HEAD:main');
+    sharedOrigin = { path, first, second: gitIn(work, 'rev-parse', 'HEAD') };
+    return sharedOrigin;
+  }
+
+  /**
+   * The driver's harness checkout in a VM sandbox: a clone of the shared origin, one commit behind its
+   * main. With a token remote, origin's URL holds a token and git reaches the local origin through
+   * url.<origin>.insteadOf, so nothing leaves the machine; unreachable points that at nothing.
+   */
+  function harnessCheckout(vm, { tokenRemote = false, unreachable = false } = {}) {
+    const { path: originPath, first, second } = origin();
+    const path = join(vm.dir, 'var/lib/paraclete/harness2-repo');
+    gitIn(vm.dir, 'clone', '--quiet', '--branch', 'main', originPath, path);
+    gitIn(path, 'reset', '--quiet', '--hard', first);
+    if (tokenRemote || unreachable) {
+      const url = `https://x-access-token:${TOKEN}@github.com/${REPO}.git`;
+      gitIn(path, 'remote', 'set-url', 'origin', url);
+      const target = unreachable ? posix(join(vm.dir, `missing-${TOKEN}`)) : posix(originPath);
+      gitIn(path, 'config', `url.${target}.insteadOf`, url);
+    }
+    return { path: posix(path), first, second, head: () => gitIn(path, 'rev-parse', 'HEAD') };
+  }
+
+  it('the timer runs the updater every --interval minutes as root, from a unit directory bootstrap.sh leaves alone', () => {
+    const driver = followMainUnits({ intervalMinutes: 45, harnessCheckout: FOLLOW_MAIN.harnessCheckout });
+    assert.match(driver.timer, /^OnActiveSec=45min$/m);
+    assert.match(driver.timer, /^OnUnitActiveSec=45min$/m);
+    assert.match(driver.timer, /^WantedBy=timers\.target$/m);
+    assert.match(driver.service, /^Type=oneshot$/m);
+    assert.match(driver.service, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main --harness-checkout \/var\/lib\/paraclete\/harness2-repo$/m);
+    assert.match(driver.service, /^TimeoutStartSec=infinity$/m, 'an upgrade is never cut off halfway');
+    assert.doesNotMatch(driver.service, /^User=/m, 'root runs it: upgrade.sh needs root');
+    assert.match(driver.service, /lab only|harness lab VM only/);
+
+    const canary = followMainUnits({ harnessCheckout: null });
+    assert.match(canary.timer, /^OnActiveSec=30min$/m, 'every 30 minutes by default');
+    assert.match(canary.service, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main$/m, 'the canary has no harness checkout');
+
+    assert.equal(parseIntervalMinutes(undefined), 30);
+    assert.equal(parseIntervalMinutes('15'), 15);
+    for (const bad of ['0', '4', '1441', 'abc', '1.5', true, '-5', '']) {
+      assert.throws(() => parseIntervalMinutes(bad), /--interval must be/, JSON.stringify(bad));
+    }
+    assert.throws(() => followMainUnits({ harnessCheckout: 'relative/path' }), /absolute path/);
+
+    // bootstrap.sh stops and removes every /etc/systemd/system/paraclete-*.service it did not ship.
+    const install = followMainInstallScript({ harnessCheckout: FOLLOW_MAIN.harnessCheckout });
+    assert.equal(FOLLOW_MAIN.unitDir, '/usr/local/lib/systemd/system');
+    assert.doesNotMatch(install, /\/etc\/systemd\/system/);
+    assert.ok(install.includes(`"$ROOT/usr/local/lib/systemd/system/paraclete-lab-follow-main.service"`));
+    assert.ok(install.includes(`"$ROOT/usr/local/sbin/paraclete-lab-follow-main"`));
+    assert.ok(install.includes(followMainScript()), 'the install script carries the updater as it is in the repo');
+  });
+
+  it('the updater skips a busy agent for 24 hours, guards the checkout, and never prints a remote or a credential', () => {
+    const script = followMainScript();
+    assert.match(script, /^#!\/usr\/bin\/env bash\n# dev\/harness2\/lab-follow-main\.sh: /, 'a header comment says what it is');
+    assert.match(script, /Lab only/);
+    // The idle check: the brain's health file and its runner's mission.
+    assert.match(script, /\$DATA_ROOT\/services\/brain\/health\.json/);
+    assert.match(script, /h\.runner && h\.runner\.active_mission/);
+    // The 24-hour override, counted from the first skip.
+    assert.match(script, /^BUSY_LIMIT_SECONDS=\$\(\(24 \* 60 \* 60\)\)$/m);
+    assert.match(script, /lab-follow-main\.busy-since/);
+    assert.match(script, /now - since < BUSY_LIMIT_SECONDS/);
+    // The clean-checkout guard, as the checkout's owner, and a fast-forward only.
+    assert.match(script, /runuser -u "\$HARNESS_USER" --/);
+    assert.match(script, /status --porcelain/);
+    assert.match(script, /symbolic-ref --quiet --short HEAD/);
+    assert.match(script, /merge-base --is-ancestor HEAD refs\/remotes\/origin\/main/);
+    assert.match(script, /merge --ff-only/);
+    assert.match(script, /pgrep -f -- "\$HARNESS_PATTERN"/);
+    assert.ok(/^HARNESS_PATTERN='([^']*)'$/m.exec(script)[1].includes('dev/harness2'));
+    for (const never of [/\breset\b/, /\bstash\b/, /checkout -B/, /\bclean -/, /\bpush\b/]) {
+      assert.doesNotMatch(script.replace(/^#.*$/gm, ''), never, `the updater never runs git ${never}`);
+    }
+    // Main's head and the upgrade.
+    assert.match(script, /git ls-remote "https:\/\/github\.com\/\$1" refs\/heads\/main/);
+    assert.match(script, /"\$INSTALL_ROOT\/install\/upgrade\.sh" --ref "\$MAIN_HEAD" --repo "\$REPO"/);
+    assert.match(script, /^BOOTSTRAP_LOCK=\/run\/paraclete-bootstrap\.lock$/m);
+    // No remote URL or git output reaches the journal.
+    for (const never of [/remote -v/, /get-url/, /remote\.origin\.url/, /config --get/]) assert.doesNotMatch(script, never);
+    assert.match(script, /fetch --quiet --tags origin '\+refs\/heads\/main:refs\/remotes\/origin\/main' > \/dev\/null 2>&1/);
+    assert.match(script, /merge --ff-only --quiet refs\/remotes\/origin\/main > \/dev\/null 2>&1/);
+    assert.match(script, /GIT_TERMINAL_PROMPT=0/);
+  });
+
+  it('parses in bash', { skip: needsBash }, () => {
+    const r = spawnSync(bashProgram, ['-n', posix(UPDATER)], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    for (const script of [followMainInstallScript({ harnessCheckout: FOLLOW_MAIN.harnessCheckout }), followMainUninstallScript()]) {
+      const file = join(mkdtempSync(join(tmpdir(), 'paraclete-lab-parse-')), 'script.sh');
+      sandboxes.push(dirname(file));
+      writeFileSync(file, script);
+      const p = spawnSync(bashProgram, ['-n', posix(file)], { encoding: 'utf8' });
+      assert.equal(p.status, 0, p.stderr);
+    }
+  });
+
+  describe('a run on a fake VM', { skip: needsBash }, () => {
+    it('upgrades to main\'s head through upgrade.sh, then finds it current: one line each run', () => {
+      const vm = vmSandbox();
+      vm.release(OLD);
+      vm.mission(null);
+      const first = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.equal(first.status, 0, first.stderr);
+      assert.equal(first.line.split('\n').length, 1, 'one line per run');
+      assert.equal(first.line, `repo=${REPO} installed=${OLD.slice(0, 12)} head=${NEW.slice(0, 12)} agent=idle upgrade=upgraded checkout=none`);
+      assert.ok(first.calls.includes(`git ls-remote https://github.com/${REPO} refs/heads/main`));
+      assert.deepEqual(first.calls.filter((c) => c.startsWith('upgrade ')), [`upgrade --ref ${NEW} --repo ${REPO}`]);
+      assert.equal(vm.installed(), NEW);
+      assert.match(readFileSync(join(vm.dir, 'var/log/paraclete-lab-follow-main-upgrade.log'), 'utf8'), /the fake upgrader ran/);
+
+      const second = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.equal(second.status, 0);
+      assert.match(second.line, /upgrade=current/);
+      assert.equal(second.calls.filter((c) => c.startsWith('upgrade ')).length, 0, 'a second run upgrades nothing');
+    });
+
+    it('waits while a mission runs, and goes ahead once the first skip is 24 hours old', () => {
+      const vm = vmSandbox();
+      vm.release(OLD);
+      vm.mission('mission-42');
+      const skipped = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.equal(skipped.status, 0);
+      assert.match(skipped.line, /agent=busy:mission-42:waiting-0h upgrade=skipped:agent-busy/);
+      assert.equal(skipped.calls.filter((c) => c.startsWith('upgrade ')).length, 0);
+      const since = Number(vm.busySince());
+      assert.ok(Math.abs(since - nowSeconds()) < 60, 'the first skip is recorded as a time');
+
+      const again = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.match(again.line, /upgrade=skipped:agent-busy/);
+      assert.equal(Number(vm.busySince()), since, 'a later skip keeps the first one');
+
+      vm.setBusySince(3 * 3600 + 60);
+      assert.match(vm.run([], { FAKE_MAIN_HEAD: NEW }).line, /agent=busy:mission-42:waiting-3h upgrade=skipped:agent-busy/);
+      assert.equal(vm.installed(), OLD);
+
+      vm.setBusySince(25 * 3600);
+      const override = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.equal(override.status, 0, override.stderr);
+      assert.match(override.line, /agent=busy:mission-42:over-24h upgrade=upgraded/);
+      assert.equal(vm.installed(), NEW);
+      assert.equal(vm.busySince(), null, 'an override that succeeded starts the next wait afresh');
+    });
+
+    it('an idle agent clears the record; a busy agent with nothing to do records nothing', () => {
+      const vm = vmSandbox();
+      vm.release(NEW);
+      vm.mission('mission-7');
+      const busyCurrent = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.match(busyCurrent.line, /agent=busy:mission-7 upgrade=current/);
+      assert.equal(vm.busySince(), null);
+
+      vm.release(OLD);
+      vm.setBusySince(3600);
+      vm.mission(null);
+      const idle = vm.run([], { FAKE_MAIN_HEAD: NEW });
+      assert.match(idle.line, /agent=idle upgrade=upgraded/);
+      assert.equal(vm.busySince(), null);
+    });
+
+    it('a mission id is printed only as safe characters', () => {
+      const vm = vmSandbox();
+      vm.release(OLD);
+      vm.mission('m-1 $(reboot)\nx');
+      assert.match(vm.run([], { FAKE_MAIN_HEAD: NEW }).line, /agent=busy:m-1reboot.?x:waiting-0h /);
+    });
+
+    it('leaves a running bootstrap alone, stops when another run holds the lock, and reports a failed upgrade', () => {
+      const vm = vmSandbox();
+      vm.release(OLD);
+      vm.mission(null);
+      const lock = vm.at('run/paraclete-bootstrap.lock');
+      writeFileSync(lock, '');
+      const bootstrapping = vm.run([], { FAKE_MAIN_HEAD: NEW, FAKE_LOCKED: lock });
+      assert.equal(bootstrapping.status, 0);
+      assert.match(bootstrapping.line, /upgrade=skipped:bootstrap-running/);
+      assert.equal(vm.installed(), OLD);
+
+      const locked = vm.run([], { FAKE_MAIN_HEAD: NEW, FAKE_LOCKED: '8' });
+      assert.equal(locked.status, 0);
+      assert.match(locked.line, /upgrade=skipped:another-run checkout=skipped:another-run$/);
+      assert.equal(locked.calls.filter((c) => c.startsWith('git ')).length, 0, 'it looks nothing up');
+
+      const failed = vm.run([], { FAKE_MAIN_HEAD: NEW, FAKE_UPGRADE_STATUS: '3' });
+      assert.equal(failed.status, 1);
+      assert.match(failed.line, /upgrade=failed:exit-3/);
+      assert.equal(failed.line.split('\n').length, 1, "the upgrade's output stays in its log");
+
+      const noHead = vm.run([], { FAKE_MAIN_HEAD: '' });
+      assert.equal(noHead.status, 1);
+      assert.match(noHead.line, /head=none .*upgrade=failed:ls-remote/);
+    });
+
+    it('fast-forwards a clean driver checkout of main as the paraclete user, through a token remote it never prints', () => {
+      const vm = vmSandbox();
+      const checkout = harnessCheckout(vm, { tokenRemote: true });
+      vm.release(checkout.second);
+      vm.mission(null);
+      const r = vm.run(['--harness-checkout', checkout.path], { FAKE_MAIN_HEAD: checkout.second });
+      assert.equal(r.status, 0, r.stderr);
+      assert.match(r.line, new RegExp(`upgrade=current checkout=fast-forwarded:${checkout.first.slice(0, 12)}\\.\\.${checkout.second.slice(0, 12)}$`));
+      assert.equal(checkout.head(), checkout.second);
+      assert.ok(r.calls.includes('runuser paraclete'), 'git runs as the checkout\'s owner');
+      assert.ok(r.calls.includes('pgrep -f -- dev/harness2|harness-(cycle|eval|promote)'));
+      assert.ok(!`${r.stdout}${r.stderr}`.includes(TOKEN), 'the token never reaches the output');
+
+      const again = vm.run(['--harness-checkout', checkout.path], { FAKE_MAIN_HEAD: checkout.second });
+      assert.match(again.line, /checkout=current$/);
+      assert.ok(!again.calls.some((c) => / fetch /.test(c)), 'a current checkout is not fetched');
+    });
+
+    it('never touches a dirty checkout, one off main, one with its own commits, or one a harness run is using', () => {
+      const cases = [
+        ['an edited file', (c) => writeFileSync(join(c.path, 'README.md'), 'local edit\n'), {}, 'skipped:uncommitted-changes'],
+        ['an untracked file', (c) => writeFileSync(join(c.path, 'notes.txt'), 'x\n'), {}, 'skipped:uncommitted-changes'],
+        ['another branch', (c) => gitIn(c.path, 'checkout', '--quiet', '-b', 'experiment'), {}, 'skipped:not-on-main'],
+        ['a local commit', (c) => { writeFileSync(join(c.path, 'local.txt'), 'x\n'); gitIn(c.path, 'add', 'local.txt'); gitIn(c.path, 'commit', '--quiet', '-m', 'local'); }, {}, 'skipped:not-a-fast-forward'],
+        ['a harness run', () => {}, { FAKE_HARNESS_PID: '4242' }, 'skipped:harness-running'],
+        ['another owner', () => {}, { FAKE_OWNER: 'root' }, 'skipped:not-owned-by-paraclete'],
+      ];
+      for (const [what, arrange, env, state] of cases) {
+        const vm = vmSandbox();
+        const checkout = harnessCheckout(vm);
+        arrange(checkout);
+        const before = checkout.head();
+        const dirtyBefore = gitIn(checkout.path, 'status', '--porcelain');
+        vm.release(checkout.second);
+        vm.mission(null);
+        const r = vm.run(['--harness-checkout', checkout.path], { FAKE_MAIN_HEAD: checkout.second, ...env });
+        assert.equal(r.status, 0, `${what}: ${r.stderr}`);
+        assert.match(r.line, new RegExp(`checkout=${state.replace(/[()|]/g, '\\$&')}$`), what);
+        assert.equal(checkout.head(), before, `${what}: HEAD is where it was`);
+        assert.equal(gitIn(checkout.path, 'status', '--porcelain'), dirtyBefore, `${what}: the working tree is as it was`);
+      }
+    });
+
+    it('a fetch that fails is reported by its exit code, without git\'s words', () => {
+      const vm = vmSandbox();
+      const checkout = harnessCheckout(vm, { unreachable: true });
+      vm.release(checkout.second);
+      vm.mission(null);
+      const r = vm.run(['--harness-checkout', checkout.path], { FAKE_MAIN_HEAD: checkout.second });
+      assert.equal(r.status, 1);
+      assert.match(r.line, /checkout=failed:fetch-exit-\d+$/);
+      assert.ok(!`${r.stdout}${r.stderr}`.includes(TOKEN), 'git\'s error, which names the remote, is not printed');
+      assert.equal(checkout.head(), checkout.first);
+    });
+
+    it('--status reports the timer, the last run, both commits and the agent, and changes nothing', () => {
+      const vm = vmSandbox();
+      const checkout = harnessCheckout(vm);
+      vm.release(OLD);
+      vm.mission('mission-9');
+      vm.setBusySince(7200);
+      const since = vm.busySince();
+      const r = vm.run(['--status', '--harness-checkout', checkout.path], {
+        FAKE_MAIN_HEAD: NEW,
+        FAKE_LAST_RUN: 'Fri 2026-10-23 10:00:00 UTC',
+        FAKE_LAST_LINE: `repo=${REPO} installed=${OLD.slice(0, 12)} head=${NEW.slice(0, 12)} agent=busy:mission-9:waiting-2h upgrade=skipped:agent-busy checkout=current`,
+      });
+      assert.equal(r.status, 0, r.stderr);
+      const fields = parseFollowMainOutput(r.stdout);
+      assert.equal(fields.timer_enabled, 'enabled');
+      assert.equal(fields.timer_active, 'active');
+      assert.equal(fields.service_active, 'inactive');
+      assert.equal(fields.last_run, 'Fri 2026-10-23 10:00:00 UTC');
+      assert.match(fields.last_line, /upgrade=skipped:agent-busy/);
+      assert.equal(fields.repo, REPO);
+      assert.equal(fields.installed, OLD);
+      assert.equal(fields.head, NEW);
+      assert.equal(fields.agent, 'busy:mission-9');
+      assert.equal(fields.busy_since, since);
+      assert.equal(fields.checkout, checkout.first);
+      assert.ok(r.calls.includes('journalctl --identifier=paraclete-lab-follow-main --lines=1 --output=cat --no-pager --quiet'));
+      assert.equal(r.calls.filter((c) => c.startsWith('upgrade ') || / fetch /.test(c) || / merge /.test(c)).length, 0);
+      assert.equal(vm.installed(), OLD);
+      assert.equal(vm.busySince(), since);
+      assert.equal(checkout.head(), checkout.first);
+    });
+  });
+
+  describe('the install and uninstall scripts on a fake VM', { skip: needsBash }, () => {
+    it('install writes the updater and units, enables the timer, and a second install changes nothing', () => {
+      const vm = vmSandbox();
+      const script = followMainInstallScript({ intervalMinutes: 15, harnessCheckout: FOLLOW_MAIN.harnessCheckout, root: vm.at() });
+      const first = vm.runScript(script, [], { FAKE_TIMER_ACTIVE: 'inactive' });
+      assert.equal(first.status, 0, first.stderr);
+      assert.deepEqual(first.fields, { installed: 'changed', interval_minutes: '15', timer_enabled: 'enabled', timer_active: 'inactive' });
+      const units = followMainUnits({ intervalMinutes: 15, harnessCheckout: FOLLOW_MAIN.harnessCheckout });
+      assert.equal(readFileSync(join(vm.dir, 'usr/local/sbin/paraclete-lab-follow-main'), 'utf8'), followMainScript());
+      assert.equal(readFileSync(join(vm.dir, 'usr/local/lib/systemd/system/paraclete-lab-follow-main.service'), 'utf8'), units.service);
+      assert.equal(readFileSync(join(vm.dir, 'usr/local/lib/systemd/system/paraclete-lab-follow-main.timer'), 'utf8'), units.timer);
+      const systemctl = (calls) => calls.filter((c) => c.startsWith('systemctl ') && !/ is-(active|enabled) /.test(c));
+      assert.deepEqual(systemctl(first.calls), [
+        'systemctl daemon-reload',
+        'systemctl enable --quiet paraclete-lab-follow-main.timer',
+        'systemctl restart paraclete-lab-follow-main.timer',
+      ]);
+
+      const second = vm.runScript(script);
+      assert.equal(second.status, 0, second.stderr);
+      assert.equal(second.fields.installed, 'unchanged');
+      assert.deepEqual(systemctl(second.calls), ['systemctl enable --quiet paraclete-lab-follow-main.timer'], 'no reload, no restart');
+
+      const longer = vm.runScript(followMainInstallScript({ intervalMinutes: 60, harnessCheckout: FOLLOW_MAIN.harnessCheckout, root: vm.at() }));
+      assert.equal(longer.fields.installed, 'changed');
+      assert.ok(systemctl(longer.calls).includes('systemctl restart paraclete-lab-follow-main.timer'), 'a new interval takes effect');
+      assert.match(readFileSync(join(vm.dir, 'usr/local/lib/systemd/system/paraclete-lab-follow-main.timer'), 'utf8'), /^OnUnitActiveSec=60min$/m);
+    });
+
+    it('uninstall removes everything it put there, never stops a run in progress, and is safe twice', () => {
+      const vm = vmSandbox();
+      vm.runScript(followMainInstallScript({ root: vm.at() }));
+      writeFileSync(join(vm.dir, 'var/lib/paraclete/lab-follow-main.busy-since'), '1\n');
+      writeFileSync(join(vm.dir, 'var/log/paraclete-lab-follow-main-upgrade.log'), 'log\n');
+      const first = vm.runScript(followMainUninstallScript({ root: vm.at() }), [], { FAKE_SERVICE_ACTIVE: 'activating' });
+      assert.equal(first.status, 0, first.stderr);
+      assert.deepEqual(first.fields, { removed: 'yes', service_active: 'activating' });
+      for (const rel of [
+        'usr/local/sbin/paraclete-lab-follow-main',
+        'usr/local/lib/systemd/system/paraclete-lab-follow-main.service',
+        'usr/local/lib/systemd/system/paraclete-lab-follow-main.timer',
+        'var/lib/paraclete/lab-follow-main.busy-since',
+        'var/log/paraclete-lab-follow-main-upgrade.log',
+      ]) {
+        assert.equal(existsSync(join(vm.dir, rel)), false, rel);
+      }
+      assert.ok(first.calls.includes('systemctl disable --now --quiet paraclete-lab-follow-main.timer'));
+      assert.ok(!first.calls.some((c) => /^systemctl (stop|kill).*\.service/.test(c)), 'a run in progress is left to finish');
+
+      const second = vm.runScript(followMainUninstallScript({ root: vm.at() }));
+      assert.equal(second.status, 0, second.stderr);
+      assert.equal(second.fields.removed, 'no');
+      assert.ok(!second.calls.includes('systemctl daemon-reload'));
+    });
+  });
+
+  describe('lab-follow-main over IAP SSH', () => {
+    /** A fake gcloud for the lab: records each call and answers `compute ssh` with answer(vm, decoded). */
+    function fakeGcloud(answer) {
+      const calls = [];
+      const execGcloud = (args, opts) => {
+        calls.push({ args, opts });
+        if (args[0] === 'compute' && args[1] === 'ssh') {
+          const decoded = decodeFollowMainRemoteCommand(args[args.indexOf('--command') + 1]);
+          assert.ok(decoded, 'every remote command is one the lab updater built');
+          return answer(args[2], decoded);
+        }
+        return '';
+      };
+      return { calls, execGcloud };
+    }
+    const INSTALLED_OUTPUT = 'lab-follow-main.installed=changed\nlab-follow-main.interval_minutes=30\nlab-follow-main.timer_enabled=enabled\nlab-follow-main.timer_active=active';
+
+    it('the remote command is one line of safe characters that carries the script exactly', () => {
+      const command = followMainRemoteCommand(followMainScript(), ['--status', '--harness-checkout', FOLLOW_MAIN.harnessCheckout]);
+      assert.match(command, /^sudo bash -c "\$\(echo [A-Za-z0-9+/=]+ \| base64 -d \| gunzip\)" paraclete-lab-follow-main --status --harness-checkout \/var\/lib\/paraclete\/harness2-repo < \/dev\/null$/);
+      assert.ok(command.length < 16_000, `${command.length} characters stay well inside a Windows command line`);
+      assert.deepEqual(decodeFollowMainRemoteCommand(command), {
+        script: followMainScript(),
+        args: ['--status', '--harness-checkout', FOLLOW_MAIN.harnessCheckout],
+      });
+      assert.throws(() => followMainRemoteCommand('true', ['$(reboot)']), /unsafe argument/);
+    });
+
+    it('the remote command decodes and runs the updater in bash -c, as the VM\'s shell does', { skip: needsBash }, () => {
+      const command = followMainRemoteCommand(followMainScript(), ['--help']);
+      const r = spawnSync(bashProgram, ['-c', 'eval "${T_COMMAND#sudo }"'], { encoding: 'utf8', env: { ...process.env, T_COMMAND: command } });
+      assert.equal(r.status, 0, r.stderr);
+      assert.equal(r.stdout, 'Usage: paraclete-lab-follow-main [--harness-checkout <dir>] [--status]\n');
+    });
+
+    it('install, uninstall and status each run one command per lab VM, through dev-env.mjs sshArgs', () => {
+      const plan = buildGcpLabPlan({ projectId: 'your-gcp-project', zone: 'us-central1-b' });
+      assert.deepEqual(plan.vms.map((vm) => [vm.name, vm.harnessCheckout]), [[DRIVER.name, DRIVER.harnessCheckout], [CANARY.name, null]]);
+      assert.ok(plan.commands.includes('node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --zone us-central1-b'));
+
+      const expectedCommand = (action, vm, o) => sshArgs({ VM: vm.name, ZONE: 'us-central1-b', PROJECT_ID: 'your-gcp-project' }, followMainCommandFor(action, vm, o));
+
+      const install = fakeGcloud(() => INSTALLED_OUTPUT);
+      const installed = manageLabFollowMain({ action: 'install', projectId: 'your-gcp-project', zone: 'us-central1-b', intervalMinutes: '20', execGcloud: install.execGcloud });
+      assert.equal(installed.ok, true);
+      assert.equal(installed.intervalMinutes, 20);
+      assert.deepEqual(install.calls.map((c) => c.args), [
+        expectedCommand('install', DRIVER, { intervalMinutes: 20 }),
+        expectedCommand('install', CANARY, { intervalMinutes: 20 }),
+      ]);
+      assert.ok(install.calls.every((c) => c.opts?.interactive === true), 'SSH prompts reach the developer');
+      const [driverInstall, canaryInstall] = install.calls.map((c) => decodeFollowMainRemoteCommand(c.args.at(-1)).script);
+      assert.equal(driverInstall, followMainInstallScript({ intervalMinutes: 20, harnessCheckout: DRIVER.harnessCheckout }));
+      assert.equal(canaryInstall, followMainInstallScript({ intervalMinutes: 20 }));
+      assert.match(driverInstall, /^OnUnitActiveSec=20min$/m);
+      assert.match(driverInstall, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main --harness-checkout \/var\/lib\/paraclete\/harness2-repo$/m);
+      assert.match(canaryInstall, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main$/m);
+      assert.deepEqual(installed.vms.map((vm) => [vm.name, vm.ok, vm.installed, vm.timer]), [
+        [DRIVER.name, true, 'changed', 'active'],
+        [CANARY.name, true, 'changed', 'active'],
+      ]);
+
+      const uninstall = fakeGcloud(() => 'lab-follow-main.removed=yes\nlab-follow-main.service_active=inactive');
+      const removed = manageLabFollowMain({ action: 'uninstall', projectId: 'your-gcp-project', zone: 'us-central1-b', execGcloud: uninstall.execGcloud });
+      assert.equal(removed.ok, true);
+      assert.deepEqual(uninstall.calls.map((c) => c.args), [expectedCommand('uninstall', DRIVER), expectedCommand('uninstall', CANARY)]);
+      assert.equal(decodeFollowMainRemoteCommand(uninstall.calls[0].args.at(-1)).script, followMainUninstallScript());
+      assert.deepEqual(removed.vms.map((vm) => vm.removed), [true, true]);
+
+      const status = fakeGcloud((name) => [
+        'lab-follow-main.timer_enabled=enabled',
+        'lab-follow-main.timer_active=active',
+        'lab-follow-main.service_active=inactive',
+        'lab-follow-main.last_run=Fri 2026-10-23 10:00:00 UTC',
+        'lab-follow-main.last_result=success',
+        `lab-follow-main.last_line=repo=${REPO} upgrade=current`,
+        `lab-follow-main.repo=${REPO}`,
+        `lab-follow-main.installed=${name === DRIVER.name ? NEW : OLD}`,
+        `lab-follow-main.head=${NEW}`,
+        'lab-follow-main.agent=',
+        'lab-follow-main.busy_since=',
+        ...(name === DRIVER.name ? [`lab-follow-main.checkout=${NEW}`] : []),
+      ].join('\n'));
+      const reported = manageLabFollowMain({ projectId: 'your-gcp-project', zone: 'us-central1-b', execGcloud: status.execGcloud });
+      assert.equal(reported.action, 'status', 'status is the default');
+      assert.deepEqual(status.calls.map((c) => c.args), [expectedCommand('status', DRIVER), expectedCommand('status', CANARY)]);
+      assert.deepEqual(decodeFollowMainRemoteCommand(status.calls[0].args.at(-1)).args, ['--status', '--harness-checkout', DRIVER.harnessCheckout]);
+      assert.deepEqual(decodeFollowMainRemoteCommand(status.calls[1].args.at(-1)).args, ['--status']);
+      const [driver, canary] = reported.vms;
+      assert.equal(driver.timer, 'active');
+      assert.equal(driver.lastRun, 'Fri 2026-10-23 10:00:00 UTC');
+      assert.equal(driver.installed, NEW);
+      assert.equal(driver.mainHead, NEW);
+      assert.equal(driver.onMainHead, true);
+      assert.equal(driver.checkout, NEW);
+      assert.equal(driver.agent, 'idle');
+      assert.equal(canary.onMainHead, false);
+      assert.equal('checkout' in canary, false);
+    });
+
+    it('installing twice over SSH changes nothing the second time', { skip: needsBash }, () => {
+      const vms = { [DRIVER.name]: vmSandbox(), [CANARY.name]: vmSandbox() };
+      const gcloud = fakeGcloud((name, decoded) => {
+        const vm = vms[name];
+        const rooted = decoded.script.replace(/^ROOT=''$/m, `ROOT='${vm.at()}'`);
+        assert.notEqual(rooted, decoded.script, 'the fake VM moves the script under its own root');
+        return vm.runScript(rooted, decoded.args).stdout;
+      });
+      const first = manageLabFollowMain({ action: 'install', execGcloud: gcloud.execGcloud });
+      assert.equal(first.ok, true, JSON.stringify(first));
+      assert.deepEqual(first.vms.map((vm) => vm.installed), ['changed', 'changed']);
+      const second = manageLabFollowMain({ action: 'install', execGcloud: gcloud.execGcloud });
+      assert.equal(second.ok, true);
+      assert.deepEqual(second.vms.map((vm) => vm.installed), ['unchanged', 'unchanged']);
+      assert.match(readFileSync(join(vms[DRIVER.name].dir, 'usr/local/lib/systemd/system/paraclete-lab-follow-main.service'), 'utf8'), /--harness-checkout/);
+      assert.doesNotMatch(readFileSync(join(vms[CANARY.name].dir, 'usr/local/lib/systemd/system/paraclete-lab-follow-main.service'), 'utf8'), /--harness-checkout/);
+    });
+
+    it('the CLI takes one action, --interval only with --install, and reports an unreachable VM without its command line', async () => {
+      assert.match((await runCli(['lab-follow-main', '--install', '--uninstall'])).error, /one of --install, --uninstall and --status/);
+      assert.match((await runCli(['lab-follow-main', '--status', '--interval', '10'])).error, /--interval goes with --install/);
+      assert.match((await runCli(['lab-follow-main', '--install', '--interval', '2'], { execGcloud: () => '' })).error, /--interval must be from 5 to 1440/);
+
+      const gcloud = fakeGcloud(() => INSTALLED_OUTPUT);
+      const res = await runCli(['lab-follow-main', '--install', '--interval', '45', '--project', 'your-gcp-project'], { execGcloud: gcloud.execGcloud });
+      assert.equal(res.ok, true);
+      assert.match(decodeFollowMainRemoteCommand(gcloud.calls[0].args.at(-1)).script, /^OnActiveSec=45min$/m);
+
+      const unreachable = await runCli(['lab-follow-main', '--status'], {
+        execGcloud: (args) => {
+          const err = new Error(`Command failed: gcloud ${args.join(' ')}`);
+          err.status = 255;
+          throw err;
+        },
+      });
+      assert.equal(unreachable.ok, false);
+      assert.equal(unreachable.vms[0].error, 'paraclete-h2-driver: gcloud compute ssh exited with code 255');
+      assert.ok(!JSON.stringify(unreachable).includes('base64'), 'the error does not repeat the command');
+    });
+
+    it('lab-provision installs the timer on both VMs, retrying a new VM until its SSH answers', () => {
+      let sshTries = 0;
+      const sleeps = [];
+      const provisioned = provisionGcpLab({
+        projectId: 'your-gcp-project',
+        repo: REPO,
+        commit: NEW,
+        intervalMinutes: 20,
+        sleep: (ms) => sleeps.push(ms),
+        execGcloud: (args) => {
+          if (args[0] === 'compute' && args[1] === 'ssh') {
+            sshTries += 1;
+            if (sshTries === 1) {
+              const err = new Error('Command failed');
+              err.status = 255;
+              throw err;
+            }
+            assert.match(decodeFollowMainRemoteCommand(args.at(-1)).script, /^OnActiveSec=20min$/m);
+            return INSTALLED_OUTPUT;
+          }
+          if (args.includes('describe') || args.includes('list')) return 'exists';
+          return 'True';
+        },
+      });
+      assert.equal(provisioned.ok, true, JSON.stringify(provisioned.followMain));
+      assert.equal(sshTries, 3, 'the driver answered on its second try, the canary on its first');
+      assert.deepEqual(sleeps, [15_000]);
+      assert.deepEqual(
+        provisioned.stepsExecuted.filter((s) => s.step.startsWith('follow-main:')).map((s) => [s.step, s.status]),
+        [['follow-main:paraclete-h2-driver', 'changed'], ['follow-main:paraclete-h2-canary', 'changed']],
+      );
+      assert.equal(provisioned.plan.followMain.intervalMinutes, 20);
+
+      const unreachable = provisionGcpLab({
+        projectId: 'your-gcp-project',
+        repo: REPO,
+        commit: NEW,
+        sshAttempts: 2,
+        sleep: () => {},
+        execGcloud: (args) => {
+          if (args[0] === 'compute' && args[1] === 'ssh') throw Object.assign(new Error('Command failed'), { status: 255 });
+          if (args.includes('describe') || args.includes('list')) return 'exists';
+          return 'True';
+        },
+      });
+      assert.equal(unreachable.ok, false);
+      assert.ok(unreachable.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-driver' && s.status === 'updated'), 'the VMs stand');
+      assert.match(unreachable.followMain[0].error, /paraclete-h2-driver: gcloud compute ssh exited with code 255 \(2 tries\)/);
+      assert.equal(unreachable.hint, 'The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --zone us-central1-a');
+    });
+
+    it('lab-status shows each running lab VM\'s timer, and none for a stopped one', () => {
+      const gcloud = fakeGcloud(() => [
+        'lab-follow-main.timer_enabled=enabled',
+        'lab-follow-main.timer_active=active',
+        `lab-follow-main.installed=${NEW}`,
+        `lab-follow-main.head=${NEW}`,
+      ].join('\n'));
+      const execGcloud = (args, opts) => {
+        if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'list') {
+          return JSON.stringify([
+            { name: DRIVER.name, status: 'RUNNING', metadata: { items: [] } },
+            { name: CANARY.name, status: 'TERMINATED', metadata: { items: [] } },
+            { name: 'something-else', status: 'RUNNING', metadata: { items: [] } },
+          ]);
+        }
+        return gcloud.execGcloud(args, opts);
+      };
+      const status = inspectGcpLabStatus({ projectId: 'your-gcp-project', execGcloud });
+      assert.equal(status.vms[0].followMain.timer, 'active');
+      assert.equal(status.vms[0].followMain.onMainHead, true);
+      assert.equal(status.vms[1].followMain, null);
+      assert.equal('followMain' in status.vms[2], false);
+      assert.equal(gcloud.calls.length, 1, 'only the running lab VM is asked');
+    });
   });
 });
 
