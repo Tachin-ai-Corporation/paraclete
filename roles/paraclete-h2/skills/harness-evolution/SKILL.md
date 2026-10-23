@@ -19,3 +19,9 @@ Drive Loop A of the Paraclete-H2 architecture across the four harness lenses (`c
 2. **Diagnose Bottlenecks**: Run `harness-cycle --action diagnose --stage stage1 --trials 2 --json` to rank bottlenecks across the four lenses before proposing changes.
 3. **Single-Lens Mutation Discipline**: Target one primary lens per candidate iteration (`--lens context`, `--lens sub_agents`, `--lens tools`, or `--lens scaffolding`) so Pareto improvements can be cleanly attributed.
 4. **Execute Full Loop**: Run `harness-cycle --action run --stage stage1 --iterations 3 --candidates 2 --trials 2 --json` to score candidates, update the pattern library, and emit the winning candidate report.
+
+With `--live --vertex` a model proposes each candidate. A step whose proposal fell back to the template,
+or changed nothing, is not evaluated, and its entry in the output's `attempts` says why
+(`proposal.fallbackReason`, `revertReason`). Report those reasons. When every step fell back, the
+proposer could not reach its model (no project, no Vertex AI access): say so instead of reporting a
+run that found no improvement.

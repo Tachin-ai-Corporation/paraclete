@@ -541,7 +541,14 @@ export function normalizeMemberVerdict(raw, packet, member) {
   };
 }
 
-async function resolveVertexAccessToken(options = {}) {
+/**
+ * An access token for Vertex AI: the caller's, VERTEX_ACCESS_TOKEN, the VM's metadata server, or
+ * `gcloud auth print-access-token` on a developer's machine. Also used by proposer.mjs.
+ *
+ * @param {object} [options]  getAccessToken or accessToken to use instead
+ * @returns {Promise<string>}
+ */
+export async function resolveVertexAccessToken(options = {}) {
   if (typeof options.getAccessToken === 'function') {
     return options.getAccessToken();
   }
