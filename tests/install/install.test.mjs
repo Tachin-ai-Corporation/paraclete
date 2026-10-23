@@ -23,6 +23,9 @@ import {
 } from './harness.mjs';
 
 const readJson = (...path) => JSON.parse(readFileSync(join(repoRoot, ...path), 'utf8'));
+/** The repo's roles the installer offers: each with a role.json, less development roles (`listed: false`). */
+const listedRepoRoles = () => readdirSync(join(repoRoot, 'roles'))
+  .filter((id) => existsSync(join(repoRoot, 'roles', id, 'role.json')) && readJson('roles', id, 'role.json').listed !== false);
 const contracts = readJson('config', 'contracts.json');
 const genericRole = readJson('roles', 'generic', 'role.json');
 const devopsRole = readJson('roles', 'devops-engineer', 'role.json');
@@ -832,8 +835,8 @@ describe('step 1 stops a project that cannot hold a paraclete', { skip: needsBas
   }
 
   test('an unknown role, a bad name or a zone outside the region', async () => {
-    // Every role the sandbox has, sorted as the shell lists them: the repo's roles and the fixture.
-    const roles = [...readdirSync(join(repoRoot, 'roles')).filter((id) => existsSync(join(repoRoot, 'roles', id, 'role.json'))), WORKSPACE_ROLE.id].sort();
+    // Every role the sandbox offers, sorted: the repo's roles and the fixture, less development roles.
+    const roles = [...listedRepoRoles(), WORKSPACE_ROLE.id].sort();
     for (const [args, message] of [
       [['--role', 'no-such-role'], new RegExp(`there is no role 'no-such-role'\\. Roles: ${roles.join(' ')}\\n`)],
       [['--name', 'Bad,Name'], /the agent's name must be/],
@@ -871,6 +874,19 @@ describe('questions', { skip: needsBash, concurrency: true }, () => {
     const metadata = metadataOf(find(run.commands, 'gcloud', 'compute', 'instances', 'create')[0]);
     assert.equal(metadata['paraclete-role'], WORKSPACE_ROLE.id);
     assert.equal(metadata['paraclete-agent-name'], 'Ada Lovelace');
+  });
+
+  test('offers every role but a development role, which --role still installs', async () => {
+    const asked = await createSandbox().run('install.sh', ['--dry-run'], { input: 'generic\nAda\n' });
+    assert.equal(asked.status, 0, asked.stderr);
+    const offered = /Roles: ([^\n]*)\n/.exec(`${asked.stdout}${asked.stderr}`)?.[1].split(' ') || [];
+    assert.deepEqual(offered, [...listedRepoRoles(), WORKSPACE_ROLE.id].sort());
+    assert.ok(!offered.includes('paraclete-h2'), 'a development role is not offered');
+
+    const named = await createSandbox().run('install.sh', ['--dry-run', '--yes', '--role', 'paraclete-h2']);
+    assert.equal(named.status, 0, named.stderr);
+    assert.match(named.stdout, /paraclete-h2 is a development role \(listed: false in its role\.json\)/);
+    assert.equal(metadataOf(find(named.commands, 'gcloud', 'compute', 'instances', 'create')[0])['paraclete-role'], 'paraclete-h2');
   });
 
   test('asks nothing the flags answered', async () => {

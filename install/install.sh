@@ -176,12 +176,10 @@ set_flag() {
   esac
 }
 
-# available_roles: the role ids this clone has, one per line.
+# available_roles: the role ids the installer offers, one per line: every role in this clone except a
+# development role (`listed: false` in its role.json), which --role still installs.
 available_roles() {
-  local file
-  for file in "$REPO_ROOT"/roles/*/role.json; do
-    [[ -f "$file" ]] && basename "$(dirname "$file")"
-  done
+  node "$ROLE_ACCESS_JS" listed "$REPO_ROOT"
 }
 
 # The instance this project already holds, if any: the role, name and zone its VM was installed with
@@ -334,6 +332,8 @@ check_role() {
   else
     note "role $ROLE"
   fi
+  available_roles | grep -qx "$ROLE" \
+    || note "$ROLE is a development role (listed: false in its role.json): the installer does not offer it, and it is for working on this repo"
 }
 
 # role_access <command> <role>: install/lib/role-access.mjs on generic and <role> in this clone: `check`

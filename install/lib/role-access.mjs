@@ -20,13 +20,17 @@
 //   node install/lib/role-access.mjs apis <repo> <role>            short API names, one per line
 //   node install/lib/role-access.mjs resource-roles <repo> <role>  <kind> TAB <role>, one per line
 //   node install/lib/role-access.mjs project-wide-refused          PROJECT_WIDE_REFUSED, one per line
+//   node install/lib/role-access.mjs listed <repo>                 the roles the installer offers, one per line
+//
+// The installer offers every role except one whose role.json sets `listed: false`: a development role,
+// such as paraclete-h2, that only someone working on this repo installs, by naming it with --role.
 //
 // The commands that take a role cover generic and that role together (every instance has both),
 // generic's first, each entry once, and check both files first: a problem in either stops them. The
 // repository is an argument of its own, not key=value, so Git for Windows' bash hands Node a path it
 // can open.
 
-import { readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -173,6 +177,28 @@ export function roleAccess(root, id, { readFile } = {}) {
   return { apis, resourceRoles };
 }
 
+/**
+ * The roles the installer offers: every directory under <root>/roles with a role.json, sorted, except
+ * those whose role.json sets `listed: false`. A role.json that cannot be read stays listed, so
+ * `check` reports its problem when someone picks it.
+ *
+ * @param {string} root
+ * @param {{readFile?: (path: string) => string, listDir?: (path: string) => string[], exists?: (path: string) => boolean}} [deps]
+ * @returns {string[]}
+ */
+export function listedRoles(root, { readFile, listDir = (path) => readdirSync(path), exists = existsSync } = {}) {
+  return listDir(join(root, 'roles'))
+    .filter((id) => ROLE_ID.test(id) && exists(join(root, 'roles', id, 'role.json')))
+    .filter((id) => {
+      try {
+        return readRole(root, id, readFile).listed !== false;
+      } catch {
+        return true;
+      }
+    })
+    .sort();
+}
+
 // ---------------------------------------------------------------------------------------------------
 // The command line install/install.sh uses: node install/lib/role-access.mjs <command> [<repo> <role>]
 // ---------------------------------------------------------------------------------------------------
@@ -194,8 +220,12 @@ const ROLE_COMMANDS = {
 export function cli(argv, deps = {}) {
   const [command, ...args] = argv;
   if (command === 'project-wide-refused' && args.length === 0) return PROJECT_WIDE_REFUSED.join('\n');
+  if (command === 'listed') {
+    if (args.length !== 1) throw new Error('install/lib/role-access.mjs: usage: listed <repo>');
+    return listedRoles(args[0], deps).join('\n');
+  }
   if (!ROLE_COMMANDS[command]) {
-    throw new Error(`install/lib/role-access.mjs: unknown command '${command}'. Commands: ${[...Object.keys(ROLE_COMMANDS), 'project-wide-refused'].join(', ')}`);
+    throw new Error(`install/lib/role-access.mjs: unknown command '${command}'. Commands: ${[...Object.keys(ROLE_COMMANDS), 'project-wide-refused', 'listed'].join(', ')}`);
   }
   const [root, role, ...rest] = args;
   if (!root || !role || rest.length) throw new Error(`install/lib/role-access.mjs: usage: ${command} <repo> <role>`);

@@ -38,6 +38,7 @@ independent verifier judges every checkpoint, and every outbound message leaves 
 | Dashboard sign-in | Identity-Aware Proxy (IAP) directly on Cloud Run with Google's managed sign-in. No OAuth client to create. |
 | Models | `gemini-4-argon` for the cortex and the strong tier, `gemini-3.8-flash` everywhere else. Claude is opt-in. |
 | Upgrades | The dashboard detects releases of this repo. An admin installs one with a button. |
+| Continual improvement | A harness (`dev/harness2/`) proposes changes to prompts, skills, role packages and contracts tunables, and opens them as pull requests. They reach `main` with a version in the title, green CI and a squash merge, and reach instances only in a release. Phase 11. |
 | Runtime | Node 24 on the VM and the dashboard. |
 | Email | Not in this plan. |
 
@@ -131,6 +132,10 @@ account after install.
 Role prompts hold domain rules only: devops "a deploy passes only on a live 2xx", legal "assist and
 escalate, never give legal advice", engineering "done means tested". The base prompt plus one role
 file is the whole composition.
+
+`roles/paraclete-h2` is not in the catalog. It is a development role (`listed: false` in its
+`role.json`): the agent that runs the continual-improvement harness (phase 11) against this repo. The
+installer does not offer it, and installs it only when `--role` names it.
 
 ---
 
@@ -343,6 +348,20 @@ done.
 10. **Product docs** (done; the install button's first live press is next). `docs/canon/`,
     `docs/concepts/`, the guides, `docs/INSTALL.md`, and the README's install button.
     *Exit:* every doc matches the code, and the doc-path tests pass.
+11. **Continual improvement** (in progress). The harness in `dev/harness2/`
+    ([dev/README.md](../../dev/README.md)) and its agent, the development role `roles/paraclete-h2`.
+    - It changes only the mutable surface (`c1`..`c8`, `dev/harness2/surface.mjs`): contracts
+      tunables, base and role prompts, skills and their commands, role packages, and the shell
+      tool's output formatting. The rest of the code is outside it.
+    - Its promotions are pull requests. Since `v2026.10.22.1.1` each title starts with its version and
+      is merged with squash, so `main`'s head stays releasable. Since `v2026.10.22.1.2` the release notes
+      also list changes merged with a merge commit. Instances get promotions only through a release.
+    - Still open: promotions that carry measured evidence (the candidate against the current version
+      on the same tasks, over repeated trials, with template edits refused); a merge step that squashes
+      and waits for CI; and a check on the dev instance before a release that carries promotions.
+
+    *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
+    after every merge, and a release with promotions passes the smoke missions on a dev instance.
 
 **Acceptance.** In a clean project inside a Workspace organization: one command, a dashboard link in
 about 15 minutes, the owner signs in, adds a colleague, drops a spreadsheet into chat, and gets a

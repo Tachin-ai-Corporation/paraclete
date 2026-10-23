@@ -272,7 +272,10 @@ to the agent. Every service but control runs as the `paraclete` user, which can 
 root.
 
 - **Why.** An agent that can rewrite its own code, prompts or limits has no fixed limits. A fix to the
-  foundation is a commit, reviewed, released, and installed the same way on every instance.
+  foundation is a commit, reviewed, released, and installed the same way on every instance. That
+  holds for the continual-improvement harness too ([build plan](../plan/BUILD_PLAN.md), phase 11): it
+  changes prompts and limits only as pull requests to this repo, never on an instance, and an
+  instance gets them only by installing a release.
 - **Kept by.** `install/bootstrap.sh` makes `/opt/paraclete` and `/etc/paraclete` root's. Each unit
   runs as `paraclete` with `ProtectSystem=strict`, `ReadOnlyPaths=/opt/paraclete /etc/paraclete`,
   `ReadWritePaths=/var/lib/paraclete` and `NoNewPrivileges=yes`

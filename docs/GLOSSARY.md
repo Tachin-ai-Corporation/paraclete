@@ -12,6 +12,10 @@ this.
 | dev instance | An instance in a project used only for developing this repo |
 | role | The agent's focus, chosen at install. One per instance. `generic` is the default and the base of every role |
 | role package | A role's directory under `roles/`: its `role.json`, organ prompt appends, skills, playbooks, responsibilities and first working memory (`roles/README.md`) |
+| development role | A role package for working on this repo, not for an organization's work: its `role.json` sets `listed: false`, so the installer does not offer it and installs it only when `--role` names it. `paraclete-h2` is one |
+| Paraclete-H2 | The continual-improvement harness (`dev/harness2/`, build plan phase 11) and its development role `paraclete-h2`. It runs missions against benchmark tasks, proposes changes to the mutable surface, and opens the winners as promotion pull requests |
+| mutable surface | What the harness may change, eight components `c1` to `c8` (`dev/harness2/surface.mjs`): contracts tunables, base and role organ prompts, skills and their commands, role packages (metadata, playbooks, responsibilities), and the shell tool's output formatting (c8, which names a file the gateway no longer has, so it changes nothing today). The rest of the code is outside it |
+| promotion | A harness change opened as a pull request to `main`: its title starts with its version (`dev/harness2/promote.mjs`), and it is merged with squash. It reaches instances in the next release |
 | setup wizard | The dashboard's Settings, Workspace tab on a workspace role: the steps that connect the agent's Workspace account |
 | setup checklist | The dashboard's Settings, Setup tab: what is done and what is left, for an admin |
 | version card | The top of the dashboard's Settings, System tab: the release the instance runs, newer releases with their notes, and Install |

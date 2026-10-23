@@ -22,7 +22,10 @@ judges every mission in that area. "A deploy passes only on a live 2xx" is such 
 | A different agent for each team | Nothing: one project holds one agent, with one role | An instance keeps the role it was installed with; changing it is not a product feature ([build plan](../plan/BUILD_PLAN.md), section 14) |
 
 The installer offers every role whose `role.json` exists in the clone it runs from
-(`install/install.sh` lists them), so a new package is installable as soon as it is in the repo.
+(`install/install.sh` lists them), so a new package is installable as soon as it is in the repo. The
+exception is a development role, one whose `role.json` sets `listed: false`: a package for working on
+this repo, such as `paraclete-h2`, which the installer installs only when `--role` names it. A role
+whose code needs the repo's `dev/` tooling must be one, because `dev/` is never installed.
 
 ## The parts, and what reads them
 
@@ -31,6 +34,7 @@ The installer offers every role whose `role.json` exists in the clone it runs fr
 | `README.md` | People | Reading the repo | Required: `tests/repo/structure.test.mjs` fails a role without one |
 | `role.json`: `gcp_roles`, `apis`, `resource_roles` | `install/install.sh`, through `install/lib/role-access.mjs` | Install steps 1 to 3 | A refused grant stops the install in step 1 |
 | `role.json`: `setup` | `install/bootstrap.sh`, through `install/vm/role-packages.mjs` | Every full install on the VM | A package that cannot be read or installed fails the install before anything is stopped |
+| `role.json`: `listed` (optional) | `install/install.sh`, through `install/lib/role-access.mjs` `listed` | Install, step 1 and the role question | `false` leaves the role out of the role question and the list an unknown role prints; `--role` still installs it, with a note that it is a development role |
 | `role.json`: `workspace` | The installer, the VM's instance record (`install/vm/instance-record.mjs`), the dashboard and the control service | Install, every boot, the Workspace setup | See [Workspace roles](#workspace-roles) |
 | `role.json`: `skills` | Only `tests/content/packages.test.mjs`, which checks each listed skill exists | `npm test` | Nothing at runtime: every directory under the role's `skills/` is installed and shown to the agent, listed or not (`install/vm/launchers.mjs`, `agent/services/service-runtime.mjs`). Keep the list in step by hand |
 | `prompts/<organ>.md` | The gateway, appended to that organ's base prompt (`agent/gateway/organs.mjs`) | Every turn of that organ | See [Organ prompts](#organ-prompts) |
