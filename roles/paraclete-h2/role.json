@@ -3,6 +3,7 @@
   "title": "Paraclete-H2 Harness Engineer",
   "summary": "Continuously improves the capability, reliability, and efficiency of Paraclete agents through the dual-loop Paraclete-H2 architecture: diagnoses execution trajectories across the four harness lenses (Context, Sub-Agents, Tools, Scaffolding), proposes and validates bounded harness mutations in isolated git worktrees, evaluates Stage 1 and Stage 2 benchmark suites, harvests failed runs into regression fixtures, and promotes Pareto-dominant candidates.",
   "version": 1,
+  "listed": false,
   "workspace": false,
   "skills": [
     "harness-evolution",

@@ -47,7 +47,7 @@ const KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
 const SKILL_KEYS = ['id', 'name', 'version', 'when_to_use', 'organs', 'commands', 'requires'];
 /** What a skill may require of its instance: agent/context/skill-requirements.mjs knows each one. */
 const KNOWN_REQUIREMENTS = Object.keys(SKILL_REQUIREMENTS);
-const ROLE_KEYS = ['id', 'title', 'summary', 'version', 'workspace', 'skills', 'gcp_roles', 'apis', 'resource_roles', 'setup'];
+const ROLE_KEYS = ['id', 'title', 'summary', 'version', 'listed', 'workspace', 'skills', 'gcp_roles', 'apis', 'resource_roles', 'setup'];
 
 /** Keys a package file may carry: the documented ones, plus `_`-prefixed documentation. */
 function unexpectedKeys(object, allowed) {
@@ -151,6 +151,7 @@ for (const role of roles) {
     assert.equal(r.id, role, 'id must match the directory name');
     for (const key of ['title', 'summary']) assert.ok(typeof r[key] === 'string' && r[key].trim(), `${key} is required`);
     assert.ok(Number.isInteger(r.version) && r.version > 0, 'version must be a positive integer');
+    if ('listed' in r) assert.equal(typeof r.listed, 'boolean', 'listed (optional) is true or false');
     assert.equal(typeof r.workspace, 'boolean');
     assert.ok(Array.isArray(r.skills), 'skills must be an array');
     const known = new Set([...subdirs('skills'), ...subdirs('roles', role, 'skills')]);
@@ -238,8 +239,22 @@ for (const role of roles) {
   });
 }
 
-test('the generic role is the plain base: no Workspace account and no skills of its own', () => {
+test('a role whose code reads the repo\'s dev/ tooling is a development role the installer does not offer', () => {
+  // dev/ is never installed, so such a role works only beside a checkout of this repo.
+  for (const role of roles) {
+    const dir = join(root, 'roles', role, 'skills');
+    const sources = isDir(dir)
+      ? readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith('.mjs')).map((f) => readFileSync(join(dir, String(f)), 'utf8'))
+      : [];
+    const readsDev = sources.some((s) => /['"]dev['"]\s*,\s*['"]harness2['"]|['"]dev\/harness2\//.test(s));
+    if (readsDev) assert.equal(readJson('roles', role, 'role.json').listed, false, `roles/${role} reads dev/: set "listed": false`);
+  }
+  assert.equal(readJson('roles', 'paraclete-h2', 'role.json').listed, false);
+});
+
+test('the generic role is the plain base: listed, no Workspace account and no skills of its own', () => {
   const generic = readJson('roles', 'generic', 'role.json');
+  assert.notEqual(generic.listed, false, 'generic is always offered');
   assert.equal(generic.workspace, false);
   assert.deepEqual(generic.skills, []);
   assert.ok(generic.gcp_roles.includes('roles/aiplatform.user'), 'the agent needs Vertex AI');

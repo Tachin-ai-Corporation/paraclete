@@ -11,6 +11,7 @@ default and the base of every role: an instance always gets `generic` plus its c
 roles/<id>/
   README.md               what the role is for, for people reading the repo
   role.json               id, title, summary, version,
+                          listed: true | false (optional; false keeps the installer from offering it)
                           workspace: true | false,
                           skills: [...]       the role's own skills, in skills/ (every one there is installed)
                           gcp_roles: [...]    granted to the agent's service account at install, on the project
@@ -31,6 +32,10 @@ roles/<id>/
 - Role prompts hold domain rules only, for example "a deploy passes only on a live 2xx".
 - `workspace: true` means the role needs its own Google Workspace account. The dashboard then walks
   an admin through domain-wide delegation, and the agent gets Google Chat and the Workspace skills.
+- `listed: false` marks a development role: a package for working on this repo, not for an
+  organization's work. The installer does not offer it, and installs it only when `--role` names it
+  (`install/lib/role-access.mjs` `listed`). A role whose code reads the repo's `dev/` tooling, which is
+  never installed, must be one (`tests/content/packages.test.mjs` checks). `generic` is always offered.
 - Prompts, processes, responsibilities and skills here are agent-facing product text.
 
 ## What a role is granted
@@ -64,7 +69,7 @@ images stay, and `install/uninstall.sh` deletes them only with `--purge`.
 | [`data-engineer`](data-engineer/) | no | BigQuery with dry runs and byte caps, loads through staging; BigQuery User and Data Editor |
 | [`security-engineer`](security-engineer/) | no | A read-only IAM and exposure audit; Security Reviewer, Cloud Asset Viewer, Org Policy Viewer and Storage Bucket Viewer; a weekly security review |
 | [`web-master`](web-master/) | no | Firebase Hosting changes through preview channels, custom domains, site audits with Lighthouse, read-only gcloud |
-| [`paraclete-h2`](paraclete-h2/) | no | Dual-loop harness evolution (`harness-cycle`), Stage 1/2 benchmark evaluation and failure harvesting (`harness-eval`), and Pareto promotion gate verification (`harness-promote`) |
+| [`paraclete-h2`](paraclete-h2/) | no | A development role (`listed: false`), not offered at install: the self-improvement harness's agent, for working on this repo. Dual-loop harness evolution (`harness-cycle`), Stage 1/2 benchmark evaluation and failure harvesting (`harness-eval`), and Pareto promotion gate verification (`harness-promote`); its commands need a checkout of this repo, for `dev/harness2/` |
 
 ## Status
 

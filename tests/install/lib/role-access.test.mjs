@@ -3,6 +3,7 @@
 // its own image repository, each with a short list of roles; the roles that would reach every service
 // account or every image repository are refused project-wide. Generic and the role are read together,
 // generic first, each entry once; and the command line install.sh calls prints exactly that, or stops.
+// The installer offers every role but a development role (`listed: false`).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -10,7 +11,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PROJECT_WIDE_REFUSED, RESOURCE_KINDS, accessProblems, cli, readRole, roleAccess } from '../../../install/lib/role-access.mjs';
+import {
+  PROJECT_WIDE_REFUSED, RESOURCE_KINDS, accessProblems, cli, listedRoles, readRole, roleAccess,
+} from '../../../install/lib/role-access.mjs';
 
 const MODULE = fileURLToPath(new URL('../../../install/lib/role-access.mjs', import.meta.url));
 
@@ -112,6 +115,25 @@ test('a problem in either file stops it, naming the file', (t) => {
   assert.throws(() => roleAccess(root, 'garbled'), /roles\/garbled\/role\.json is not JSON/);
   assert.throws(() => readRole(root, 'missing'), /roles\/missing\/role\.json cannot be read \(ENOENT\)/);
   assert.throws(() => readRole(root, '../generic'), /is not a role id/);
+});
+
+test('the installer offers every role but a development role, sorted; an unreadable one stays offered', (t) => {
+  const root = repoWith(t, {
+    generic: GENERIC,
+    'web-master': {},
+    harness: { listed: false },
+    builder: { listed: true },
+    garbled: '{ not json',
+  });
+  mkdirSync(join(root, 'roles', 'no-role-json'));
+  assert.deepEqual(listedRoles(root), ['builder', 'garbled', 'generic', 'web-master']);
+  assert.equal(cli(['listed', root]), 'builder\ngarbled\ngeneric\nweb-master');
+  assert.throws(() => cli(['listed']), /usage: listed <repo>/);
+  assert.throws(() => cli(['listed', root, 'extra']), /usage: listed <repo>/);
+  const run = spawnSync(process.execPath, [MODULE, 'listed', root], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout, 'builder\ngarbled\ngeneric\nweb-master\n');
+  assert.deepEqual(roleAccess(root, 'harness'), { apis: ['bigquery'], resourceRoles: [] }, 'an unlisted role still installs by name');
 });
 
 test('the command line prints what install.sh reads, and stops on a problem', (t) => {

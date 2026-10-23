@@ -1,5 +1,10 @@
 # Paraclete-H2 (`roles/paraclete-h2`)
 
+**A development role** (`"listed": false` in `role.json`): it is for working on this repo, so the
+installer does not offer it and installs it only when `install/install.sh --role paraclete-h2` names
+it. Its commands load `dev/harness2/` from a checkout of this repository (`--repo`), which is never
+installed on an instance. The harness is build plan phase 11.
+
 `paraclete-h2` is the self-improving harness engineer role for Paraclete. It equips a single harnessed agent with the skills, organ overlays, processes, and recurring responsibilities required to run both **Loop A** (Harness2-inspired evolutionary harness refinement across the four lenses: Context, Sub-Agents, Tools, and Scaffolding) and **Loop B** (target role evaluation, runtime diagnostics, and cross-role benchmark validation).
 
 ## Capabilities
