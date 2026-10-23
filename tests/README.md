@@ -13,7 +13,7 @@ role skill's commands in `tests/roles/<role>/skills/<skill>/`.
 
 | Path | Tests |
 |---|---|
-| `run.mjs` | The runner: finds every `*.test.mjs` under `tests/` and runs them |
+| `run.mjs` | The runner: finds every `*.test.mjs` under `tests/` and runs them from the repo root, with paths relative to it so the command line stays within Windows' limit in a deep checkout |
 | `repo/` | Whole-repo rules: layout, hygiene, dependency direction, the manifest, and the docs' links and paths |
 | `content/` | Agent-facing content: every skill and role package's shape, responsibilities and processes, organ prompts, and that none of it mentions concepts the product doesn't have |
 | `integration/` | Several services wired together against the fakes, through the paths a person's request takes |
