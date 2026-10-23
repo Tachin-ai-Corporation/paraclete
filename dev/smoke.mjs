@@ -28,6 +28,11 @@ and says PASS or FAIL. The role is the one the VM runs, unless --role names one.
 
 const DEFAULT_WAIT_SECONDS = 900;
 const POLL_MS = 5_000;
+/**
+ * How long a message marked processed may still have no intake before the ears count as having dropped
+ * it. They write the intake before they mark the message, so it is normally there on the same read.
+ */
+const INTAKE_GRACE_MS = 10_000;
 const REPLIES_READ = 50;
 const ROLE_ID = /^[a-z][a-z0-9-]*$/;
 /** A mission that stops here waits on a person: a smoke request must never need one. */
@@ -270,7 +275,7 @@ export async function main(argv, deps = {}) {
     if (request.expect.length) ctx.out(`  the answer must match ${request.expect.map((e) => `/${e}/i`).join(' and ')}`);
 
     const intakePath = `${COLLECTIONS.intake}/${intakeIdFor('dashboard', id)}`;
-    const state = { intakeSeen: false, responded: false, workId: null, work: null, replies: [], seen: new Set() };
+    const state = { intakeSeen: false, processedAt: null, responded: false, workId: null, work: null, replies: [], seen: new Set() };
     const outcome = await pollUntil(async () => {
       for (const reply of await agentMessages(db, thread)) {
         if (state.seen.has(reply.id)) continue;
@@ -279,13 +284,19 @@ export async function main(argv, deps = {}) {
         ctx.out(`\n--- ${reply.sender_name || AGENT_SENDER} at ${reply.timestamp}\n${reply.text}\n`);
       }
       if (!state.workId) {
+        // The message before the intake: read the other way round, the ears can write the intake and
+        // mark the message in between, and a message taken in looks dropped.
+        const message = state.intakeSeen ? null : await db.read(messagePath, { strict: true });
         const intake = await db.read(intakePath, { strict: true });
         if (intake && !state.intakeSeen) {
           state.intakeSeen = true;
           ctx.out(`  the ears took it in as ${intakePath}`);
         }
-        if (!intake && (await db.read(messagePath, { strict: true }))?.processed === true) {
-          throw new DevError('the ears marked the message processed without taking it in (a duplicate, or one too soon after your last)');
+        if (!intake && message?.processed === true) {
+          state.processedAt ??= ctx.now();
+          if (ctx.now() - state.processedAt >= INTAKE_GRACE_MS) {
+            throw new DevError('the ears marked the message processed without taking it in (a duplicate, or one too soon after your last)');
+          }
         }
         if (intake?.status === 'failed') return 'done';
         if (intake?.status === 'consumed' && intake.consumed_by) {

@@ -2,8 +2,9 @@
 // .local/instance.env, runs gcloud and git with argument lists (never a shell string; on Windows it
 // runs gcloud's own Python entry point, because Node cannot start gcloud.cmd without a shell), gets
 // your own access token and account from gcloud, builds the `gcloud compute ssh` call to the
-// instance's VM, and gives Firestore clients (agent/storage/firestore.mjs) that act as you. It runs on
-// your machine (Windows Git Bash, macOS or Linux), never on an instance, and is not a command itself.
+// instance's VM, and gives Firestore clients (agent/storage/firestore.mjs) that act as you, asking gcloud
+// for a new token when Firestore refuses the one in hand. It runs on your machine (Windows Git Bash,
+// macOS or Linux), never on an instance, and is not a command itself.
 // Used by deploy.mjs, status.mjs, logs.mjs, query.mjs, trigger.mjs and say.mjs.
 
 import { spawn } from 'node:child_process';
@@ -47,7 +48,10 @@ const FORMATS = {
   DASHBOARD_URL: [/^https:\/\/\S+$/, 'an https URL'],
 };
 
-/** How long a token from `gcloud auth print-access-token` is reused before asking again. */
+/**
+ * How long a token from `gcloud auth print-access-token` is reused before asking again. gcloud may hand
+ * out a token with only minutes left, so a Firestore 401 also asks again (devContext's db()).
+ */
 const TOKEN_REUSE_MS = 30 * 60_000;
 
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -299,6 +303,7 @@ export function devContext(deps = {}) {
   const stderr = deps.stderr || process.stderr;
   const now = deps.now || Date.now;
   const sleep = deps.sleep || ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
+  const fetchImpl = deps.fetch || globalThis.fetch;
   let instance = null;
   let token = null;
 
@@ -327,9 +332,12 @@ export function devContext(deps = {}) {
     },
     /** git in this clone. */
     git: (args, opts = {}) => exec('git', args, { cwd: REPO_ROOT, ...opts }),
-    /** Your access token, from the gcloud account you are logged in with. */
-    async accessToken() {
-      if (token && now() - token.at < TOKEN_REUSE_MS) return token.value;
+    /**
+     * Your access token, from the gcloud account you are logged in with. It is reused for a while;
+     * `{ fresh: true }` asks gcloud again, for when the one in hand was refused.
+     */
+    async accessToken({ fresh = false } = {}) {
+      if (!fresh && token && now() - token.at < TOKEN_REUSE_MS) return token.value;
       const result = await gcloud(['auth', 'print-access-token']);
       const value = result.stdout.trim();
       if (result.code !== 0 || !value) {
@@ -356,13 +364,22 @@ export function devContext(deps = {}) {
     },
     /**
      * A Firestore client for your dev instance's project, acting as you. Callers pass
-     * `{ strict: true }`, so a failure is an error and never an empty answer.
+     * `{ strict: true }`, so a failure is an error and never an empty answer. A request Firestore
+     * refuses with 401 (the token expired during a long follow) is sent once more with a token gcloud
+     * gives afresh; a second 401 is the client's error to report.
      */
     db() {
       return createClient({
         projectId: ctx.instance().PROJECT_ID,
         getAccessToken: () => ctx.accessToken(),
-        fetch: deps.fetch || globalThis.fetch,
+        fetch: async (url, init = {}) => {
+          const resp = await fetchImpl(url, init);
+          if (resp.status !== 401) return resp;
+          await resp.body?.cancel();
+          const headers = new Headers(init.headers);
+          headers.set('Authorization', `Bearer ${await ctx.accessToken({ fresh: true })}`);
+          return fetchImpl(url, { ...init, headers });
+        },
         firestoreHost: deps.firestoreHost,
         logger: () => {},
       });

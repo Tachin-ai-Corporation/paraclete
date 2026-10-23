@@ -1,6 +1,6 @@
 // Tests for dev/dev-env.mjs: reading and checking .local/instance.env, the `gcloud compute ssh`
 // arguments, starting gcloud on Windows without a shell, the program runner, the developer's token and
-// account, polling, and the run-directly check.
+// account, a new token when Firestore refuses one, polling, and the run-directly check.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -12,6 +12,7 @@ import {
   DevError, PLACEHOLDERS, REPO_ROOT, INSTANCE_ENV_PATH, autoId, createExec, devContext, isMain, loadInstanceEnv,
   parseEnvFile, pollUntil, sshArgs, windowsGcloud,
 } from '../../dev/dev-env.mjs';
+import { start as startFirestore } from '../fakes/firestore-server.mjs';
 import { ENV_TEXT, expectedSsh, fakeExec, sink } from './fakes.mjs';
 
 const reading = (text) => ({ readFile: () => text });
@@ -176,6 +177,37 @@ test('the token and account come from gcloud; failures say how to log in', async
   await assert.rejects(loggedOut.accessToken(), /could not give an access token:\nERROR: Reauthentication failed\.\nLog in with: gcloud auth login/);
   await assert.rejects(devContext({ exec: fakeExec(() => ({ stdout: '' })) }).account(), /No gcloud account is active/);
   await assert.rejects(devContext({ exec: fakeExec(() => ({ code: 127, missing: true })) }).accessToken(), /gcloud was not found/);
+});
+
+test('a Firestore 401 asks gcloud for a new token and sends the request once more', async () => {
+  const firestore = await startFirestore();
+  try {
+    await firestore.reset();
+    let issued = 0;
+    let valid = 'tok-1';
+    const exec = fakeExec((program, args) => (args.join(' ') === 'auth print-access-token'
+      ? { stdout: `tok-${issued += 1}\n` } : undefined));
+    // Firestore as it answers an expired token: 401 for anything but the token now valid.
+    const fetch = async (url, init) => (new Headers(init.headers).get('Authorization') === `Bearer ${valid}`
+      ? globalThis.fetch(url, init)
+      : new Response(JSON.stringify({ error: { code: 401, status: 'UNAUTHENTICATED' } }), { status: 401 }));
+    const ctx = devContext({ exec, fetch, firestoreHost: firestore.origin, readFile: () => ENV_TEXT, now: () => 0, stdout: sink(), stderr: sink() });
+    const db = ctx.db();
+
+    await db.write('messages/m-1', { text: 'hi' }, { strict: true });
+    assert.equal(issued, 1, 'one token while it is accepted');
+    valid = 'tok-2';
+    assert.equal((await db.read('messages/m-1', { strict: true })).text, 'hi', 'the read made after the token expired succeeds');
+    assert.equal(issued, 2, 'gcloud was asked once more');
+    assert.equal(await ctx.accessToken(), 'tok-2', 'and the new token is the one reused');
+    assert.deepEqual(firestore.requests.map((r) => r.token), ['tok-1', 'tok-2'], 'the refused request never reached Firestore');
+
+    valid = 'never';
+    await assert.rejects(db.read('messages/m-1', { strict: true }), /401/, 'a second 401 for the same request is reported');
+    assert.equal(issued, 3, 'one new token per refused request, not a loop');
+  } finally {
+    await firestore.stop();
+  }
 });
 
 test('ssh runs gcloud compute ssh for the configured VM and passes its stderr through', async () => {

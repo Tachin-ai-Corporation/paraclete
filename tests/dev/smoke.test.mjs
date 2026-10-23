@@ -1,7 +1,8 @@
 // Tests for dev/smoke.mjs: the request each kind of role gets, the verdict on what came back, and a
 // whole run against the Firestore fake: the role read from the VM over SSH, the message sent the way
-// dev/say.mjs sends one, the real ears taking it in, and PASS or FAIL with the reason. Also a
-// Workspace role with no account, a mission that stops to ask, and usage mistakes.
+// dev/say.mjs sends one, the real ears taking it in, and PASS or FAIL with the reason. Also the ears
+// taking the message in between two reads, a message they dropped, a Workspace role with no account,
+// a mission that stops to ask, and usage mistakes.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
@@ -116,6 +117,84 @@ test('a whole run: the role from the VM, the message sent like say, the result f
   assert.match(out, /^PASS: role generic, a short research answer: the mission completed and its result was delivered\.$/m);
   assert.deepEqual(exec.callsTo('gcloud')[0].args, expectedSsh('sudo -n cat /etc/paraclete/instance.json'));
   assertNoShell(exec.calls);
+});
+
+/**
+ * fetch for the command, with `onIntakeRead(next)` deciding each read of the intake document: `next()`
+ * reads it from the fake. Every other request goes straight through.
+ */
+function intakeReads(onIntakeRead) {
+  return async (url, init = {}) => {
+    const isIntakeRead = (init.method || 'GET') === 'GET' && new URL(url).pathname.includes(`/documents/${COLLECTIONS.intake}/`);
+    return isIntakeRead ? onIntakeRead(() => globalThis.fetch(url, init)) : globalThis.fetch(url, init);
+  };
+}
+const notFound = () => new Response(JSON.stringify({ error: { code: 404, status: 'NOT_FOUND' } }), { status: 404 });
+/** The brain's mission completing, with the agent's answer in the thread. */
+async function missionDelivered() {
+  await agentSays('HTTP/2 was RFC 7540, and RFC 9113 replaced it in 2022.', START + 60_000);
+  await db.write(`${COLLECTIONS.work}/w-1`, { id: 'w-1', type: 'M', status: 'complete', delivery_status: 'delivered', output: 'RFC 7540; RFC 9113.' });
+}
+
+test('the ears taking the message in just after the intake was read is not a drop', async () => {
+  let earsRan = false;
+  const deps = devDeps({
+    firestore,
+    exec: vm(),
+    onSleep: async (n) => {
+      if (n === 2) await brainMakesMission();
+      if (n === 3) await missionDelivered();
+    },
+  });
+  // The ears write the intake and mark the message processed right after the command's first look.
+  const fetch = intakeReads(async (next) => {
+    const resp = await next();
+    if (!earsRan) { earsRan = true; await earsTick(); }
+    return resp;
+  });
+  assert.equal(await main([], { ...deps, fetch, readRole }), 0, deps.stderr.text);
+  assert.match(deps.stdout.text, /the ears took it in as intake\//);
+  assert.match(deps.stdout.text, /^PASS: role generic/m);
+});
+
+test('a processed message whose intake shows up within the grace is followed, not called dropped', async () => {
+  let hidden = 0;
+  const deps = devDeps({
+    firestore,
+    exec: vm(),
+    onSleep: async (n) => {
+      if (n === 1) { await earsTick(); hidden = 1; }
+      if (n === 2) await brainMakesMission();
+      if (n === 3) await missionDelivered();
+    },
+  });
+  // Read once while the message already shows processed, the intake is not there yet.
+  const fetch = intakeReads((next) => {
+    if (hidden === 0) return next();
+    hidden -= 1;
+    return notFound();
+  });
+  assert.equal(await main([], { ...deps, fetch, readRole }), 0, deps.stderr.text);
+  assert.match(deps.stdout.text, /^PASS: role generic/m);
+});
+
+test('a message the ears dropped is reported, once the grace has passed', async () => {
+  let sleeps = 0;
+  const deps = devDeps({
+    firestore,
+    exec: vm(),
+    onSleep: async (n) => {
+      sleeps = n;
+      // What the ears do with a duplicate: mark it processed and write no intake.
+      if (n === 1) {
+        const [message] = await db.query('', COLLECTIONS.messages, [], { noOrderBy: true });
+        await db.patch(`${COLLECTIONS.messages}/${message.id}`, ['processed'], { processed: { booleanValue: true } });
+      }
+    },
+  });
+  assert.equal(await main([], { ...deps, readRole }), 1);
+  assert.match(deps.stderr.text, /the ears marked the message processed without taking it in/);
+  assert.equal(sleeps, 3, 'it looked again for 10 s (two polls) before saying so');
 });
 
 test('a mission that stops to ask a question fails at once, with the question', async () => {
