@@ -257,9 +257,17 @@ export async function runTier1Evaluation(opts = {}) {
         };
       }
 
-      // Each run is tagged with its task and trial, and whether it was the synthetic dry run (which
-      // always completes, so it measures nothing): promotion evidence (evidence.mjs) groups by them.
-      const trajectory = { ...extractTrajectory(rollout), taskId: task.id, trial, synthetic };
+      // Each run is tagged with its task and trial, whether it was the synthetic dry run (which always
+      // completes), and whether a scripted gateway answered for the organs (the same answers for any
+      // harness). Neither of those measures a candidate. Promotion evidence (evidence.mjs) groups by
+      // task and trial and refuses both.
+      const trajectory = {
+        ...extractTrajectory(rollout),
+        taskId: task.id,
+        trial,
+        synthetic,
+        scripted: Boolean(rollout?.scripted),
+      };
       trajectories.push(trajectory);
     }
 

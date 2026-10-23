@@ -390,7 +390,6 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
                   cachedOrgans: invSnap.cachedOrgans,
                   organPromptTokens: domSnap.organPromptTokens,
                   organPrompts: domSnap.organPrompts || invSnap.organPrompts,
-                  isEvolved: Boolean(invSnap.isEvolved || domSnap.isEvolved),
                 });
               } else if (invSnap || domSnap) {
                 mergedSnapshots.set(r, invSnap || domSnap);

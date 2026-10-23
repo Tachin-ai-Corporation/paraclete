@@ -357,9 +357,13 @@ done.
     - Its promotions are pull requests. Since `v2026.10.22.1.1` each title starts with its version and
       is merged with squash, so `main`'s head stays releasable. Since `v2026.10.22.1.2` the release notes
       also list changes merged with a merge commit. Instances get promotions only through a release.
-    - Still open: promotions that carry measured evidence (the candidate against the current version
-      on the same tasks, over repeated trials, with template edits refused); a merge step that squashes
-      and waits for CI; and a check on the dev instance before a release that carries promotions.
+    - Since `v2026.10.23.2.1` a promotion opens only with measured evidence: the candidate against the
+      current version on the same tasks, over repeated trials, proposed by a model. Runs that the
+      scripted in-process gateway answered are refused as evidence.
+    - Still open: runs that put a candidate's own prompts in front of a model (the in-process gateway
+      is scripted, and a `--gateway-url` gateway reads its installed prompts, so no run measures a
+      prompt change yet); a merge step that squashes and waits for CI; and a check on the dev instance
+      before a release that carries promotions.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
     after every merge, and a release with promotions passes the smoke missions on a dev instance.

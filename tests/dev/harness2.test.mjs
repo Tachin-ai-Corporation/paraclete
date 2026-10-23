@@ -3,7 +3,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -1428,7 +1428,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         fixture.seedWorkspace(wsBase);
         fixture.seedWorkspace(wsEvo);
         fixture.applyReferenceSolution(wsEvo);
-        materializeCurriculumArtifacts(wsEvo, unit, { evolved: true });
+        materializeCurriculumArtifacts(wsEvo, unit);
 
         const verifyBase = verifyUnitArtifacts(wsBase, unit);
         const verifyEvo = verifyUnitArtifacts(wsEvo, unit);
@@ -1572,7 +1572,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         const pathCheck = classifySurfacePath(dynUnit.targetMutablePath, { stage: 'stage2', allowNewRoles: true });
         assert.equal(pathCheck.allowed, true, `Dynamic unit ${dynUnit.id} targetMutablePath ${dynUnit.targetMutablePath} must be mutable`);
         const ws = join(tmpRoot, `ws-${dynUnit.id}`);
-        materializeCurriculumArtifacts(ws, dynUnit, { evolved: true });
+        materializeCurriculumArtifacts(ws, dynUnit);
         const verified = verifyUnitArtifacts(ws, dynUnit);
         assert.equal(verified.passed, true, `Dynamic unit ${dynUnit.id} artifacts failed verification: ${JSON.stringify(verified)}`);
       }
@@ -2112,6 +2112,63 @@ describe('dev/harness2/evidence.mjs: a promotion carries measured evidence', () 
     const none = await createLiveProposeAndApply({})(spec, { id: 'gen0' });
     assert.equal(none.proposal.source, 'none');
     assert.equal(DEFAULT_EVIDENCE_RULES.refusedSources.includes('none'), true);
+  });
+
+  it('runs the scripted in-process gateway answered measure nothing, and the evidence says so', () => {
+    const runs = (caps, scripted) => caps.map((capability, i) => ({ taskId: 'task-a', trial: i + 1, capability, scripted }));
+    const evidence = buildPromotionEvidence({
+      candidate: { ...CANDIDATE, proposal: { source: 'vertex' } },
+      baselineTrajectories: runs([0.4, 0.42, 0.38], true),
+      candidateTrajectories: runs([0.9, 0.92, 0.88], true),
+    });
+    assert.equal(evidence.scripted, true);
+    const { ok, problems } = judgeEvidence(evidence);
+    assert.equal(ok, false);
+    assert.equal(problems.length, 1, problems.join(' | '));
+    assert.match(problems[0], /scripted in-process gateway, which gives every harness the same answers/);
+    assert.match(formatEvidenceMarkdown(evidence), /\*\*Runs per task\*\*: baseline 3, candidate 3 \(scripted in-process gateway\)/);
+    // Runs a model answered carry no mark and are judged on their numbers.
+    assert.equal(measuredEvidence(CANDIDATE).scripted, false);
+  });
+
+  it('in-process, a candidate that changed a prompt scores exactly as the baseline, and every run is marked scripted', async () => {
+    const task = getCurriculumUnitById('unit-role-security-engineer').task;
+    const overlay = `roles/${task.role}/prompts/cerebellum.md`;
+    const judge = { useFrontierJudge: true, judgeOptions: { mode: 'heuristic' } };
+    // The candidate's worktree, where createIsolatedWorktree would put it; git itself is faked.
+    const wt = join(tmpdir(), 'paraclete-h2-scripted-gen0-dom-1');
+    rmSync(wt, { recursive: true, force: true });
+    try {
+      for (const dir of ['config', 'prompts', join('roles', task.role, 'prompts')]) cpSync(dir, join(wt, dir), { recursive: true });
+      const candidate = await createLiveProposeAndApply({
+        stage: 'stage2',
+        useWorktree: true,
+        execGit: () => '',
+        ...judge,
+        applyMutation: async ({ targetRoot }) => {
+          const abs = join(targetRoot, overlay);
+          writeFileSync(abs, `${readFileSync(abs, 'utf8')}\n- Quote the evidence for every finding.\n`);
+          return { touchedPaths: [overlay], source: 'vertex', hypothesis: 'quote the evidence' };
+        },
+      })({ lens: 'DOM', escalationMode: 'initial_targeted_patch', allowedComponents: ['c5_role_overlays'], priorAttemptsSummary: [] }, { id: 'scripted-gen0' });
+      assert.deepEqual(candidate.touchedPaths, [overlay]);
+
+      const candEval = await runTier1Evaluation({ tasks: [task], runTaskRollout: candidate.runTaskRollout });
+      const baseEval = await evaluateLiveTarget({ tasks: [task], role: task.role, ...judge });
+      const score = (res) => res.summary.perTrajectory.map((p) => [p.capability, p.scripted]);
+      assert.ok(baseEval.summary.capability < 1, 'the judge scored the run, so equal scores mean something');
+      assert.deepEqual(score(candEval), score(baseEval));
+      assert.deepEqual(score(baseEval).map(([, scripted]) => scripted), [true]);
+
+      const evidence = buildPromotionEvidence({
+        candidate: { ...candidate, trajectories: candEval.trajectories },
+        baselineTrajectories: baseEval.trajectories,
+      });
+      assert.equal(evidence.capability.delta, 0);
+      assert.match(judgeEvidence(evidence).problems.join(' | '), /scripted in-process gateway/);
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
   });
 });
 
