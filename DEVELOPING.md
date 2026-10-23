@@ -302,9 +302,11 @@ have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often b
 - Merge a pull request with **Squash and merge**, and give the pull request a title that starts with
   its version. The squashed commit then lands on main with that version, so main's head stays
   releasable. A merge commit's subject has no version, so `dev/release.mjs` refuses to release it.
-  The harness's promotion pull requests (`dev/harness2/promote.mjs`) are titled this way. Release
-  notes list the commits a merge commit brought in, so a change merged without squashing still
-  appears there.
+  The harness's promotion pull requests (`dev/harness2/promote.mjs`) are titled this way, and the
+  harness-merge workflow (`.github/workflows/harness-merge.yml`, running `dev/harness2/merge.mjs`)
+  squash-merges them, only once CI passed and their measured evidence and changed files pass its
+  checks. Release notes list the commits a merge commit brought in, so a change merged without
+  squashing still appears there.
 - Before pushing, run `npm test`.
 - Commit or push only when the developer has asked you to.
 - Releases are tags that maintainers cut after CI is green. Don't tag a release unless asked.
