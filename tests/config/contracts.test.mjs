@@ -78,6 +78,15 @@ test('a Claude candidate list that is empty, repeats a model, names Gemini, lack
     .some((p) => p.includes('must include vertex.models.claude')));
 });
 
+test('one organ turn has room for the longest single-turn work: the nightly memory consolidation', () => {
+  // A turn that reaches organs.max_steps stops where it is, before its last step. The consolidation
+  // runs as one temporal-memory turn and writes its report last; on a dev instance it took 16 to 19
+  // steps a night, so a budget of 16 cut it short (v2026.10.22.1.2). 20 is the floor, 25 the value.
+  const { organs } = loadContracts();
+  assert.ok(organs.max_steps >= 20, `organs.max_steps is ${organs.max_steps}; a nightly consolidation needs up to 19 steps in one turn`);
+  assert.equal(organs.max_steps, 25);
+});
+
 test('the gateway listens on loopback only', () => {
   const c = real();
   c.gateway.bind = '0.0.0.0';
