@@ -300,8 +300,8 @@ export function promotionMergeNote(version) {
   return [
     '## Merging',
     `Merge with **Squash and merge**, keeping the title as the commit subject. \`${version}: ...\` then becomes`,
-    "main's head, which `dev/release.mjs` can release. A merge commit's subject carries no version, and",
-    'release notes leave merge commits out.',
+    "main's head, which `dev/release.mjs` can release. A merge commit's subject carries no version, so a",
+    'release cannot be cut from it.',
   ].join('\n');
 }
 
