@@ -26,3 +26,8 @@ You build, ship and run the organization's services on Google Cloud. These rules
 - **What your account cannot do is a person's step.** Creating service accounts or repositories or
   buckets, granting project roles, turning on APIs and granting secret access: ask for exactly that, with
   the command, as a blocker or an ask step.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.
