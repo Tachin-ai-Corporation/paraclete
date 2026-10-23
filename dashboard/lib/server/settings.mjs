@@ -15,6 +15,11 @@
 // folder id, or null for none. The drive skill and the control service's drive_check read it. For the
 // agent's service account it must sit in a shared drive the account belongs to, since a service
 // account has no Drive storage of its own; the Test Drive check says whether it can write there.
+//
+// Automatic updates (`auto_update`) say whether the dashboard's update job installs new releases by
+// itself (auto-update.mjs). Only a stored true or false counts; anything else, the field's absence
+// included, is the contracts' `auto_update.enabled_by_default`. install/install.sh --no-auto-update
+// stores false. The job reads it at the start of every run, so a change takes effect at the next one.
 
 import { firestoreEncode } from '../../../agent/storage/firestore.mjs';
 import { EFFORT_LEVELS, effortScale, normalizeEffort } from '../../../agent/work/effort.mjs';
@@ -25,6 +30,9 @@ export const EFFORT_FIELDS = Object.freeze(['effort', 'effort_updated_at', 'effo
 
 /** The fields of `config/settings` the Drive output folder writes. */
 export const DRIVE_FIELDS = Object.freeze(['drive_output_folder', 'drive_output_folder_updated_at', 'drive_output_folder_updated_by']);
+
+/** The fields of `config/settings` the automatic-update setting writes. */
+export const AUTO_UPDATE_FIELDS = Object.freeze(['auto_update', 'auto_update_updated_at', 'auto_update_updated_by']);
 
 /** A Drive file or folder id: letters, digits, '-' and '_' (a shared drive's own id is 19 characters, a folder's usually 33). */
 export const DRIVE_ID = /^[A-Za-z0-9_-]{10,128}$/;
@@ -132,4 +140,56 @@ export async function setDriveOutputFolder(runtime, { folder, user, now = new Da
   const fields = { drive_output_folder: id, drive_output_folder_updated_at: now.toISOString(), drive_output_folder_updated_by: user.email };
   await runtime.db.patch(settingsPath(runtime), [...DRIVE_FIELDS], firestoreEncode(fields), { strict: true });
   return readDriveSettings(runtime);
+}
+
+/**
+ * Whether automatic updates are on, from a `config/settings` document: a stored true or false, else
+ * the contracts' default.
+ *
+ * @param {object} runtime
+ * @param {object} doc  config/settings as read, or {}
+ * @returns {boolean}
+ */
+export function autoUpdateEnabled(runtime, doc) {
+  return typeof doc?.auto_update === 'boolean' ? doc.auto_update : runtime.contracts.auto_update.enabled_by_default === true;
+}
+
+function autoUpdateView(runtime, doc) {
+  return {
+    enabled: autoUpdateEnabled(runtime, doc),
+    stored: typeof doc.auto_update === 'boolean' ? doc.auto_update : null,
+    default: runtime.contracts.auto_update.enabled_by_default === true,
+    updated_at: doc.auto_update_updated_at ?? null,
+    updated_by: doc.auto_update_updated_by ?? null,
+  };
+}
+
+/**
+ * The automatic-update setting: whether it is on, what is stored, the default, and who changed it
+ * last. Read strictly: an outage is an error, never "the default".
+ *
+ * @param {object} runtime
+ * @returns {Promise<{enabled: boolean, stored: boolean|null, default: boolean, updated_at: string|null, updated_by: string|null}>}
+ */
+export async function readAutoUpdate(runtime) {
+  const doc = (await runtime.db.read(settingsPath(runtime), { strict: true })) || {};
+  return autoUpdateView(runtime, doc);
+}
+
+/**
+ * Turns automatic updates on or off. Admins only.
+ *
+ * @param {object}  runtime
+ * @param {object}  o
+ * @param {unknown} o.enabled  true or false
+ * @param {{email: string, role: string}} o.user  who asks
+ * @param {Date}    [o.now]
+ * @returns {Promise<object>} readAutoUpdate()'s shape
+ */
+export async function setAutoUpdate(runtime, { enabled, user, now = new Date() }) {
+  if (user?.role !== 'admin') throw new HttpError(403, 'only a dashboard admin can turn automatic updates on or off');
+  if (typeof enabled !== 'boolean') throw new HttpError(400, 'enabled must be true or false');
+  const fields = { auto_update: enabled, auto_update_updated_at: now.toISOString(), auto_update_updated_by: user.email };
+  await runtime.db.patch(settingsPath(runtime), [...AUTO_UPDATE_FIELDS], firestoreEncode(fields), { strict: true });
+  return readAutoUpdate(runtime);
 }

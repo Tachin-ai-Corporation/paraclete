@@ -146,6 +146,14 @@ function knativeService(name, s) {
   };
 }
 
+/** A schedule from `gcloud scheduler jobs create|update http`'s flags. */
+function scheduleFrom(f) {
+  return {
+    location: f.location, schedule: f.schedule, timeZone: f['time-zone'], uri: f.uri, httpMethod: f['http-method'],
+    account: f['oauth-service-account-email'], scope: f['oauth-token-scope'], description: f.description,
+  };
+}
+
 function service(name, region) {
   const found = state.runServices[name];
   return found && found.region === region ? found : null;
@@ -509,6 +517,92 @@ const GCLOUD = {
       out(`DONE\n${substitutions._IMAGE}:${substitutions._COMMIT}`);
     },
   },
+  // The automatic-update job, in Cloud Run's v1 form as `gcloud run jobs describe --format=json` prints it.
+  'run jobs describe': {
+    write: false,
+    run: ([name], f) => {
+      const job = state.runJobs?.[name];
+      if (!job || job.region !== f.region) fail('NOT_FOUND');
+      if (f.format !== 'json') return out(name);
+      return out(JSON.stringify({
+        apiVersion: 'run.googleapis.com/v1',
+        kind: 'Job',
+        metadata: { name },
+        spec: { template: { spec: { template: { spec: {
+          serviceAccountName: job.account,
+          timeoutSeconds: String(job.timeoutSeconds),
+          maxRetries: job.maxRetries,
+          containers: [{
+            image: job.image, command: job.command, args: job.args,
+            env: Object.entries(job.env || {}).map(([envName, value]) => ({ name: envName, value })),
+          }],
+        } } } } },
+      }));
+    },
+  },
+  'run jobs deploy': {
+    write: true,
+    run: ([name], f) => {
+      const [path, tag] = splitImage(f.image);
+      if (!(state.images[path] || []).includes(tag)) fail(`Image '${f.image}' not found`);
+      (state.runJobs ||= {})[name] = {
+        region: f.region,
+        image: f.image,
+        account: f['service-account'],
+        command: [].concat(f.command ?? []),
+        args: String(f.args ?? '').split(',').filter(Boolean),
+        env: f['env-vars-file'] ? readEnvFile(f['env-vars-file']) : {},
+        timeoutSeconds: Number(String(f['task-timeout']).replace(/s$/, '')),
+        maxRetries: Number(f['max-retries']),
+        tasks: Number(f.tasks),
+      };
+      save();
+      out('');
+    },
+  },
+  'run jobs delete': {
+    write: true,
+    run: ([name]) => { delete state.runJobs?.[name]; save(); out(''); },
+  },
+  // The schedule, in Cloud Scheduler's API form as `gcloud scheduler jobs describe --format=json` prints it.
+  'scheduler jobs describe': {
+    write: false,
+    run: ([name], f) => {
+      const s = state.schedules?.[name];
+      if (!s || s.location !== f.location) fail('NOT_FOUND');
+      if (f.format !== 'json') return out(name);
+      return out(JSON.stringify({
+        name: `projects/${f.project}/locations/${f.location}/jobs/${name}`,
+        schedule: s.schedule,
+        timeZone: s.timeZone,
+        state: s.state || 'ENABLED',
+        httpTarget: { uri: s.uri, httpMethod: s.httpMethod, oauthToken: { serviceAccountEmail: s.account, scope: s.scope } },
+      }));
+    },
+  },
+  'scheduler jobs create http': {
+    write: true,
+    run: ([name], f) => {
+      if (!state.services.includes('cloudscheduler.googleapis.com')) fail('Cloud Scheduler API has not been used in this project before or it is disabled');
+      if (state.schedules?.[name]) fail('ALREADY_EXISTS');
+      (state.schedules ||= {})[name] = scheduleFrom(f);
+      save();
+      out('');
+    },
+  },
+  'scheduler jobs update http': {
+    write: true,
+    run: ([name], f) => {
+      if (!state.schedules?.[name]) fail('NOT_FOUND');
+      state.schedules[name] = { ...scheduleFrom(f), state: state.schedules[name].state };
+      save();
+      out('');
+    },
+  },
+  'scheduler jobs delete': {
+    write: true,
+    run: ([name]) => { delete state.schedules?.[name]; save(); out(''); },
+  },
   'compute networks describe': {
     write: false,
     run: ([name], f) => {
@@ -688,6 +782,23 @@ function curl() {
   }
   const userDoc = /^https:\/\/firestore\.googleapis\.com\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/users\/([^/?]+)(\?.*)?$/.exec(url);
   if (userDoc) return firestoreUser(url, decodeURIComponent(userDoc[1]), userDoc[2]);
+  const settingsDoc = /^https:\/\/firestore\.googleapis\.com\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/config\/settings\?(.*)$/.exec(url);
+  if (settingsDoc && option('-X') === 'PATCH') {
+    // Only a field-masked write is modelled: the fields it names change, every other one stays.
+    log('firestore patch settings', true);
+    const mask = new URLSearchParams(settingsDoc[1]).getAll('updateMask.fieldPaths');
+    if (mask.length === 0) fail(`only field-masked writes of config/settings are modelled: ${url}`, 3);
+    if (!state.database) return httpError({ error: { code: 404, status: 'NOT_FOUND', message: 'The database (default) does not exist' } });
+    const body = JSON.parse(readFileSync(option('--data-binary').slice(1), 'utf8'));
+    const decode = (v) => ('booleanValue' in v ? v.booleanValue : v.stringValue);
+    state.settings = { ...(state.settings || {}) };
+    for (const field of mask) {
+      if (body.fields[field]) state.settings[field] = decode(body.fields[field]);
+      else delete state.settings[field];
+    }
+    save();
+    return out(JSON.stringify({ name: 'config/settings' }));
+  }
   if (url.includes('firestore.googleapis.com') && url.endsWith('/documents/agent/instance')) {
     log('firestore get agent/instance', false);
     const doc = state.agentInstance;

@@ -28,6 +28,7 @@ this.
 | role move | A developer re-running `install.sh --role <other>` on an existing instance. Not a product feature: the old role's own grants are revoked, its packages stay, memory stays |
 | release | A version tag on main (`vYYYY.MM.DD.N.N`) published as a GitHub release with notes by `.github/workflows/release.yml`; instances install it or upgrade to it. `dev/release.mjs` cuts one |
 | upgrade | Moving an instance, VM first and then the dashboard, to a release or commit. From the dashboard: the System tab's Install, only forward |
+| automatic update | An upgrade the dashboard starts by itself: its scheduled job (a Cloud Run job, started by Cloud Scheduler every 30 minutes) installs the newest release the way Install does, while the agent is idle (`dashboard/lib/server/auto-update.mjs`). On by default (`config/settings.auto_update`); never moves an instance installed from a branch or commit |
 | migration | A release's idempotent data change (`migrations/<version>-<slug>.mjs`), run once per instance by the upgrade after the services stop and before the new release is swapped in; recorded in `config/migrations` |
 | Claude candidates | The Claude Opus models the contracts list (`vertex.models.claude_candidates`), newest first: the Models tab's Test tries each, and Claude is turned on with the newest that answered (`config/settings.claude_model`) |
 | dashboard | The web app where people use and manage an instance |

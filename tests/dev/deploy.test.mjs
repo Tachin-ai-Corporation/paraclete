@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { main, githubRepoFromUrl, pickRemoteRef } from '../../dev/deploy.mjs';
-import { buildArgs, deployArgs } from '../../install/lib/dashboard.mjs';
+import { buildArgs, deployArgs, jobDeployArgs } from '../../install/lib/dashboard.mjs';
 import { REPO_ROOT } from '../../dev/dev-env.mjs';
 import { DEV_TOKEN, assertNoShell, devDeps, expectedSsh, fakeExec } from './fakes.mjs';
 
@@ -70,6 +70,21 @@ function dashboardService(commit = OLD, env = installedEnv(commit)) {
   };
 }
 
+/** The automatic-update job as `gcloud run jobs describe --format=json` shows it, running a commit. */
+function updateJob(commit = OLD, env = installedEnv(commit)) {
+  return {
+    metadata: { name: 'paraclete-auto-update' },
+    spec: { template: { spec: { template: { spec: {
+      serviceAccountName: DASHBOARD,
+      timeoutSeconds: '3600',
+      containers: [{
+        image: `${IMAGE}:${commit}`, command: ['node'], args: ['dashboard/jobs/auto-update.mjs'],
+        env: Object.entries(env).map(([name, value]) => ({ name, value })),
+      }],
+    } } } } },
+  };
+}
+
 /** The value of --name=value in an argument list. */
 const flagOf = (args, name) => args.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
 
@@ -87,8 +102,9 @@ function instance({
   remote = `${MAIN}\trefs/heads/main\n`, local = MAIN, upgrade = { stdout: 'upgrade: fetching\nupgrade: done\n' }, onUpgrade,
   service = dashboardService(), tags = [OLD], show = { stdout: CONFIG }, build = { stdout: 'BUILD step 0: docker build\nDONE\n' },
   deploy = { stderr: 'Deploying container to Cloud Run service [paraclete]... Done.\n' },
+  job = null, jobDeploy = { stdout: 'Job [paraclete-auto-update] has successfully been deployed.\n' },
 } = {}) {
-  const seen = { configs: [], envs: [], files: [] };
+  const seen = { configs: [], envs: [], files: [], jobEnvs: [], jobArgs: [] };
   const exec = fakeExec(async (program, args) => {
     if (program === 'git' && args.includes('ls-remote')) return { stdout: remote };
     if (program === 'git' && args[0] === 'rev-parse') return local ? { stdout: `${local}\n` } : { code: 1 };
@@ -106,6 +122,15 @@ function instance({
       seen.files.push(flagOf(args, 'config'));
       seen.configs.push(readFileSync(flagOf(args, 'config'), 'utf8'));
       return build;
+    }
+    if (words === 'run jobs describe') {
+      return job ? { stdout: JSON.stringify(job) } : { code: 1, stderr: 'ERROR: (gcloud.run.jobs.describe) Cannot find job [paraclete-auto-update]\n' };
+    }
+    if (words === 'run jobs deploy') {
+      seen.files.push(flagOf(args, 'env-vars-file'));
+      seen.jobEnvs.push(envOf(readFileSync(flagOf(args, 'env-vars-file'), 'utf8')));
+      seen.jobArgs.push(args);
+      return jobDeploy;
     }
     if (words === 'run deploy paraclete') {
       seen.files.push(flagOf(args, 'env-vars-file'));
@@ -160,7 +185,7 @@ test('after the VM is ready, the dashboard is built at the commit with its own c
 
   const gcloud = exec.callsTo('gcloud').filter((c) => c.args[0] !== 'auth');
   assert.deepEqual(gcloud.map((c) => c.args.slice(0, 2).join(' ')),
-    ['compute ssh', 'run services', 'artifacts docker', 'builds submit', 'run deploy'], 'the VM first, then the dashboard');
+    ['compute ssh', 'run services', 'artifacts docker', 'builds submit', 'run deploy', 'run jobs'], 'the VM first, then the dashboard, then its update job');
   const [, describe, tags, build, deploy] = gcloud.map((c) => c.args);
   assert.deepEqual(describe, ['run', 'services', 'describe', 'paraclete', '--region=us-central1', `--project=${PROJECT}`, '--format=json']);
   assert.deepEqual(tags, ['artifacts', 'docker', 'tags', 'list', IMAGE, `--project=${PROJECT}`, '--format=value(tag.basename())']);
@@ -185,7 +210,7 @@ test('an image that exists is not built again, and a dashboard on the commit is 
   });
   const deps = devDeps({ firestore, exec });
   assert.equal(await main(['main'], deps), 0, deps.stderr.text);
-  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags']);
+  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags', 'run jobs describe']);
   assert.match(deps.stdout.text, /The dashboard's image for aaaaaaaaaaaa exists; not building it again\./);
   assert.match(deps.stdout.text, /The dashboard already runs aaaaaaaaaaaa\./);
   assert.equal(exec.callsTo('git').some((c) => c.args[0] === 'show'), false);
@@ -203,12 +228,40 @@ test('--vm-only moves the VM alone, --dashboard-only the dashboard alone, and no
   deps = devDeps({ firestore, exec });
   assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
   assert.equal(exec.calls.some((c) => c.args[0] === 'compute'), false, 'nothing runs on the VM');
-  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags', 'builds submit', 'run deploy paraclete']);
+  assert.deepEqual(dashboardCalls(exec), ['run services describe', 'artifacts docker tags', 'builds submit', 'run deploy paraclete', 'run jobs describe']);
   assert.match(deps.stdout.text, /The VM stays as it is \(--dashboard-only\)/);
 
   deps = devDeps({ firestore, exec: instance() });
   assert.equal(await main(['main', '--vm-only', '--dashboard-only'], deps), 2);
   assert.match(deps.stderr.text, /--vm-only and --dashboard-only exclude each other/);
+});
+
+test("the automatic-update job follows the dashboard: moved to the commit with the service's environment, or left when it runs it", async () => {
+  let exec = instance({ job: updateJob(OLD) });
+  let deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
+  const [args] = exec.seen.jobArgs;
+  assert.deepEqual(args, jobDeployArgs({ project: PROJECT, region: 'us-central1', commit: MAIN, envFile: flagOf(args, 'env-vars-file') }));
+  assert.deepEqual(exec.seen.jobEnvs, exec.seen.envs, "the job's environment is the service's");
+  assert.match(deps.stdout.text, /Moving the automatic-update job paraclete-auto-update to aaaaaaaaaaaa \(changing: image, environment\)/);
+  assert.ok(exec.seen.files.every((file) => !existsSync(file)), 'the temporary files are gone');
+
+  const env = installedEnv(MAIN, { PARACLETE_RELEASE: 'main' });
+  exec = instance({ tags: [OLD, MAIN], service: dashboardService(MAIN, env), job: updateJob(MAIN, env) });
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
+  assert.deepEqual(exec.seen.jobArgs, []);
+  assert.match(deps.stdout.text, /The automatic-update job already runs aaaaaaaaaaaa\./);
+
+  exec = instance();
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 0, deps.stderr.text);
+  assert.match(deps.stdout.text, /There is no automatic-update job paraclete-auto-update; install\/install\.sh creates it\./);
+
+  exec = instance({ job: updateJob(OLD), jobDeploy: { code: 1, stderr: 'ERROR: job failed\n' } });
+  deps = devDeps({ firestore, exec });
+  assert.equal(await main(['main', '--dashboard-only'], deps), 1);
+  assert.match(deps.stderr.text, /the automatic-update job's deploy exited with code 1; read its output above\. The dashboard runs aaaaaaaaaaaa; re-running dev\/deploy moves the job too\./);
 });
 
 test('a dev instance without a dashboard is told to install one', async () => {

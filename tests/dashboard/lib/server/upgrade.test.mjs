@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { startDashboard } from '../../harness.mjs';
 import {
   IMAGE_REPOSITORY, STEP_START_GRACE_SECONDS, UPGRADE_DOC, VM_MARGIN_SECONDS, buildRequest, imagePath, parseBuildConfig,
-  readUpgrade, rolloutService, startUpgrade, upgradeView,
+  readUpgrade, rolloutJob, rolloutService, startUpgrade, upgradeView,
 } from '../../../../dashboard/lib/server/upgrade.mjs';
 import { RELEASE_CHECK_DOC } from '../../../../dashboard/lib/server/releases.mjs';
 import { NAMES, imagePath as installImagePath } from '../../../../install/lib/dashboard.mjs';
@@ -31,6 +31,7 @@ const later = (seconds) => new Date(NOW.getTime() + seconds * 1000);
 const ACCOUNT = `paraclete-dashboard@${PROJECT}.iam.gserviceaccount.com`;
 const IMAGE = `${REGION}-docker.pkg.dev/${PROJECT}/paraclete/dashboard`;
 const SERVICE_URL = `https://run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/services/paraclete`;
+const JOB_URL = `https://run.googleapis.com/v2/projects/${PROJECT}/locations/${REGION}/jobs/paraclete-auto-update`;
 const BUILDS_URL = `https://cloudbuild.googleapis.com/v1/projects/${PROJECT}/locations/${REGION}/builds`;
 const OPERATION = `projects/${PROJECT}/locations/${REGION}/operations/op-1`;
 const BUILD_CONFIG = readFileSync(new URL('../../../../dashboard/cloudbuild.json', import.meta.url), 'utf8');
@@ -68,6 +69,34 @@ function runService(commit = A, release = V1) {
   };
 }
 
+/** The automatic-update job as the v2 API answers it. */
+function runJob(commit = A, version = V1) {
+  return {
+    name: `projects/${PROJECT}/locations/${REGION}/jobs/paraclete-auto-update`,
+    etag: '"job-etag"',
+    launchStage: 'GA',
+    template: {
+      taskCount: 1,
+      template: {
+        serviceAccount: ACCOUNT,
+        timeout: '3600s',
+        maxRetries: 0,
+        containers: [{
+          image: `${IMAGE}:${commit}`,
+          command: ['node'],
+          args: ['dashboard/jobs/auto-update.mjs'],
+          env: [
+            { name: 'PARACLETE_PROJECT', value: PROJECT },
+            { name: 'PARACLETE_SERVICE', value: 'paraclete' },
+            { name: 'PARACLETE_RELEASE', value: version },
+            { name: 'PARACLETE_COMMIT', value: commit },
+          ],
+        }],
+      },
+    },
+  };
+}
+
 const release = (tag) => ({ tag_name: tag, name: tag, body: `- ${tag}`, html_url: `https://github.com/your-org/paraclete/releases/tag/${tag}`, published_at: '2027-01-20T10:00:00Z' });
 
 /**
@@ -87,6 +116,8 @@ function fakeCloud() {
     service: runService(),
     patch: { status: 200, body: { name: OPERATION, done: false } },
     operation: { name: OPERATION, done: false },
+    job: null,
+    jobPatch: { status: 200, body: { name: `projects/${PROJECT}/locations/${REGION}/operations/op-job`, done: false } },
   };
   const answer = (status, body) => new Response(JSON.stringify(body), { status });
   cloud.fetch = async (url, init = {}) => {
@@ -107,6 +138,8 @@ function fakeCloud() {
     if (u === SERVICE_URL && method === 'GET') return answer(200, cloud.service);
     if (u === SERVICE_URL && method === 'PATCH') return answer(cloud.patch.status, cloud.patch.body);
     if (u === `https://run.googleapis.com/v2/${OPERATION}`) return answer(200, cloud.operation);
+    if (u === JOB_URL && method === 'GET') return cloud.job ? answer(200, cloud.job) : answer(404, { error: { message: 'Job not found' } });
+    if (u === JOB_URL && method === 'PATCH') return answer(cloud.jobPatch.status, cloud.jobPatch.body);
     return answer(599, { error: { message: `unexpected call ${method} ${u}` } });
   };
   cloud.to = (prefix, method) => cloud.calls.filter((c) => c.url.startsWith(prefix) && (!method || c.method === method));
@@ -206,6 +239,43 @@ test('an upgrade, start to end: the VM, then the build at the commit, then the r
   await readUpgrade(dash.runtime, { user: member, now: later(600) });
   assert.equal(dash.cloud.to(BUILDS_URL, 'POST').length, 1);
   assert.equal(dash.cloud.to(SERVICE_URL, 'PATCH').length, 1, 'a finished upgrade calls nothing');
+});
+
+test('once the dashboard serves the new release, the automatic-update job is moved to the same image; a job that is missing or refuses does not fail the upgrade', async (t) => {
+  for (const [job, jobPatch] of [[runJob(), { status: 200 }], [null, null], [runJob(), { status: 403, body: { error: { message: 'denied' } } }]]) {
+    const dash = await dashboard(t);
+    dash.cloud.job = job;
+    if (jobPatch) dash.cloud.jobPatch = { body: { name: 'op' }, ...jobPatch };
+    await startUpgrade(dash.runtime, { version: V2, user: admin, now: NOW, sign });
+    await dash.vmFinishes((await dash.record()).vm_command_id);
+    await readUpgrade(dash.runtime, { user: admin, now: later(300) });
+    dash.cloud.build = { status: 'SUCCESS' };
+    await readUpgrade(dash.runtime, { user: admin, now: later(500) });
+    assert.equal(dash.cloud.to(JOB_URL).length, 0, 'the job is not touched before the dashboard serves');
+    dash.cloud.operation = { name: OPERATION, done: true, response: { name: 'service' } };
+    const { upgrade } = await readUpgrade(dash.runtime, { user: admin, now: later(540) });
+    assert.equal(upgrade.state, 'done');
+    const patches = dash.cloud.to(JOB_URL, 'PATCH');
+    if (!job) {
+      assert.deepEqual(patches, [], 'no job: nothing to move');
+      assert.ok(dash.lines.some((l) => /there is no paraclete-auto-update job to move/.test(l.message)));
+      continue;
+    }
+    const expected = runJob();
+    expected.template.template.containers[0].image = `${IMAGE}:${B}`;
+    expected.template.template.containers[0].env.find((e) => e.name === 'PARACLETE_RELEASE').value = V2;
+    expected.template.template.containers[0].env.find((e) => e.name === 'PARACLETE_COMMIT').value = B;
+    assert.deepEqual(patches.map((p) => p.body), [expected], 'only the image and the release and commit move');
+    if (jobPatch.status !== 200) assert.ok(dash.lines.some((l) => /did not take the new image/.test(l.message)));
+  }
+});
+
+test('rolloutJob refuses a job without a container, and leaves the one it read alone', () => {
+  assert.throws(() => rolloutJob({ template: { template: { containers: [] } } }, { image: 'x', version: V2, commit: B }), /no container/);
+  const job = runJob();
+  const moved = rolloutJob(job, { image: `${IMAGE}:${B}`, version: V2, commit: B });
+  assert.equal(job.template.template.containers[0].image, `${IMAGE}:${A}`);
+  assert.equal(moved.template.template.containers[0].image, `${IMAGE}:${B}`);
 });
 
 test('a failed VM upgrade leaves the dashboard as it is', async (t) => {

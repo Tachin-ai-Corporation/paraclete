@@ -6,7 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startDashboard } from '../../harness.mjs';
 import {
-  DRIVE_FIELDS, EFFORT_FIELDS, defaultEffort, readDriveSettings, readEffort, setDriveOutputFolder, setEffort,
+  AUTO_UPDATE_FIELDS, DRIVE_FIELDS, EFFORT_FIELDS, autoUpdateEnabled, defaultEffort, readAutoUpdate, readDriveSettings, readEffort,
+  setAutoUpdate, setDriveOutputFolder, setEffort,
 } from '../../../../dashboard/lib/server/settings.mjs';
 import { route } from '../../../../dashboard/lib/server/http.mjs';
 import { StoreUnavailable } from '../../../../agent/storage/firestore.mjs';
@@ -189,4 +190,30 @@ test('the drive setting route: every user reads it, only admins change it', asyn
   const refused = await patch(new Request('http://dashboard.example.com/api/settings/drive', { method: 'PATCH', body: JSON.stringify({ drive_output_folder: FOLDER }) }));
   assert.equal(refused.status, 403);
   assert.equal(await dash.doc('config/settings'), null);
+});
+
+test('automatic updates: on with nothing stored (the contracts default); an admin turns them off and on, field-masked', async (t) => {
+  const dash = await dashboard(t);
+  const { runtime } = dash;
+  assert.equal(runtime.contracts.auto_update.enabled_by_default, true);
+  assert.deepEqual(await readAutoUpdate(runtime), { enabled: true, stored: null, default: true, updated_at: null, updated_by: null });
+  await setEffort(runtime, { effort: 'high', user: admin, now: NOW });
+
+  const off = await setAutoUpdate(runtime, { enabled: false, user: admin, now: NOW });
+  assert.deepEqual(off, { enabled: false, stored: false, default: true, updated_at: NOW.toISOString(), updated_by: 'admin@example.com' });
+  const patch = dash.firestore.requests.filter((r) => r.method === 'PATCH').pop();
+  assert.deepEqual(new URLSearchParams(patch.query).getAll('updateMask.fieldPaths'), [...AUTO_UPDATE_FIELDS]);
+  assert.equal((await dash.doc('config/settings')).effort, 'high', 'the effort stays');
+  assert.equal((await setAutoUpdate(runtime, { enabled: true, user: admin, now: NOW })).enabled, true);
+});
+
+test('automatic updates: members cannot change them, only true or false is stored, and anything else reads as the default', async (t) => {
+  const dash = await dashboard(t);
+  const { runtime } = dash;
+  await assert.rejects(setAutoUpdate(runtime, { enabled: false, user: member, now: NOW }), (err) => err.status === 403);
+  await assert.rejects(setAutoUpdate(runtime, { enabled: 'no', user: admin, now: NOW }), (err) => err.status === 400);
+  assert.equal(await dash.doc('config/settings'), null, 'nothing was written');
+  assert.equal(autoUpdateEnabled(runtime, { auto_update: 'false' }), true);
+  assert.equal(autoUpdateEnabled(runtime, { auto_update: false }), false);
+  assert.equal(autoUpdateEnabled({ contracts: { auto_update: { enabled_by_default: false } } }, {}), false);
 });

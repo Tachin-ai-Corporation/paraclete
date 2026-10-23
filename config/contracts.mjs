@@ -16,7 +16,7 @@ const MODEL_PATTERN = /^vertex-(google|anthropic)\/[a-z0-9][a-z0-9.@_-]*$/;
 const REQUIRED_SECTIONS = [
   'vertex', 'gateway', 'organs', 'tools', 'brain', 'archival', 'ears', 'mouth', 'chat', 'delivery',
   'conversation', 'compaction', 'session', 'organ_context', 'projects', 'utility', 'memory', 'git',
-  'files', 'responsibility_store', 'control', 'dashboard', 'effort', 'versioning',
+  'files', 'responsibility_store', 'control', 'dashboard', 'auto_update', 'effort', 'versioning',
 ];
 
 const MODEL_TIERS = ['cortex', 'strong', 'fast', 'fallback', 'claude', 'claude_fallback'];
@@ -69,6 +69,7 @@ export function validateContracts(c) {
     need(isPositive(c.control[key]), `control.${key} must be positive`);
   }
   problems.push(...dashboardProblems(c.dashboard));
+  problems.push(...autoUpdateProblems(c.auto_update, c));
   need(EFFORT_LEVELS.includes(c.effort.default), `effort.default must be one of ${EFFORT_LEVELS.join(', ')}`);
   need(typeof c.git.prefix === 'string' && c.git.prefix.endsWith('/'), "git.prefix must end with '/'");
   need(typeof c.files.prefix === 'string' && c.files.prefix.endsWith('/'), "files.prefix must end with '/'");
@@ -141,6 +142,34 @@ function dashboardProblems(d) {
   need(isWhole(d.build_timeout_seconds), 'dashboard.build_timeout_seconds must be a whole number above 0');
   need(isWhole(d.release_check_ttl_seconds) && d.release_check_ttl_seconds >= MIN_RELEASE_CHECK_TTL_SECONDS,
     `dashboard.release_check_ttl_seconds must be a whole number of at least ${MIN_RELEASE_CHECK_TTL_SECONDS}: GitHub answers 60 unauthenticated requests an hour`);
+  return problems;
+}
+
+/** A Cloud Scheduler schedule: five cron fields (minute, hour, day of month, month, day of week). */
+const CRON = /^(\S+\s+){4}\S+$/;
+
+/**
+ * Automatic updates (the `auto_update` section): what install/install.sh gives Cloud Scheduler and
+ * Cloud Run, and what each run of the dashboard's update job does. A run must outlast the upgrade's
+ * longest step, the VM's (control.upgrade_max_seconds), or no run could ever see one finish.
+ *
+ * @param {object} a the contracts' auto_update section
+ * @param {object} c the whole contracts
+ * @returns {string[]}
+ */
+function autoUpdateProblems(a, c) {
+  const problems = [];
+  const need = (ok, message) => { if (!ok) problems.push(message); };
+  const isWhole = (v) => Number.isInteger(v) && v > 0;
+  need(typeof a.enabled_by_default === 'boolean', 'auto_update.enabled_by_default must be true or false');
+  need(typeof a.job_name === 'string' && /^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$/.test(a.job_name),
+    'auto_update.job_name must be a Cloud Run job name: lowercase letters, digits and -, starting with a letter');
+  need(typeof a.schedule === 'string' && CRON.test(a.schedule.trim()), "auto_update.schedule must be a five-field cron schedule such as '*/30 * * * *'");
+  need(isWhole(a.job_timeout_seconds) && a.job_timeout_seconds > c.control.upgrade_max_seconds,
+    'auto_update.job_timeout_seconds must be a whole number above control.upgrade_max_seconds, so a run can see the VM step finish');
+  need(isWhole(a.idle_wait_max_hours), 'auto_update.idle_wait_max_hours must be a whole number above 0');
+  need(isWhole(a.advance_interval_seconds) && a.advance_interval_seconds < a.job_timeout_seconds,
+    'auto_update.advance_interval_seconds must be a whole number above 0 and below job_timeout_seconds');
   return problems;
 }
 

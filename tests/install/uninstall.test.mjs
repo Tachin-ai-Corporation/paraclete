@@ -54,6 +54,8 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
       'VM paraclete in us-central1-a, with its disk',
       'firewall rule paraclete-allow-iap-ssh',
       'firewall rule paraclete-deny-ingress',
+      'Cloud Scheduler job paraclete-auto-update in us-central1 (starts the automatic update)',
+      'Cloud Run job paraclete-auto-update in us-central1 (the automatic update)',
       'Cloud Run service paraclete in us-central1 (the dashboard)',
       "Artifact Registry repository paraclete in us-central1 (the dashboard's images)",
       'Firestore index messages|collection|thread_id:ascending,timestamp:descending',
@@ -116,6 +118,13 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(dashboardRoles, granted);
     const accountsDeleted = position(commands, 'gcloud', 'iam', 'service-accounts', 'delete');
     assert.ok(position(commands, 'gcloud', 'run', 'services', 'delete') < accountsDeleted, 'the service runs as the account');
+    // The automatic update: the schedule first, so it cannot start the job, then the job, then the service.
+    const [schedule] = find(commands, 'gcloud', 'scheduler', 'jobs', 'delete');
+    const [job] = find(commands, 'gcloud', 'run', 'jobs', 'delete');
+    assert.deepEqual([schedule[4], flag(schedule, 'location'), job[4], flag(job, 'region')],
+      ['paraclete-auto-update', 'us-central1', 'paraclete-auto-update', 'us-central1']);
+    assert.ok(commands.indexOf(schedule) < commands.indexOf(job));
+    assert.ok(commands.indexOf(job) < position(commands, 'gcloud', 'run', 'services', 'delete'));
   });
 
   test('without --yes, a no deletes nothing', async () => {
@@ -134,6 +143,8 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(after.instances, {});
     assert.deepEqual(after.firewallRules, {});
     assert.deepEqual(after.runServices, {});
+    assert.deepEqual(after.runJobs, {});
+    assert.deepEqual(after.schedules, {});
     assert.deepEqual(after.imageRepositories, []);
     assert.deepEqual(after.images, {});
     assert.deepEqual(after.users, installed.users, "the dashboard's users stay with the database");

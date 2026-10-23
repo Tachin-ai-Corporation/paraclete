@@ -72,6 +72,7 @@ paraclete will be installed into your-gcp-project:
   region      us-central1, VM in us-central1-a
   bucket      gs://your-gcp-project-paraclete
   dashboard   Cloud Run service paraclete, behind Google sign-in (first admin: <your email>)
+  updates     new releases install automatically, checked on */30 * * * * (UTC)
 Go ahead? [y/N]:
 ```
 
@@ -83,6 +84,7 @@ Two options worth knowing:
 |---|---|
 | `--region <region>` | Keep the data, the dashboard and the VM in another region than `us-central1` |
 | `--dry-run` | See every command that would change something, and change nothing |
+| `--no-auto-update` | Install new releases only when an admin presses Install (by default they install by themselves; see [Update to a new release](#update-to-a-new-release)) |
 
 [install/README.md](../install/README.md#running-it) lists every option.
 
@@ -98,7 +100,7 @@ exact commands it runs on your project.
 | 3 accounts | Creates the agent's and the dashboard's service accounts (and, for a Workspace role, the one that signs the agent's Workspace access), and grants each what it needs |
 | 4 firestore | Creates the database the agent and the dashboard keep their records in, protected against deletion, with the indexes its searches need |
 | 5 bucket | Creates one storage bucket for files and the agent's work, closed to the public |
-| 6 dashboard | Builds the dashboard with Cloud Build, runs it on Cloud Run behind Google sign-in, and makes you its first admin |
+| 6 dashboard | Builds the dashboard with Cloud Build, runs it on Cloud Run behind Google sign-in, and makes you its first admin. Also creates the automatic-update job and the schedule that starts it every 30 minutes |
 | 7 network | Sets up the VM's network so that nothing reaches the VM from outside except SSH through Google's IAP |
 | 8 vm | Creates the agent's VM, which installs the release by itself when it starts |
 | 9 wait | Waits until the agent reports that it is ready |
@@ -194,6 +196,16 @@ Once saved, the tab shows the account with **Test again**, **Change** and **Remo
 Chat and the Workspace skills away, and Drive goes back to the agent's service account.
 
 ## Update to a new release
+
+**New releases install by themselves.** Every 30 minutes a scheduled job of the dashboard's checks for a
+newer release and installs it exactly the way an admin's **Install** would (below):
+- It waits while the agent is working on a mission, for at most 24 hours, so a running task isn't
+  interrupted; after that it installs anyway, and the mission picks up where it was.
+- It only moves forward, and an instance installed from a branch instead of a release is never moved.
+- The version card says whether automatic updates are on and what the last check found. An admin turns
+  them off or on there, with **Turn off** and **Turn on**.
+- To install with them off, add `--no-auto-update` to the installer. An instance installed before
+  automatic updates existed gets them the next time you run the installer.
 
 **Settings → System** opens with a version card. It shows the release the agent and the dashboard run,
 and the newer releases of this repository with their notes. The dashboard asks GitHub at most once an
