@@ -5,18 +5,18 @@ import { CAPABILITY_CREDO } from './selection.mjs';
 
 /**
  * The two orthogonal diagnostic and mutation lenses from Harness² adapted to
- * Paraclete's 8-component surface (`c1..c8`).
+ * Paraclete's surface (`c1..c7`).
  */
 export const MUTATION_LENSES = Object.freeze({
   INV: Object.freeze({
     id: 'INV',
     name: 'Domain-Invariant Execution Mechanics Lens',
-    allowedComponents: Object.freeze(['c1_contracts', 'c2_base_prompts', 'c3_cerebellum_verifier', 'c4_memory_consolidation', 'c8_shell_ergonomics']),
+    allowedComponents: Object.freeze(['c1_contracts', 'c2_base_prompts', 'c3_cerebellum_verifier', 'c4_memory_consolidation']),
     focus: [
       'Reduce checkpoint replan loops and tool syntax/flag errors.',
       'Eliminate unverified resource ID fabrication and enforce read-back verification.',
       'Right-size organ thinking effort levels, context compaction thresholds, and max tool turns.',
-      'Improve shell error diagnostics and temporal memory contrastive lesson extraction.',
+      'Right-size tool output limits and improve temporal memory contrastive lesson extraction.',
     ],
   }),
   DOM: Object.freeze({
@@ -126,7 +126,7 @@ export function buildMutationProposalSpec(opts = {}) {
   const allowedSurfaceDetails = lens.allowedComponents.map((cid) => ({
     id: cid,
     description: PARACLETE_SURFACE[cid]?.description || cid,
-    paths: PARACLETE_SURFACE[cid]?.paths || [],
+    paths: PARACLETE_SURFACE[cid]?.patterns || [],
   }));
 
   const escalationMode =

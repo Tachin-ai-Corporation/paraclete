@@ -183,9 +183,9 @@ export function computeParetoFrontier(candidates = []) {
 }
 
 /**
- * Synthesize complementary winning patches from the `INV` branch (components `c1..c4, c8`)
+ * Synthesize complementary winning patches from the `INV` branch (components `c1..c4`)
  * and the `DOM` branch (components `c5..c7`). Because `INV` and `DOM` mutate disjoint
- * components of the 8-component surface, their file-level patches can be merged cleanly
+ * components of the surface, their file-level patches can be merged cleanly
  * without textual conflict and evaluated as a combined `H_SYN` candidate.
  *
  * Selection of `bestOverall` strictly enforces the Capability-First Credo:

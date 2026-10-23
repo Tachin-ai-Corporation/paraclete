@@ -350,9 +350,10 @@ done.
     *Exit:* every doc matches the code, and the doc-path tests pass.
 11. **Continual improvement** (in progress). The harness in `dev/harness2/`
     ([dev/README.md](../../dev/README.md)) and its agent, the development role `roles/paraclete-h2`.
-    - It changes only the mutable surface (`c1`..`c8`, `dev/harness2/surface.mjs`): contracts
-      tunables, base and role prompts, skills and their commands, role packages, and the shell
-      tool's output formatting. The rest of the code is outside it.
+    - It changes only the mutable surface (`c1`..`c7`, `dev/harness2/surface.mjs`): contracts
+      tunables, base and role prompts, skill playbooks (`SKILL.md`, `skill.json`), and role playbooks
+      (README, processes, responsibilities). Code and grants are outside it: a skill's commands, a
+      role's `role.json`, and the rest of the code.
     - Its promotions are pull requests. Since `v2026.10.22.1.1` each title starts with its version and
       is merged with squash, so `main`'s head stays releasable. Since `v2026.10.22.1.2` the release notes
       also list changes merged with a merge commit. Instances get promotions only through a release.

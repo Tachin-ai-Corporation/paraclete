@@ -48,7 +48,7 @@ import {
 export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 
 Subcommands:
-  surface                          Print the 8-component Paraclete mutable surface (c1..c8)
+  surface                          Print the Paraclete mutable surface (c1..c7)
   validate [--stage stage1|stage2] Run structural, contract, and prompt budget validation
   eval     [--stage stage1|stage2] [--role <role>] [--live] [--vertex] [--judge-committee [models]] [--include-harvested] [--suite-path <path>]
                                    Run Tier-1 hermetic or live target benchmark evaluation
@@ -67,9 +67,9 @@ Subcommands:
   report   [--markdown] [--project <id>] [--state-path <path>] [--archive-path <path>] [--suite-path <path>]
                                    Generate the standardized Paraclete-H² Autonomous Loop & GCP Cost Status Report
   scaffold-skill --id <skill-id> [--role <role>] [--name <title>] [--command <cmd>]
-                                   Generate a compliant skill package scaffold (skill.json, SKILL.md, <cmd>.mjs)
+                                   Generate a skill package scaffold (skill.json, SKILL.md, <cmd>.mjs; a person commits the command)
   scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
-                                   Generate a compliant specialist role package scaffold (role.json, README.md, prompts/, responsibilities.json)
+                                   Generate a role package scaffold (role.json, README.md, prompts/, responsibilities.json; a person commits role.json)
   lab-plan [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
                                    Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
   lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--dry-run]
