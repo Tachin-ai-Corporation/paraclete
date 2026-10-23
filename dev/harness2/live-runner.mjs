@@ -821,6 +821,10 @@ export function createLiveProposeAndApply(opts = {}) {
 
     let touchedPaths = [];
     let mutationHypothesis = `${spec.lens} (${spec.escalationMode}) live candidate`;
+    // Where the change came from: 'vertex' (a model proposed it), 'fallback' or 'template' (the fixed
+    // edits of applyDefaultCandidateMutation), 'custom' (an applyMutation hook), 'none' (no change).
+    // Promotion evidence (evidence.mjs) refuses template changes.
+    let proposalSource = 'none';
     let worktreeInfo = null;
     if (opts.useWorktree) {
       worktreeInfo = createIsolatedWorktree({
@@ -857,6 +861,8 @@ export function createLiveProposeAndApply(opts = {}) {
         if (res?.hypothesis) {
           mutationHypothesis = res.hypothesis;
         }
+        proposalSource = res?.source
+          || (mutator === applyDefaultCandidateMutation ? 'template' : typeof opts.applyMutation === 'function' ? 'custom' : 'none');
       }
 
       const filePatches = { ...(baseState?.filePatches || {}) };
@@ -915,6 +921,7 @@ export function createLiveProposeAndApply(opts = {}) {
         roleSnapshots,
         worktreePath: worktreeInfo?.worktreePath || null,
         hypothesis: mutationHypothesis,
+        proposal: { source: proposalSource, hypothesis: mutationHypothesis },
         runTaskRollout,
       };
     } finally {
@@ -935,6 +942,7 @@ export function createLiveProposeAndApply(opts = {}) {
  * @param {string} [opts.role]
  * @param {object[]} [opts.tasks]
  * @param {Function} [opts.runTaskRollout]
+ * @param {number} [opts.trials]  How many times each task runs (default 1)
  * @param {string} [opts.gatewayUrl]
  * @param {string} [opts.gatewayToken]
  * @param {object} [opts.deps]
@@ -965,6 +973,7 @@ export async function evaluateLiveTarget(opts = {}) {
     stage,
     role: opts.role,
     tasks,
+    trials: opts.trials,
     runTaskRollout: opts.runTaskRollout || defaultRollout,
     deps: opts.deps,
   });

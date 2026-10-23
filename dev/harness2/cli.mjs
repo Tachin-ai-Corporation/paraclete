@@ -7,6 +7,7 @@ import { runTier1Evaluation, runTier2CanaryEvaluation, selectBenchmarkTasks } fr
 import { selectLensForTrajectories } from './lenses.mjs';
 import { runWithinGenerationRecursion } from './recursion.mjs';
 import { CAPABILITY_CREDO, synthesizeCrossLensCandidate } from './selection.mjs';
+import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence } from './evidence.mjs';
 import { createLineageLibrary } from './library.mjs';
 import {
   evaluatePromotionReadiness,
@@ -106,6 +107,7 @@ export function parseCliArgs(argv = []) {
  * @param {string} [opts.role]
  * @param {number} [opts.generations]
  * @param {number} [opts.recursionSteps]
+ * @param {number} [opts.trials]  runs of each task per evaluation (default 1)
  * @param {object} [opts.library]
  * @param {Function} [opts.proposeAndApply]
  * @param {Function} [opts.validateCandidate]
@@ -123,6 +125,7 @@ export async function runEvolutionLoop(opts = {}) {
       runTier1Evaluation({
         stage,
         role: opts.role,
+        trials: opts.trials,
         runTaskRollout: cand?.runTaskRollout,
       }));
 
@@ -228,6 +231,9 @@ export async function runEvolutionLoop(opts = {}) {
 export async function runCli(argv = process.argv.slice(2), deps = {}) {
   const { subcommand, flags } = parseCliArgs(argv);
   const stage = flags.stage || 'stage1';
+  // Runs of each task per evaluation (--trials). A run that may open a pull request (--push-pr)
+  // defaults to the evidence rules' minimum, since a promotion needs that many on both sides.
+  const trials = Math.max(1, Math.floor(Number(flags.trials) || (flags['push-pr'] ? DEFAULT_EVIDENCE_RULES.minTrials : 1)));
 
   if (subcommand === 'surface') {
     return {
@@ -272,9 +278,10 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           judgeOptions: deps.judgeOptions,
           gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
           gatewayToken: flags['gateway-token'] || deps.gatewayToken,
+          trials,
           deps,
         })
-      : await runTier1Evaluation({ stage, role: flags.role, tasks, deps });
+      : await runTier1Evaluation({ stage, role: flags.role, tasks, trials, deps });
     return {
       ok: true,
       credo: CAPABILITY_CREDO.name,
@@ -324,6 +331,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             judgeOptions: deps.judgeOptions,
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
+            trials,
             deps,
           })
       : undefined;
@@ -331,6 +339,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     const res = await runEvolutionLoop({
       stage,
       role: flags.role,
+      trials,
       generations: flags.generations ? Number(flags.generations) : 1,
       recursionSteps: flags.recursion ? Number(flags.recursion) : 2,
       proposeAndApply: isLive
@@ -502,6 +511,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         useFrontierJudge,
         judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
         judgeOptions: deps.judgeOptions,
+        trials,
         deps,
       });
       const evoRes = await runCli(
@@ -513,6 +523,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           String(flags.generations || 2),
           '--recursion',
           String(flags.recursion || 2),
+          '--trials',
+          String(trials),
           '--live',
           ...(flags.vertex ? ['--vertex'] : []),
           ...(useFrontierJudge
@@ -531,6 +543,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         candidate: evoRes.winner,
         baselineScores: baselineRes.summary,
         validationResult: baselineRes.validation,
+        evidence: buildPromotionEvidence({ candidate: evoRes.winner, baselineTrajectories: baselineRes.trajectories }),
       });
       let application = null;
       if (flags.apply) {
@@ -568,7 +581,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       };
     }
 
-    const evalRes = await runTier1Evaluation({ stage, role: flags.role, deps });
+    const evalRes = await runTier1Evaluation({ stage, role: flags.role, trials, deps });
     const candidate = deps.candidate || {
       id: flags.candidate || 'candidate-head',
       lens: 'SYN',
@@ -579,6 +592,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     const readiness = evaluatePromotionReadiness({
       candidate,
       baselineScores: deps.baselineScores || evalRes.summary,
+      // Without --live this run measured the baseline only; a candidate brings its own trajectories.
+      evidence: buildPromotionEvidence({ candidate, baselineTrajectories: evalRes.trajectories }),
     });
     let application = null;
     if (flags.apply) {
@@ -685,12 +700,14 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           useFrontierJudge,
           judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
           judgeOptions: deps.judgeOptions,
+          trials,
           deps: unitDeps,
         })
       : await runTier1Evaluation({
           stage: unit.stage,
           role: unit.role,
           tasks: [unit.task],
+          trials,
           deps: unitDeps,
         });
 
@@ -707,6 +724,8 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         String(flags.generations || 1),
         '--recursion',
         String(flags.recursion || 1),
+        '--trials',
+        String(trials),
         ...(flags.live ? ['--live'] : []),
         ...(flags.vertex ? ['--vertex'] : []),
         ...(useFrontierJudge
@@ -725,6 +744,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       candidate: evoRes.winner,
       baselineScores: baselineRes.summary,
       validationResult: baselineRes.validation,
+      evidence: buildPromotionEvidence({ candidate: evoRes.winner, baselineTrajectories: baselineRes.trajectories }),
     });
 
     let application = null;

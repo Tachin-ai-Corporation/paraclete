@@ -1,14 +1,18 @@
 // dev/harness2/promote.mjs: Promote a winning Pareto candidate after Tier-1 and Tier-2 canary verification.
 // A promotion's commit subject and pull request title start with the next version
 // (agent/release/versions.mjs), so a squash merge leaves main's head a commit dev/release.mjs can release.
+// No pull request opens without measured evidence that passes its verdict (evidence.mjs), and none
+// whose prompt additions fail the lint (validate.mjs promptAdditionProblems); the body carries the
+// evidence block.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isNewer, isVersion, parseVersion, versionFromText } from '../../agent/release/versions.mjs';
+import { formatEvidenceMarkdown, judgeEvidence } from './evidence.mjs';
 import { CAPABILITY_CREDO, isNonRegression } from './selection.mjs';
 import { classifySurfacePath } from './surface.mjs';
-import { validateCandidateWorkspace } from './validate.mjs';
+import { addedLinesFromDiff, promptAdditionProblems, validateCandidateWorkspace } from './validate.mjs';
 
 function defaultExecGit(args, cwd) {
   return execFileSync('git', args, {
@@ -34,12 +38,17 @@ function defaultExecGh(args, cwd) {
  * 3. If Tier-2 canary results are required/provided, canary smoke passed and
  *    Tier-2 scores satisfy non-regression guards.
  *
+ * `ready` says the candidate is safe to apply. Whether it is worth promoting is the evidence's own
+ * verdict (`evidence.verdict`, evidence.mjs), which `pushAndCreatePullRequest` requires.
+ *
  * @param {object} opts
  * @param {object} opts.candidate
  * @param {object} opts.baselineScores
  * @param {object} [opts.tier2Result]
  * @param {boolean} [opts.requireTier2]
  * @param {object} [opts.validationResult]
+ * @param {object} [opts.evidence]       buildPromotionEvidence's result
+ * @param {object} [opts.evidenceRules]  stricter rules than DEFAULT_EVIDENCE_RULES
  */
 export function evaluatePromotionReadiness(opts = {}) {
   const reasons = [];
@@ -87,6 +96,7 @@ export function evaluatePromotionReadiness(opts = {}) {
     ready: reasons.length === 0,
     reasons,
     credo: CAPABILITY_CREDO.name,
+    evidence: opts.evidence ? { ...opts.evidence, verdict: judgeEvidence(opts.evidence, opts.evidenceRules) } : null,
     summary: {
       candidateId: candidate.id || 'candidate',
       lens: candidate.lens || null,
@@ -249,6 +259,12 @@ export function formatPromotionReport(readiness) {
     }
   }
 
+  if (readiness.evidence) {
+    lines.push('', formatEvidenceMarkdown(readiness.evidence, readiness.evidence.verdict));
+  } else {
+    lines.push('', '## Measured Evidence', '', '- None: this candidate was not measured against the baseline, so it is not promotable.');
+  }
+
   return `${lines.join('\n')}\n`;
 }
 
@@ -311,6 +327,8 @@ export function promotionMergeNote(version) {
  * with the full Frontier Model Committee + Capability-First Credo promotion report.
  * It fetches `baseBranch` and the tags first, so the version in the commit subject and the title is
  * newer than every one there; a dry run reads the local refs and fetches nothing.
+ * It refuses, before anything else and in a dry run too, unless `readiness.evidence.verdict` passed
+ * and the lines the candidate adds to product prompts pass `promptAdditionProblems`.
  *
  * @param {object} opts
  * @param {object} opts.candidate
@@ -353,7 +371,26 @@ export function pushAndCreatePullRequest(opts = {}) {
     ? application.appliedPaths
     : candidate?.touchedPaths || Object.keys(candidate?.filePatches || {});
 
-  const summary = `paraclete-h2(${candidate?.lens || 'SYN'}): promote ${candidate?.id || 'winner'} (ΔS_cap=${readiness.summary?.deltaCapability >= 0 ? `+${readiness.summary?.deltaCapability}` : (readiness.summary?.deltaCapability ?? 0)})`;
+  // The promotion gate, before anything is fetched, committed or pushed: measured evidence whose
+  // verdict passed, and additions to product prompts that the lint accepts.
+  const refused = (why) => ({ pushed: false, branch: null, prUrl: null, reason: `Not promoted: ${why}` });
+  const verdict = readiness.evidence?.verdict;
+  if (!verdict?.ok) {
+    return refused(verdict ? verdict.problems.join('; ') : 'no measured evidence (evaluatePromotionReadiness takes it from buildPromotionEvidence)');
+  }
+  let added = {};
+  if (touched.length > 0) {
+    try {
+      added = addedLinesFromDiff(execGit(['diff', '--unified=0', '--no-color', 'HEAD', '--', ...touched], repoRoot));
+    } catch (err) {
+      return refused(`git could not show the candidate's changes (${err.message})`);
+    }
+  }
+  const lint = promptAdditionProblems(added);
+  if (lint.length > 0) return refused(lint.join('; '));
+
+  const delta = readiness.evidence.capability?.delta ?? 0;
+  const summary = `paraclete-h2(${candidate?.lens || 'SYN'}): promote ${candidate?.id || 'winner'} (ΔS_cap=${delta >= 0 ? `+${delta}` : delta}, n=${readiness.evidence.trials?.candidate ?? 0})`;
   const versionedPromotion = () => {
     const version = nextPromotionVersion({ ...readVersionSources({ execGit, repoRoot, remote, baseBranch }), now });
     return {

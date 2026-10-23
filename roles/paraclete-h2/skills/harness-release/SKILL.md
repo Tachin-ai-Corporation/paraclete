@@ -9,6 +9,12 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 
 ## Workflow
 
-1. **Verify Promotion Gates**: Run `harness-promote --action verify --repo . --stage stage1 --trials 2 --json` to ensure all 5 promotion gates pass (structural validity, unit tests, integration tests, Pareto dominance, and zero capability regressions).
-2. **Generate Promotion Report**: Run `harness-promote --action report --repo . --stage stage1 --trials 2 --out <path> --json` to produce the PR body and canary rollout checklist.
+1. **Verify Promotion Gates**: Run `harness-promote --action verify --repo . --stage stage1 --trials 3 --json` to ensure all 5 promotion gates pass (structural validity, unit tests, integration tests, Pareto dominance, and zero capability regressions).
+2. **Generate Promotion Report**: Run `harness-promote --action report --repo . --stage stage1 --trials 3 --out <path> --json` to produce the PR body and canary rollout checklist.
 3. **Canary Rollout**: Open a pull request with `gh pr create` and roll out verified harness updates to canary agents before broader promotion.
+
+A promotion pull request opens only with measured evidence: the candidate against the current version
+on the same tasks, every task run at least 3 times on both sides, a capability gain larger than the
+run-to-run noise with no task worse, and a change a model proposed. The template fallback's fixed
+edits and the synthetic dry run never qualify. When the evidence falls short, `--push-pr` opens nothing
+and its report names each rule that failed; report that, and do not open the pull request another way.
