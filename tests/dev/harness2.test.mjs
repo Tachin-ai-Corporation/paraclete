@@ -146,8 +146,16 @@ function measuredEvidence(candidate, { source = 'vertex', base = [0.4, 0.42, 0.3
 }
 
 describe('dev/harness2/surface.mjs', () => {
-  it('defines the 8-component Paraclete mutable surface and stage role sets', () => {
-    assert.equal(Object.keys(PARACLETE_SURFACE).length, 8);
+  it('defines the 7-component Paraclete mutable surface and stage role sets', () => {
+    assert.deepEqual(Object.keys(PARACLETE_SURFACE), [
+      'c1_contracts',
+      'c2_base_prompts',
+      'c3_cerebellum_verifier',
+      'c4_memory_consolidation',
+      'c5_role_overlays',
+      'c6_skill_playbooks',
+      'c7_role_manifests',
+    ]);
     assert.equal(STAGE1_BUILDER_ROLES[0], 'paraclete-h2');
     assert.deepEqual(rolesForStage('stage1'), STAGE1_BUILDER_ROLES);
     assert.deepEqual(rolesForStage('stage2'), DEFAULT_ROLES);
@@ -163,13 +171,62 @@ describe('dev/harness2/surface.mjs', () => {
     assert.equal(classifySurfacePath('roles/software-engineer/prompts/motor.md', { stage: 'stage1' }).allowed, true);
     assert.equal(classifySurfacePath('roles/data-analyst/prompts/motor.md', { stage: 'stage1' }).allowed, false);
     assert.equal(classifySurfacePath('roles/data-analyst/prompts/motor.md', { stage: 'stage2' }).allowed, true);
-    assert.equal(classifySurfacePath('agent/gateway/shell-exec.mjs').component, 'c8_shell_ergonomics');
+    assert.equal(classifySurfacePath('skills/drive/SKILL.md').component, 'c6_skill_playbooks');
+    assert.equal(classifySurfacePath('skills/drive/skill.json').component, 'c6_skill_playbooks');
+    assert.equal(classifySurfacePath('skills/memory-consolidate/skill.json').component, 'c4_memory_consolidation');
+    assert.equal(classifySurfacePath('roles/security-engineer/skills/iam-audit/SKILL.md', { stage: 'stage2' }).component, 'c6_skill_playbooks');
+    assert.equal(classifySurfacePath('roles/security-engineer/responsibilities.json', { stage: 'stage2' }).component, 'c7_role_manifests');
+    assert.equal(classifySurfacePath('roles/security-engineer/README.md', { stage: 'stage2' }).component, 'c7_role_manifests');
 
     // Immutable spine rejections
     assert.equal(classifySurfacePath('agent/services/brain/envelope-runner.mjs').allowed, false);
     assert.equal(classifySurfacePath('agent/work/checkpoint-spine.mjs').allowed, false);
     assert.equal(classifySurfacePath('tests/run.mjs').allowed, false);
     assert.equal(classifySurfacePath('prompts/new-invented-organ.md').allowed, false);
+  });
+
+  it('refuses a role.json in every role and stage, since it holds the role\'s grants', () => {
+    for (const [relPath, opts] of [
+      ['roles/security-engineer/role.json', { stage: 'stage2' }],
+      ['roles/security-engineer/role.json', { stage: 'stage2', allowNewRoles: true }],
+      ['roles/paraclete-h2/role.json', { stage: 'stage1' }],
+      ['roles/finops-analyst/role.json', { stage: 'stage2', allowNewRoles: true }],
+    ]) {
+      const res = classifySurfacePath(relPath, opts);
+      assert.equal(res.allowed, false, relPath);
+      assert.equal(res.component, null);
+      assert.match(res.reason, /grants \(gcp_roles, resource_roles, apis\)/);
+    }
+  });
+
+  it('refuses a skill\'s command code, base or role-scoped, while its SKILL.md and skill.json stay on the surface', () => {
+    for (const [relPath, opts] of [
+      ['skills/drive/drive-get.mjs', {}],
+      ['skills/memory-consolidate/core-memory-write.mjs', {}],
+      ['roles/security-engineer/skills/iam-audit/iam-scan.mjs', { stage: 'stage2' }],
+      ['roles/paraclete-h2/skills/harness-evolution/harness-cycle.mjs', { stage: 'stage1' }],
+    ]) {
+      const res = classifySurfacePath(relPath, opts);
+      assert.equal(res.allowed, false, relPath);
+      assert.match(res.reason, /executable code is outside the mutable surface/);
+    }
+  });
+
+  it('refuses the shell tool\'s files: c8 is gone and the gateway\'s tools are on the immutable spine', () => {
+    const shellExec = classifySurfacePath('agent/gateway/shell-exec.mjs');
+    assert.equal(shellExec.allowed, false);
+    assert.match(shellExec.reason, /outside the Paraclete evolvable surface \(c1\.\.c7\)/);
+    const tools = classifySurfacePath('agent/gateway/tools.mjs');
+    assert.equal(tools.allowed, false);
+    assert.match(tools.reason, /immutable spine/);
+  });
+
+  it('names no executable file, no role.json and no wildcard in any component\'s patterns', () => {
+    for (const comp of Object.values(PARACLETE_SURFACE)) {
+      for (const pattern of comp.patterns) {
+        assert.doesNotMatch(pattern, /\.mjs$|role\.json$|\*/, `${comp.id}: ${pattern}`);
+      }
+    }
   });
 
   it('checks tunable contract keys accurately', () => {
@@ -191,6 +248,32 @@ describe('dev/harness2/validate.mjs', () => {
     });
     assert.equal(badLensCross.ok, false);
     assert.match(badLensCross.violations[0], /outside allowed lens scope/);
+  });
+
+  it('refuses a candidate that touches a role.json or a skill command, and promotion readiness says so', () => {
+    const touchedPaths = [
+      'roles/security-engineer/prompts/cortex.md',
+      'roles/security-engineer/role.json',
+      'skills/drive/drive-put.mjs',
+    ];
+    const res = validateTouchedPaths(touchedPaths, { stage: 'stage2', allowNewRoles: true });
+    assert.equal(res.ok, false);
+    assert.equal(res.violations.length, 2);
+    assert.match(res.violations[0], /^roles\/security-engineer\/role\.json: .*grants/);
+    assert.match(res.violations[1], /^skills\/drive\/drive-put\.mjs: .*executable code/);
+
+    const readiness = evaluatePromotionReadiness({
+      candidate: {
+        id: 'grant-widening',
+        stage: 'stage2',
+        touchedPaths,
+        scores: { capability: 0.99, reliability: 1, efficiency: 0.8, fitness: 0.95 },
+      },
+      baselineScores: { capability: 0.5, reliability: 0.5, efficiency: 0.5, fitness: 0.5 },
+    });
+    assert.equal(readiness.ready, false);
+    assert.ok(readiness.reasons.some((r) => /role\.json: .*grants/.test(r)));
+    assert.ok(readiness.reasons.some((r) => /drive-put\.mjs: .*executable code/.test(r)));
   });
 
   it('enforces hard bounds on config/contracts.json and rejects untunable key edits', () => {
@@ -270,6 +353,18 @@ describe('dev/harness2/lenses.mjs & recursion.mjs & selection.mjs', () => {
       { missionId: 'm2', errorToolCalls: 0, adversarialFailureCount: 2, missionCompleted: false, checkpoints: [] },
     ]);
     assert.equal(domRouting.primaryLens, 'DOM');
+  });
+
+  it('scopes each lens to components on the surface and hands the proposer their path patterns', () => {
+    const allowed = [...MUTATION_LENSES.INV.allowedComponents, ...MUTATION_LENSES.DOM.allowedComponents];
+    assert.deepEqual(allowed.sort(), Object.keys(PARACLETE_SURFACE).sort());
+    for (const lens of ['INV', 'DOM']) {
+      const spec = buildMutationProposalSpec({ lens });
+      for (const detail of spec.allowedSurfaceDetails) {
+        assert.deepEqual(detail.paths, PARACLETE_SURFACE[detail.id].patterns);
+        assert.ok(detail.paths.length > 0, detail.id);
+      }
+    }
   });
 
   it('reverts regressed candidates and escalates on subsequent recursion steps', async () => {
@@ -1191,18 +1286,26 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     assert.ok(roleScaffold.filePatches['roles/finops-analyst/README.md']);
     assert.ok(roleScaffold.filePatches['roles/finops-analyst/prompts/cortex.md']);
 
-    // Verify allowNewRoles allows scaffolding a brand-new role directory
+    // allowNewRoles admits a brand-new role directory's playbooks, never its role.json (its grants)
     assert.equal(
-      validateTouchedPaths(['roles/finops-analyst/role.json'], { stage: 'stage1', allowNewRoles: false }).ok,
+      validateTouchedPaths(['roles/finops-analyst/README.md'], { stage: 'stage1', allowNewRoles: false }).ok,
       false,
     );
     assert.equal(
-      validateTouchedPaths(['roles/finops-analyst/role.json', 'roles/finops-analyst/README.md'], {
+      validateTouchedPaths(['roles/finops-analyst/README.md', 'roles/finops-analyst/prompts/cortex.md'], {
         stage: 'stage1',
         allowNewRoles: true,
       }).ok,
       true,
     );
+    const newRole = validateTouchedPaths(roleScaffold.touchedPaths, { stage: 'stage1', allowNewRoles: true });
+    assert.deepEqual(newRole.violations.map((v) => v.split(':')[0]), ['roles/finops-analyst/role.json']);
+
+    // A scaffolded skill's playbook and manifest are promotable; its command stub is not
+    const newSkill = validateTouchedPaths(skillScaffold.touchedPaths, { stage: 'stage2', allowNewRoles: true });
+    assert.deepEqual(newSkill.violations.map((v) => v.split(':')[0]), [
+      'roles/site-reliability-engineer/skills/log-correlation/log-correlation-cli.mjs',
+    ]);
     assert.equal(
       classifySurfacePath('roles/finops-analyst/README.md', { stage: 'stage2', allowNewRoles: true }).allowed,
       true,
@@ -1681,6 +1784,37 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     });
     assert.equal(spineReject.resolved, false);
     assert.ok(spineReject.reason.includes('immutable or disallowed path'));
+
+    // 3b. A role.json conflict is refused rather than merged with the PR's grants on top
+    const roleJsonReject = resolveHarnessMergeConflict({
+      relPath: 'roles/security-engineer/role.json',
+      baseContent: JSON.stringify({ id: 'security-engineer', gcp_roles: ['roles/iam.securityReviewer'] }),
+      headContent: JSON.stringify({ id: 'security-engineer', gcp_roles: ['roles/owner'] }),
+    });
+    assert.equal(roleJsonReject.resolved, false);
+    assert.equal(roleJsonReject.mergedText, undefined);
+    assert.match(roleJsonReject.reason, /grants/);
+
+    // 3c. A skill command conflict is refused rather than resolved to the PR's code
+    const commandReject = resolveHarnessMergeConflict({
+      relPath: 'roles/paraclete-h2/skills/harness-evolution/harness-cycle.mjs',
+      baseContent: '// main',
+      headContent: '// pr',
+      stage: 'stage1',
+    });
+    assert.equal(commandReject.resolved, false);
+    assert.equal(commandReject.mergedText, undefined);
+    assert.match(commandReject.reason, /executable code/);
+
+    // 3d. A skill manifest stays on the surface and still merges
+    const skillJsonConflict = resolveHarnessMergeConflict({
+      relPath: 'skills/drive/skill.json',
+      baseContent: JSON.stringify({ id: 'drive', when_to_use: 'base' }),
+      headContent: JSON.stringify({ id: 'drive', when_to_use: 'head' }),
+    });
+    assert.equal(skillJsonConflict.resolved, true);
+    assert.equal(skillJsonConflict.component, 'c6_skill_playbooks');
+    assert.equal(JSON.parse(skillJsonConflict.mergedText).when_to_use, 'head');
 
     // 4. pushAndCreatePullRequest falls back to --force-with-lease and gh pr edit when updating an existing branch/PR
     const readiness = evaluatePromotionReadiness({

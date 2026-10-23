@@ -687,7 +687,8 @@ export function mergePromptMarkdown(baseMd, headMd, ancestorMd = null) {
 
 /**
  * Resolve a merge conflict on a single Paraclete-H² file path under the Capability-First Credo:
- * - Rejects any path outside the 8-component mutable surface (`c1..c8`).
+ * - Rejects any path outside the mutable surface (`c1..c7`): the immutable spine, a skill's command
+ *   code, and a role's `role.json`.
  * - Uses `mergeContractsJson` for `config/contracts.json`.
  * - Uses `mergePromptMarkdown` for Markdown prompt / skill / role overlay files.
  * - Uses top-level JSON key reconciliation for role/skill metadata `.json` files.
@@ -773,9 +774,9 @@ export function resolveHarnessMergeConflict(opts = {}) {
   }
 
   return {
-    resolved: true,
+    resolved: false,
     relPath: cleanPath,
     component: surfaceCheck.component,
-    mergedText: `${String(headContent || baseContent).replace(/\r\n/g, '\n').trimEnd()}\n`,
+    reason: `No merge rule for '${cleanPath}': the surface holds only contracts.json, Markdown and JSON files`,
   };
 }

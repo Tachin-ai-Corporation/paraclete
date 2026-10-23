@@ -1,7 +1,9 @@
-// dev/harness2/surface.mjs: the evolvable surface of the Paraclete harness (c1..c8), the Stage 1
+// dev/harness2/surface.mjs: the evolvable surface of the Paraclete harness (c1..c7), the Stage 1
 // builder roles (software-engineer, qa-engineer, devops-engineer) and Stage 2 role catalog, and the
-// immutable spine boundaries that no harness candidate may cross. Pure: no I/O except optional role
-// directory discovery when a caller asks for the installed roles on disk.
+// immutable spine boundaries that no harness candidate may cross. The surface holds prompts, skill
+// playbooks, role playbooks and contract tunables only: no executable code (a skill's command `.mjs`)
+// and no grants (a role's `role.json`). Pure: no I/O except optional role directory discovery when a
+// caller asks for the installed roles on disk.
 
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -144,7 +146,7 @@ export const IMMUTABLE_SPINE_PREFIXES = Object.freeze([
 ]);
 
 /**
- * The 8 evolvable component families (`c1..c8`) of the Paraclete harness surface.
+ * The 7 evolvable component families (`c1..c7`) of the Paraclete harness surface.
  */
 export const PARACLETE_SURFACE = Object.freeze({
   c1_contracts: Object.freeze({
@@ -168,8 +170,12 @@ export const PARACLETE_SURFACE = Object.freeze({
   c4_memory_consolidation: Object.freeze({
     id: 'c4_memory_consolidation',
     name: 'memory-consolidation',
-    description: 'Temporal memory prompt and consolidation skill in prompts/temporal-memory.md and skills/memory-consolidate/',
-    patterns: ['prompts/temporal-memory.md', 'skills/memory-consolidate/**'],
+    description: 'Temporal memory prompt and the consolidation skill playbook in prompts/temporal-memory.md and skills/memory-consolidate/',
+    patterns: [
+      'prompts/temporal-memory.md',
+      'skills/memory-consolidate/SKILL.md',
+      'skills/memory-consolidate/skill.json',
+    ],
   }),
   c5_role_overlays: Object.freeze({
     id: 'c5_role_overlays',
@@ -180,34 +186,34 @@ export const PARACLETE_SURFACE = Object.freeze({
   c6_skill_playbooks: Object.freeze({
     id: 'c6_skill_playbooks',
     name: 'skill-playbooks',
-    description: 'Base and role skill playbooks, manifests, and CLI helpers in skills/ and roles/<role>/skills/',
+    description: 'Base and role skill playbooks and manifests in skills/ and roles/<role>/skills/ (never their command code)',
     patterns: [
       'skills/<skill>/SKILL.md',
       'skills/<skill>/skill.json',
-      'skills/<skill>/<cmd>.mjs',
       'roles/<role>/skills/<skill>/SKILL.md',
       'roles/<role>/skills/<skill>/skill.json',
-      'roles/<role>/skills/<skill>/<cmd>.mjs',
     ],
   }),
   c7_role_manifests: Object.freeze({
     id: 'c7_role_manifests',
     name: 'role-manifests',
-    description: 'Role metadata, README, processes, and responsibilities in roles/<role>/',
+    description: 'Role README, processes, and responsibilities in roles/<role>/ (never role.json, which holds the role\'s grants)',
     patterns: [
-      'roles/<role>/role.json',
       'roles/<role>/README.md',
       'roles/<role>/processes/<id>.json',
       'roles/<role>/responsibilities.json',
     ],
   }),
-  c8_shell_ergonomics: Object.freeze({
-    id: 'c8_shell_ergonomics',
-    name: 'shell-ergonomics',
-    description: 'Non-security shell diagnostic formatting and output ergonomics',
-    patterns: ['agent/gateway/shell-exec.mjs'],
-  }),
 });
+
+/** The files of a skill package that the surface holds: its playbook and its manifest. */
+const SKILL_PLAYBOOK_FILES = Object.freeze(['SKILL.md', 'skill.json']);
+
+/** Why a skill's command code is outside the surface: it runs on the VM, so a change to it is a code change. */
+const SKILL_COMMAND_REFUSAL = 'is a skill command: executable code is outside the mutable surface (a promotion changes a skill\'s SKILL.md and skill.json only)';
+
+/** Why `role.json` is outside the surface: the installer reads the role's grants from it. */
+const ROLE_JSON_REFUSAL = 'holds the role\'s grants (gcp_roles, resource_roles, apis), setup and listing, which a promotion never changes; a person commits role.json';
 
 /**
  * Classify a repo-relative path (forward slashes) against the Paraclete evolvable surface.
@@ -259,20 +265,18 @@ export function classifySurfacePath(relPath, opts = {}) {
     return { allowed: true, component: 'c2_base_prompts', family: 'c2_base_prompts' };
   }
 
-  // c4_memory_consolidation / c6_skill_playbooks in skills/<skill>/(SKILL.md | skill.json | <cmd>.mjs)
+  // c4_memory_consolidation / c6_skill_playbooks in skills/<skill>/(SKILL.md | skill.json)
   const mSkill = /^skills\/([a-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(norm);
   if (mSkill) {
     const [, skillName, file] = mSkill;
-    if (file === 'SKILL.md' || file === 'skill.json' || /^[a-z0-9-]+\.mjs$/.test(file)) {
+    if (SKILL_PLAYBOOK_FILES.includes(file)) {
       const comp = skillName === 'memory-consolidate' ? 'c4_memory_consolidation' : 'c6_skill_playbooks';
       return { allowed: true, component: comp, family: comp };
     }
+    if (file.endsWith('.mjs')) {
+      return { allowed: false, component: null, family: null, reason: `'${norm}' ${SKILL_COMMAND_REFUSAL}` };
+    }
     return { allowed: false, component: null, family: null, reason: `unsupported file '${file}' in base skill directory` };
-  }
-
-  // c8_shell_ergonomics
-  if (norm === 'agent/gateway/shell-exec.mjs') {
-    return { allowed: true, component: 'c8_shell_ergonomics', family: 'c8_shell_ergonomics' };
   }
 
   // Role-scoped families (c5_role_overlays, c6_skill_playbooks, c7_role_manifests)
@@ -314,21 +318,27 @@ export function classifySurfacePath(relPath, opts = {}) {
       return { allowed: true, component: 'c5_role_overlays', family: 'c5_role_overlays', role };
     }
 
-    // c6_skill_playbooks: roles/<role>/skills/<skill>/(SKILL.md | skill.json | <cmd>.mjs)
+    // c6_skill_playbooks: roles/<role>/skills/<skill>/(SKILL.md | skill.json)
     const mC6 = /^roles\/([a-z0-9-]+)\/skills\/([a-z0-9-]+)\/([A-Za-z0-9_.-]+)$/.exec(norm);
     if (mC6) {
       const file = mC6[3];
-      if (file === 'SKILL.md' || file === 'skill.json' || /^[a-z0-9-]+\.mjs$/.test(file)) {
+      if (SKILL_PLAYBOOK_FILES.includes(file)) {
         return { allowed: true, component: 'c6_skill_playbooks', family: 'c6_skill_playbooks', role };
+      }
+      if (file.endsWith('.mjs')) {
+        return { allowed: false, component: null, family: null, role, reason: `'${norm}' ${SKILL_COMMAND_REFUSAL}` };
       }
       return { allowed: false, component: null, family: null, role, reason: `unsupported file '${file}' in role skill directory` };
     }
 
-    // c7_role_manifests: processes, responsibilities, role.json, README.md
+    if (/^roles\/([a-z0-9-]+)\/role\.json$/.test(norm)) {
+      return { allowed: false, component: null, family: null, role, reason: `'${norm}' ${ROLE_JSON_REFUSAL}` };
+    }
+
+    // c7_role_manifests: processes, responsibilities, README.md
     if (
       /^roles\/([a-z0-9-]+)\/processes\/([a-z0-9-]+)\.json$/.test(norm) ||
       /^roles\/([a-z0-9-]+)\/responsibilities\.json$/.test(norm) ||
-      /^roles\/([a-z0-9-]+)\/role\.json$/.test(norm) ||
       /^roles\/([a-z0-9-]+)\/README\.md$/.test(norm)
     ) {
       return { allowed: true, component: 'c7_role_manifests', family: 'c7_role_manifests', role };
@@ -337,7 +347,7 @@ export function classifySurfacePath(relPath, opts = {}) {
     return { allowed: false, component: null, family: null, role, reason: `path '${norm}' is not an evolvable role file` };
   }
 
-  return { allowed: false, component: null, family: null, reason: `path '${norm}' is outside the Paraclete evolvable surface (c1..c8)` };
+  return { allowed: false, component: null, family: null, reason: `path '${norm}' is outside the Paraclete evolvable surface (c1..c7)` };
 }
 
 /**
@@ -379,6 +389,8 @@ export function rolesForStage(stage = 'stage1', opts = {}) {
 /**
  * Build a compliant file-patch map (`{ [relPath]: content }`) for a new or updated
  * skill package (either shared in `skills/<skillId>/` or role-scoped in `roles/<role>/skills/<skillId>/`).
+ * The command stub it writes is executable code, outside the mutable surface: a person commits it,
+ * and a promotion carrying it is refused.
  *
  * @param {object} opts
  * @param {string} opts.skillId       Kebab-case skill ID
@@ -477,6 +489,8 @@ export function buildSkillScaffold(opts = {}) {
 /**
  * Build a compliant file-patch map (`{ [relPath]: content }`) for a complete new role package
  * (`roles/<roleId>/role.json`, `README.md`, `prompts/*.md`, `processes/*.json`, `responsibilities.json`).
+ * Its `role.json` holds the role's grants, outside the mutable surface: a person commits it, and a
+ * promotion carrying it is refused.
  *
  * @param {object} opts
  * @param {string} opts.roleId

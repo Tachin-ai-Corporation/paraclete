@@ -37,7 +37,7 @@ function flattenObjectPaths(obj, prefix = '') {
 
 /**
  * Validate a list of mutated repo-relative file paths against the Paraclete
- * 8-component surface (`c1..c8`) and immutable spine boundaries.
+ * mutable surface (`c1..c7`) and immutable spine boundaries.
  *
  * @param {string[]} touchedPaths
  * @param {object} [opts]
@@ -274,7 +274,7 @@ export const HARNESS_VOCABULARY = Object.freeze([
   /\bTier-[12]\b/,
   /ΔS/,
   /\bc[1-8]_[a-z_]+\b/,
-  /\bc1\s*\.\.\s*c8\b/,
+  /\bc1\s*\.\.\s*c[78]\b/,
   /Capability-First Credo/i,
   /mutable surface/i,
   /\bharness2\b/i,
