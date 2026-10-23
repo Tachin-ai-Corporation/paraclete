@@ -126,7 +126,7 @@ export function buildMutationProposalSpec(opts = {}) {
   const allowedSurfaceDetails = lens.allowedComponents.map((cid) => ({
     id: cid,
     description: PARACLETE_SURFACE[cid]?.description || cid,
-    paths: PARACLETE_SURFACE[cid]?.paths || [],
+    paths: PARACLETE_SURFACE[cid]?.patterns || [],
   }));
 
   const escalationMode =

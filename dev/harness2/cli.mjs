@@ -98,6 +98,20 @@ export function parseCliArgs(argv = []) {
 }
 
 /**
+ * The proposal record of a cross-lens merge: both lenses' hypotheses, and their shared source. When
+ * the sources differ, a refused one wins, so a merge is never more promotable than its parts.
+ */
+function mergedProposal(invCandidate, domCandidate) {
+  const parts = [invCandidate, domCandidate];
+  const sources = parts.map((c) => c?.proposal?.source || 'unknown');
+  const refused = sources.find((s) => DEFAULT_EVIDENCE_RULES.refusedSources.includes(s));
+  return {
+    source: refused || (sources[0] === sources[1] ? sources[0] : sources.join('+')),
+    hypothesis: parts.map((c) => c?.proposal?.hypothesis || c?.hypothesis).filter(Boolean).join(' + '),
+  };
+}
+
+/**
  * Run a full Loop A evolutionary cycle across `generations` with `recursionSteps`
  * within-generation steps per lens (`INV` and `DOM`), cross-lens synthesis, and
  * Pareto archive logging.
@@ -166,6 +180,9 @@ export async function runEvolutionLoop(opts = {}) {
 
   library.recordCandidate(currentParent);
   const generationSummaries = [];
+  // Every step of every lens: its proposal (source, and why a model proposal fell back), whether it
+  // was evaluated, and its outcome. The run's output carries it so a skipped or failed proposal shows.
+  const attempts = [];
 
   for (let g = 1; g <= generations; g += 1) {
     const routing = selectLensForTrajectories(currentParent.trajectories);
@@ -191,6 +208,8 @@ export async function runEvolutionLoop(opts = {}) {
       validateCandidate,
       evaluateCandidate,
     });
+
+    attempts.push(...[...invResult.history, ...domResult.history].map((a) => ({ generation: g, ...a })));
 
     const synthesis = await synthesizeCrossLensCandidate({
       parentState: currentParent,
@@ -221,6 +240,7 @@ export async function runEvolutionLoop(opts = {}) {
     stage,
     roles: rolesForStage(stage),
     generations: generationSummaries,
+    attempts,
     winner: currentParent,
   };
 }
@@ -399,11 +419,14 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
               touchedPaths,
               runTaskRollout: mergedRollout,
             });
+            const proposal = mergedProposal(invCandidate, domCandidate);
             return {
               id: `${parentState?.id || 'cand'}-syn`,
               parentId: parentState?.id || null,
               lens: 'SYN',
               stage,
+              hypothesis: proposal.hypothesis,
+              proposal,
               touchedPaths,
               filePatches,
               roleSnapshots: mergedSnapshots,
@@ -577,6 +600,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         readiness,
         application,
         pullRequest,
+        attempts: evoRes.attempts || [],
         report: formatPromotionReport(readiness),
       };
     }
@@ -825,6 +849,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       winnerScores: evoRes.winner?.scores || null,
       winnerId: evoRes.winner?.id || null,
       touchedPaths: evoRes.winner?.touchedPaths || [],
+      attempts: evoRes.attempts || [],
       artifactChecksPassed,
       readiness,
       application,
@@ -904,6 +929,12 @@ const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv
 if (isMain) {
   runCli()
     .then((res) => {
+      // A proposal that was not evaluated (a template fallback, or no change) shows in the log too.
+      for (const a of res.attempts || []) {
+        if (a.revertReason?.startsWith('not_evaluated: ')) {
+          process.stderr.write(`[WARN] ${a.candidateId || `${a.lens} step ${a.step}`} not evaluated: ${a.revertReason.slice('not_evaluated: '.length)}\n`);
+        }
+      }
       if (res.usage) {
         process.stdout.write(res.usage);
       } else if (res.report) {

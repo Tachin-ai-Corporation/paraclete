@@ -264,6 +264,7 @@ export async function main(argv, deps = {}) {
       bestCandidateId: result.winner.id,
       bestSummary: result.winner.scores,
       generations: result.generations,
+      attempts: result.attempts,
     };
     writeOut(opts.out, payload);
     emit(

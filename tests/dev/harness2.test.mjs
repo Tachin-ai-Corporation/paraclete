@@ -102,6 +102,8 @@ import {
   proposeVertexMutation,
   provisionGcpLab,
 } from '../../dev/harness2/live-runner.mjs';
+import { buildProposalPrompt, createVertexProposalGenerator } from '../../dev/harness2/proposer.mjs';
+import { loadContracts } from '../../config/contracts.mjs';
 import { STAGE1_FIXTURES, STAGE2_FIXTURES, ALL_FIXTURES, getTaskFixture } from '../../dev/harness2/fixtures.mjs';
 import {
   CURRICULUM_TRACKS,
@@ -1976,6 +1978,230 @@ describe('dev/harness2/evidence.mjs: a promotion carries measured evidence', () 
     const none = await createLiveProposeAndApply({})(spec, { id: 'gen0' });
     assert.equal(none.proposal.source, 'none');
     assert.equal(DEFAULT_EVIDENCE_RULES.refusedSources.includes('none'), true);
+  });
+});
+
+describe('dev/harness2/proposer.mjs: model proposals, why they fall back, and what is not evaluated', () => {
+  const OVERLAY = 'roles/paraclete-h2/prompts/cortex.md';
+  const domSpec = () => ({
+    ...buildMutationProposalSpec({ lens: 'DOM', stage: 'stage1', role: 'paraclete-h2' }),
+    targetMutablePath: OVERLAY,
+  });
+  const invSpec = () => buildMutationProposalSpec({ lens: 'INV', stage: 'stage1' });
+  const noFallback = async () => ({ touchedPaths: [] });
+
+  /** A workspace holding a role overlay (CRLF, as a Windows checkout has it) and a small contracts file. */
+  function workspace() {
+    const root = mkdtempSync(join(tmpdir(), 'h2-proposer-'));
+    mkdirSync(join(root, 'roles', 'paraclete-h2', 'prompts'), { recursive: true });
+    writeFileSync(join(root, OVERLAY), '# Overlay\r\n- Check the work.\r\n', 'utf8');
+    mkdirSync(join(root, 'config'), { recursive: true });
+    writeFileSync(join(root, 'config', 'contracts.json'), '{\n  "organs": {\n    "max_steps": 25\n  }\n}\n', 'utf8');
+    return root;
+  }
+
+  it('a generator that returns edits gives a vertex proposal, written into the workspace', async () => {
+    const root = workspace();
+    try {
+      let seen = '';
+      const res = await proposeVertexMutation({
+        spec: domSpec(),
+        baseState: { id: 'gen0' },
+        targetRoot: root,
+        fallback: () => assert.fail('no fallback'),
+        vertexGenerate: async (prompt) => {
+          seen = prompt;
+          return '```json\n' + JSON.stringify({
+            hypothesis: 'Quote the evidence for each check',
+            edits: [{ path: OVERLAY, find: '- Check the work.', replace: '- Check the work.\n- Quote the evidence for each check.' }],
+          }) + '\n```';
+        },
+      });
+      assert.deepEqual(res, { touchedPaths: [OVERLAY], hypothesis: 'Quote the evidence for each check', source: 'vertex' });
+      assert.equal(readFileSync(join(root, OVERLAY), 'utf8'), '# Overlay\r\n- Check the work.\r\n- Quote the evidence for each check.\r\n');
+      // The request carries the lens, its rules, and the current text of the file it may change.
+      assert.match(seen, /## Lens: DOM, Domain-Specific Role & Skill Craft Lens/);
+      assert.match(seen, /Escalation: initial_targeted_patch/);
+      assert.match(seen, /===== BEGIN roles\/paraclete-h2\/prompts\/cortex\.md =====\n# Overlay\n- Check the work\.\n===== END/);
+      assert.match(seen, /c5_role_overlays: .*\(roles\/<role>\/prompts\/<organ>\.md\)/);
+
+      // A full-file patch, the older answer form, works too.
+      const patched = await proposeVertexMutation({
+        spec: domSpec(),
+        baseState: { id: 'gen0' },
+        targetRoot: root,
+        fallback: () => assert.fail('no fallback'),
+        vertexGenerate: async () => ({ hypothesis: 'rewrite', patches: { [OVERLAY]: '# Overlay\n- New rule.\n' } }),
+      });
+      assert.equal(patched.source, 'vertex');
+      assert.equal(readFileSync(join(root, OVERLAY), 'utf8'), '# Overlay\r\n- New rule.\r\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('INV is shown the contracts and may tune them, but never leave them invalid', async () => {
+    const root = workspace();
+    try {
+      const { prompt, shownPaths } = buildProposalPrompt({ spec: invSpec(), targetRoot: root });
+      assert.deepEqual(shownPaths, ['config/contracts.json'], 'the INV files this workspace has; not the role overlay');
+      assert.match(prompt, /In config\/contracts\.json change only these keys: .*organs\.max_steps.*Bounds: .*organs\.max_steps 5\.\.60/);
+      const res = await proposeVertexMutation({
+        spec: invSpec(),
+        baseState: { id: 'gen0' },
+        targetRoot: root,
+        fallback: noFallback,
+        vertexGenerate: async () => ({ hypothesis: 'fewer steps', edits: [{ path: 'config/contracts.json', find: '"max_steps": 25', replace: '"max_steps": 22' }] }),
+      });
+      assert.equal(res.source, 'vertex');
+      assert.equal(JSON.parse(readFileSync(join(root, 'config', 'contracts.json'), 'utf8')).organs.max_steps, 22);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a failing generator, or an unusable answer, falls back and says why, writing none of the answer', async () => {
+    const root = workspace();
+    const overlayBefore = readFileSync(join(root, OVERLAY), 'utf8');
+    const fallbackFor = async (answer) =>
+      proposeVertexMutation({
+        spec: domSpec(),
+        baseState: { id: 'gen0' },
+        targetRoot: root,
+        fallback: noFallback,
+        vertexGenerate: typeof answer === 'function' ? answer : async () => answer,
+      });
+    try {
+      const failed = await fallbackFor(async () => { throw new Error('callVertex HTTP 403: permission denied'); });
+      assert.deepEqual(failed, {
+        touchedPaths: [],
+        hypothesis: 'DOM (initial_targeted_patch) live candidate',
+        source: 'fallback',
+        fallbackReason: 'callVertex HTTP 403: permission denied',
+      });
+      assert.match((await fallbackFor('I would tighten the overlay.')).fallbackReason, /not a JSON object: I would tighten/);
+      assert.equal((await fallbackFor('{"hypothesis":"nothing to do","edits":[]}')).fallbackReason, 'the model proposed no change');
+      assert.match((await fallbackFor({ edits: [{ path: OVERLAY, find: '- Not there.', replace: 'x' }] })).fallbackReason, /edit 1: its "find" text is not in roles\/paraclete-h2\/prompts\/cortex\.md/);
+      assert.match((await fallbackFor({ edits: [{ path: 'config/contracts.json', find: '25', replace: '25,' }] })).fallbackReason, /leaves config\/contracts\.json invalid JSON/);
+      // One bad part refuses the whole answer: the good edit before it is not written.
+      const mixed = await fallbackFor({
+        edits: [{ path: OVERLAY, find: '- Check the work.', replace: '- Changed.' }],
+        patches: { 'agent/work/approvals.mjs': 'export {};\n' },
+      });
+      assert.match(mixed.fallbackReason, /patch agent\/work\/approvals\.mjs: .*immutable spine/);
+      assert.equal(readFileSync(join(root, OVERLAY), 'utf8'), overlayBefore);
+      assert.throws(() => readFileSync(join(root, 'agent', 'work', 'approvals.mjs')));
+
+      // With no generator and no project, the reason names what is missing.
+      const saved = ['GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT', 'PARACLETE_INSTANCE'].map((k) => [k, process.env[k]]);
+      delete process.env.GOOGLE_CLOUD_PROJECT;
+      delete process.env.GCLOUD_PROJECT;
+      process.env.PARACLETE_INSTANCE = join(root, 'no-instance.json');
+      try {
+        assert.throws(() => createVertexProposalGenerator(), /no Google Cloud project for the model proposer/);
+        const none = await proposeVertexMutation({ spec: domSpec(), baseState: { id: 'gen0' }, targetRoot: root, fallback: noFallback });
+        assert.match(none.fallbackReason, /no Google Cloud project/);
+      } finally {
+        for (const [k, v] of saved) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('the default generator asks the strong Gemini model through the utility client, and reports its error', async () => {
+    const model = loadContracts().vertex.models.strong.replace('vertex-google/', '');
+    const calls = [];
+    const generate = createVertexProposalGenerator({
+      projectId: 'your-gcp-project',
+      getAccessToken: async () => 'test-token',
+      fetch: async (url, init) => {
+        calls.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization });
+        return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: 'thinking', thought: true }, { text: '{"edits":[]}' }] } }] }) };
+      },
+    });
+    assert.equal(await generate('THE REQUEST'), '{"edits":[]}');
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].url, new RegExp(`/projects/your-gcp-project/locations/global/publishers/google/models/${model}:generateContent$`));
+    assert.equal(calls[0].auth, 'Bearer test-token');
+    assert.match(calls[0].body.contents[0].parts[0].text, /THE REQUEST/);
+
+    const refused = createVertexProposalGenerator({
+      projectId: 'your-gcp-project',
+      getAccessToken: async () => 'test-token',
+      fetch: async () => ({ ok: false, status: 429, text: async () => 'Resource exhausted' }),
+    });
+    await assert.rejects(refused('x'), new RegExp(`${model} returned no proposal: callVertex HTTP 429: Resource exhausted`));
+  });
+
+  it('a template or no-change proposal is recorded but never validated or evaluated', async () => {
+    const parentState = { id: 'parent', scores: { capability: 0.5, reliability: 1, efficiency: 0.5, fitness: 0.5 }, trajectories: [] };
+    const proposals = [
+      { proposal: { source: 'fallback', hypothesis: 'h1', fallbackReason: 'callVertex HTTP 403' }, touchedPaths: [OVERLAY] },
+      { proposal: { source: 'template', hypothesis: 'h2' }, touchedPaths: [OVERLAY] },
+      { proposal: { source: 'vertex', hypothesis: 'h3' }, touchedPaths: [] },
+      { proposal: { source: 'vertex', hypothesis: 'h4' }, touchedPaths: [OVERLAY] },
+    ];
+    const evaluated = [];
+    const res = await runWithinGenerationRecursion({
+      lens: 'DOM',
+      parentState,
+      maxSteps: proposals.length,
+      proposeAndApply: async (spec) => ({ id: `cand-${spec.priorAttemptsSummary.length + 1}`, ...proposals[spec.priorAttemptsSummary.length] }),
+      validateCandidate: (cand) => {
+        assert.equal(cand.id, 'cand-4', 'only the model proposal that changed something is validated');
+        return { ok: true, violations: [] };
+      },
+      evaluateCandidate: async (cand) => {
+        evaluated.push(cand.id);
+        return { summary: { capability: 0.6, reliability: 1, efficiency: 0.5, fitness: 0.6 }, trajectories: [] };
+      },
+    });
+    assert.deepEqual(evaluated, ['cand-4']);
+    assert.deepEqual(res.history.map((h) => [h.candidateId, h.evaluated, h.revertReason]), [
+      ['cand-1', false, 'not_evaluated: the model proposal fell back to the template: callVertex HTTP 403'],
+      ['cand-2', false, "not_evaluated: a 'template' change is never promoted"],
+      ['cand-3', false, 'not_evaluated: the proposal changed nothing'],
+      ['cand-4', true, null],
+    ]);
+    assert.equal(res.bestCandidate.id, 'cand-4');
+  });
+
+  it('a live run whose model never answers evaluates only the baseline, and its output says why', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'h2-proposer-evo-'));
+    try {
+      let evaluations = 0;
+      const evo = await runEvolutionLoop({
+        stage: 'stage1',
+        generations: 1,
+        recursionSteps: 2,
+        archivePath: join(tmp, 'archive.json'),
+        proposeAndApply: createLiveProposeAndApply({
+          repoRoot: tmp,
+          stage: 'stage1',
+          useVertex: true,
+          vertexGenerate: async () => { throw new Error('callVertex failed: fetch failed'); },
+        }),
+        validateCandidate: () => assert.fail('a fallback is not validated'),
+        evaluateCandidate: async () => {
+          evaluations += 1;
+          return { summary: { capability: 0.5, reliability: 1, efficiency: 0.5, fitness: 0.5 }, trajectories: [] };
+        },
+      });
+      assert.equal(evaluations, 1, 'the baseline only');
+      assert.equal(evo.winner.id, 'gen0-baseline');
+      assert.deepEqual(evo.attempts.map((a) => [a.generation, a.lens, a.step, a.evaluated]), [[1, 'INV', 1, false], [1, 'INV', 2, false], [1, 'DOM', 1, false], [1, 'DOM', 2, false]]);
+      for (const a of evo.attempts) {
+        assert.equal(a.proposal.source, 'fallback');
+        assert.equal(a.proposal.fallbackReason, 'callVertex failed: fetch failed');
+        assert.match(a.revertReason, /^not_evaluated: the model proposal fell back to the template: callVertex failed/);
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

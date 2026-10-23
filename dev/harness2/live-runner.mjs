@@ -20,6 +20,7 @@ import {
 } from './curriculum.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
+import { applyProposal, buildProposalPrompt, createVertexProposalGenerator, parseProposal } from './proposer.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
 import { DEFAULT_ROLES, rolesForStage } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
@@ -705,17 +706,20 @@ export async function applyDefaultCandidateMutation({ spec, baseState, targetRoo
 }
 
 /**
- * Propose and apply a candidate harness mutation using a real Vertex AI LLM generator
- * (`vertexGenerate` or `createVertexText`), falling back cleanly to `applyDefaultCandidateMutation`
- * when Vertex AI is unavailable or returns an unparseable response.
+ * Propose and apply a candidate harness mutation with a model: build the request
+ * (proposer.mjs `buildProposalPrompt`), ask the generator (`vertexGenerate`, or by default a Gemini
+ * model on Vertex AI through `createVertexProposalGenerator`), and write its edits into `targetRoot`.
+ * When there is no generator, the call fails, or the answer is unusable or changes nothing, it applies
+ * `fallback` (the template edits of `applyDefaultCandidateMutation`) instead and says why in
+ * `fallbackReason`. A fallback is never promoted, and recursion.mjs does not evaluate it.
  *
  * @param {object} opts
  * @param {object} opts.spec
  * @param {object} opts.baseState
  * @param {string} opts.targetRoot
- * @param {Function} [opts.vertexGenerate]  Async `(prompt: string, spec: object) => Promise<string | { patches?: Record<string,string>, hypothesis?: string }>`
+ * @param {Function} [opts.vertexGenerate]  Async `(prompt: string, spec: object) => Promise<string | { hypothesis?: string, edits?: object[], patches?: Record<string,string> }>`
  * @param {Function} [opts.fallback]
- * @returns {Promise<{ touchedPaths: string[], hypothesis?: string, source: 'vertex' | 'fallback' }>}
+ * @returns {Promise<{ touchedPaths: string[], hypothesis?: string, source: 'vertex' | 'fallback', fallbackReason?: string }>}
  */
 export async function proposeVertexMutation(opts = {}) {
   const { spec, baseState, targetRoot, vertexGenerate } = opts;
@@ -729,64 +733,22 @@ export async function proposeVertexMutation(opts = {}) {
     }
   }
 
-  const prompt = [
-    spec?.feedbackPrompt || `Propose a ${spec?.lens || 'INV'} harness mutation.`,
-    '',
-    'Return ONLY a JSON object with this schema:',
-    '{"hypothesis":"string","patches":{"<repo-relative-path>":"<full-file-content>"}}',
-  ].join('\n');
-
-  let generator = vertexGenerate;
-  if (!generator && (process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT)) {
-    const projectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
-    const vt = createVertexText({
-      projectId,
-      region: process.env.GOOGLE_CLOUD_LOCATION || 'us-central1',
-      logger: () => {},
-    });
-    generator = async (promptText) => {
-      if (typeof vt.generateText === 'function') {
-        const res = await vt.generateText({ prompt: promptText });
-        return typeof res === 'string' ? res : res?.text || '';
-      }
-      throw new Error('vertexText.generateText unavailable');
-    };
-  }
-
-  if (typeof generator === 'function') {
-    try {
-      const rawOut = await generator(prompt, spec);
-      let parsed = null;
-      if (rawOut && typeof rawOut === 'object') {
-        parsed = rawOut;
-      } else if (typeof rawOut === 'string') {
-        const stripped = rawOut
-          .trim()
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```$/i, '');
-        parsed = JSON.parse(stripped);
-      }
-      if (parsed && parsed.patches && typeof parsed.patches === 'object') {
-        const touchedPaths = [];
-        for (const [relPath, content] of Object.entries(parsed.patches)) {
-          const cleanRel = String(relPath).replace(/\\/g, '/').replace(/^\/+/, '');
-          if (!cleanRel || cleanRel.includes('..') || typeof content !== 'string') continue;
-          const abs = path.join(targetRoot, cleanRel);
-          fs.mkdirSync(path.dirname(abs), { recursive: true });
-          fs.writeFileSync(abs, content, 'utf8');
-          touchedPaths.push(cleanRel);
-        }
-        if (touchedPaths.length > 0) {
-          return {
-            touchedPaths,
-            hypothesis: parsed.hypothesis || `${spec?.lens || 'INV'} vertex mutation`,
-            source: 'vertex',
-          };
-        }
-      }
-    } catch {
-      // Fall through to deterministic fallback mutation when offline or on parse error
+  let fallbackReason;
+  try {
+    const generate = vertexGenerate || createVertexProposalGenerator();
+    const { prompt } = buildProposalPrompt({ spec, targetRoot });
+    const proposal = parseProposal(await generate(prompt, spec));
+    const { touchedPaths } = applyProposal({ proposal, targetRoot, stage: spec?.stage });
+    if (touchedPaths.length > 0) {
+      return {
+        touchedPaths,
+        hypothesis: proposal.hypothesis || `${spec?.lens || 'INV'} model proposal`,
+        source: 'vertex',
+      };
     }
+    fallbackReason = 'the model proposed no change';
+  } catch (err) {
+    fallbackReason = err?.message || String(err);
   }
 
   const fb = await fallback({ spec, baseState, targetRoot });
@@ -794,6 +756,7 @@ export async function proposeVertexMutation(opts = {}) {
     touchedPaths: fb?.touchedPaths || [],
     hypothesis: fb?.hypothesis || `${spec?.lens || 'INV'} (${spec?.escalationMode || 'refine'}) live candidate`,
     source: 'fallback',
+    fallbackReason,
   };
 }
 
@@ -823,8 +786,10 @@ export function createLiveProposeAndApply(opts = {}) {
     let mutationHypothesis = `${spec.lens} (${spec.escalationMode}) live candidate`;
     // Where the change came from: 'vertex' (a model proposed it), 'fallback' or 'template' (the fixed
     // edits of applyDefaultCandidateMutation), 'custom' (an applyMutation hook), 'none' (no change).
-    // Promotion evidence (evidence.mjs) refuses template changes.
+    // Promotion evidence (evidence.mjs) refuses template changes, and recursion.mjs does not evaluate
+    // them. A model proposal that fell back to the template says why in fallbackReason.
     let proposalSource = 'none';
+    let fallbackReason = null;
     let worktreeInfo = null;
     if (opts.useWorktree) {
       worktreeInfo = createIsolatedWorktree({
@@ -863,6 +828,7 @@ export function createLiveProposeAndApply(opts = {}) {
         }
         proposalSource = res?.source
           || (mutator === applyDefaultCandidateMutation ? 'template' : typeof opts.applyMutation === 'function' ? 'custom' : 'none');
+        fallbackReason = res?.fallbackReason || null;
       }
 
       const filePatches = { ...(baseState?.filePatches || {}) };
@@ -921,7 +887,11 @@ export function createLiveProposeAndApply(opts = {}) {
         roleSnapshots,
         worktreePath: worktreeInfo?.worktreePath || null,
         hypothesis: mutationHypothesis,
-        proposal: { source: proposalSource, hypothesis: mutationHypothesis },
+        proposal: {
+          source: proposalSource,
+          hypothesis: mutationHypothesis,
+          ...(fallbackReason ? { fallbackReason } : {}),
+        },
         runTaskRollout,
       };
     } finally {
