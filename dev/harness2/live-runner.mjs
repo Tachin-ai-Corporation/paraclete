@@ -139,7 +139,7 @@ export function getWorktreeTouchedPaths(worktreePath, opts = {}) {
  * @param {string} repoRoot
  * @param {string} [role]
  */
-export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2', opts = {}) {
+export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2') {
   const contractsPath = path.join(repoRoot, 'config', 'contracts.json');
   const contracts = loadContracts({ path: contractsPath });
   const promptsDir = path.join(repoRoot, 'prompts');
@@ -169,7 +169,6 @@ export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2', opts = 
     organPrompts,
     organPromptTokens,
     cachedOrgans: new Set(cachedList),
-    isEvolved: Boolean(opts.isEvolved),
   };
 }
 
@@ -350,9 +349,7 @@ async function startInProcessFixtureGateway({
       if (task.curriculumUnitId) {
         const curriculumUnit = getCurriculumUnitById(task.curriculumUnitId);
         if (curriculumUnit) {
-          materializeCurriculumArtifacts(workspaceDir, curriculumUnit, {
-            evolved: Boolean(configSnapshot?.isEvolved),
-          });
+          materializeCurriculumArtifacts(workspaceDir, curriculumUnit);
           const artifactList = (curriculumUnit.requiredArtifacts || []).map((a) => a.path).join(', ');
           summaryClause = `${summaryClause} | Artifacts verified: ${artifactList}`;
           logLines.push(
@@ -399,11 +396,16 @@ async function startInProcessFixtureGateway({
  * Execute a real in-process `buildBrain` + HTTP Gateway + seeded workspace fixture
  * rollout against the Tier-1 hermetic Firestore/GCS substrate.
  *
+ * Without `opts.gatewayUrl` the gateway is the in-process fixture gateway, which scripts every
+ * organ's answer, so the result carries `scripted: true`. With it, the organs answer through that
+ * gateway, which reads its own installed organ prompts, not the candidate's.
+ *
  * @param {object} task
  * @param {object} substrateCtx
  * @param {object} [opts]
  * @param {string} [opts.repoRoot]
  * @param {object} [opts.configSnapshot]
+ * @param {string} [opts.gatewayUrl]
  */
 export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
   const repoRoot = opts.repoRoot || process.cwd();
@@ -627,6 +629,9 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       evalCritique,
       fixtureVerification,
       judgePacket,
+      // Without a gateway URL the in-process fixture gateway wrote every organ's answer, so the run is
+      // the same for any harness and measures nothing about a candidate (evidence.mjs refuses it).
+      scripted: !opts.gatewayUrl,
     };
   } finally {
     await gateway.stop();
@@ -855,7 +860,7 @@ export function createLiveProposeAndApply(opts = {}) {
           if (fs.existsSync(path.join(targetRoot, 'config', 'contracts.json'))) {
             roleSnapshots.set(
               roleName,
-              snapshotCandidateConfig(targetRoot, roleName, { isEvolved: touchedPaths.length > 0 }),
+              snapshotCandidateConfig(targetRoot, roleName),
             );
           } else {
             return roleSnapshots.get('generic') || roleSnapshots.get('paraclete-h2');

@@ -25,3 +25,8 @@ with the role.
   visitor's URL back to its origin before any deploy.
 - **Stakes.** A preview is routine. A release to the live site is consequential: it can be rolled back.
   Taking a site or domain offline is irreversible for its visitors.
+
+## Capability-First Artifact Protocol
+- Verify every required output artifact on disk before reporting checkpoint completion.
+- Cross-check numeric totals, schema keys, and boundary edge cases with deterministic read-back.
+- Emit grounded citations for every claim and preserve immutable spine boundaries.

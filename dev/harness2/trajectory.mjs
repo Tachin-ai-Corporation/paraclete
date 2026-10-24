@@ -302,7 +302,9 @@ export function aggregateTrajectoryScores(trajectories = [], budgets = DEFAULT_S
   const perTrajectory = trajectories.map((t) => ({
     missionId: t.missionId,
     role: t.role,
-    ...(t.taskId !== undefined ? { taskId: t.taskId, trial: t.trial, synthetic: Boolean(t.synthetic) } : {}),
+    ...(t.taskId !== undefined
+      ? { taskId: t.taskId, trial: t.trial, synthetic: Boolean(t.synthetic), scripted: Boolean(t.scripted) }
+      : {}),
     ...scoreTrajectory(t, budgets),
   }));
 

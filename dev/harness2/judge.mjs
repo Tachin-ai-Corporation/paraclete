@@ -403,14 +403,10 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
   const completedCps = checkpoints.filter((c) => c.status === 'done' || c.status === 'completed' || c.status === 'passed').length;
   const cpRatio = checkpoints.length > 0 ? completedCps / checkpoints.length : 0;
 
-  // Measure synthesis richness, artifact verification depth, and adversarial edge-case coverage
-  // so evolved prompts/harnesses earn higher capability scores under the Frontier Committee.
+  // Measure synthesis richness and artifact verification. No bonus for particular phrases: a scorer
+  // that rewards words rewards whatever writes them, not better work.
   const hasReadBackEvidence = /verified|passed|confirmed|audit|reconcile|check/i.test(corpus);
-  const hasAdversarialDepth =
-    /adversarial edge-case & self-verification audit|adversarialchecks|idempotentreadbackverified|harness²/i.test(
-      corpus,
-    );
-  const synthesisDepthBonus = clamp01(synthesis.length / 600) * 0.10 + (hasAdversarialDepth ? 0.06 : 0);
+  const synthesisDepthBonus = clamp01(synthesis.length / 600) * 0.10;
   const artifactBonus = artifactCount > 0 ? 0.05 : 0;
 
   // Slight deterministic perspective difference between google and anthropic heuristic profiles when offline
@@ -423,7 +419,6 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
       synthesisDepthBonus +
       artifactBonus +
       (packet?.fixtureVerification?.passed !== false ? 0.09 : 0) +
-      (hasAdversarialDepth ? 0.04 : 0) +
       craftBias,
   );
   const groundingScore = clamp01(
@@ -437,7 +432,7 @@ export function evaluatePacketDeterministically(packet, member = { model: 'heuri
       (replans === 0 ? 0.11 : Math.max(0, 0.11 - 0.05 * replans)),
   );
   const clarityScore = clamp01(
-    0.78 + clamp01(synthesis.length / 450) * 0.16 + (hasAdversarialDepth ? 0.06 : 0),
+    0.78 + clamp01(synthesis.length / 450) * 0.16,
   );
 
   const dimensions = {

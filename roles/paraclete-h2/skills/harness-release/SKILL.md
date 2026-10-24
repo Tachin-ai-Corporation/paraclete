@@ -16,5 +16,6 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 A promotion pull request opens only with measured evidence: the candidate against the current version
 on the same tasks, every task run at least 3 times on both sides, a capability gain larger than the
 run-to-run noise with no task worse, and a change a model proposed. The template fallback's fixed
-edits and the synthetic dry run never qualify. When the evidence falls short, `--push-pr` opens nothing
+edits, the synthetic dry run, and runs the scripted in-process gateway answered (a `--live` run without
+`--gateway-url`) never qualify. When the evidence falls short, `--push-pr` opens nothing
 and its report names each rule that failed; report that, and do not open the pull request another way.
