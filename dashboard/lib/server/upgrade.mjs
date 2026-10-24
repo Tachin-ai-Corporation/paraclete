@@ -10,7 +10,9 @@
 //           instance's region, unless the image exists already;
 //   deploy  Cloud Run's Admin API (v2) rolls the dashboard's own service to that image: the service as
 //           read, with only the image and PARACLETE_RELEASE and PARACLETE_COMMIT changed, so IAP and
-//           every other setting stay as they are;
+//           every other setting stay as they are; once it serves, the automatic-update job
+//           (contracts.auto_update.job_name, auto-update.mjs) is moved to the same image the same way,
+//           when it exists, so the job always runs the dashboard's own code;
 //   done | failed.
 //
 // The upgrade is one Firestore document, `config/upgrade`: { id, version, commit, requested_by,
@@ -26,8 +28,11 @@
 // The image is <region>-docker.pkg.dev/<project>/<repository>/<image name>:<commit>: the repository
 // is IMAGE_REPOSITORY (install/lib/names.sh creates it; a test pins the two together); the image's
 // name, the build config's path and the build's timeout come from config/contracts.json's `dashboard`
-// section, which install/lib/dashboard.mjs reads too. Which releases exist and which one is installed:
-// releases.mjs. Called by the /api/upgrade route.
+// section, which install/lib/dashboard.mjs reads too. Which releases exist, which were withdrawn and
+// which one is installed: releases.mjs. Every start asks GitHub for the list afresh, so no upgrade
+// starts to a withdrawn release (startUpgrade); one already running when its release is withdrawn
+// finishes. Called by the /api/upgrade route, and by the automatic-update job (auto-update.mjs), which
+// starts and follows an upgrade as the dashboard's own account.
 
 import { commitUrl, isVersion } from '../../../agent/release/versions.mjs';
 import { StoreConflict, StoreUnavailable } from '../../../agent/storage/firestore.mjs';
@@ -130,6 +135,28 @@ export function rolloutService(service, { image, version, commit }) {
   const next = structuredClone(service);
   const container = next?.template?.containers?.[0];
   if (!container) throw new Error('the service has no container to move');
+  moveContainer(container, { image, version, commit });
+  delete next.template.revision;
+  return next;
+}
+
+/**
+ * The automatic-update job (a Cloud Run v2 Job, as its Admin API answers GET) moved to a new image:
+ * the job as read, with only its container's image and PARACLETE_RELEASE and PARACLETE_COMMIT changed.
+ *
+ * @param {object} job
+ * @param {{image: string, version: string, commit: string}} o
+ * @returns {object} a new object; `job` is not changed
+ */
+export function rolloutJob(job, { image, version, commit }) {
+  const next = structuredClone(job);
+  const container = next?.template?.template?.containers?.[0];
+  if (!container) throw new Error('the job has no container to move');
+  moveContainer(container, { image, version, commit });
+  return next;
+}
+
+function moveContainer(container, { image, version, commit }) {
   container.image = image;
   const env = Array.isArray(container.env) ? container.env : [];
   for (const [name, value] of [['PARACLETE_RELEASE', version], ['PARACLETE_COMMIT', commit]]) {
@@ -142,8 +169,6 @@ export function rolloutService(service, { image, version, commit }) {
     }
   }
   container.env = env;
-  delete next.template.revision;
-  return next;
 }
 
 /** The build's page in the Cloud console, where its log is. */
@@ -476,7 +501,40 @@ async function advanceDeploy(runtime, read, now, live) {
       + `the agent runs ${up.version}: install it again to finish.`, now);
   }
   runtime.log('INFO', `upgrade ${up.id}: the dashboard runs ${up.version} (${up.commit})`);
+  await moveUpdateJob(runtime, up);
   return (await step(runtime, read, { state: 'done', error: null }, now)) || current(runtime, read);
+}
+
+/**
+ * Moves the automatic-update job to the image the dashboard now runs. Best effort: the upgrade is done
+ * whatever happens here, a job that is not there (an instance installed before automatic updates) is
+ * left alone, and re-running install/install.sh puts a missing or stale job right.
+ */
+async function moveUpdateJob(runtime, up) {
+  const { settings, contracts } = runtime;
+  const name = contracts.auto_update?.job_name;
+  if (!name) return;
+  const url = `${CLOUD_RUN_API}/projects/${settings.project}/locations/${settings.region}/jobs/${name}`;
+  const read = await google(runtime, url);
+  if (read.status === 404) {
+    runtime.log('INFO', `upgrade ${up.id}: there is no ${name} job to move; install/install.sh creates it`);
+    return;
+  }
+  if (!read.ok) {
+    runtime.log('WARN', `upgrade ${up.id}: the ${name} job could not be read (${read.message}); it keeps its image until install/install.sh runs again`);
+    return;
+  }
+  let job;
+  try {
+    job = rolloutJob(read.body, { image: `${imagePath(settings, contracts)}:${up.commit}`, version: up.version, commit: up.commit });
+  } catch (err) {
+    runtime.log('WARN', `upgrade ${up.id}: the ${name} job cannot be moved: ${err.message}`);
+    return;
+  }
+  const res = await google(runtime, url, { method: 'PATCH', body: job });
+  runtime.log(res.ok ? 'INFO' : 'WARN', res.ok
+    ? `upgrade ${up.id}: the ${name} job runs ${up.version} (${up.commit}) from its next run`
+    : `upgrade ${up.id}: the ${name} job did not take the new image (${res.message}); it keeps its image until install/install.sh runs again`);
 }
 
 async function advance(runtime, read, now, live) {
@@ -521,8 +579,10 @@ export async function readUpgrade(runtime, { user, now = new Date() }) {
 
 /**
  * Starts an upgrade to a published release: newer than the installed one, or the same one, which
- * finishes an upgrade left half-done. Resolves the tag's commit on GitHub, claims config/upgrade (no
- * other upgrade may be running), and sends the VM its `upgrade` command.
+ * finishes an upgrade left half-done. GitHub's release list is asked for again first, every time (one
+ * request per attempt), and a withdrawn release, or any while GitHub cannot be asked, is refused.
+ * Resolves the tag's commit on GitHub, claims config/upgrade (no other upgrade may be running), and
+ * sends the VM its `upgrade` command.
  *
  * @param {object} runtime
  * @param {object} o
@@ -544,13 +604,19 @@ export async function startUpgrade(runtime, { version, user, now = new Date(), s
     throw new HttpError(409, `an upgrade to ${before.data.version}, started by ${before.data.requested_by || 'an admin'}, is still running`);
   }
 
-  const { repo, installed, check, releases } = await loadReleases(runtime, { now });
+  // GitHub's list, asked for again whatever the kept one's age: no upgrade starts to a withdrawn release.
+  const { repo, installed, check, releases, withdrawn } = await loadReleases(runtime, { now, fresh: true });
   const refusal = installRefusal(wanted, installed.version);
   if (refusal) throw new HttpError(409, refusal);
-  if (!releases.some((r) => r.version === wanted)) {
-    const why = check?.error ? ` (the last look at GitHub failed: ${check.error})` : '';
-    throw new HttpError(409, `${wanted} is not a published release of ${repo}${why}`);
+  const withdrawal = withdrawn.find((w) => w.version === wanted);
+  if (withdrawal) {
+    throw new HttpError(409, `${wanted} was withdrawn by its maintainers${withdrawal.reason ? ` (${withdrawal.reason})` : ''}, so no upgrade starts to it; `
+      + 'a newer release replaces it');
   }
+  if (check?.error) {
+    throw new HttpError(502, `GitHub could not be asked whether ${wanted} is still published, so it is not installed now (${check.error}); try again later`);
+  }
+  if (!releases.some((r) => r.version === wanted)) throw new HttpError(409, `${wanted} is not a published release of ${repo}`);
 
   let commit;
   try {

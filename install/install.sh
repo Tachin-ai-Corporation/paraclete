@@ -60,7 +60,7 @@ VM_SCOPES=cloud-platform,https://www.googleapis.com/auth/drive
 # <name>.googleapis.com). A role's own `apis` come on top (read in step 1). cloudresourcemanager is there
 # for gcloud itself: `iap web` commands look the project up through it, and fail on a project that
 # never turned it on.
-BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive cloudresourcemanager)
+BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive cloudresourcemanager cloudscheduler)
 WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
 # The Service Usage API takes a limited number of services per call.
 APIS_PER_CALL=10
@@ -109,6 +109,9 @@ REQUIRED_PERMISSIONS=(
 # The dashboard's users, one Firestore document per email (dashboard/lib/server/users.mjs). Step 6
 # writes the first: the installer, as an admin.
 USERS_COLLECTION=users
+# The instance's settings document is config/settings (agent/storage/collections.mjs); --no-auto-update
+# writes its auto_update field in step 6.
+CONFIG_COLLECTION=config
 IMAGE_REPOSITORY_DESCRIPTION='Images of the paraclete dashboard, one per release'
 AGENT_IMAGE_REPOSITORY_DESCRIPTION='Images the paraclete agent builds'
 
@@ -130,6 +133,8 @@ Prepares this Google Cloud project for one paraclete and creates its VM. Safe to
   --ref <ref>        A release tag, branch or full commit to install (default: the newest release tag,
                      else the repository's default branch)
   --repo <owner/name>  The GitHub repository to install from (default: this clone's origin)
+  --no-auto-update   Don't install new releases automatically (default: on; an admin can change it on the
+                     dashboard's System tab)
   --yes              Don't ask: take the defaults and skip the confirmation
   --dry-run          Print every command that would change something; change nothing
   -h, --help         This help
@@ -144,6 +149,7 @@ ZONE=""
 REF=""
 REPO=""
 YES=0
+AUTO_UPDATE_OFF=0
 
 parse_flags() {
   local flag value
@@ -151,6 +157,7 @@ parse_flags() {
     case "$1" in
       --yes | -y) YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
+      --no-auto-update) AUTO_UPDATE_OFF=1; shift ;;
       -h | --help) usage; exit 0 ;;
       --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=*)
         set_flag "${1%%=*}" "${1#*=}"; shift ;;
@@ -411,6 +418,11 @@ summarize_and_confirm() {
   say "  region      $REGION, VM in $ZONE"
   say "  bucket      gs://$BUCKET"
   say "  dashboard   Cloud Run service $SERVICE_NAME, behind Google sign-in (first admin: $INSTALLER_EMAIL)"
+  if [[ "$AUTO_UPDATE_OFF" == 1 ]]; then
+    say "  updates     installed from the dashboard's System tab only (--no-auto-update)"
+  else
+    say "  updates     new releases install automatically, checked on $(contract auto_update.schedule) (UTC)"
+  fi
   if [[ "$DRY_RUN" == 1 ]]; then
     say ""
     say "Dry run: nothing will change. Each command that would change something is printed after a +."
@@ -827,6 +839,7 @@ lifecycle_json() {
 step_dashboard() {
   step 6 dashboard "the web dashboard on Cloud Run, behind Google sign-in"
   local deploys=0
+  UPDATE_JOB="$(contract auto_update.job_name)"
   if fetch_build_config; then
     deploys=1
     DASHBOARD_IMAGE="$(dashboard_js image project="$PROJECT" region="$REGION")"
@@ -839,6 +852,9 @@ step_dashboard() {
     ensure_service
     ensure_sign_in
     ensure_first_admin
+    ensure_update_job
+    ensure_update_schedule
+    ensure_auto_update_off
   fi
   DASHBOARD_URL="$(gcloud run services describe "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" \
     --format='value(status.url)' 2>/dev/null || true)"
@@ -993,6 +1009,70 @@ ensure_first_admin() {
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
     --data-binary "@$body_file" "$url?currentDocument.exists=false"
+}
+
+# The automatic-update job: dashboard/jobs/auto-update.mjs in the dashboard's image at this commit, as the
+# dashboard's account, with the service's environment. Deployed unless it already runs exactly that.
+# Each run installs the newest release when the admin setting allows it (dashboard/lib/server/auto-update.mjs);
+# the dashboard's own upgrade moves its image afterwards.
+ensure_update_job() {
+  local job drift env_file="$WORK_DIR/update-job-env.yaml"
+  gcloud_args job-describe-args project="$PROJECT" region="$REGION"
+  job="$(gcloud "${GCLOUD_ARGS[@]}" 2>/dev/null || true)"
+  drift="$(dashboard_js job-drift "${DASHBOARD_ENV[@]}" <<<"$job")"
+  if [[ -z "$drift" ]]; then
+    note "the update job $UPDATE_JOB already runs $COMMIT"
+    return 0
+  fi
+  [[ "$drift" == missing ]] || note "the update job $UPDATE_JOB exists; deploying because of: $drift"
+  dashboard_js env-file "${DASHBOARD_ENV[@]}" >"$env_file"
+  gcloud_args job-deploy-args project="$PROJECT" region="$REGION" commit="$COMMIT" envFile="$env_file"
+  run gcloud "${GCLOUD_ARGS[@]}"
+}
+
+# The schedule that starts the update job: Cloud Scheduler calls Cloud Run's Admin API as the dashboard's
+# account on contracts.auto_update.schedule. Created, or updated when it differs. A schedule someone
+# paused stays paused: the admin setting is what turns automatic updates off.
+ensure_update_schedule() {
+  local schedule drift verb=create
+  gcloud_args schedule-describe-args project="$PROJECT" region="$REGION"
+  schedule="$(gcloud "${GCLOUD_ARGS[@]}" 2>/dev/null || true)"
+  drift="$(dashboard_js schedule-drift project="$PROJECT" region="$REGION" <<<"$schedule")"
+  if [[ -z "$drift" ]]; then
+    note "the update schedule $UPDATE_JOB runs the job on $(contract auto_update.schedule) (UTC)"
+    return 0
+  fi
+  if [[ "$drift" != missing ]]; then
+    verb=update
+    note "the update schedule $UPDATE_JOB exists; updating because of: $drift"
+  fi
+  gcloud_args schedule-args project="$PROJECT" region="$REGION" verb="$verb"
+  run gcloud "${GCLOUD_ARGS[@]}"
+}
+
+# --no-auto-update: stores auto_update=false in config/settings, through the REST API as you, with a
+# field mask, so the rest of the document stays as it is. Without the flag nothing is written: an
+# absent setting is the contracts' default (on), and a re-run never undoes an admin's choice.
+ensure_auto_update_off() {
+  [[ "$AUTO_UPDATE_OFF" == 1 ]] || return 0
+  local url body_file="$WORK_DIR/auto-update-off.json" header_file="$WORK_DIR/firestore-headers" token mask
+  url="https://firestore.googleapis.com/v1/projects/$PROJECT/databases/$FIRESTORE_DATABASE/documents/$CONFIG_COLLECTION/settings"
+  mask='updateMask.fieldPaths=auto_update&updateMask.fieldPaths=auto_update_updated_at&updateMask.fieldPaths=auto_update_updated_by'
+  node -e '
+const [email] = process.argv.slice(1);
+console.log(JSON.stringify({ fields: {
+  auto_update: { booleanValue: false },
+  auto_update_updated_at: { stringValue: new Date().toISOString() },
+  auto_update_updated_by: { stringValue: email },
+} }));
+' "$INSTALLER_EMAIL" >"$body_file"
+  show_file auto-update-off.json "$body_file"
+  if [[ "$DRY_RUN" != 1 ]]; then
+    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
+  fi
+  run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
+    --data-binary "@$body_file" "$url?$mask"
 }
 
 # The browser uploads files straight into the bucket through V4 signed URLs (dashboard/README.md), which

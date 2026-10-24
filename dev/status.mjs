@@ -6,7 +6,8 @@
 // Firestore gives agent/instance and the five newest missions, and `gcloud run services describe`
 // the dashboard's URL and the commit its image was built from (install/lib/dashboard.mjs). Exits
 // non-zero when a service is down or hung, or when the installed commit, agent/instance and the
-// dashboard disagree. It changes nothing.
+// dashboard disagree. `--vm-only` leaves the dashboard out, for an instance that has none (the harness
+// lab's canary): it is neither read nor counted. It changes nothing. dev/release-check.mjs runs it.
 
 import { loadContracts } from '../config/contracts.mjs';
 import { COLLECTIONS } from '../agent/storage/collections.mjs';
@@ -17,11 +18,12 @@ import {
   DevError, VM_PATHS, READINESS_DOC, devContext, failureDetail, isMain, preview, runCommand,
 } from './dev-env.mjs';
 
-const USAGE = `Usage: node dev/status.mjs [--json]
+const USAGE = `Usage: node dev/status.mjs [--json] [--vm-only]
 Shows the commit your dev instance's VM runs, each service's state and heartbeat, the gateway's
 models, agent/instance, the five newest missions, and the dashboard's URL and commit. Exits 1 when a
-service is down or hung, or the installed commit, agent/instance and the dashboard disagree. --json
-prints the same as one JSON object.`;
+service is down or hung, or the installed commit, agent/instance and the dashboard disagree.
+  --json     print the same as one JSON object
+  --vm-only  leave the dashboard out, for an instance without one: it is neither read nor counted`;
 
 const MISSIONS_SHOWN = 5;
 
@@ -112,6 +114,7 @@ export function readDashboard(described, instance) {
 
 /**
  * Puts the probe, the Firestore reads and the dashboard together and lists what is wrong. Pure.
+ * `dashboard` null leaves it out (--vm-only): the report's `dashboard` is null and adds no problem.
  *
  * @returns {object} the report; `problems` is empty when all is well
  */
@@ -132,10 +135,10 @@ export function buildReport({ instance, probe, agentInstance, missions, dashboar
   if (release?.commit && agentInstance && release.commit !== agentInstance.commit) {
     problems.push(`the VM has ${release.commit} installed but ${READINESS_DOC} reports ${agentInstance.commit || 'no commit'}`);
   }
-  const shown = { ...dashboard, matches_vm: null };
-  if (dashboard.error) problems.push(`the dashboard could not be checked: ${dashboard.error}`);
-  else if (!dashboard.commit) problems.push(`the dashboard runs ${dashboard.image || 'no image'}, which is not tagged with a commit`);
-  else if (release?.commit) {
+  const shown = dashboard ? { ...dashboard, matches_vm: null } : null;
+  if (dashboard?.error) problems.push(`the dashboard could not be checked: ${dashboard.error}`);
+  else if (dashboard && !dashboard.commit) problems.push(`the dashboard runs ${dashboard.image || 'no image'}, which is not tagged with a commit`);
+  else if (dashboard && release?.commit) {
     shown.matches_vm = dashboard.commit === release.commit;
     if (!shown.matches_vm) problems.push(`the dashboard runs ${dashboard.commit} but the VM has ${release.commit} installed`);
   }
@@ -181,7 +184,8 @@ export function formatReport(report) {
   else if (g.unreadable || g.error) lines.push(`  gateway        /status answered: ${preview(g.unreadable || JSON.stringify(g.error), 120)}`);
   else lines.push(`  gateway        up ${g.uptime_sec ?? '?'} s, ${g.requests ?? '?'} requests, ${Array.isArray(g.sessions) ? g.sessions.length : '?'} sessions; ${formatModels(g.models)}`);
   const d = report.dashboard;
-  if (d.error) lines.push(`  dashboard      not checked: ${d.error}`);
+  if (!d) lines.push('  dashboard      left out (--vm-only)');
+  else if (d.error) lines.push(`  dashboard      not checked: ${d.error}`);
   else {
     const match = d.matches_vm === null ? '' : d.matches_vm ? ' (the VM\'s commit)' : ` (the VM has ${report.release.commit})`;
     lines.push(`  dashboard      ${d.url || 'no URL'}  commit ${d.commit || `none: ${d.image || 'no image'}`}${match}`);
@@ -191,7 +195,7 @@ export function formatReport(report) {
   for (const m of report.missions) lines.push(`  ${m.id}  ${String(m.status).padEnd(18)} ${m.created_at || '-'}  ${preview(m.instruction, 70)}`);
   lines.push('', report.problems.length
     ? `PROBLEMS:\n${report.problems.map((p) => `  - ${p}`).join('\n')}`
-    : 'All services up; the VM, agent/instance and the dashboard are on the same commit.');
+    : `All services up; ${d ? 'the VM, agent/instance and the dashboard' : 'the VM and agent/instance'} are on the same commit.`);
   return lines.join('\n');
 }
 
@@ -204,9 +208,11 @@ export async function main(argv, deps = {}) {
   const ctx = devContext(deps);
   return runCommand('status', ctx, async () => {
     let json = false;
+    let vmOnly = false;
     for (const arg of argv) {
       if (arg === '--help' || arg === '-h') { ctx.out(USAGE); return 0; }
       if (arg === '--json') json = true;
+      else if (arg === '--vm-only') vmOnly = true;
       else throw new DevError(`Unknown argument: ${arg}\n${USAGE}`, 2);
     }
     const instance = ctx.instance();
@@ -218,10 +224,10 @@ export async function main(argv, deps = {}) {
       db.read(READINESS_DOC, { strict: true }),
       db.query('', COLLECTIONS.work, [{ field: 'type', op: 'EQUAL', value: { stringValue: 'M' } }],
         { orderBy: 'created_at', orderDirection: 'DESCENDING', limit: MISSIONS_SHOWN, strict: true }),
-      ctx.gcloud(describeArgs({ project: instance.PROJECT_ID, region: instance.REGION })),
+      vmOnly ? null : ctx.gcloud(describeArgs({ project: instance.PROJECT_ID, region: instance.REGION })),
     ]);
     const probe = ssh.code === 0 ? parseStatusProbe(ssh.stdout) : null;
-    const dashboard = readDashboard(described, instance);
+    const dashboard = vmOnly ? null : readDashboard(described, instance);
     const report = buildReport({ instance, probe, agentInstance, missions, dashboard, localNow: ctx.now() });
     if (!probe) report.problems.unshift(`the VM could not be reached: gcloud compute ssh exited with code ${ssh.code} (its messages are above)`);
 

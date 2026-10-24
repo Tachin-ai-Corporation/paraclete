@@ -1,10 +1,11 @@
 // Tests for dashboard/components/settings/release-update.js: how the version card reads. Release notes
-// become plain lines; an upgrade's three steps; the card's badge and summary in each situation; what an
-// admin is offered to install; and when the page waits for the new dashboard and reloads.
+// become plain lines; an upgrade's three steps; the card's badge and summary in each situation, a
+// withdrawn installed release among them; what an admin is offered to install; and when the page waits
+// for the new dashboard and reloads.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  NOTE_LINES_SHOWN, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure, upgradeSteps,
+  NOTE_LINES_SHOWN, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure, upgradeSteps, autoUpdateRow,
 } from '../../../../dashboard/components/settings/release-update.js';
 
 const V1 = 'v2027.01.10.1.1';
@@ -92,6 +93,25 @@ test('the badge and summary: up to date, an update, half installed, failed, upda
   assert.equal(cardStatus(null, null).label, 'checking');
 });
 
+test('an instance on a withdrawn release: the summary says so and why, with or without a newer release', () => {
+  const withdrawn = { version: V1, reason: 'it breaks uploads (issue 41)', url: null };
+  assert.deepEqual(cardStatus(releasesOf({ newer: [], latest: null, current: null, withdrawn }), null), {
+    level: 'warn',
+    label: 'withdrawn',
+    summary: `Runs ${V1}, which its maintainers withdrew: it breaks uploads (issue 41). The next newer release installs over it as usual.`,
+  }, 'never "the newest release"');
+  assert.deepEqual(cardStatus(releasesOf({ withdrawn }), null), {
+    level: 'info',
+    label: 'update available',
+    summary: `${V3} is available; this instance runs ${V1}, which its maintainers withdrew: it breaks uploads (issue 41).`,
+  });
+  assert.equal(cardStatus(releasesOf({ newer: [], withdrawn: { version: V1, reason: '', url: null } }), null).summary,
+    `Runs ${V1}, which its maintainers withdrew. The next newer release installs over it as usual.`, 'no reason given');
+  assert.equal(cardStatus(releasesOf({ newer: [], latest: rel(V1), withdrawn: { version: V2, reason: 'x', url: null } }), null).label, 'up to date',
+    'a withdrawal of another release is not this one');
+  assert.equal(cardStatus(releasesOf({ newer: [], latest: rel(V1), withdrawn: null }), null).label, 'up to date');
+});
+
 test('while the page waits for the new dashboard, the card says it is updated and offers nothing', () => {
   const half = releasesOf({ repair: V2, newer: [rel(V3)] });
   assert.deepEqual(cardStatus(half, upgradeOf('done'), { awaiting: true }),
@@ -127,4 +147,16 @@ test('the page waits for the new dashboard once an upgrade it watched is done, o
   assert.equal(isNewDashboard({ dashboard: { commit: B } }, done), true);
   assert.equal(isNewDashboard({ dashboard: { commit: A } }, done), false, 'the old revision may answer for a moment');
   assert.equal(isNewDashboard(null, done), false);
+});
+
+test('the automatic-update row: on or off, and what the last run did, before or after its first run', () => {
+  assert.equal(autoUpdateRow(null), null);
+  const on = autoUpdateRow({ setting: { enabled: true }, last_run: null });
+  assert.deepEqual([on.enabled, on.lastRun], [true, null]);
+  assert.match(on.state, /^On: new releases install by themselves, while the agent is idle/);
+  const off = autoUpdateRow({ setting: { enabled: false }, last_run: { checked_at: '2027-01-21T09:00:00Z', action: 'off', reason: 'automatic updates are off' } });
+  assert.match(off.state, /^Off: a release installs only when an admin presses Install/);
+  assert.deepEqual(off.lastRun, { at: '2027-01-21T09:00:00Z', outcome: 'off', reason: 'automatic updates are off' });
+  assert.equal(autoUpdateRow({ setting: { enabled: true }, last_run: { action: 'wait', reason: 'x' } }).lastRun.outcome, 'waiting for the agent to be idle');
+  assert.equal(autoUpdateRow({ setting: { enabled: true }, last_run: { action: 'new-thing' } }).lastRun.outcome, 'new-thing');
 });

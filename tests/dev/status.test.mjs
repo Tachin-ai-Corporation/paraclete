@@ -2,7 +2,7 @@
 // units, the heartbeats and the gateway's /status (the token never on a command line); Firestore gives
 // agent/instance and the newest missions; `gcloud run services describe` gives the dashboard's URL and
 // commit; and the exit code says whether a service is down or hung, or the installed commit,
-// agent/instance and the dashboard disagree.
+// agent/instance and the dashboard disagree. --vm-only leaves the dashboard out.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
@@ -157,6 +157,28 @@ test('a dashboard on another commit, on an untagged image, or missing fails the 
 
   const denied = await run([], { dashboard: { code: 1, stderr: 'ERROR: PERMISSION_DENIED: no\n' } });
   assert.match(denied.out, /- the dashboard could not be checked: gcloud run services describe failed: ERROR: PERMISSION_DENIED: no/);
+});
+
+test('--vm-only leaves the dashboard out: it is not described, shown as left out, and counts for nothing', async () => {
+  await seed();
+  const missing = { code: 1, stderr: 'ERROR: (gcloud.run.services.describe) Cannot find service [paraclete]\n' };
+  const r = await run(['--vm-only'], { dashboard: missing });
+  assert.equal(r.exit, 0, r.out + r.err);
+  assert.deepEqual(r.exec.calls.filter((c) => c.args[0] === 'run'), [], 'gcloud run is never asked');
+  assert.match(r.out, /dashboard {6}left out \(--vm-only\)/);
+  assert.match(r.out, /All services up; the VM and agent\/instance are on the same commit\./);
+
+  const json = await run(['--json', '--vm-only'], { dashboard: missing });
+  const report = JSON.parse(json.out);
+  assert.equal(json.exit, 0);
+  assert.equal(report.dashboard, null);
+  assert.deepEqual(report.problems, []);
+
+  firestore.reset();
+  await seed({ commit: 'b'.repeat(40) });
+  const wrong = await run(['--vm-only']);
+  assert.equal(wrong.exit, 1, 'the VM is still checked');
+  assert.match(wrong.out, /- the VM has a{40} installed but agent\/instance reports b{40}/);
 });
 
 test('the probe output parses with CRLF line ends and missing parts', () => {

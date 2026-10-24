@@ -17,7 +17,7 @@ packages in `agent/` never do (`tests/repo/boundaries.test.mjs` enforces it).
 |---|---|---|
 | Product defaults | `config/contracts.json` | A release |
 | Instance identity | `/etc/paraclete/instance.json` | The installer, once |
-| Admin settings (effort, Claude on or off) | Firestore `config/settings` | A dashboard admin |
+| Admin settings (effort, Claude on or off, automatic updates) | Firestore `config/settings` | A dashboard admin (automatic updates also `install.sh --no-auto-update`) |
 
 ## Rules
 

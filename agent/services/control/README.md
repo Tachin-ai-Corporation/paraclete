@@ -384,6 +384,8 @@ command again is safe.
 | `effort_updated_at`, `effort_updated_by` | the dashboard | When and by whom the effort last changed |
 | `drive_output_folder` | the dashboard | A Drive folder id, or null: where `drive-put` saves new files when not told a folder, and what `drive_check` tests |
 | `drive_output_folder_updated_at`, `drive_output_folder_updated_by` | the dashboard | When and by whom the output folder last changed |
+| `auto_update` | the dashboard; `install.sh --no-auto-update` | Whether the dashboard's update job installs new releases by itself. Only a stored `true` or `false` counts; absent means `auto_update.enabled_by_default` (on). Read by the job at the start of every run, never by the VM |
+| `auto_update_updated_at`, `auto_update_updated_by` | the dashboard; `install.sh` | When and by whom it last changed |
 
 ## The Workspace account record
 

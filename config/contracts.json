@@ -285,6 +285,15 @@
     "build_timeout_seconds": 1200,
     "release_check_ttl_seconds": 3600
   },
+  "auto_update": {
+    "_comment": "Installing new releases without anyone pressing Install (dashboard/lib/server/auto-update.mjs). A Cloud Scheduler job named job_name runs the Cloud Run job job_name on schedule (cron, UTC), as the dashboard's own account; each run installs the newest published release, forward only, through the same signed upgrade as the Install button, and follows it to the end for at most job_timeout_seconds (a later run picks up what is left). enabled_by_default applies while Firestore config/settings has no auto_update; install/install.sh --no-auto-update stores false, and an admin turns it on or off on the System tab. An instance installed from a branch or commit is never moved. While a mission is active a run waits, for at most idle_wait_max_hours from the first run that found one, then installs anyway: missions resume after a restart. advance_interval_seconds is how often a run moves a started upgrade on.",
+    "enabled_by_default": true,
+    "job_name": "paraclete-auto-update",
+    "schedule": "*/30 * * * *",
+    "job_timeout_seconds": 3600,
+    "idle_wait_max_hours": 24,
+    "advance_interval_seconds": 10
+  },
   "effort": {
     "_comment": "The dashboard's effort setting, stored in Firestore config/settings. One of low, medium, high, max.",
     "default": "medium"

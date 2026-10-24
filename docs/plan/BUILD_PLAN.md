@@ -18,7 +18,7 @@ mission for anyone developing this repo. When a decision changes, change this pl
 | P5 | A Google Workspace account for the agent is optional. Only roles flagged `workspace` get one. |
 | P6 | Every paraclete works with files and Google Drive. It takes files in, works on them, and hands back standard file types as dashboard downloads. |
 | P7 | It runs on Gemini by default. Claude is an upgrade the owner turns on after accepting Anthropic's terms. |
-| P8 | Upgrades come from this repo's releases. One button moves the dashboard and the agent to the same release. |
+| P8 | Upgrades come from this repo's releases. One button moves the dashboard and the agent to the same release, and by default the dashboard presses it by itself when a new release is out. |
 
 The agent is a deterministic machine that consults models: code moves the data and enforces the
 rules, and models think in structured JSON. Work runs Request → Mission → Checkpoint → Task. An
@@ -37,7 +37,7 @@ independent verifier judges every checkpoint, and every outbound message leaves 
 | Files | Every agent takes files in from the dashboard, links, Cloud Storage, git and Drive, and returns standard files as dashboard downloads. |
 | Dashboard sign-in | Identity-Aware Proxy (IAP) directly on Cloud Run with Google's managed sign-in. No OAuth client to create. |
 | Models | `gemini-4-argon` for the cortex and the strong tier, `gemini-3.8-flash` everywhere else. Claude is opt-in. |
-| Upgrades | The dashboard detects releases of this repo. An admin installs one with a button. |
+| Upgrades | The dashboard detects releases of this repo. An admin installs one with a button; by default a scheduled job of the dashboard's installs each new release by itself, the same way (an admin turns that off on the System tab, or `install.sh --no-auto-update`). |
 | Continual improvement | A harness (`dev/harness2/`) proposes changes to prompts, skills, role packages and contracts tunables, and opens them as pull requests. They reach `main` with a version in the title, green CI and a squash merge, and reach instances only in a release. Phase 11. |
 | Runtime | Node 24 on the VM and the dashboard. |
 | Email | Not in this plan. |
@@ -245,13 +245,14 @@ repairs an install. [docs/INSTALL.md](../INSTALL.md) is the owner's guide.
 install/install.sh
   1  check      caller can act as owner, billing is on, project is in an organization, the ref resolves
   2  apis       compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry,
-                cloudbuild, secretmanager, storage, iap, drive, cloudresourcemanager
+                cloudbuild, secretmanager, storage, iap, drive, cloudresourcemanager, cloudscheduler
                 (+ Workspace APIs for flagged roles);
                 then checks the cortex model answers
   3  accounts   paraclete-dashboard@, paraclete-agent@ (+ the role's gcp_roles), paraclete-dwd@ if flagged
   4  firestore  native database (delete-protected), indexes and the TTL policy
   5  bucket     <project>-paraclete: uniform access, public access prevention, lifecycle rules
-  6  dashboard  Cloud Build at the tag → Artifact Registry → Cloud Run with IAP; grant the installer
+  6  dashboard  Cloud Build at the tag → Artifact Registry → Cloud Run with IAP; grant the installer;
+                the automatic-update job (Cloud Run job) and its schedule (Cloud Scheduler)
   7  network    the default network (or a paraclete one); SSH from IAP only, everything else denied
   8  agent VM   e2-standard-2, 50 GB, Debian 12, paraclete-agent@, cloud-platform + drive scopes;
                 the startup script runs install/bootstrap.sh at the release's commit on every boot
@@ -276,10 +277,12 @@ unless you pass `--purge`.
 
 ## 9. Upgrades
 
-1. **Releases.** A maintainer cuts a release from main's head with `dev/release.mjs` once CI is green
-   for it: a tag in the commit version format (`vYYYY.MM.DD.N.N`). The tag's workflow
-   (`.github/workflows/release.yml`) runs the tests again and publishes the GitHub release with notes,
-   one line per commit since the previous release.
+1. **Releases.** A maintainer cuts a release from main's head once CI is green for it, with
+   `dev/release-check.mjs`: it first deploys the head to a dev instance and requires a clean status and
+   a passing smoke mission there, then tags it the way `dev/release.mjs` does: a tag in the commit
+   version format (`vYYYY.MM.DD.N.N`). The tag's workflow (`.github/workflows/release.yml`) runs the
+   tests again and publishes the GitHub release with notes, one line per commit since the previous
+   release.
 2. **Detection.** The dashboard checks this repo's releases (cached hourly in `config/release_check`)
    and shows "Update available" with the notes.
 3. **Install.** An admin clicks Install. The VM goes first: the control service downloads that tag's
@@ -292,6 +295,27 @@ unless you pass `--purge`.
    installed release, which starts again.
 5. **One version.** The dashboard and the agent report the same version. The button only moves
    forward; going back is `install/install.sh --ref <older tag>`.
+6. **Automatic updates.** On by default. A Cloud Scheduler job starts a Cloud Run job every 30 minutes
+   (`contracts.auto_update`): the dashboard's own image and account running
+   `dashboard/jobs/auto-update.mjs`. Each run installs the newest published release exactly as Install
+   does, with the same signed VM command, then the dashboard's build and rollout, and follows it to the
+   end (`dashboard/lib/server/auto-update.mjs`).
+   - It moves only forward, and finishes an upgrade left half-done first.
+   - It never moves an instance installed from a branch or commit, such as a dev instance under test.
+   - While a mission is active it waits, for at most 24 hours from the first run that found one, then
+     installs anyway; missions resume after the restart.
+   - An admin turns it off or on on the System tab, which also shows what the last run did.
+   - `install/install.sh --no-auto-update` installs with it off.
+   - An instance installed before automatic updates gets the job and the schedule the next time
+     `install.sh` runs.
+7. **Withdrawing.** A bad release is withdrawn with `dev/release.mjs yank <tag> --reason "<why>"`:
+   GitHub lists it as a prerelease whose notes start with `Withdrawn: <why>`, and its tag stays. Each
+   dashboard stops offering it at its next look at GitHub, and one that checks for withdrawn releases
+   starts no new install to it, since every upgrade asks GitHub first. An upgrade to it already running
+   finishes, and a dashboard on an older release may still install it within its cached hour. An
+   instance already on it says so on its version card and moves on to the next newer release as usual.
+   The next release's notes start after the last one not withdrawn. The release workflow of a tag older
+   than v2026.10.23.12.1 is never rerun: it would publish a withdrawn release again.
 
 ---
 
@@ -375,8 +399,13 @@ done.
       an existing test, a failing suite, or a behaviour change that real-model runs do not show to be
       safe, and opens a pull request. Stage 1 is supervised: a person merges. Next: merging low-risk
       classes by itself, the daily release check, and retiring the legacy harness.
-    - Still open: a merge step that squashes and waits for CI; and a check on the dev instance
-      before a release that carries promotions.
+    - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
+      `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
+      and the role's smoke mission to pass, and only then cuts the release, with the check recorded in
+      the tag's message. A bad release is withdrawn with `dev/release.mjs yank`: no new install to it
+      starts on a dashboard that checks for withdrawn releases, and instances on it move on to the next
+      newer release.
+    - Still open: a merge step that squashes and waits for CI.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
     after every merge, and a release with promotions passes the smoke missions on a dev instance.

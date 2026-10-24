@@ -56,7 +56,7 @@ const dashboardCommands = (commands) => commands.filter((command) =>
   DASHBOARD_COMMANDS.some((words) => words.every((word, i) => command[i] === word)));
 
 const BASE_APIS = ['compute', 'run', 'firestore', 'iam', 'iamcredentials', 'aiplatform', 'artifactregistry',
-  'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive', 'cloudresourcemanager'].map((api) => `${api}.googleapis.com`);
+  'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive', 'cloudresourcemanager', 'cloudscheduler'].map((api) => `${api}.googleapis.com`);
 const WORKSPACE_APIS = ['chat', 'gmail', 'calendar-json', 'docs', 'sheets', 'slides', 'people', 'admin']
   .map((api) => `${api}.googleapis.com`);
 
@@ -393,6 +393,30 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.ok(order.every((i) => i > position(run.commands, 'gcloud', 'storage', 'buckets', 'create')));
     assert.ok(order.every((i) => i < position(run.commands, 'gcloud', 'compute', 'instances', 'create')));
+  });
+
+  test('creates the automatic-update job from the dashboard image, and a schedule that starts it as the dashboard', () => {
+    const [job, ...moreJobs] = find(run.commands, 'gcloud', 'run', 'jobs', 'deploy');
+    assert.equal(moreJobs.length, 0);
+    assert.equal(job[4], 'paraclete-auto-update');
+    assert.equal(flag(job, 'image'), `${IMAGE}:${COMMITS.release}`);
+    assert.equal(flag(job, 'service-account'), DASHBOARD);
+    assert.deepEqual([flag(job, 'command'), flag(job, 'args')], ['node', 'dashboard/jobs/auto-update.mjs']);
+    assert.equal(flag(job, 'task-timeout'), `${contracts.auto_update.job_timeout_seconds}s`);
+    assert.deepEqual([flag(job, 'tasks'), flag(job, 'max-retries')], ['1', '0']);
+    const [schedule, ...moreSchedules] = find(run.commands, 'gcloud', 'scheduler', 'jobs', 'create', 'http');
+    assert.equal(moreSchedules.length, 0);
+    assert.equal(schedule[5], 'paraclete-auto-update');
+    assert.equal(flag(schedule, 'schedule'), contracts.auto_update.schedule);
+    assert.equal(flag(schedule, 'time-zone'), 'Etc/UTC');
+    assert.equal(flag(schedule, 'uri'), `https://run.googleapis.com/v2/projects/${PROJECT}/locations/us-central1/jobs/paraclete-auto-update:run`);
+    assert.equal(flag(schedule, 'http-method'), 'POST');
+    assert.equal(flag(schedule, 'oauth-service-account-email'), DASHBOARD);
+    assert.ok(position(run.commands, 'gcloud', 'run', 'deploy') < run.commands.indexOf(job), 'after the service');
+    assert.ok(run.commands.indexOf(job) < run.commands.indexOf(schedule), 'the job before the schedule that starts it');
+    assert.deepEqual(find(run.commands, 'curl').filter((c) => c.some((a) => a.includes('/documents/config/settings'))), [],
+      'automatic updates stay at their default, on: nothing is written');
+    assert.match(run.stdout, /updates {5}new releases install automatically/);
   });
 
   test("lets the browser upload into the bucket from the dashboard's URL, once the service is planned", () => {
@@ -958,6 +982,18 @@ describe('a real run, then re-runs', { skip: needsBash, concurrency: false }, ()
     assert.match(first.stdout, new RegExp(`Dashboard: ${service.url.replace(/\./g, '\\.')} \\(sign in as ${OWNER}`));
   });
 
+  test('runs the update job at the release, starts it on schedule, and leaves automatic updates at their default', () => {
+    const state = box.state();
+    const job = state.runJobs['paraclete-auto-update'];
+    assert.equal(job.image, `${IMAGE}:${COMMITS.release}`);
+    assert.deepEqual(job.env, dashboardEnv(), "the service's environment, PARACLETE_SERVICE included");
+    assert.equal(job.account, DASHBOARD);
+    assert.deepEqual([job.command, job.args], [['node'], ['dashboard/jobs/auto-update.mjs']]);
+    const schedule = state.schedules['paraclete-auto-update'];
+    assert.deepEqual([schedule.schedule, schedule.account, schedule.httpMethod], [contracts.auto_update.schedule, DASHBOARD, 'POST']);
+    assert.equal(state.settings, null, 'nothing stored: the default, on, applies');
+  });
+
   test("lets the browser upload into the bucket from the dashboard's URL", () => {
     const state = box.state();
     assert.equal(state.runServices.paraclete.url, SERVICE_ORIGIN);
@@ -982,7 +1018,7 @@ describe('a real run, then re-runs', { skip: needsBash, concurrency: false }, ()
     const moved = await box.run('install.sh', ['--yes', '--ref', 'dev-branch']);
     assert.equal(moved.status, 0, moved.stderr);
     assert.deepEqual(writes(moved.calls).map((call) => call.command),
-      ['storage buckets update', 'builds submit', 'run deploy', 'compute instances add-metadata']);
+      ['storage buckets update', 'builds submit', 'run deploy', 'run jobs deploy', 'compute instances add-metadata']);
     const service = box.state().runServices.paraclete;
     assert.equal(service.image, `${IMAGE}:${COMMITS.devBranch}`);
     assert.deepEqual(service.env, dashboardEnv({ commit: COMMITS.devBranch, release: 'dev-branch' }));
@@ -1001,6 +1037,26 @@ describe('a real run, then re-runs', { skip: needsBash, concurrency: false }, ()
     const again = await box.run('install.sh', ['--yes', '--ref', 'dev-branch']);
     assert.equal(again.status, 0, again.stderr);
     assert.deepEqual(writes(again.calls).map((call) => call.command), ['storage buckets update']);
+  });
+});
+
+describe('--no-auto-update', { skip: needsBash, concurrency: false }, () => {
+  test('stores auto_update false with a field-masked write, and a re-run without the flag leaves it', async () => {
+    const box = createSandbox();
+    const run = await box.run('install.sh', ['--yes', '--no-auto-update']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /updates {5}installed from the dashboard's System tab only \(--no-auto-update\)/);
+    const state = box.state();
+    assert.equal(state.settings.auto_update, false);
+    assert.equal(state.settings.auto_update_updated_by, OWNER);
+    assert.ok(state.schedules['paraclete-auto-update'], 'the schedule exists either way: the setting decides');
+    const [write, ...more] = find(run.commands, 'curl').filter((c) => c.some((a) => a.includes('/documents/config/settings')));
+    assert.equal(more.length, 0);
+    assert.match(write.at(-1), /\?updateMask\.fieldPaths=auto_update&updateMask\.fieldPaths=auto_update_updated_at&updateMask\.fieldPaths=auto_update_updated_by$/);
+    assert.ok(!write.join(' ').includes('fake-token'), 'the token stays off the command line');
+    const again = await box.run('install.sh', ['--yes']);
+    assert.equal(again.status, 0, again.stderr);
+    assert.equal(box.state().settings.auto_update, false, "a re-run never undoes an admin's choice");
   });
 });
 
@@ -1082,11 +1138,26 @@ describe('a dashboard that partly exists', { skip: needsBash, concurrency: true 
     assert.match(run.stdout, /deploying because of: service account, IAP, cpu, memory, max instances$/m);
   });
 
+  test('a schedule changed by hand is updated, and the job left alone', async () => {
+    const run = await plan((s) => { s.schedules['paraclete-auto-update'].schedule = '0 3 * * *'; });
+    assert.match(run.stdout, /the update schedule paraclete-auto-update exists; updating because of: schedule$/m);
+    assert.equal(find(run.commands, 'gcloud', 'scheduler', 'jobs', 'update', 'http').length, 1);
+    assert.deepEqual(find(run.commands, 'gcloud', 'run', 'jobs', 'deploy'), []);
+  });
+
+  test('an update job on another image is deployed again at the release', async () => {
+    const run = await plan((s) => { s.runJobs['paraclete-auto-update'].image = `${IMAGE}:${COMMITS.olderRelease}`; s.images[IMAGE].push(COMMITS.olderRelease); });
+    assert.match(run.stdout, /the update job paraclete-auto-update exists; deploying because of: image$/m);
+    assert.equal(flag(find(run.commands, 'gcloud', 'run', 'jobs', 'deploy')[0], 'image'), `${IMAGE}:${COMMITS.release}`);
+  });
+
   test('a new agent name changes only the environment', async () => {
     const run = await plan(() => {}, ['--name', "Ada O'Brien"]);
     assert.match(run.stdout, /deploying because of: environment$/m);
     assert.equal(shownEnv(run.stdout).PARACLETE_AGENT_NAME, "Ada O'Brien");
-    assert.deepEqual(dashboardCommands(run.commands).map((c) => c.slice(0, 3).join(' ')), ['gcloud run deploy']);
+    // The update job runs with the service's environment, so it follows.
+    assert.match(run.stdout, /the update job paraclete-auto-update exists; deploying because of: environment$/m);
+    assert.deepEqual(dashboardCommands(run.commands).map((c) => c.slice(0, 3).join(' ')), ['gcloud run deploy', 'gcloud run jobs']);
   });
 
   test('missing sign-in grants are added, and only those', async () => {

@@ -118,6 +118,15 @@ discover() {
   if [[ "$(gcloud compute networks describe "$NETWORK_NAME" --project="$PROJECT" --format='value(description)' 2>/dev/null || true)" == "$NETWORK_DESCRIPTION" ]]; then
     NETWORK_OWNED=1
   fi
+  UPDATE_JOB="$(contract auto_update.job_name)"
+  SCHEDULE_EXISTS=0
+  if gcloud scheduler jobs describe "$UPDATE_JOB" --location="$REGION" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    SCHEDULE_EXISTS=1
+  fi
+  UPDATE_JOB_EXISTS=0
+  if gcloud run jobs describe "$UPDATE_JOB" --region="$REGION" --project="$PROJECT" --format='value(metadata.name)' >/dev/null 2>&1; then
+    UPDATE_JOB_EXISTS=1
+  fi
   SERVICE_EXISTS=0
   if gcloud run services describe "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" --format='value(metadata.name)' >/dev/null 2>&1; then
     SERVICE_EXISTS=1
@@ -181,6 +190,8 @@ confirm_plan() {
   ((FIREWALL_EXISTS)) && doomed+=("firewall rule $FIREWALL_RULE")
   ((DENY_EXISTS)) && doomed+=("firewall rule $DENY_RULE")
   ((NETWORK_OWNED)) && doomed+=("network $NETWORK_NAME (the installer created it)")
+  ((SCHEDULE_EXISTS)) && doomed+=("Cloud Scheduler job $UPDATE_JOB in $REGION (starts the automatic update)")
+  ((UPDATE_JOB_EXISTS)) && doomed+=("Cloud Run job $UPDATE_JOB in $REGION (the automatic update)")
   ((SERVICE_EXISTS)) && doomed+=("Cloud Run service $SERVICE_NAME in $REGION (the dashboard)")
   ((IMAGES_EXIST)) && doomed+=("Artifact Registry repository $IMAGE_REPOSITORY in $REGION (the dashboard's images)")
   ((PURGE && AGENT_IMAGES_EXIST)) && doomed+=("Artifact Registry repository $AGENT_IMAGE_REPOSITORY in $REGION and ALL the agent's images (irreversible)")
@@ -270,7 +281,18 @@ step_network() {
 }
 
 step_dashboard() {
-  step 4 dashboard "the dashboard's Cloud Run service and its images"
+  step 4 dashboard "the dashboard's Cloud Run service, its automatic-update job and schedule, and its images"
+  # The schedule first, so it cannot start the job while the job and the service go.
+  if ((SCHEDULE_EXISTS)); then
+    run gcloud scheduler jobs delete "$UPDATE_JOB" --location="$REGION" --project="$PROJECT" --quiet
+  else
+    note "no Cloud Scheduler job $UPDATE_JOB in $REGION"
+  fi
+  if ((UPDATE_JOB_EXISTS)); then
+    run gcloud run jobs delete "$UPDATE_JOB" --region="$REGION" --project="$PROJECT" --quiet
+  else
+    note "no Cloud Run job $UPDATE_JOB in $REGION"
+  fi
   if ((SERVICE_EXISTS)); then
     run gcloud run services delete "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" --quiet
   else

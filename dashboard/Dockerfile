@@ -23,6 +23,15 @@ COPY --from=build /src/dashboard/.next/standalone ./
 COPY --from=build /src/dashboard/.next/static ./dashboard/.next/static
 COPY --from=build /src/dashboard/public ./dashboard/public
 COPY --from=build /src/config/contracts.json ./config/contracts.json
+# The automatic-update job (dashboard/jobs/auto-update.mjs) runs in this image with plain Node, outside
+# the Next.js server, so it needs the server modules and the agent packages they import as source. They
+# use no npm package of their own.
+COPY --from=build /src/dashboard/jobs ./dashboard/jobs
+COPY --from=build /src/dashboard/lib/server ./dashboard/lib/server
+COPY --from=build /src/agent/auth ./agent/auth
+COPY --from=build /src/agent/storage ./agent/storage
+COPY --from=build /src/agent/work ./agent/work
+COPY --from=build /src/agent/release ./agent/release
 USER node
 EXPOSE 8080
 CMD ["node", "dashboard/server.js"]

@@ -102,7 +102,8 @@ export function upgradeSteps(upgrade) {
 }
 
 /**
- * The card's badge and its one-line summary.
+ * The card's badge and its one-line summary. When the installed release was withdrawn, the summary says
+ * so and why, and that the next newer release installs over it.
  *
  * @param {object|null} releases  GET /api/releases
  * @param {object|null} upgrade   GET /api/upgrade's `upgrade`
@@ -133,11 +134,29 @@ export function cardStatus(releases, upgrade, { awaiting = false } = {}) {
   }
   if (showsFailure(releases, upgrade)) return { level: 'danger', label: 'update failed', summary: `Installing ${upgrade.version} failed.` };
   const newer = releases.newer || [];
+  const withdrawn = withdrawnText(releases);
   if (newer.length) {
-    return { level: 'info', label: 'update available', summary: `${newer[0].version} is available; this instance runs ${installed.version}.` };
+    return {
+      level: 'info',
+      label: 'update available',
+      summary: `${newer[0].version} is available; this instance runs ${installed.version}${withdrawn ? `, ${withdrawn}` : ''}.`,
+    };
+  }
+  if (withdrawn) {
+    return { level: 'warn', label: 'withdrawn', summary: `Runs ${installed.version}, ${withdrawn}. The next newer release installs over it as usual.` };
   }
   if (releases.error && !releases.latest) return { level: 'warn', label: 'unknown', summary: `Runs ${installed.version}. Whether a newer release exists is not known.` };
   return { level: 'ok', label: 'up to date', summary: `Runs ${installed.version}, the newest release.` };
+}
+
+/**
+ * The words for a withdrawn installed release, with its maintainers' reason: "which its maintainers
+ * withdrew: why". '' when the installed release is not withdrawn (GET /api/releases `withdrawn`).
+ */
+function withdrawnText(releases) {
+  const withdrawal = releases?.withdrawn;
+  if (!withdrawal?.version || withdrawal.version !== releases.installed?.version) return '';
+  return `which its maintainers withdrew${withdrawal.reason ? `: ${withdrawal.reason}` : ''}`;
 }
 
 /**
@@ -190,4 +209,32 @@ export function shouldAwaitReload(upgrade, pageCommit, { sawRunning, now = Date.
 export function isNewDashboard(me, upgrade) {
   const commit = me?.dashboard?.commit;
   return Boolean(commit && upgrade?.commit && commit.toLowerCase() === upgrade.commit.toLowerCase());
+}
+
+/** What each of the automatic-update job's actions means, in a few words (lib/server/auto-update.mjs). */
+const AUTO_UPDATE_OUTCOMES = Object.freeze({
+  off: 'off',
+  skip: 'did not update',
+  none: 'up to date',
+  wait: 'waiting for the agent to be idle',
+  install: 'started an upgrade',
+  follow: 'followed the upgrade in progress',
+});
+
+/**
+ * The version card's automatic-update row, from GET /api/settings/auto-update: whether it is on, and
+ * what the job's last run found and did (null before its first run).
+ *
+ * @param {{setting?: {enabled: boolean}, last_run?: object|null}|null} view
+ * @returns {{state: string, enabled: boolean, lastRun: {at: string|null, outcome: string, reason: string}|null}|null}
+ */
+export function autoUpdateRow(view) {
+  if (!view?.setting) return null;
+  const enabled = view.setting.enabled === true;
+  const run = view.last_run;
+  return {
+    enabled,
+    state: enabled ? 'On: new releases install by themselves, while the agent is idle' : 'Off: a release installs only when an admin presses Install',
+    lastRun: run ? { at: run.checked_at || null, outcome: AUTO_UPDATE_OUTCOMES[run.action] || run.action || 'unknown', reason: run.reason || '' } : null,
+  };
 }
