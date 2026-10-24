@@ -5,17 +5,28 @@
 //
 // GitHub answers 60 unauthenticated requests an hour per address, and Cloud Run shares its addresses,
 // so the release list is asked for at most once per `dashboard.release_check_ttl_seconds` (contracts)
-// and kept in Firestore `config/release_check` as `{ repo, checked_at, releases, error }`. A failed
-// check keeps the releases it had and says why. An admin may ask GitHub again sooner, at most every
-// five minutes.
+// and kept in Firestore `config/release_check` as `{ repo, checked_at, releases, withdrawn, error }`. A
+// failed check keeps the releases it had and says why. An admin may ask GitHub again sooner, at most
+// every five minutes, and every upgrade, by hand or automatic, asks again before it starts (`fresh`:
+// one request per install attempt).
+//
+// Withdrawn releases (versions.mjs: GitHub lists them as prereleases, after `dev/release.mjs yank`) are
+// never among `releases`: the card stops offering one at the first check that sees it withdrawn, and
+// no new upgrade starts to one, since it asks GitHub first. What this cannot reach: an upgrade to it
+// already running finishes, and a dashboard on a release older than this check may still install it
+// within the hour it keeps GitHub's list. Withdrawn releases are kept apart, in `withdrawn`, so the
+// System tab can say when the installed release is one. An instance on a withdrawn release moves on to
+// the next newer release as usual.
 //
 // What the instance runs: the VM's release as `agent/instance` reports it (bootstrap.sh writes it at
 // the end of every install or upgrade), when that is a ready version; otherwise this dashboard's own
 // (PARACLETE_RELEASE). Branches and bare commits are not releases: an instance installed from one is
 // offered nothing. The upgrade itself is upgrade.mjs; this module only reads.
-// Called by the /api/releases route and by upgrade.mjs.
+// Called by the /api/releases route, upgrade.mjs and auto-update.mjs.
 
-import { isNewer, isVersion, newerReleases, releasesFromGitHub, releasesUrl } from '../../../agent/release/versions.mjs';
+import {
+  isNewer, isVersion, newerReleases, releasesFromGitHub, releasesUrl, withdrawnFromGitHub,
+} from '../../../agent/release/versions.mjs';
 import { StoreConflict, StoreUnavailable } from '../../../agent/storage/firestore.mjs';
 import { HttpError } from './errors.mjs';
 
@@ -159,6 +170,13 @@ function storedReleases(value) {
     }));
 }
 
+/** Withdrawn releases as read back from Firestore: only well-formed ones. */
+function storedWithdrawn(value) {
+  return (Array.isArray(value) ? value : [])
+    .filter((w) => w && typeof w === 'object' && isVersion(w.version))
+    .map((w) => ({ version: w.version, reason: typeof w.reason === 'string' ? w.reason : '', url: text(w.url) }));
+}
+
 function ageSeconds(at, now) {
   const then = Date.parse(at);
   return Number.isFinite(then) ? Math.max(0, (now.getTime() - then) / 1000) : Infinity;
@@ -171,21 +189,27 @@ function ageSeconds(at, now) {
 async function checkGitHub(runtime, { repo, previous, now }) {
   try {
     const json = await githubJson(runtime, releasesUrl(repo), `the releases of ${repo}`);
-    return { repo, checked_at: now.toISOString(), releases: releasesFromGitHub(json).map(keptRelease), error: null };
+    return {
+      repo, checked_at: now.toISOString(), releases: releasesFromGitHub(json).map(keptRelease), withdrawn: withdrawnFromGitHub(json), error: null,
+    };
   } catch (err) {
     runtime.log('WARN', `release check: ${err.message}`);
-    return { repo, checked_at: now.toISOString(), releases: storedReleases(previous?.releases), error: err.message };
+    return {
+      repo, checked_at: now.toISOString(), releases: storedReleases(previous?.releases), withdrawn: storedWithdrawn(previous?.withdrawn), error: err.message,
+    };
   }
 }
 
 /**
- * The release check to show: the stored one while it is fresh and for this repository, otherwise a
- * new one from GitHub, stored. Two dashboards checking at once keep whichever was stored first.
+ * The release check to show: the stored one while it is younger than the contracts'
+ * release_check_ttl_seconds and for this repository, otherwise a new one from GitHub, stored. `fresh`
+ * asks GitHub whatever the stored one's age, without the floor an admin's `refresh` keeps: an upgrade
+ * about to start. Two dashboards checking at once keep whichever was stored first.
  *
  * @param {object} runtime
- * @param {{repo: string, refresh: boolean, now: Date}} o
+ * @param {{repo: string, refresh: boolean, fresh?: boolean, now: Date}} o
  */
-async function currentCheck(runtime, { repo, refresh, now }) {
+async function currentCheck(runtime, { repo, refresh, fresh = false, now }) {
   const path = `${runtime.collections.config}/${RELEASE_CHECK_DOC}`;
   const stored = await guarded(runtime, 'release check: read', () => runtime.db.readDoc(path));
   const data = stored?.data?.repo === repo ? stored.data : null;
@@ -194,7 +218,7 @@ async function currentCheck(runtime, { repo, refresh, now }) {
     const wait = Math.ceil(REFRESH_FLOOR_SECONDS - age);
     throw new HttpError(429, `GitHub was asked ${Math.floor(age)} s ago; ask again in ${wait} s (it answers 60 requests an hour)`);
   }
-  if (!refresh && age < runtime.contracts.dashboard.release_check_ttl_seconds) return data;
+  if (!refresh && !fresh && age < runtime.contracts.dashboard.release_check_ttl_seconds) return data;
 
   const next = await checkGitHub(runtime, { repo, previous: data, now });
   try {
@@ -222,7 +246,8 @@ export async function readInstalled(runtime) {
 }
 
 /**
- * The release view from a check and what is installed. Pure.
+ * The release view from a check and what is installed. Pure. `withdrawn` is the installed release's
+ * withdrawal, `{ version, reason, url }`, when its maintainers withdrew it, else null.
  *
  * @param {object} o
  * @param {string|null} o.repo
@@ -248,6 +273,7 @@ export function releasesView({ repo, installed, check, now, admin = false, probl
     latest: releases[0] || null,
     newer: newerReleases(releases, installed.version),
     current: installed.version ? published(installed.version) : null,
+    withdrawn: installed.version ? storedWithdrawn(check?.withdrawn).find((w) => w.version === installed.version) || null : null,
     // The release an upgrade left half-done, when it is still published: installing it again finishes it.
     repair: installed.repair && published(installed.repair) ? installed.repair : null,
     ...(admin ? { refresh_at: refreshAt } : {}),
@@ -276,18 +302,20 @@ const NO_REPO = 'the dashboard does not know which repository it was installed f
 
 /**
  * What is installed and the release check (stored, or asked for now), unshaped: readReleases shows
- * it; upgrade.mjs checks a version against it.
+ * it; upgrade.mjs checks a version against it, with `fresh`: GitHub asked now, whatever the kept
+ * list's age.
  *
  * @param {object} runtime
- * @param {{refresh?: boolean, now?: Date}} [o]
- * @returns {Promise<{repo: string|null, installed: object, check: object|null, releases: object[], problem: string|null}>}
+ * @param {{refresh?: boolean, fresh?: boolean, now?: Date}} [o]
+ * @returns {Promise<{repo: string|null, installed: object, check: object|null, releases: object[],
+ *   withdrawn: {version: string, reason: string, url: string|null}[], problem: string|null}>}
  */
-export async function loadReleases(runtime, { refresh = false, now = new Date() } = {}) {
+export async function loadReleases(runtime, { refresh = false, fresh = false, now = new Date() } = {}) {
   const installed = await readInstalled(runtime);
   const { repo } = runtime.settings;
-  if (!repo) return { repo: null, installed, check: null, releases: [], problem: NO_REPO };
-  const check = await currentCheck(runtime, { repo, refresh, now });
-  return { repo, installed, check, releases: storedReleases(check?.releases), problem: null };
+  if (!repo) return { repo: null, installed, check: null, releases: [], withdrawn: [], problem: NO_REPO };
+  const check = await currentCheck(runtime, { repo, refresh, fresh, now });
+  return { repo, installed, check, releases: storedReleases(check?.releases), withdrawn: storedWithdrawn(check?.withdrawn), problem: null };
 }
 
 /**

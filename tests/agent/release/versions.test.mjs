@@ -1,10 +1,12 @@
 // Tests for agent/release/versions.mjs: parsing and ordering versions, the version a commit message
-// carries, GitHub's release list, which releases are newer than the installed one, and the URLs.
+// carries, GitHub's release list, withdrawn releases and their Withdrawn line, which releases are newer
+// than the installed one, and the URLs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseVersion, isVersion, versionFromText, compareVersions, isNewer, releasesFromGitHub, newerReleases,
-  releasesUrl, commitUrl, RELEASES_PAGE_SIZE,
+  releasesUrl, commitUrl, RELEASES_PAGE_SIZE, WITHDRAWN_PREFIX, WITHDRAWAL_REASON_MAX_CHARS, withdrawalReason, withdrawnNotes,
+  withdrawnFromGitHub,
 } from '../../../agent/release/versions.mjs';
 import { loadContracts } from '../../../config/contracts.mjs';
 
@@ -66,6 +68,41 @@ test("GitHub's release list: published version tags only, newest first", () => {
   assert.deepEqual(releases[1], { version: 'v2026.10.18.10.1', name: 'v2026.10.18.10.1', notes: '', url: null, published_at: '2026-10-19T10:00:00Z' });
   assert.equal(releases[0].notes, 'notes for v2026.10.19.1.1');
   assert.deepEqual(releasesFromGitHub({ message: 'API rate limit exceeded' }), [], 'an error answer is no releases');
+});
+
+test('withdrawn releases: the version tags GitHub lists as prereleases, with the reason their notes start with', () => {
+  const json = [
+    gh('v2026.10.19.1.1'),
+    gh('v2026.10.19.3.1', { prerelease: true, body: 'Withdrawn: it breaks upgrades (issue 41)\n\nChanges in v2026.10.19.3.1' }),
+    gh('v2026.10.19.4.1', { prerelease: true, body: 'Changes in v2026.10.19.4.1', html_url: null }),
+    gh('v2026.10.19.5.1', { prerelease: true, draft: true }),
+    gh('nightly', { prerelease: true }),
+    gh('v2026.10.19.3.1', { prerelease: true }),
+  ];
+  assert.deepEqual(withdrawnFromGitHub(json), [
+    { version: 'v2026.10.19.4.1', reason: '', url: null },
+    { version: 'v2026.10.19.3.1', reason: 'it breaks upgrades (issue 41)', url: 'https://github.com/your-org/paraclete/releases/tag/v2026.10.19.3.1' },
+  ], 'newest first; a draft was never published, and a prerelease marked by hand has no reason');
+  assert.deepEqual(releasesFromGitHub(json).map((r) => r.version), ['v2026.10.19.1.1'], 'and never among the releases offered');
+  assert.deepEqual(withdrawnFromGitHub({ message: 'Not Found' }), []);
+});
+
+test("a withdrawal's line: written first in the notes once, and read back", () => {
+  const notes = 'Changes in v2026.10.19.3.1 since v2026.10.19.1.1\n\n- v2026.10.19.3.1: one\n';
+  const withdrawn = withdrawnNotes(notes, 'it breaks upgrades');
+  assert.equal(withdrawn, `${WITHDRAWN_PREFIX} it breaks upgrades\n\n${notes}`);
+  assert.equal(withdrawnNotes(withdrawn, 'it breaks upgrades'), withdrawn, 'the same reason again changes nothing');
+  assert.equal(withdrawnNotes(withdrawn, 'another reason'), `Withdrawn: another reason\n\n${notes}`, 'a new reason replaces the line');
+  assert.equal(withdrawnNotes('Withdrawn: old\r\n\r\nrest\r\n', 'new'), 'Withdrawn: new\n\nrest\r\n');
+  assert.equal(withdrawnNotes('', 'why'), 'Withdrawn: why\n');
+  assert.equal(withdrawnNotes(null, 'why'), 'Withdrawn: why\n');
+  assert.equal(withdrawalReason(withdrawn), 'it breaks upgrades');
+  assert.equal(withdrawalReason('  Withdrawn:   spaced out  \nrest'), 'spaced out');
+  assert.equal(withdrawalReason('Withdrawn:'), '', 'withdrawn, no reason given');
+  assert.equal(withdrawalReason(`Withdrawn: ${'x'.repeat(WITHDRAWAL_REASON_MAX_CHARS + 50)}`).length, WITHDRAWAL_REASON_MAX_CHARS);
+  assert.equal(withdrawalReason(notes), null);
+  assert.equal(withdrawalReason('- Withdrawn: not the first line'), null);
+  assert.equal(withdrawalReason(undefined), null);
 });
 
 test('the releases newer than the installed one, newest first; none when the installed one is unknown', () => {

@@ -82,7 +82,7 @@ The build's root is the repo for this reason (`next.config.mjs`).
 | `config/settings` | writes `effort`, `effort_updated_at`, `effort_updated_by` and `drive_output_folder`, `drive_output_folder_updated_at`, `drive_output_folder_updated_by` (each setting field-masked to its own three); reads `claude_enabled` | `claude_enabled` and `claude_model` are changed only through the `set_model` command (Settings, Models; see below). `drive_output_folder` is a Drive folder id or null |
 | `agent/instance` | reads | Written by the VM's bootstrap |
 | `config/workspace_account` | reads | Written only by the control service: the recorded Workspace account and the last check (see [Workspace](#workspace-the-agents-own-google-account)) |
-| `config/release_check` | owns | GitHub's release list, `{ repo, checked_at, releases, error }`, replaced only if unchanged since it was read (see [Updates](#updates)) |
+| `config/release_check` | owns | GitHub's release list, `{ repo, checked_at, releases, withdrawn, error }`, replaced only if unchanged since it was read (see [Updates](#updates)) |
 | `config/upgrade` | owns | The upgrade in progress or the last one; every write is guarded by the record's update time, or creates it only if absent (see [Updates](#updates)) |
 
 **Threads.** Each user's thread id is `user-` and the first 32 hex digits of the SHA-256 of their
@@ -188,11 +188,16 @@ most once per `dashboard.release_check_ttl_seconds` (contracts) and kept in `con
 an admin's Check now asks again, at most every five minutes. A failed check keeps the releases it had
 and says why. What the instance runs is the VM's release as `agent/instance` reports it when that is a
 ready version, else this dashboard's `PARACLETE_RELEASE`; an instance installed from a branch or a
-commit is offered nothing.
+commit is offered nothing. A withdrawn release (a prerelease on GitHub, after `dev/release.mjs yank`)
+is never among the releases offered; the check keeps withdrawn ones apart, in `withdrawn`, so when the
+instance runs one the card says so and why, and offers the next newer release as usual.
 
 **Install** (`lib/server/upgrade.mjs`). An admin may install a published release newer than the
-installed one, or the same one again to finish an upgrade left half-done. The VM moves first, so a
-failed VM upgrade leaves the dashboard as it was:
+installed one, or the same one again to finish an upgrade left half-done. First the release list is
+asked for again, every time (one request per attempt), so a release withdrawn since the list was kept
+is refused, and so is any install while GitHub cannot be asked; an upgrade already running when its
+release is withdrawn finishes. The VM moves first, so a failed VM upgrade leaves the dashboard as it
+was:
 
 1. **vm.** The tag's commit is looked up on GitHub, `config/upgrade` is claimed (created, or replaced
    only if unchanged since it was read and not running, so two admins cannot start two), and the signed
@@ -226,7 +231,9 @@ moment: the card waits until `GET /api/me` names the new commit, then reloads th
   installs the newest published release, with `startUpgrade` requested by the dashboard's own account.
   So the VM's command is signed exactly as an admin's Install signs it.
 - **What it never does.** It never moves an instance installed from a branch or commit (its
-  `agent/instance` release is not a version), and never moves backward.
+  `agent/instance` release is not a version), never moves backward, and starts no new upgrade to a
+  withdrawn release: it is not among the published ones, and `startUpgrade` asks GitHub again before
+  every start. One already running when its release is withdrawn is followed to its end.
 - **A busy agent.** While a mission is active (a `work` envelope with a running status) it waits, for
   at most `idle_wait_max_hours` from the first run that found one, then installs anyway.
 - **Following the upgrade.** After starting one, a run moves it on with `readUpgrade` every

@@ -4,17 +4,20 @@
 // annotated tag (none with --dry-run), and a second run finishes a half-done one or says it is done.
 // The notes: a title line and one line per commit since the previous version tag (version order,
 // first parent, each merge replaced by the commits it brought in, oldest first). The check: a tag is
-// a release only when it is a version on origin/main. These run against a fake git and gh, and then against real git in scratch repositories
-// with a bare one as origin; GitHub is always faked. The workflow is read as text: it checks the tag
-// first, tests read-only, and publishes with the notes this script writes.
+// a release only when it is a version on origin/main. Withdrawing one (yank): a prerelease whose notes
+// start with the Withdrawn line, once, and nothing else changed. These run against a fake git and gh,
+// and then against real git in scratch repositories with a bare one as origin; GitHub is always faked.
+// The workflow is read as text: it checks the tag first, tests read-only, and publishes with the notes
+// this script writes; its publish step also runs in bash against a fake gh, so a rerun is seen to leave
+// a withdrawn release as it is.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  main, versionTags, previousVersion, releaseNotes, remoteTags, ciVerdict, MAIN, REMOTE,
+  main, versionTags, previousVersion, releaseNotes, remoteTags, ciVerdict, MAIN, REMOTE, WORKFLOW_RERUN_GUARD,
 } from '../../dev/release.mjs';
 import { createExec } from '../../dev/dev-env.mjs';
 import { readRepoFile } from '../repo/repo-files.mjs';
@@ -43,6 +46,14 @@ describe('the pure parts', () => {
     assert.equal(previousVersion(tags, 'v2026.10.20.1.1'), 'v2026.10.19.1.1', 'the version need not be tagged yet');
     assert.equal(previousVersion(tags, 'v2026.10.17.1.1'), null, 'the first release has none');
     assert.equal(previousVersion([], VERSION), null);
+  });
+
+  test('a withdrawn tag is never the previous version: the notes reach back past it', () => {
+    const tags = ['v2026.10.18.9.1', 'v2026.10.18.10.1', 'v2026.10.18.11.1'];
+    assert.equal(previousVersion(tags, 'v2026.10.18.12.1', new Set(['v2026.10.18.11.1'])), 'v2026.10.18.10.1');
+    assert.equal(previousVersion(tags, 'v2026.10.18.12.1', new Set(['v2026.10.18.11.1', 'v2026.10.18.10.1'])), 'v2026.10.18.9.1');
+    assert.equal(previousVersion(tags, 'v2026.10.18.12.1', new Set(tags)), null, 'all withdrawn: from the first commit');
+    assert.equal(previousVersion(tags, 'v2026.10.18.11.1', new Set(['v2026.10.18.11.1'])), 'v2026.10.18.10.1', 'its own withdrawal changes nothing');
   });
 
   test('the notes: a title line, a blank line, then each subject as written', () => {
@@ -90,12 +101,13 @@ describe('the pure parts', () => {
 function clone({
   branch = MAIN, status = '', head = HEAD, subject = SUBJECT, originMain = HEAD, originTags = { 'v2026.10.18.9.4': OLD },
   localTags = { 'v2026.10.18.9.4': OLD }, checkRuns = [passed('Tests', 'Dashboard build')], subjects = ['v2026.10.19.1.1: releases are cut from main'],
-  tag = { code: 0 }, push = { code: 0 }, gh,
+  tag = { code: 0 }, push = { code: 0 }, gh, releases = [],
 } = {}) {
   let page = 0;
   return fakeExec(async (program, args) => {
     if (program === 'gh') {
       if (gh) return gh(args);
+      if (/\/releases\?/.test(args.at(-1))) return { stdout: JSON.stringify(releases) };
       page += 1;
       return { stdout: JSON.stringify(checkRuns[page - 1] || { total_count: 0, check_runs: [] }) };
     }
@@ -212,6 +224,38 @@ describe('cutting a release', () => {
     assert.match(deps.stderr.text, /CI did not pass on aaaaaaaaaaaa: last \(failure\)/);
   });
 
+  test("a withdrawn tag is skipped for the notes, and the cut says so; GitHub's releases are read page by page", async () => {
+    const withdrawnTag = { tag_name: 'v2026.10.18.9.5', prerelease: true, draft: false, body: 'Withdrawn: it broke uploads' };
+    const older = Array.from({ length: 100 }, (_, i) => ({ tag_name: `v2026.09.01.${i + 1}.1`, prerelease: false }));
+    let listing = 0;
+    const exec = clone({
+      originTags: { 'v2026.10.18.9.4': OLD, 'v2026.10.18.9.5': OTHER },
+      localTags: { 'v2026.10.18.9.4': OLD, 'v2026.10.18.9.5': OTHER },
+      gh: (args) => {
+        if (!/\/releases\?/.test(args.at(-1))) return { stdout: JSON.stringify(passed('Tests')) };
+        listing += 1;
+        return { stdout: JSON.stringify(listing === 1 ? older : [withdrawnTag]) };
+      },
+    });
+    const deps = devDeps({ exec });
+    assert.equal(await main(['--dry-run'], deps), 0, deps.stderr.text);
+    assert.deepEqual(exec.callsTo('gh').filter((c) => /\/releases\?/.test(c.args.at(-1))).map((c) => c.args.at(-1)),
+      [`repos/${REPO}/releases?per_page=100&page=1`, `repos/${REPO}/releases?per_page=100&page=2`]);
+    assert.match(deps.stdout.text, /v2026\.10\.19\.1\.1 is newer than v2026\.10\.18\.9\.5, the newest version tag, and not taken\./,
+      'a withdrawn tag still counts for the order');
+    assert.match(deps.stdout.text, /Its notes start after v2026\.10\.18\.9\.4: v2026\.10\.18\.9\.5 was withdrawn\./);
+    assert.match(deps.stdout.text, /Changes in v2026\.10\.19\.1\.1 since v2026\.10\.18\.9\.4/);
+    assert.equal(exec.callsTo('git').find((c) => c.args.includes('--first-parent')).args[4], `${OLD}..${HEAD}`);
+  });
+
+  test('a cut whose release list GitHub refuses changes nothing', async () => {
+    const exec = clone({ gh: (args) => (/\/releases\?/.test(args.at(-1)) ? { code: 1, stderr: 'HTTP 502\n' } : { stdout: JSON.stringify(passed('Tests')) }) });
+    const deps = devDeps({ exec });
+    assert.equal(await main([], deps), 1);
+    assert.match(deps.stderr.text, /gh could not list the releases of your-org\/paraclete:\nHTTP 502/);
+    assert.deepEqual(changes(exec), []);
+  });
+
   test('a tag already on origin at the head is a release already cut: nothing to do', async () => {
     const exec = clone({ originTags: { 'v2026.10.18.9.4': OLD, [VERSION]: HEAD } });
     const deps = devDeps({ exec });
@@ -245,6 +289,138 @@ describe('cutting a release', () => {
     assert.equal(await main(['--help'], deps), 0);
     assert.match(deps.stdout.text, /notes <tag> {2}print a release's notes/);
     assert.deepEqual(deps.exec.calls, [], '--help runs nothing');
+  });
+});
+
+const NOTES = 'Changes in v2026.10.19.1.1 since v2026.10.18.9.4\n\n- v2026.10.19.1.1: releases are cut from main\n';
+const PAGE = `https://github.com/${REPO}/releases/tag/${VERSION}`;
+const REASON = 'it breaks upgrades from v2026.10.18.9.4 (issue 41)';
+
+/**
+ * GitHub's release of VERSION as `gh release view` and `gh release edit` see it; an edit changes it,
+ * reading the notes from the file it names while that file exists. `release` null: none is published.
+ */
+function publishedRelease({
+  release = { tagName: VERSION, isDraft: false, isPrerelease: false, body: NOTES, url: PAGE }, edit,
+  workflow = readRepoFile('.github/workflows/release.yml'),
+} = {}) {
+  const state = { release: release && { ...release }, edits: [] };
+  const exec = fakeExec(async (program, args) => {
+    if (program === 'git' && args.join(' ') === `show refs/tags/${VERSION}:.github/workflows/release.yml`) {
+      return workflow === null ? { code: 128, stderr: `fatal: invalid object name 'refs/tags/${VERSION}'.\n` } : { stdout: workflow };
+    }
+    if (program !== 'gh') return undefined;
+    if (args.slice(0, 2).join(' ') === 'release view') {
+      return state.release ? { stdout: JSON.stringify(state.release) } : { code: 1, stderr: 'release not found\n' };
+    }
+    if (args.slice(0, 2).join(' ') === 'release edit') {
+      if (edit) return edit(args);
+      const file = args[args.indexOf('--notes-file') + 1];
+      const notes = readFileSync(file, 'utf8');
+      state.edits.push({ args, file, notes });
+      state.release = { ...state.release, isPrerelease: state.release.isPrerelease || args.includes('--prerelease'), body: notes };
+      return { stdout: `${PAGE}\n` };
+    }
+    return { code: 1, stderr: `unexpected: gh ${args.join(' ')}\n` };
+  });
+  return { exec, state };
+}
+
+describe('withdrawing a release', () => {
+  test('yank marks the release a prerelease with the Withdrawn line first in its notes; a second run changes nothing', async () => {
+    const { exec, state } = publishedRelease();
+    let deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0, deps.stderr.text);
+    assert.deepEqual(exec.callsTo('gh').map((c) => c.args.slice(0, -1)), [
+      ['release', 'view', VERSION, '--repo', REPO, '--json'],
+      ['release', 'edit', VERSION, '--repo', REPO, '--prerelease', '--notes-file'],
+    ]);
+    assert.equal(exec.callsTo('gh')[0].args.at(-1), 'tagName,isDraft,isPrerelease,body,url');
+    const [edit] = state.edits;
+    assert.equal(edit.notes, `Withdrawn: ${REASON}\n\n${NOTES}`, 'the notes as they were, under the Withdrawn line');
+    assert.equal(existsSync(edit.file), false, 'the notes file is removed');
+    assert.equal(state.release.isPrerelease, true);
+    assert.match(deps.stdout.text, /Withdrew v2026\.10\.19\.1\.1: GitHub lists it as a prerelease, and its notes start with "Withdrawn: it breaks upgrades/);
+    assert.match(deps.stdout.text, /The tag v2026\.10\.19\.1\.1 stays, so that release must be newer than it\./);
+    assert.deepEqual(changes(exec), [], 'no tag is made, moved or deleted');
+    for (const call of exec.calls) assert.ok(call.args.every((a) => typeof a === 'string') && call.opts.shell === undefined, 'no shell');
+
+    deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0, deps.stderr.text);
+    assert.equal(state.edits.length, 1, 'withdrawn already: nothing is edited');
+    assert.match(deps.stdout.text, /v2026\.10\.19\.1\.1 is withdrawn already \(it breaks upgrades .*\); nothing changed\./);
+
+    deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', '  another\n  reason  '], deps), 0, deps.stderr.text);
+    assert.equal(state.edits.length, 2);
+    assert.equal(state.edits[1].notes, `Withdrawn: another reason\n\n${NOTES}`, 'a new reason replaces the line, on one line, never a second line');
+  });
+
+  test("yank says what a rerun of the tag's own release workflow would do: keep it withdrawn, or publish it again", async () => {
+    let deps = devDeps({ exec: publishedRelease().exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0, deps.stderr.text);
+    assert.match(deps.stdout.text, /v2026\.10\.19\.1\.1's own release workflow leaves a withdrawn release as it is, so a rerun keeps it withdrawn\./);
+    assert.match(deps.stdout.text, /An upgrade to it already running finishes, and a dashboard on an older release may still install it within the hour/);
+    assert.equal(deps.stderr.text, '');
+
+    const old = readRepoFile('.github/workflows/release.yml').split(WORKFLOW_RERUN_GUARD).join('> /dev/null 2>&1');
+    deps = devDeps({ exec: publishedRelease({ workflow: old }).exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0, 'it withdraws all the same');
+    assert.match(deps.stderr.text, /warning: v2026\.10\.19\.1\.1 was tagged before the release workflow had its guard for withdrawn releases\. A rerun of its release workflow runs that old workflow, which publishes it again .* Never rerun the release workflow of this tag; if one ran, yank it again\./);
+
+    const { exec, state } = publishedRelease({ workflow: null });
+    deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0);
+    assert.match(deps.stderr.text, /warning: this clone cannot show v2026\.10\.19\.1\.1's own \.github\/workflows\/release\.yml \(git fetch --tags origin gets the tag\)/);
+    deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0);
+    assert.equal(state.edits.length, 1);
+    assert.match(deps.stderr.text, /warning: this clone cannot show/, 'withdrawn already: the warning still stands');
+  });
+
+  test('the guard yank looks for is in the release workflow', () => {
+    assert.ok(readRepoFile('.github/workflows/release.yml').includes(WORKFLOW_RERUN_GUARD));
+  });
+
+  test('a release marked a prerelease by hand, without the line, gets it', async () => {
+    const { exec, state } = publishedRelease({ release: { tagName: VERSION, isDraft: false, isPrerelease: true, body: NOTES, url: PAGE } });
+    const deps = devDeps({ exec });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 0, deps.stderr.text);
+    assert.equal(state.edits.length, 1);
+    assert.ok(state.edits[0].notes.startsWith(`Withdrawn: ${REASON}\n\n`));
+  });
+
+  const refusals = [
+    ['no published release', { release: null }, /your-org\/paraclete has no published release v2026\.10\.19\.1\.1; there is nothing to withdraw/],
+    ['a draft', { release: { tagName: VERSION, isDraft: true, isPrerelease: false, body: '', url: PAGE } }, /is a draft on your-org\/paraclete: it was never published/],
+    ['an answer for another tag', { release: { tagName: 'v2026.10.19.2.1', isDraft: false, isPrerelease: false, body: '', url: PAGE } }, /in a form this script cannot read/],
+    ['an edit GitHub refuses', { edit: () => ({ code: 1, stderr: 'HTTP 403: Resource not accessible\n' }) },
+      /gh could not withdraw the release v2026\.10\.19\.1\.1 of your-org\/paraclete; it is as it was:\nHTTP 403/],
+  ];
+  for (const [what, over, message] of refusals) {
+    test(`yank refuses ${what}, exit 1`, async () => {
+      const { exec } = publishedRelease(over);
+      const deps = devDeps({ exec });
+      assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 1);
+      assert.match(deps.stderr.text, message);
+    });
+  }
+
+  test('yank without gh says how to get it', async () => {
+    const deps = devDeps({ exec: fakeExec((program) => (program === 'gh' ? { code: 127, missing: true } : undefined)) });
+    assert.equal(await main(['yank', VERSION, '--reason', REASON], deps), 1);
+    assert.match(deps.stderr.text, /gh was not found: install the GitHub CLI/);
+  });
+
+  test('usage mistakes exit 2 before GitHub is asked', async () => {
+    for (const argv of [['yank', VERSION], ['yank', VERSION, '--reason'], ['yank', VERSION, '--reason', ' \n '], ['yank', 'nightly', '--reason', REASON],
+      ['yank', VERSION, '--reason', 'x'.repeat(201)], ['notes', VERSION, '--reason', REASON], ['--reason', REASON], ['yank', VERSION, '--reason', REASON, '--dry-run']]) {
+      const { exec } = publishedRelease();
+      const deps = devDeps({ exec });
+      assert.equal(await main(argv, deps), 2, argv.join(' '));
+      assert.match(deps.stderr.text, /Usage: node dev\/release\.mjs|not a version|keep it to 200/);
+      assert.deepEqual(exec.callsTo('gh'), [], argv.join(' '));
+    }
   });
 });
 
@@ -286,13 +462,16 @@ describe('notes and check, against real git', () => {
     git('fetch', '--quiet', REMOTE);
 
     const real = createExec({ env });
+    /** GitHub's releases, as its API lists them; a test marks one withdrawn by making it a prerelease. */
+    const github = { releases: [] };
     /** The command's runner: real git in the clone (origin read as GitHub's address), gh faked. */
     const exec = fakeExec(async (program, args, opts) => {
+      if (program === 'gh' && /\/releases\?/.test(args.at(-1))) return { stdout: JSON.stringify(github.releases) };
       if (program === 'gh') return { stdout: JSON.stringify(passed('Tests', 'Dashboard build')) };
       if (args.join(' ') === `remote get-url ${REMOTE}`) return { stdout: `https://github.com/${REPO}.git\n` };
       return real(program, args, { ...opts, cwd: dir });
     });
-    return { dir, origin, git, c, exec, env };
+    return { dir, origin, git, c, exec, env, github };
   }
 
   test('notes: one line per commit since the previous version tag, a merge as the commits it brought in, oldest first', async (t) => {
@@ -311,6 +490,25 @@ describe('notes and check, against real git', () => {
     ].join('\n'), 'the branch commit stands where its merge is, the merge itself is left out; the newer 10.1 is not the previous tag');
     assert.equal(await notes('v2026.10.17.10.1'), 'Changes in v2026.10.17.10.1 since v2026.10.17.9.1\n\n- v2026.10.17.10.1: ten comes after nine\n');
     assert.equal(await notes('v2026.10.17.1.1'), 'Changes in v2026.10.17.1.1, the first release\n\n- v2026.10.17.1.1: the first commit\n');
+  });
+
+  test('notes: a withdrawn previous release is skipped, so the notes hold the changes an instance on the one before it receives', async (t) => {
+    const { exec, github } = history(t);
+    github.releases = [
+      { tag_name: 'v2026.10.17.10.1', prerelease: false },
+      { tag_name: 'v2026.10.17.9.1', prerelease: true, body: 'Withdrawn: it broke uploads' },
+      { tag_name: 'v2026.10.17.1.1', prerelease: false },
+    ];
+    const deps = devDeps({ exec });
+    assert.equal(await main(['notes', 'v2026.10.17.10.1'], deps), 0, deps.stderr.text);
+    assert.equal(deps.stdout.text, [
+      'Changes in v2026.10.17.10.1 since v2026.10.17.1.1', '',
+      '- v2026.10.17.2.1: the second, *as written*',
+      '- v2026.10.17.3.1: a commit on a branch',
+      '- v2026.10.17.9.1: after the merge',
+      '- v2026.10.17.10.1: ten comes after nine', '',
+    ].join('\n'));
+    assert.deepEqual(exec.callsTo('gh').map((c) => c.args), [['api', '-H', 'Accept: application/vnd.github+json', `repos/${REPO}/releases?per_page=100&page=1`]]);
   });
 
   test('notes: pull requests merged with merge commits show each commit once, in the order main took them', async (t) => {
@@ -436,17 +634,71 @@ describe('the release workflow', () => {
     for (const command of ['npm run setup', 'npm test', 'npm run build:dashboard']) assert.ok(ci.includes(`run: ${command}`), `CI runs ${command} too`);
   });
 
-  test('the publish job publishes the notes this script writes, and a rerun updates them', () => {
+  test('the publish job publishes the notes this script writes, and a rerun updates them unless the release was withdrawn', () => {
     assert.match(publishJob, /run: node dev\/release\.mjs notes "\$TAG" > "\$RUNNER_TEMP\/release-notes\.md"/);
     assert.match(publishJob, /GH_TOKEN: \$\{\{ github\.token \}\}/);
     assert.match(publishJob, /gh release create "\$TAG" --repo "\$GITHUB_REPOSITORY" --title "\$TAG" \\\n\s+--notes-file "\$RUNNER_TEMP\/release-notes\.md" --verify-tag/);
     assert.match(publishJob, /gh release edit "\$TAG" .*\\\n\s+--notes-file "\$RUNNER_TEMP\/release-notes\.md" --draft=false --prerelease=false/);
-    assert.doesNotMatch(publishJob, /--draft(?!=false)|--prerelease(?!=false)/, 'never a draft or a prerelease');
+    assert.match(publishJob, /gh release view "\$TAG" --repo "\$GITHUB_REPOSITORY" --json isPrerelease --jq \.isPrerelease/);
+    assert.doesNotMatch(publishJob, /--draft(?!=false)|--prerelease(?!=false)/, 'it never makes a draft or a prerelease itself');
+  });
+
+  /** The publish step's script, as the runner's bash gets it. */
+  const publishScript = () => {
+    const lines = publishJob.split('\n');
+    const at = lines.findIndex((line) => /^ {6}- name: Publish/.test(line));
+    const run = lines.findIndex((line, i) => i > at && /^ {8}run: \|$/.test(line));
+    const body = [];
+    for (const line of lines.slice(run + 1)) {
+      if (line.trim() && !line.startsWith(' '.repeat(10))) break;
+      body.push(line.slice(10));
+    }
+    return body.join('\n');
+  };
+  const BASH = spawnSync('bash', ['--version'], { encoding: 'utf8' }).status === 0;
+
+  test('the publish step: creates a new release, updates a published one, and leaves a withdrawn one exactly as it is', { skip: !BASH && 'no bash on this machine' }, () => {
+    // gh as a shell function: it records each call, and answers `release view` from the fake's state.
+    const fakeGh = [
+      'gh() {',
+      '  printf "%s\\n" "gh $*" >> "$CALLS"',
+      '  if [ "$1 $2" = "release view" ]; then',
+      '    [ "$STATE" = none ] && return 1',
+      '    [ "$STATE" = withdrawn ] && echo true || echo false',
+      '  fi',
+      '  return 0',
+      '}',
+    ].join('\n');
+    const runAs = (state) => {
+      const dir = mkdtempSync(join(tmpdir(), 'paraclete-publish-'));
+      try {
+        const calls = join(dir, 'calls.txt');
+        writeFileSync(calls, '');
+        const r = spawnSync('bash', ['-e', '-c', `${fakeGh}\n${publishScript()}`], {
+          encoding: 'utf8',
+          env: { PATH: process.env.PATH, TAG: VERSION, GITHUB_REPOSITORY: REPO, RUNNER_TEMP: '/runner/temp', CALLS: calls, STATE: state },
+        });
+        assert.equal(r.status, 0, r.stderr);
+        return { calls: readFileSync(calls, 'utf8').trim().split('\n').map((line) => line.split(' ').slice(0, 3).join(' ')), out: r.stdout };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    assert.deepEqual(runAs('none').calls, ['gh release view', 'gh release create']);
+    assert.deepEqual(runAs('published').calls, ['gh release view', 'gh release edit']);
+    const withdrawn = runAs('withdrawn');
+    assert.deepEqual(withdrawn.calls, ['gh release view'], 'a rerun never clears the prerelease flag or the Withdrawn line');
+    assert.match(withdrawn.out, /v2026\.10\.19\.1\.1 was withdrawn \(a prerelease\): it is left exactly as it is\./);
   });
 
   test('the tag reaches the scripts through the environment, never spliced into a command', () => {
     const expressions = text.split('\n').filter((line) => line.includes('${{')).map((line) => line.trim());
-    assert.deepEqual(expressions, ['TAG: ${{ github.ref_name }}', 'TAG: ${{ github.ref_name }}', 'GH_TOKEN: ${{ github.token }}'],
+    assert.deepEqual(expressions, ['TAG: ${{ github.ref_name }}', 'TAG: ${{ github.ref_name }}', 'GH_TOKEN: ${{ github.token }}', 'GH_TOKEN: ${{ github.token }}'],
       'expressions appear only as environment values');
+  });
+
+  test('the notes step asks GitHub which releases were withdrawn, with the publish job\'s token; the tests never get one', () => {
+    assert.match(publishJob, /- name: Write the release notes[^\n]*\n {8}env:\n {10}GH_TOKEN: \$\{\{ github\.token \}\}\n {8}run: node dev\/release\.mjs notes "\$TAG"/);
+    assert.doesNotMatch(testJob, /GH_TOKEN/);
   });
 });

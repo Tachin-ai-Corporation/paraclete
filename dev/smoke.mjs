@@ -6,8 +6,9 @@
 // finished and its result was delivered, and the answer says what a correct one must. A question back,
 // an approval gate or a failure is a FAIL. It exists for the build plan's role check (an install of
 // generic, a Workspace role and one other role each passing a smoke mission), after a move between
-// roles with install/install.sh --role (install/README.md). Never use it on an instance someone relies
-// on (DEVELOPING.md section 7).
+// roles with install/install.sh --role (install/README.md), and as the last check before a release
+// (dev/release-check.mjs, which reads the verdict back with readSmokeVerdict). Never use it on an
+// instance someone relies on (DEVELOPING.md section 7).
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -213,6 +214,28 @@ async function agentMessages(db, thread) {
   return rows.filter((m) => m.sender === AGENT_SENDER).sort((a, b) => (Date.parse(a.timestamp) || 0) - (Date.parse(b.timestamp) || 0));
 }
 
+/** The line after the verdict that names the mission, followed by its id. */
+const MISSION_LINE = 'The mission: node dev/query.mjs work --doc ';
+
+/**
+ * A run's verdict read back from what it printed: dev/release-check.mjs runs this command as a child
+ * process and records it. Only the last verdict line counts, and the mission line after it, so an
+ * agent's reply that looks like one (it is printed before) changes nothing. Pure.
+ *
+ * @param {string} output this command's stdout
+ * @returns {{pass: boolean, role: string, about: string, reason: string, mission: string|null}|null}
+ *   null when the output holds no verdict
+ */
+export function readSmokeVerdict(output) {
+  const text = String(output ?? '').replace(/\r/g, '');
+  const verdicts = [...text.matchAll(/^(PASS|FAIL): role ([a-z][a-z0-9-]*), (.*?): (.*)\.$/gm)];
+  const last = verdicts.at(-1);
+  if (!last) return null;
+  const after = text.slice(last.index + last[0].length);
+  const mission = after.split('\n').find((line) => line.startsWith(MISSION_LINE))?.slice(MISSION_LINE.length).trim() || null;
+  return { pass: last[1] === 'PASS', role: last[2], about: last[3], reason: last[4], mission };
+}
+
 /** A thread of its own for each run: smoke-<role>-<yyyymmddhhmmss>, from your local time. */
 export function smokeThread(role, date) {
   const pad = (n) => String(n).padStart(2, '0');
@@ -337,7 +360,7 @@ export async function main(argv, deps = {}) {
       result = verdict({ work: state.work, responded: state.responded, replies: state.replies, expect: request.expect });
     }
     ctx.out(`${result.pass ? 'PASS' : 'FAIL'}: role ${role}, ${request.about}: ${result.reason}.`);
-    if (state.workId) ctx.out(`The mission: node dev/query.mjs work --doc ${state.workId}`);
+    if (state.workId) ctx.out(`${MISSION_LINE}${state.workId}`);
     return result.pass ? 0 : 1;
   });
 }

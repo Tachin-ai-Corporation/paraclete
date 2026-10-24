@@ -1,9 +1,16 @@
 # Publishes a release. A maintainer cuts one with `node dev/release.mjs`, which pushes a version tag
 # (DEVELOPING.md section 10). This workflow refuses a tag that is not a version or whose commit is not
 # on main, runs the full test suite and the dashboard build at the tag, then publishes the GitHub
-# release with its notes: one line per commit since the previous version tag. Instances learn of
-# releases from GitHub's release list (agent/release/versions.mjs), so a tag that fails here is never
-# offered to them as an update.
+# release with its notes: one line per commit since the previous version tag that was not withdrawn
+# (the notes ask GitHub which were, with the publish job's token). Instances learn of releases from
+# GitHub's release list (agent/release/versions.mjs), so a tag that fails here is never offered to
+# them as an update.
+#
+# A rerun updates the notes of a release an earlier run published, except a withdrawn one
+# (`node dev/release.mjs yank`, which marks it a prerelease): that stays a prerelease with its
+# `Withdrawn:` line, exactly as it is, so a rerun never offers it to instances again. A rerun runs the
+# tag's own copy of this file: a tag older than this guard publishes a withdrawn release again, so its
+# workflow is never rerun (DEVELOPING.md section 10; `yank` warns of it).
 #
 # Two jobs, so the npm packages the tests install never run with a token that can write: the tests run
 # read-only, and only the publish job, which installs nothing, may write releases.
@@ -52,15 +59,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - name: Write the release notes
+      - name: Write the release notes, since the previous release that was not withdrawn
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node dev/release.mjs notes "$TAG" > "$RUNNER_TEMP/release-notes.md"
-      - name: Publish, or update the notes of a release an earlier run published
+      - name: Publish, or update the notes of a release an earlier run published unless it was withdrawn
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" \
-              --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false --prerelease=false
+          if withdrawn=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease 2> /dev/null); then
+            if [ "$withdrawn" = "true" ]; then
+              echo "$TAG was withdrawn (a prerelease): it is left exactly as it is."
+            else
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+                --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false --prerelease=false
+            fi
           else
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" \
               --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag

@@ -59,7 +59,8 @@ export function UpdateCard({ me }) {
       await upgradePoll.refresh();
     } catch (err) {
       setNotice({ kind: 'error', text: err.message });
-      await upgradePoll.refresh();
+      // The refusal may come from GitHub's list asked for again (a release withdrawn since): show it.
+      await Promise.all([upgradePoll.refresh(), releases.refresh()]);
     } finally {
       setBusy(false);
     }

@@ -226,6 +226,11 @@ sees the three steps as they run:
   `install/install.sh --project your-gcp-project --ref <older version>` in Cloud Shell, then the command
   it prints to move the VM.
 - An instance installed from a branch instead of a release is offered no updates.
+- **A release its maintainers withdrew** stops being offered at the dashboard's next look at GitHub,
+  and no new install to it starts, by hand or automatically: every install asks GitHub first. An
+  install to it already running finishes, and a dashboard on an older release may still install it
+  within the hour it keeps GitHub's list. If your instance runs one, the version card says so and why;
+  the next newer release installs over it as usual.
 
 ## Turn on Claude
 

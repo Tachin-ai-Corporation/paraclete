@@ -2,12 +2,14 @@
 // instance runs (the VM's ready release, else the dashboard's own); GitHub's list, kept in
 // config/release_check for the contracts' time and asked for again after it; an admin's early
 // refresh, at most every five minutes; a failed check keeping the releases it had; a check stored by
-// another dashboard first winning; and which versions may be installed.
+// another dashboard first winning; withdrawn releases (prereleases) never offered, kept apart, and
+// named when the instance runs one; the fresh look an upgrade takes; and which versions may be
+// installed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startDashboard } from '../../harness.mjs';
 import {
-  MAX_NOTES_CHARS, RELEASE_CHECK_DOC, REFRESH_FLOOR_SECONDS, installRefusal, installedVersion, readReleases,
+  MAX_NOTES_CHARS, RELEASE_CHECK_DOC, REFRESH_FLOOR_SECONDS, installRefusal, installedVersion, loadReleases, readReleases,
 } from '../../../../dashboard/lib/server/releases.mjs';
 
 const admin = { email: 'admin@example.com', role: 'admin' };
@@ -94,8 +96,11 @@ test("GitHub's list is read once, stored, and shown newest first: drafts and pre
   assert.equal(view.refresh_at, later(REFRESH_FLOOR_SECONDS).toISOString(), 'admins learn when they may ask again');
 
   const stored = await dash.doc(`config/${RELEASE_CHECK_DOC}`);
-  assert.deepEqual(Object.keys(stored).sort(), ['checked_at', 'error', 'releases', 'repo']);
+  assert.deepEqual(Object.keys(stored).sort(), ['checked_at', 'error', 'releases', 'repo', 'withdrawn']);
   assert.deepEqual(stored.releases.map((r) => r.version), [V2, V1]);
+  assert.deepEqual(stored.withdrawn, [{ version: 'v2027.01.31.1.1', reason: '', url: 'https://github.com/your-org/paraclete/releases/tag/v2027.01.31.1.1' }],
+    'the prerelease is kept apart, as withdrawn');
+  assert.equal(view.withdrawn, null, 'what runs was not withdrawn');
 
   const forMember = await readReleases(dash.runtime, { user: member, now: later(60) });
   assert.equal(dash.github.calls.length, 1, 'within the time the contracts give, nobody asks GitHub again');
@@ -177,6 +182,61 @@ test('an instance installed from a branch is offered nothing', async (t) => {
   assert.equal(view.installed.version, null);
   assert.deepEqual(view.newer, []);
   assert.equal(view.latest.version, V2);
+});
+
+const WITHDRAWN = (tag) => release(tag, { prerelease: true, body: `Withdrawn: it breaks uploads (issue 41)\n\n- what ${tag} changed` });
+
+test('a withdrawn release is never offered, and once a check sees it withdrawn the card stops offering it', async (t) => {
+  const dash = await dashboard(t, { github: fakeGitHub({ releases: [release(V3), release(V2), release(V1)] }) });
+  const ttl = dash.runtime.contracts.dashboard.release_check_ttl_seconds;
+  assert.deepEqual((await readReleases(dash.runtime, { user: admin, now: NOW })).newer.map((r) => r.version), [V3, V2]);
+  dash.github.releases = [WITHDRAWN(V3), release(V2), release(V1)];
+  const view = await readReleases(dash.runtime, { user: admin, now: later(ttl + 1) });
+  assert.deepEqual(view.newer.map((r) => r.version), [V2], 'withdrawn: not offered');
+  assert.equal(view.latest.version, V2);
+  assert.equal(view.withdrawn, null, 'the instance runs V1, which stands');
+});
+
+test('an instance on a withdrawn release is told so and why, and moves on to the next newer release', async (t) => {
+  const github = fakeGitHub({ releases: [WITHDRAWN(V3), release(V2), release(V1)] });
+  const dash = await dashboard(t, { github, env: { ...ENV, PARACLETE_RELEASE: V3, PARACLETE_COMMIT: B }, agent: { status: 'ready', release: V3, commit: B } });
+  const view = await readReleases(dash.runtime, { user: admin, now: NOW });
+  assert.equal(view.installed.version, V3);
+  assert.deepEqual(view.withdrawn, { version: V3, reason: 'it breaks uploads (issue 41)', url: `https://github.com/your-org/paraclete/releases/tag/${V3}` });
+  assert.deepEqual(view.newer, [], 'nothing older is offered: an instance moves only forward');
+  assert.equal(view.current, null);
+
+  const V4 = 'v2027.01.25.1.1';
+  github.releases = [release(V4), WITHDRAWN(V3), release(V2), release(V1)];
+  const fixed = await readReleases(dash.runtime, { user: admin, refresh: true, now: later(REFRESH_FLOOR_SECONDS) });
+  assert.deepEqual(fixed.newer.map((r) => r.version), [V4], 'the fix, once published, is offered as usual');
+  assert.equal(fixed.withdrawn.version, V3);
+});
+
+test('the withdrawn releases are kept through a failed check, and a list stored before them reads as none', async (t) => {
+  const dash = await dashboard(t, { github: fakeGitHub({ releases: [WITHDRAWN(V3), release(V2), release(V1)] }), agent: { status: 'ready', release: V3, commit: B } });
+  const ttl = dash.runtime.contracts.dashboard.release_check_ttl_seconds;
+  await readReleases(dash.runtime, { user: member, now: NOW });
+  dash.github.status = 500;
+  const failed = await readReleases(dash.runtime, { user: member, now: later(ttl + 1) });
+  assert.match(failed.error, /GitHub answered 500/);
+  assert.equal(failed.withdrawn.version, V3);
+
+  await dash.seed({ [`config/${RELEASE_CHECK_DOC}`]: { repo: 'your-org/paraclete', checked_at: later(ttl + 2).toISOString(), releases: [{ version: V2, name: V2, notes: '' }], error: null } });
+  const old = await readReleases(dash.runtime, { user: member, now: later(ttl + 3) });
+  assert.equal(old.withdrawn, null);
+});
+
+test('fresh asks GitHub every time, whatever the age of the kept list, and without the five-minute floor of an admin refresh', async (t) => {
+  const dash = await dashboard(t);
+  await loadReleases(dash.runtime, { now: NOW });
+  await loadReleases(dash.runtime, { now: later(1) });
+  assert.equal(dash.github.calls.length, 1, 'without fresh, the kept list is used');
+  const fresh = await loadReleases(dash.runtime, { now: later(1), fresh: true });
+  await loadReleases(dash.runtime, { now: later(2), fresh: true });
+  assert.equal(dash.github.calls.length, 3, 'one request per fresh look, a second apart');
+  assert.deepEqual(fresh.withdrawn.map((w) => w.version), ['v2027.01.31.1.1']);
+  assert.equal((await dash.doc(`config/${RELEASE_CHECK_DOC}`)).checked_at, later(2).toISOString(), 'and the card sees what it found');
 });
 
 test('the release an upgrade left half-done is offered again while it is published', async (t) => {
