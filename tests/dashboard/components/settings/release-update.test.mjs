@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  NOTE_LINES_SHOWN, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure, upgradeSteps,
+  NOTE_LINES_SHOWN, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure, upgradeSteps, autoUpdateRow,
 } from '../../../../dashboard/components/settings/release-update.js';
 
 const V1 = 'v2027.01.10.1.1';
@@ -127,4 +127,16 @@ test('the page waits for the new dashboard once an upgrade it watched is done, o
   assert.equal(isNewDashboard({ dashboard: { commit: B } }, done), true);
   assert.equal(isNewDashboard({ dashboard: { commit: A } }, done), false, 'the old revision may answer for a moment');
   assert.equal(isNewDashboard(null, done), false);
+});
+
+test('the automatic-update row: on or off, and what the last run did, before or after its first run', () => {
+  assert.equal(autoUpdateRow(null), null);
+  const on = autoUpdateRow({ setting: { enabled: true }, last_run: null });
+  assert.deepEqual([on.enabled, on.lastRun], [true, null]);
+  assert.match(on.state, /^On: new releases install by themselves, while the agent is idle/);
+  const off = autoUpdateRow({ setting: { enabled: false }, last_run: { checked_at: '2027-01-21T09:00:00Z', action: 'off', reason: 'automatic updates are off' } });
+  assert.match(off.state, /^Off: a release installs only when an admin presses Install/);
+  assert.deepEqual(off.lastRun, { at: '2027-01-21T09:00:00Z', outcome: 'off', reason: 'automatic updates are off' });
+  assert.equal(autoUpdateRow({ setting: { enabled: true }, last_run: { action: 'wait', reason: 'x' } }).lastRun.outcome, 'waiting for the agent to be idle');
+  assert.equal(autoUpdateRow({ setting: { enabled: true }, last_run: { action: 'new-thing' } }).lastRun.outcome, 'new-thing');
 });

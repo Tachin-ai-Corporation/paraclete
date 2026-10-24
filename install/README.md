@@ -38,6 +38,7 @@ install/install.sh --project your-gcp-project --role generic --name Paraclete --
 | `--repo <owner>/<name>` | This clone's `origin` | A fork must be public |
 | `--yes` | | Asks nothing: takes the defaults and skips the confirmation |
 | `--dry-run` | | The read-only checks still run |
+| `--no-auto-update` | Automatic updates on | Stores `auto_update: false` in Firestore `config/settings` (step 6), so new releases install only from the System tab. Without it nothing is stored, and a re-run never undoes an admin's choice |
 
 The steps, each printed as `[n/9]`:
 
@@ -47,7 +48,7 @@ The steps, each printed as `[n/9]`:
    and no `gcp_roles` entry that acts as any service account or writes to any image repository); the
    ref resolves and has `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
-   secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it); plus chat, gmail, calendar-json, docs, sheets, slides, people and
+   secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it), cloudscheduler (automatic updates); plus chat, gmail, calendar-json, docs, sheets, slides, people and
    admin for a Workspace role; plus the `apis` of `generic`'s and the role's `role.json` (short names,
    `bigquery` for `bigquery.googleapis.com`). Only the ones that are off, each once. None is ever turned
    off, also on a move to another role. Then the **model check**: the contracts'
@@ -114,6 +115,16 @@ The steps, each printed as `[n/9]`:
      `gcloud storage buckets update --cors-file` only when it differs, replacing the whole setting. Set
      whenever a dashboard exists or this run deploys one. `uninstall.sh` leaves it: it goes with the
      bucket.
+   - automatic updates: the Cloud Run job `paraclete-auto-update` (`contracts.auto_update.job_name`) runs
+     `node dashboard/jobs/auto-update.mjs` in the same image, as `paraclete-dashboard@`, with the service's
+     environment: one task, no retries, `auto_update.job_timeout_seconds`. Deployed unless it already runs
+     that image with that environment, account, command and timeout; the dashboard's own upgrade moves
+     its image afterwards. Then the Cloud Scheduler job of the same name POSTs to Cloud Run's Admin API
+     (`.../jobs/paraclete-auto-update:run`) on `auto_update.schedule`, in UTC, with an OAuth token for
+     `paraclete-dashboard@` (Cloud Run Admin lets it run the job). Created, or updated when it differs; a
+     schedule paused by hand stays paused, because the admin setting is what turns automatic updates
+     off. With `--no-auto-update`, `config/settings` gets `auto_update: false` (field-masked, through the
+     REST API as you).
 7. **network**: the `default` network, or a `paraclete` network when there is none; the firewall rule
    `paraclete-allow-iap-ssh` (tcp:22 from IAP's range to the tag `paraclete`, priority 1000) and
    `paraclete-deny-ingress` (deny everything else inbound to that tag, priority 65000, which outranks a
@@ -177,8 +188,9 @@ install/uninstall.sh --dry-run
 install/uninstall.sh --purge           # also the Firestore database, the bucket and agent-images: asks you to type the project id
 ```
 
-It removes the VM, the firewall rules (and the network, when the installer made it), the dashboard's
-Cloud Run service and its image repository (which holds only the dashboard's images; the grants on the
+It removes the VM, the firewall rules (and the network, when the installer made it), the automatic-update
+schedule and job (the schedule first, so it cannot start the job), the dashboard's Cloud Run service and its
+image repository (which holds only the dashboard's images; the grants on the
 two go with them), the Firestore indexes and TTL policies, and the service accounts with every project
 grant they hold (the dashboard's `roles/logging.logWriter` among them); a grant on an account itself,
 such as the agent's act-as on its own account, goes with the account. The dashboard's users records

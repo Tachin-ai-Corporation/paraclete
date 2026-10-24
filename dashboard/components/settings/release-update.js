@@ -191,3 +191,31 @@ export function isNewDashboard(me, upgrade) {
   const commit = me?.dashboard?.commit;
   return Boolean(commit && upgrade?.commit && commit.toLowerCase() === upgrade.commit.toLowerCase());
 }
+
+/** What each of the automatic-update job's actions means, in a few words (lib/server/auto-update.mjs). */
+const AUTO_UPDATE_OUTCOMES = Object.freeze({
+  off: 'off',
+  skip: 'did not update',
+  none: 'up to date',
+  wait: 'waiting for the agent to be idle',
+  install: 'started an upgrade',
+  follow: 'followed the upgrade in progress',
+});
+
+/**
+ * The version card's automatic-update row, from GET /api/settings/auto-update: whether it is on, and
+ * what the job's last run found and did (null before its first run).
+ *
+ * @param {{setting?: {enabled: boolean}, last_run?: object|null}|null} view
+ * @returns {{state: string, enabled: boolean, lastRun: {at: string|null, outcome: string, reason: string}|null}|null}
+ */
+export function autoUpdateRow(view) {
+  if (!view?.setting) return null;
+  const enabled = view.setting.enabled === true;
+  const run = view.last_run;
+  return {
+    enabled,
+    state: enabled ? 'On: new releases install by themselves, while the agent is idle' : 'Off: a release installs only when an admin presses Install',
+    lastRun: run ? { at: run.checked_at || null, outcome: AUTO_UPDATE_OUTCOMES[run.action] || run.action || 'unknown', reason: run.reason || '' } : null,
+  };
+}

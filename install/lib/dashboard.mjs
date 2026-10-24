@@ -20,12 +20,20 @@
 // The uploads: the browser PUTs a file straight into the instance's bucket through a signed URL, so the
 // bucket's CORS setting must let the dashboard's origins do that. This file builds that setting and
 // tells whether a bucket already has it; install.sh applies it in step 6.
+//
+// Automatic updates: a Cloud Run job runs dashboard/jobs/auto-update.mjs in the same image, as the same
+// account, with the same environment, and a Cloud Scheduler job starts it on contracts.auto_update's
+// schedule, by calling Cloud Run's Admin API as the dashboard's account. Both are named
+// contracts.auto_update.job_name. The dashboard's own upgrade moves the job's image along with the
+// service's (dashboard/lib/server/upgrade.mjs), and so does a dev deploy.
 
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-/** config/contracts.json's `dashboard` section, read once. */
-const DASHBOARD = JSON.parse(readFileSync(new URL('../../config/contracts.json', import.meta.url), 'utf8')).dashboard;
+/** config/contracts.json's `dashboard` and `auto_update` sections, read once. */
+const CONTRACTS = JSON.parse(readFileSync(new URL('../../config/contracts.json', import.meta.url), 'utf8'));
+const DASHBOARD = CONTRACTS.dashboard;
+const AUTO_UPDATE = CONTRACTS.auto_update;
 
 /** The image inside the repository. The build config tags it with the commit it was built from. */
 export const IMAGE_NAME = DASHBOARD.image_name;
@@ -256,6 +264,110 @@ export function parseService(text) {
 }
 
 // ---------------------------------------------------------------------------------------------------
+// Automatic updates: the Cloud Run job, and the Cloud Scheduler job that starts it.
+// ---------------------------------------------------------------------------------------------------
+
+/** The name both jobs share. */
+export const UPDATE_JOB = AUTO_UPDATE.job_name;
+
+/** What the job runs, in the dashboard's image. */
+export const UPDATE_JOB_COMMAND = Object.freeze(['node', 'dashboard/jobs/auto-update.mjs']);
+
+/** The OAuth scope the schedule's call to Cloud Run's Admin API carries. */
+const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+
+/** `gcloud` arguments that print the update job as JSON. */
+export function jobDescribeArgs({ project, region }) {
+  need({ project, region }, ['project', 'region']);
+  return ['run', 'jobs', 'describe', UPDATE_JOB, `--region=${region}`, `--project=${project}`, '--format=json'];
+}
+
+/**
+ * `gcloud` arguments that create or update the update job at a commit: the dashboard's image and
+ * account and the service's environment, one task, no retries (the next scheduled run is the retry),
+ * and contracts.auto_update.job_timeout_seconds.
+ */
+export function jobDeployArgs({ project, region, commit, envFile }) {
+  need({ project, region, commit, envFile }, ['project', 'region', 'commit', 'envFile']);
+  const [command, ...args] = UPDATE_JOB_COMMAND;
+  return ['run', 'jobs', 'deploy', UPDATE_JOB, `--image=${imagePath({ project, region })}:${commit}`, `--region=${region}`,
+    `--service-account=${dashboardAccount(project)}`, `--command=${command}`, `--args=${args.join(',')}`, '--tasks=1', '--max-retries=0',
+    `--task-timeout=${AUTO_UPDATE.job_timeout_seconds}s`, `--cpu=${SERVICE_SETTINGS.cpu}`, `--memory=${SERVICE_SETTINGS.memory}`,
+    `--env-vars-file=${envFile}`, `--project=${project}`, '--quiet'];
+}
+
+/** The container and pod spec of a described job (`gcloud run jobs describe --format=json`, Cloud Run's v1 form). */
+function jobSpec(job) {
+  const spec = job?.spec?.template?.spec?.template?.spec || {};
+  return { spec, container: spec.containers?.[0] || {} };
+}
+
+/**
+ * What a deploy would change on the update job: [] when it runs this commit's image with this
+ * environment, account, command and timeout; ['missing'] when there is none.
+ *
+ * @param {object|null} job
+ * @param {{project: string, region: string, commit: string, env: Record<string, string>}} wanted
+ * @returns {string[]}
+ */
+export function jobDrift(job, { project, region, commit, env }) {
+  if (!job || typeof job !== 'object') return ['missing'];
+  const { spec, container: c } = jobSpec(job);
+  const changes = [];
+  const found = Object.fromEntries((c.env || []).filter((e) => e && 'value' in e).map((e) => [e.name, String(e.value)]));
+  if (c.image !== `${imagePath({ project, region })}:${commit}`) changes.push('image');
+  if (!sameEnv(found, env)) changes.push('environment');
+  if (spec.serviceAccountName !== dashboardAccount(project)) changes.push('service account');
+  if (JSON.stringify([...(c.command || []), ...(c.args || [])]) !== JSON.stringify(UPDATE_JOB_COMMAND)) changes.push('command');
+  if (Number(spec.timeoutSeconds) !== AUTO_UPDATE.job_timeout_seconds) changes.push('timeout');
+  return changes;
+}
+
+/** The call the schedule makes: Cloud Run's Admin API, run the update job. */
+export function scheduleUri({ project, region }) {
+  need({ project, region }, ['project', 'region']);
+  return `https://run.googleapis.com/v2/projects/${project}/locations/${region}/jobs/${UPDATE_JOB}:run`;
+}
+
+/** `gcloud` arguments that print the schedule as JSON. */
+export function scheduleDescribeArgs({ project, region }) {
+  need({ project, region }, ['project', 'region']);
+  return ['scheduler', 'jobs', 'describe', UPDATE_JOB, `--location=${region}`, `--project=${project}`, '--format=json'];
+}
+
+/**
+ * `gcloud` arguments that create (verb=create) or update (verb=update) the schedule: an HTTP POST to
+ * scheduleUri() on contracts.auto_update.schedule, in UTC, with an OAuth token for the dashboard's
+ * account, which may run the job (Cloud Run Admin).
+ */
+export function scheduleArgs({ project, region, verb }) {
+  need({ project, region, verb }, ['project', 'region', 'verb']);
+  if (!['create', 'update'].includes(verb)) throw new Error(`install/lib/dashboard.mjs: verb must be create or update, got '${verb}'`);
+  return ['scheduler', 'jobs', verb, 'http', UPDATE_JOB, `--location=${region}`, `--schedule=${AUTO_UPDATE.schedule}`, '--time-zone=Etc/UTC',
+    `--uri=${scheduleUri({ project, region })}`, '--http-method=POST', `--oauth-service-account-email=${dashboardAccount(project)}`,
+    `--oauth-token-scope=${CLOUD_PLATFORM_SCOPE}`, '--description=Runs the paraclete dashboard\'s automatic update job', `--project=${project}`, '--quiet'];
+}
+
+/**
+ * What an update would change on the schedule (`gcloud scheduler jobs describe --format=json`): [] when
+ * it already calls the job on this schedule as the dashboard's account; ['missing'] when there is none.
+ *
+ * @param {object|null} schedule
+ * @param {{project: string, region: string}} o
+ * @returns {string[]}
+ */
+export function scheduleDrift(schedule, { project, region }) {
+  if (!schedule || typeof schedule !== 'object') return ['missing'];
+  const target = schedule.httpTarget || {};
+  const changes = [];
+  if (String(schedule.schedule || '').trim() !== AUTO_UPDATE.schedule) changes.push('schedule');
+  if ((schedule.timeZone || 'Etc/UTC') !== 'Etc/UTC') changes.push('time zone');
+  if (target.uri !== scheduleUri({ project, region }) || (target.httpMethod || 'POST') !== 'POST') changes.push('target');
+  if (target.oauthToken?.serviceAccountEmail !== dashboardAccount(project)) changes.push('account');
+  return changes;
+}
+
+// ---------------------------------------------------------------------------------------------------
 // The bucket's CORS setting, for uploads from the dashboard.
 // ---------------------------------------------------------------------------------------------------
 
@@ -371,7 +483,8 @@ function originList(value) {
 // service on stdin and prints what would change, comma-separated, or nothing. `origins` reads the
 // described service (or nothing) on stdin and prints the dashboard's origins, comma-separated;
 // `cors-file` prints the CORS file for origins=a,b; `cors-drift` reads the described bucket (or
-// nothing) on stdin and prints what setting that file would change, or nothing.
+// nothing) on stdin and prints what setting that file would change, or nothing. `job-drift` and
+// `schedule-drift` read the described update job or schedule (or nothing) the same way.
 // ---------------------------------------------------------------------------------------------------
 
 const COMMANDS = {
@@ -387,10 +500,16 @@ const COMMANDS = {
   origins: (o, stdin) => dashboardOrigins(parseService(stdin), o).join(','),
   'cors-file': (o) => JSON.stringify(corsConfig(originList(o.origins))),
   'cors-drift': (o, stdin) => corsDrift(parseBucket(stdin), originList(o.origins)),
+  'job-describe-args': (o) => jobDescribeArgs(o).join('\n'),
+  'job-deploy-args': (o) => jobDeployArgs(o).join('\n'),
+  'job-drift': (o, stdin) => jobDrift(parseObject(stdin), { ...o, env: serviceEnv(o) }).join(', '),
+  'schedule-describe-args': (o) => scheduleDescribeArgs(o).join('\n'),
+  'schedule-args': (o) => scheduleArgs(o).join('\n'),
+  'schedule-drift': (o, stdin) => scheduleDrift(parseObject(stdin), o).join(', '),
 };
 
 /** The commands that read stdin. */
-const READS_STDIN = new Set(['drift', 'origins', 'cors-drift']);
+const READS_STDIN = new Set(['drift', 'origins', 'cors-drift', 'job-drift', 'schedule-drift']);
 
 /**
  * Runs one command. Exported for the tests.

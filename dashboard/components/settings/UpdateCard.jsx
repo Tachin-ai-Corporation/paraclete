@@ -5,7 +5,9 @@
 // user sees its steps: the agent's VM first, then the dashboard's build, then its rollout; the card
 // polls GET /api/upgrade, which also moves the upgrade on. Once it is done, the card waits until the
 // new dashboard answers (GET /api/me names the new commit; the old revision may answer for a moment)
-// and reloads the page. What to say and offer is decided in release-update.js.
+// and reloads the page. It also says whether new releases install by themselves and what the
+// automatic-update job's last run did (GET /api/settings/auto-update), and lets an admin turn that on
+// or off (PATCH). What to say and offer is decided in release-update.js.
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/client/api.js';
 import { usePoll } from '@/lib/client/use-poll.js';
@@ -13,7 +15,7 @@ import { formatDate, timeAgo } from '@/lib/client/format.js';
 import { ConfirmButton } from './ConfirmButton.jsx';
 import { Notice } from './Notice.jsx';
 import {
-  NOTE_LINES_SHOWN, RELOAD_WAIT_MS, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure,
+  NOTE_LINES_SHOWN, RELOAD_WAIT_MS, autoUpdateRow, cardStatus, installChoices, isNewDashboard, noteLines, runsText, shouldAwaitReload, showsFailure,
   upgradeSteps,
 } from './release-update.js';
 import settings from './Settings.module.css';
@@ -27,6 +29,8 @@ export function UpdateCard({ me }) {
   const releases = usePoll('/api/releases', 0);
   const upgradePoll = usePoll('/api/upgrade', UPGRADE_POLL_MS);
   const upgrade = upgradePoll.data?.upgrade ?? null;
+  const autoPoll = usePoll('/api/settings/auto-update', 0);
+  const auto = autoUpdateRow(autoPoll.data);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
   const [sawRunning, setSawRunning] = useState(false);
@@ -56,6 +60,19 @@ export function UpdateCard({ me }) {
     } catch (err) {
       setNotice({ kind: 'error', text: err.message });
       await upgradePoll.refresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setAutoUpdate(enabled) {
+    setBusy(true);
+    setNotice(null);
+    try {
+      await api('/api/settings/auto-update', { method: 'PATCH', body: { enabled } });
+      await autoPoll.refresh();
+    } catch (err) {
+      setNotice({ kind: 'error', text: err.message });
     } finally {
       setBusy(false);
     }
@@ -115,6 +132,28 @@ export function UpdateCard({ me }) {
                 <dd>
                   {data.repo}
                   {data.checked_at && <span className="muted"> · checked {timeAgo(data.checked_at)}</span>}
+                </dd>
+              </>
+            )}
+            {auto && (
+              <>
+                <dt>Automatic updates</dt>
+                <dd>
+                  {auto.state}
+                  {isAdmin && (
+                    <>
+                      {' '}
+                      <button type="button" className="btn btn-ghost" onClick={() => setAutoUpdate(!auto.enabled)} disabled={busy}>
+                        {auto.enabled ? 'Turn off' : 'Turn on'}
+                      </button>
+                    </>
+                  )}
+                  {auto.lastRun && (
+                    <span className={settings.sub}>
+                      Last check{auto.lastRun.at ? ` ${timeAgo(auto.lastRun.at)}` : ''}: {auto.lastRun.outcome}
+                      {auto.lastRun.reason ? ` (${auto.lastRun.reason})` : ''}
+                    </span>
+                  )}
                 </dd>
               </>
             )}

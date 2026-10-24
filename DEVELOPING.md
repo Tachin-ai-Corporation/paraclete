@@ -188,6 +188,7 @@ Instances install from GitHub at an exact commit, so push your branch first.
 |---|---|
 | New dev instance | `install/install.sh --ref <branch>` in Cloud Shell or a terminal logged in to the dev project. For a fork, add `--repo <owner>/paraclete`; the fork must be public. It builds and deploys the dashboard too, and makes you its first admin. |
 | Existing dev instance | `node dev/deploy.mjs <branch>` resolves the branch to a commit on GitHub, moves the VM to it through the same upgrader a release upgrade runs, and waits until the agent reports ready on it. Then it builds the dashboard at that commit with Cloud Build (unless that image exists) and deploys it to Cloud Run, the way the installer does. Testing a branch therefore also tests the upgrade. `--vm-only` or `--dashboard-only` moves one half, when your change touches only that half. |
+| Automatic updates | A dev instance deployed with `dev/deploy.mjs` runs a commit, not a release, so the dashboard's update job never moves it, and your branch stays under test. An instance installed with `install.sh` at a release tag updates itself to each newer release unless an admin turns that off on the System tab (or it was installed with `--no-auto-update`). |
 | Check what it runs | `node dev/status.mjs` shows the commit the agent runs, whether its services are healthy, and the dashboard's URL and commit. Both commits must match the commit you pushed; status fails when they differ. |
 
 The `dev/` commands run on your machine (Git Bash on Windows, macOS or Linux) with Node 24 and `gcloud`

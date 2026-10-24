@@ -204,7 +204,9 @@ A [release](../GLOSSARY.md) is a tag on `main` in the commit version format, `vY
 published by the release workflow after its tests pass. The dashboard installs a release on the VM
 first, then builds and deploys the dashboard at the same commit. From the dashboard an instance moves
 only forward, or installs the same release again to finish an upgrade; going back is
-`install/install.sh --ref <older tag>`.
+`install/install.sh --ref <older tag>`. An automatic update is that same upgrade, started by the
+dashboard's own scheduled job instead of an admin, to the newest release only. It is on by default,
+waits for an idle agent, and never moves an instance installed from a branch or commit.
 
 - **Why.** The dashboard imports the agent's own libraries, so the two halves must run the same code.
   Moving the VM first means a failed VM upgrade leaves the dashboard as it was.
@@ -213,8 +215,10 @@ only forward, or installs the same release again to finish an upgrade; going bac
   `config/contracts.json`. `dev/release.mjs` tags only a head whose CI passed and whose subject starts
   with a newer version; `.github/workflows/release.yml` refuses a tag that is not a version or not on
   `main`. `dashboard/lib/server/upgrade.mjs` runs the VM, build and deploy steps in order, and starts
-  only a release newer than the installed one, or the same one again. Every commit's subject starts
-  with its version ([DEVELOPING.md](../../DEVELOPING.md), section 10); nothing checks that before the
+  only a release newer than the installed one, or the same one again.
+  `dashboard/lib/server/auto-update.mjs` starts automatic updates only through that same `startUpgrade`,
+  and `tests/dashboard/lib/server/auto-update.test.mjs` checks what it decides. Every commit's subject
+  starts with its version ([DEVELOPING.md](../../DEVELOPING.md), section 10); nothing checks that before the
   release tool does.
 
 ### P-14. A data migration changes data only, and the release before can still read the result
@@ -300,7 +304,9 @@ protocol.
   `agent/services/control/command-queue.mjs` (refuses unsigned, altered or expired commands),
   `agent/services/control/commands.mjs` (the closed set), `agent/services/control/systemd.mjs`
   (allowlisted units, no shell). Which dashboard users may send a command that changes something is
-  the dashboard's decision: admins only (`dashboard/lib/server/commands.mjs`).
+  the dashboard's decision: admins only (`dashboard/lib/server/commands.mjs`). An automatic update
+  is no exception: the dashboard's update job runs as the dashboard's account and signs its `upgrade`
+  command the same way (`dashboard/lib/server/auto-update.mjs`), and control never starts one by itself.
 
 ### P-19. Every identity holds the least access its job needs
 

@@ -14,8 +14,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  BUILD_CONFIG_PATH, NAMES, buildArgs, deployArgs, deployedCommit, deployedEnv, describeArgs, envFileText,
-  parseService, serviceDrift, tagsArgs,
+  BUILD_CONFIG_PATH, NAMES, UPDATE_JOB, buildArgs, deployArgs, deployedCommit, deployedEnv, describeArgs, envFileText,
+  jobDeployArgs, jobDescribeArgs, jobDrift, parseService, serviceDrift, tagsArgs,
 } from '../install/lib/dashboard.mjs';
 import {
   DevError, REPO_ROOT, VM_PATHS, READINESS_DOC, devContext, failureDetail, isMain, pollUntil, runCommand,
@@ -252,10 +252,40 @@ async function deployDashboard(ctx, { instance, repo, commit, release }) {
     } else {
       ctx.out(`The dashboard already runs ${short}.`);
     }
+    await moveUpdateJob(ctx, { where, commit, env, dir, short, stream });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
   ctx.out(`Done: the dashboard runs ${commit} from ${repo}, at ${service.status?.url || 'its Cloud Run URL'}.`);
+}
+
+/**
+ * Moves the automatic-update job to the dashboard's image and environment, so it runs the dashboard's
+ * own code (install/lib/dashboard.mjs). An instance without the job (installed before automatic
+ * updates) is left alone: install/install.sh creates it.
+ */
+async function moveUpdateJob(ctx, { where, commit, env, dir, short, stream }) {
+  const described = await ctx.gcloud(jobDescribeArgs(where));
+  if (described.code !== 0) {
+    if (/cannot find job|not found/i.test(described.stderr || '')) {
+      ctx.out(`There is no automatic-update job ${UPDATE_JOB}; install/install.sh creates it.`);
+      return;
+    }
+    throw new DevError(`could not read the automatic-update job ${UPDATE_JOB}${failureDetail(described)}`);
+  }
+  const drift = jobDrift(parseService(described.stdout), { ...where, commit, env });
+  if (!drift.length) {
+    ctx.out(`The automatic-update job already runs ${short}.`);
+    return;
+  }
+  const envFile = join(dir, 'update-job-env.yaml');
+  writeFileSync(envFile, envFileText(env));
+  ctx.out(`Moving the automatic-update job ${UPDATE_JOB} to ${short} (changing: ${drift.join(', ')}); Cloud Run's output follows.`);
+  const deploy = await ctx.gcloud(jobDeployArgs({ ...where, commit, envFile }), stream);
+  if (deploy.code !== 0) {
+    throw new DevError(`the automatic-update job's deploy exited with code ${deploy.code}; read its output above. `
+      + `The dashboard runs ${short}; re-running dev/deploy moves the job too.`);
+  }
 }
 
 /**
