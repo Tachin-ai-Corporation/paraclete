@@ -61,9 +61,10 @@ export async function runWithinGenerationRecursion(opts = {}) {
   const history = [];
 
   for (let step = 1; step <= maxSteps; step += 1) {
+    // Held-out runs never reach the proposer: a change tuned to them would pass the evidence unseen.
     const spec = buildMutationProposalSpec({
       lens,
-      trajectories: currentBest.trajectories || [],
+      trajectories: (currentBest.trajectories || []).filter((t) => t.split !== 'holdout'),
       stage: opts.stage,
       role: opts.role,
       priorAttempts: history,

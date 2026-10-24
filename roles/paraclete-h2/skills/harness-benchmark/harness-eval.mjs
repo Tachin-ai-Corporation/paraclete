@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-eval --action <evaluate|harvest|suites> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--judge-committee] [--include-harvested] [--expand-curriculum] [--persist] [--input <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-eval --action <evaluate|harvest|suites> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--judge-committee] [--include-harvested] [--expand-curriculum] [--persist] [--input <path>] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['evaluate', 'harvest', 'suites']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -36,6 +36,9 @@ function parseArgs(argv) {
     else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--real-model') opts.realModel = true;
+    else if (arg === '--max-rollouts') opts.maxRollouts = Number(argv[++i] || 0);
+    else if (arg === '--max-tokens') opts.maxTokens = Number(argv[++i] || 0);
     else if (arg === '--judge-committee') opts.judgeCommittee = true;
     else if (arg === '--include-harvested') opts.includeHarvested = true;
     else if (arg === '--expand-curriculum') opts.expandCurriculum = true;
@@ -59,14 +62,16 @@ function parseArgs(argv) {
 async function loadHarness2Modules(repoDir) {
   const h2Dir = path.join(repoDir, 'dev', 'harness2');
   if (! fs.existsSync(path.join(h2Dir, 'substrate.mjs'))) return null;
-  const [substrate, harvest, liveRunner] = await Promise.all([
+  const optional = (file) => (fs.existsSync(path.join(h2Dir, file))
+    ? import(pathToFileURL(path.join(h2Dir, file)).href)
+    : Promise.resolve(null));
+  const [substrate, harvest, liveRunner, cli] = await Promise.all([
     import(pathToFileURL(path.join(h2Dir, 'substrate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'harvest.mjs')).href),
-    fs.existsSync(path.join(h2Dir, 'live-runner.mjs'))
-      ? import(pathToFileURL(path.join(h2Dir, 'live-runner.mjs')).href)
-      : Promise.resolve(null),
+    optional('live-runner.mjs'),
+    optional('cli.mjs'),
   ]);
-  return { substrate, harvest, liveRunner };
+  return { substrate, harvest, liveRunner, cli };
 }
 
 function writeOut(outPath, payload) {
@@ -126,7 +131,20 @@ export async function main(argv, deps = {}) {
       role: opts.role || undefined,
       includeHarvested: opts.includeHarvested,
     });
-    const result = opts.live && h2.liveRunner?.evaluateLiveTarget
+    // A real-model evaluation goes through the harness CLI, which owns the run's model context.
+    const realArgs = [
+      'eval',
+      '--stage', normalizedStage,
+      ...(opts.role ? ['--role', opts.role] : []),
+      ...(opts.trials ? ['--trials', String(opts.trials)] : []),
+      ...(opts.judgeCommittee ? ['--judge-committee'] : []),
+      ...(opts.realModel ? ['--real-model'] : []),
+      ...(opts.maxRollouts ? ['--max-rollouts', String(opts.maxRollouts)] : []),
+      ...(opts.maxTokens ? ['--max-tokens', String(opts.maxTokens)] : []),
+    ];
+    const result = opts.realModel && typeof h2.cli?.runCli === 'function'
+      ? await h2.cli.runCli(realArgs, { repoRoot: opts.repo })
+      : opts.live && h2.liveRunner?.evaluateLiveTarget
       ? await h2.liveRunner.evaluateLiveTarget({
           repoRoot: opts.repo,
           stage: normalizedStage,

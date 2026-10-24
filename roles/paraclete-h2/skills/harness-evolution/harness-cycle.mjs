@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|report|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--markdown] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|report|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--markdown] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'report', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -61,6 +61,9 @@ function parseArgs(argv) {
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--lens') opts.lens = argv[++i] || null;
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--real-model') opts.realModel = true;
+    else if (arg === '--max-rollouts') opts.maxRollouts = Number(argv[++i] || 0);
+    else if (arg === '--max-tokens') opts.maxTokens = Number(argv[++i] || 0);
     else if (arg === '--vertex') opts.vertex = true;
     else if (arg === '--judge-committee') opts.judgeCommittee = true;
     else if (arg === '--include-harvested') opts.includeHarvested = true;
@@ -90,17 +93,19 @@ async function loadHarness2Modules(repoDir) {
   const h2Dir = path.join(repoDir, 'dev', 'harness2');
   const surfacePath = path.join(h2Dir, 'surface.mjs');
   if (! fs.existsSync(surfacePath)) return null;
-  const [surface, validate, substrate, lenses, cli, liveRunner] = await Promise.all([
+  const optional = (file) => (fs.existsSync(path.join(h2Dir, file))
+    ? import(pathToFileURL(path.join(h2Dir, file)).href)
+    : Promise.resolve(null));
+  const [surface, validate, substrate, lenses, cli, liveRunner, pause] = await Promise.all([
     import(pathToFileURL(path.join(h2Dir, 'surface.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'validate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'substrate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'lenses.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'cli.mjs')).href),
-    fs.existsSync(path.join(h2Dir, 'live-runner.mjs'))
-      ? import(pathToFileURL(path.join(h2Dir, 'live-runner.mjs')).href)
-      : Promise.resolve(null),
+    optional('live-runner.mjs'),
+    optional('pause.mjs'),
   ]);
-  return { surface, validate, substrate, lenses, cli, liveRunner };
+  return { surface, validate, substrate, lenses, cli, liveRunner, pause };
 }
 
 function writeOut(outPath, payload) {
@@ -240,6 +245,12 @@ export async function main(argv, deps = {}) {
   }
 
   if (opts.action === 'run') {
+    // An evolution is a cycle: the off switch stops it as it stops the CLI's (pause.mjs).
+    const paused = h2.pause?.pauseState({ repoRoot: opts.repo });
+    if (paused?.paused) {
+      emit(stdout, { ok: false, action: 'run', paused: true, reason: `the harness is paused: ${paused.reason}` }, opts.json, `The harness is paused: ${paused.reason}`);
+      return 1;
+    }
     const result = await h2.cli.runEvolutionLoop({
       stage: normalizedStage,
       role: opts.role || undefined,
@@ -290,6 +301,9 @@ export async function main(argv, deps = {}) {
       ...(opts.judgeCommittee ? ['--judge-committee'] : []),
       ...(opts.apply ? ['--apply'] : []),
       ...(opts.pushPr ? ['--push-pr'] : []),
+      ...(opts.realModel ? ['--real-model'] : []),
+      ...(opts.maxRollouts ? ['--max-rollouts', String(opts.maxRollouts)] : []),
+      ...(opts.maxTokens ? ['--max-tokens', String(opts.maxTokens)] : []),
     ];
     const result = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
     const payload = {

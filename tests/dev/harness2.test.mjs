@@ -132,16 +132,29 @@ import { main as runHarnessCycle } from '../../roles/paraclete-h2/skills/harness
 import { main as runHarnessEval } from '../../roles/paraclete-h2/skills/harness-benchmark/harness-eval.mjs';
 import { main as runHarnessPromote } from '../../roles/paraclete-h2/skills/harness-release/harness-promote.mjs';
 
+/** A calibration that passed (calibration.mjs judgeCalibration's shape). */
+const PASSING_CALIBRATION = Object.freeze({
+  ok: true,
+  aa: { delta: 0.004, noise: 0.01, runs: 3 },
+  knownBad: { change: 'prompts/motor.md', delta: -0.6, noise: 0.02, runs: 3, detected: true },
+  problems: [],
+  commit: 'a'.repeat(40),
+});
+
 /**
- * Evidence that passes its verdict: three real runs of one task on each side, the candidate clearly
- * better, and the change proposed by a model. Options make it fail one rule at a time.
+ * Evidence that passes its verdict: three real-model runs of one task on each side, the candidate
+ * clearly better, the change proposed by a model, and a passing calibration. Options make it fail one
+ * rule at a time.
  */
-function measuredEvidence(candidate, { source = 'vertex', base = [0.4, 0.42, 0.38], cand = [0.9, 0.92, 0.88], taskId = 'task-a' } = {}) {
-  const runs = (caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, synthetic: false, capability, missionId: `m-${taskId}-${i}` }));
+function measuredEvidence(candidate, {
+  source = 'vertex', base = [0.4, 0.42, 0.38], cand = [0.9, 0.92, 0.88], taskId = 'task-a', measured = true, calibration = PASSING_CALIBRATION,
+} = {}) {
+  const runs = (caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, synthetic: false, measured, capability, missionId: `m-${taskId}-${i}` }));
   return buildPromotionEvidence({
     candidate: { ...candidate, proposal: { source, hypothesis: 'a measured change' } },
     baselineTrajectories: runs(base),
     candidateTrajectories: runs(cand),
+    calibration,
   });
 }
 
@@ -747,7 +760,8 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       assert.equal(applied.branch, 'h2/promote-cand-win-1');
       assert.deepEqual(applied.appliedPaths, [targetRel]);
       assert.equal(readFileSync(join(tmpRepo, targetRel), 'utf8'), '# Promoted Cortex Overlay\nConcise rule.\n');
-      assert.deepEqual(gitCalls[0], ['checkout', '-B', 'h2/promote-cand-win-1']);
+      // It notes the branch it was on (to return to after the push), then checks out the promotion's.
+      assert.deepEqual(gitCalls.slice(0, 2), [['rev-parse', '--abbrev-ref', 'HEAD'], ['checkout', '-B', 'h2/promote-cand-win-1']]);
 
       // Verify automatic rollback when post-apply validation fails
       const badCandidate = {
@@ -1980,7 +1994,7 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     assert.equal(res.pushed, false);
     assert.equal(res.version, null);
     assert.match(res.reason, /could not read from remote/);
-    assert.deepEqual(gitCalls.map((c) => c[0]), ['diff', 'fetch'], 'the lint reads the diff, then the fetch fails');
+    assert.deepEqual(gitCalls.map((c) => c[0]), ['diff', 'rev-parse', 'fetch'], 'the lint reads the diff, the branch is noted, then the fetch fails');
   });
 
   it('a dry run reads the versions of a real clone without fetching, from HEAD when there is no remote', () => {
