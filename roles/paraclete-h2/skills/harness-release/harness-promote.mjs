@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
+export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
 
 const VALID_ACTIONS = new Set(['verify', 'report']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
@@ -37,6 +37,9 @@ function parseArgs(argv) {
     else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--real-model') opts.realModel = true;
+    else if (arg === '--max-rollouts') opts.maxRollouts = Number(argv[++i] || 0);
+    else if (arg === '--max-tokens') opts.maxTokens = Number(argv[++i] || 0);
     else if (arg === '--vertex') opts.vertex = true;
     else if (arg === '--judge-committee') opts.judgeCommittee = true;
     else if (arg === '--apply') opts.apply = true;
@@ -107,7 +110,7 @@ export async function main(argv, deps = {}) {
   }
 
   const normalizedStage = opts.stage === 'all' ? 'stage2' : opts.stage;
-  if (opts.live && typeof h2.cli?.runCli === 'function') {
+  if ((opts.live || opts.realModel) && typeof h2.cli?.runCli === 'function') {
     const cliArgs = [
       'promote',
       '--stage',
@@ -120,6 +123,9 @@ export async function main(argv, deps = {}) {
       ...(opts.branch ? ['--branch', opts.branch] : []),
       ...(opts.dryRun ? ['--dry-run'] : []),
       ...(opts.role ? ['--role', opts.role] : []),
+      ...(opts.realModel ? ['--real-model'] : []),
+      ...(opts.maxRollouts ? ['--max-rollouts', String(opts.maxRollouts)] : []),
+      ...(opts.maxTokens ? ['--max-tokens', String(opts.maxTokens)] : []),
     ];
     const cliRes = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
     const readiness = cliRes.readiness || { ready: Boolean(cliRes.ok), blockers: [] };
