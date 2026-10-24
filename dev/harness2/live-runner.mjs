@@ -1,5 +1,7 @@
 // dev/harness2/live-runner.mjs: In-process Gateway + Brain live rollout adapter, isolated git worktree mutations, and GCP lab planner for Paraclete-H².
-// The lab's follow-main timer (built by lab-updater.mjs; lab only) reaches the lab VMs from here, over IAP SSH.
+// The lab is two projects, the driver's and the canary's (lab-canary.mjs), since one project holds one paraclete.
+// The lab's follow-main timer (built by lab-updater.mjs; lab only) and the canary's coordinates on the driver
+// (lab-canary.mjs) reach the lab VMs from here, over IAP SSH.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -21,6 +23,15 @@ import {
 } from './curriculum.mjs';
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
 import { getTaskFixture } from './fixtures.mjs';
+import {
+  LAB_CANARY,
+  canaryInstanceEnv,
+  canaryProjectFor,
+  driverAccessOnCanary,
+  instanceEnvRemoteCommand,
+  instanceEnvResult,
+  oldCanaryDeleteCommand,
+} from './lab-canary.mjs';
 import {
   FOLLOW_MAIN,
   followMainCommandFor,
@@ -1138,25 +1149,34 @@ export async function evaluateLiveTarget(opts = {}) {
 
 /**
  * Create a Tier-2 canary runner that executes a read-only smoke test and optional
- * task rollouts against a canary VM (`canaryAgent`).
+ * task rollouts against a canary VM (`canaryAgent`), in its own project (`projectId`, `zone`) when
+ * those are given; the `canary` subcommand gives the lab canary's (lab-canary.mjs). Without a
+ * `runSmoke` nothing reaches a VM, so the smoke check fails and there are no rollouts: it never
+ * reports a canary it did not run.
  *
  * @param {object} [opts]
  * @param {string} [opts.role]
- * @param {Function} [opts.runSmoke]   Injectable `(args: { canaryAgent, role }) => Promise<{ pass?: boolean, exitCode?: number }>`
- * @param {Function} [opts.runTask]    Injectable `(task, { canaryAgent, role }) => Promise<object>`
+ * @param {string} [opts.projectId]  the canary's project
+ * @param {string} [opts.zone]
+ * @param {Function} [opts.runSmoke]   Injectable `(args: { canaryAgent, role, projectId?, zone? }) => Promise<{ pass?: boolean, exitCode?: number }>`
+ * @param {Function} [opts.runTask]    Injectable `(task, { canaryAgent, role, projectId?, zone? }) => Promise<object>`
  */
 export function createDevCanaryRunner(opts = {}) {
   return async function canaryRunner({ canaryAgent, tasks = [] }) {
+    if (typeof opts.runSmoke !== 'function') return { smokePassed: false, rollouts: [] };
     const role = opts.role || tasks[0]?.role || 'paraclete-h2';
-    let smokePassed = true;
-    if (typeof opts.runSmoke === 'function') {
-      const smokeRes = await opts.runSmoke({ canaryAgent, role });
-      smokePassed = Boolean(smokeRes?.pass ?? (smokeRes?.exitCode === 0));
-    }
+    const target = {
+      canaryAgent,
+      role,
+      ...(opts.projectId ? { projectId: opts.projectId } : {}),
+      ...(opts.zone ? { zone: opts.zone } : {}),
+    };
+    const smokeRes = await opts.runSmoke(target);
+    const smokePassed = Boolean(smokeRes?.pass ?? (smokeRes?.exitCode === 0));
     const rollouts = [];
     for (const task of tasks) {
       if (typeof opts.runTask === 'function') {
-        rollouts.push(await opts.runTask(task, { canaryAgent, role }));
+        rollouts.push(await opts.runTask(task, target));
       } else {
         rollouts.push({
           envelope: {
@@ -1209,26 +1229,59 @@ exec systemd-run --unit=paraclete-bootstrap --collect --wait --quiet --setenv=HO
   /bin/bash /run/paraclete-bootstrap/bootstrap.sh
 `;
 
+/** A zone, and the region it is in, as dev-env.mjs checks them in instance.env. */
+const ZONE = /^([a-z]+-[a-z]+[0-9]+)-[a-z]$/;
+const REGION = /^[a-z]+-[a-z]+[0-9]+$/;
+
 /**
- * Generate the two-tier GCP lab (`paraclete-h2-lab`) provisioning plan and exact commands
- * for `paraclete-h2-driver` (`e2-standard-8`) and `paraclete-h2-canary` (`e2-standard-4`).
+ * The lab's region and zone: `--zone` alone sets its region, `--region` alone its `-a` zone, neither
+ * is us-central1-a. Throws on a malformed one, or a zone outside the region, which every dev/ command
+ * would refuse in the canary's instance.env.
+ *
+ * @param {{region?: string|boolean, zone?: string|boolean}} opts
+ * @returns {{region: string, zone: string}}
+ */
+function labLocation({ region, zone }) {
+  const given = (v) => v !== undefined && v !== null;
+  if (given(zone) && !ZONE.test(String(zone))) throw new Error(`--zone must be a zone such as us-central1-a, got '${String(zone).slice(0, 40)}'`);
+  if (given(region) && !REGION.test(String(region))) throw new Error(`--region must be a region such as us-central1, got '${String(region).slice(0, 40)}'`);
+  const r = given(region) ? region : given(zone) ? ZONE.exec(zone)[1] : 'us-central1';
+  const z = given(zone) ? zone : `${r}-a`;
+  if (!z.startsWith(`${r}-`)) throw new Error(`--zone ${z} is not in --region ${r}: give a zone in the region, or --zone alone`);
+  return { region: r, zone: z };
+}
+
+/** The flags that name the lab in a command it prints: both projects, the region and the zone. */
+function labFlagsOf({ projectId, canaryProjectId, region, zone }) {
+  return `--project ${projectId} --canary-project ${canaryProjectId} --region ${region} --zone ${zone}`;
+}
+
+/**
+ * Generate the harness lab's provisioning plan and exact commands: `paraclete-h2-driver`
+ * (`e2-standard-8`) in the lab's project (`paraclete-h2-lab` unless `projectId`), and
+ * `paraclete-h2-canary` (`e2-standard-4`) in a project of its own (`<lab project>-canary` unless
+ * `canaryProjectId`; lab-canary.mjs), because one project holds one paraclete and each VM runs a full
+ * install. Each project gets what its VM needs (`projects`). The driver's agent account also gets, on
+ * the canary's project, what the dev/ commands need to check the canary (`driverAccess`), and its
+ * harness checkout gets the canary's coordinates (`instanceEnv`). Throws when the canary's project
+ * cannot be worked out (canaryProjectFor), or the region and zone do not fit (labLocation).
  *
  * @param {object} [opts]
- * @param {string} [opts.projectId]
- * @param {string} [opts.zone]
- * @param {string} [opts.region]
+ * @param {string} [opts.projectId]  the lab's project, which holds the driver
+ * @param {string} [opts.canaryProjectId]  the canary's project
+ * @param {string} [opts.zone]  default the region's -a zone
+ * @param {string} [opts.region]  default the zone's region, else us-central1
  * @param {string} [opts.organizationId]
  * @param {string} [opts.billingAccount]
  * @param {string|number} [opts.intervalMinutes]  the follow-main timer's interval (lab-updater.mjs)
  */
 export function buildGcpLabPlan(opts = {}) {
   const projectId = opts.projectId || 'paraclete-h2-lab';
-  const region = opts.region || 'us-central1';
-  const zone = opts.zone || `${region}-a`;
+  const canaryProjectId = canaryProjectFor(projectId, opts.canaryProjectId);
+  const { region, zone } = labLocation(opts);
   const intervalMinutes = parseIntervalMinutes(opts.intervalMinutes);
-  const bucket = `${projectId}-paraclete`;
   const serviceAccountId = 'paraclete-agent';
-  const serviceAccountEmail = [serviceAccountId, `${projectId}.iam.gserviceaccount.com`].join('@');
+  const serviceAccountOf = (project) => [serviceAccountId, `${project}.iam.gserviceaccount.com`].join('@');
 
   const apis = [
     'compute.googleapis.com',
@@ -1257,20 +1310,31 @@ export function buildGcpLabPlan(opts = {}) {
     'roles/cloudbuild.builds.editor',
   ];
 
+  // One project per paraclete: the driver's, then the canary's.
+  const projects = [
+    { projectId, displayName: 'Paraclete H2 Evolution Lab', vm: LAB_CANARY.driverVm },
+    { projectId: canaryProjectId, displayName: 'Paraclete H2 Canary', vm: LAB_CANARY.vm },
+  ].map((p) => ({ ...p, bucket: `${p.projectId}-paraclete`, serviceAccountEmail: serviceAccountOf(p.projectId) }));
+  const [lab, canary] = projects;
+  const inProject = (p) => ({ projectId: p.projectId, bucket: p.bucket, serviceAccountEmail: p.serviceAccountEmail });
+  const labFlags = labFlagsOf({ projectId, canaryProjectId, region, zone });
+  const orgFlag =opts.organizationId ? ` --organization=${opts.organizationId}` : '';
+
   return {
     projectId,
+    canaryProjectId,
     region,
     zone,
     organizationId: opts.organizationId || null,
     billingAccount: opts.billingAccount || null,
-    bucket,
     serviceAccountId,
-    serviceAccountEmail,
     apis,
     projectRoles,
+    projects,
     vms: [
       {
-        name: 'paraclete-h2-driver',
+        name: LAB_CANARY.driverVm,
+        ...inProject(lab),
         machineType: 'e2-standard-8',
         role: 'paraclete-h2',
         agentName: 'Paraclete-H2-Driver',
@@ -1282,7 +1346,8 @@ export function buildGcpLabPlan(opts = {}) {
         harnessCheckout: FOLLOW_MAIN.harnessCheckout,
       },
       {
-        name: 'paraclete-h2-canary',
+        name: LAB_CANARY.vm,
+        ...inProject(canary),
         machineType: 'e2-standard-4',
         role: 'software-engineer',
         agentName: 'Paraclete-H2-Canary',
@@ -1294,20 +1359,28 @@ export function buildGcpLabPlan(opts = {}) {
         harnessCheckout: null,
       },
     ],
+    driverAccess: driverAccessOnCanary({
+      canaryProjectId,
+      driverServiceAccountEmail: lab.serviceAccountEmail,
+      canaryServiceAccountEmail: canary.serviceAccountEmail,
+    }),
+    instanceEnv: {
+      vm: LAB_CANARY.driverVm,
+      path: LAB_CANARY.instanceEnvPath,
+      text: canaryInstanceEnv({ projectId: canaryProjectId, region, zone }),
+    },
     // Lab only: both VMs follow main's head through upgrade.sh. Product instances follow releases.
     followMain: { timer: FOLLOW_MAIN.timerUnit, intervalMinutes },
     commands: [
-      `gcloud projects create ${projectId} --name="Paraclete H2 Evolution Lab"${opts.organizationId ? ` --organization=${opts.organizationId}` : ''}`,
-      ...(opts.billingAccount
-        ? [`gcloud billing projects link ${projectId} --billing-account=${opts.billingAccount}`]
-        : []),
-      `gcloud config set project ${projectId}`,
-      `gcloud services enable ${apis.join(' ')} --project=${projectId}`,
-      `gcloud compute instances create paraclete-h2-driver --project=${projectId} --zone=${zone} --machine-type=e2-standard-8 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-ssd --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
-      `gcloud compute instances create paraclete-h2-canary --project=${projectId} --zone=${zone} --machine-type=e2-standard-4 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=50GB --boot-disk-type=pd-balanced --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
-      `node dev/harness2/cli.mjs lab-follow-main --install --interval ${intervalMinutes} --project ${projectId} --zone ${zone}`,
-      `node dev/harness2/cli.mjs lab-status --project ${projectId} --zone ${zone}`,
-      `node dev/harness2/cli.mjs canary --agent paraclete-h2-canary --role paraclete-h2`,
+      ...projects.flatMap((p) => [
+        `gcloud projects create ${p.projectId} --name="${p.displayName}"${orgFlag}`,
+        ...(opts.billingAccount ? [`gcloud billing projects link ${p.projectId} --billing-account=${opts.billingAccount}`] : []),
+        `gcloud services enable ${apis.join(' ')} --project=${p.projectId}`,
+      ]),
+      `gcloud compute instances create ${LAB_CANARY.driverVm} --project=${projectId} --zone=${zone} --machine-type=e2-standard-8 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-ssd --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
+      `gcloud compute instances create ${LAB_CANARY.vm} --project=${canaryProjectId} --zone=${zone} --machine-type=e2-standard-4 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=50GB --boot-disk-type=pd-balanced --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
+      `node dev/harness2/cli.mjs lab-follow-main --install --interval ${intervalMinutes} ${labFlags}`,
+      `node dev/harness2/cli.mjs lab-status ${labFlags}`,
     ],
   };
 }
@@ -1349,29 +1422,502 @@ function resolveRepoAndCommit(opts = {}) {
   };
 }
 
+/** Why a gcloud call failed, in one short line. Never err.message from execFileSync: it repeats the whole command line. */
+function gcloudProblem(err, what = 'gcloud') {
+  return Number.isInteger(err?.status)
+    ? `${what} exited with code ${err.status}`
+    : String(err?.message || err).split('\n')[0].slice(0, 200);
+}
+
+/** Runs an IAM call, again while a principal or role just created is not visible yet. */
+function iamWithRetry(execGcloud, args, maxAttempts = 5) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return execGcloud(args);
+    } catch (err) {
+      const msg = String(err?.stderr || err?.message || '');
+      if (attempt < maxAttempts && msg.includes('does not exist')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /**
- * Provision the two-tier GCP lab (`paraclete-h2-lab`) idempotently:
+ * Steps 1 to 7 of provisionGcpLab for one of the lab's projects: the project and its billing, the APIs,
+ * the agent's service account and its roles, Firestore, the bucket, the network and the IAP SSH
+ * firewall. Each step checks first, so a second run creates nothing. Returns the network's name.
+ */
+function provisionLabProject(plan, project, { execGcloud, recordStep }) {
+  const p = project.projectId;
+  const step = (name, status, detail = '') => recordStep(name, status, detail, p);
+
+  // 1. Ensure project exists
+  let projectExists = false;
+  try {
+    const num = execGcloud(['projects', 'describe', p, '--format=value(projectNumber)']);
+    projectExists = Boolean(num);
+  } catch {
+    projectExists = false;
+  }
+  if (!projectExists) {
+    const createArgs = ['projects', 'create', p, `--name=${project.displayName}`, '--quiet'];
+    if (plan.organizationId) {
+      createArgs.push(`--organization=${plan.organizationId}`);
+    }
+    execGcloud(createArgs);
+    step('project', 'created', p);
+  } else {
+    step('project', 'exists', p);
+  }
+
+  // 2. Ensure billing is linked
+  let billingEnabled = false;
+  try {
+    const enabled = execGcloud(['billing', 'projects', 'describe', p, '--format=value(billingEnabled)']);
+    billingEnabled = /^true$/i.test(String(enabled).trim());
+  } catch {
+    billingEnabled = false;
+  }
+  if (!billingEnabled && plan.billingAccount) {
+    execGcloud(['billing', 'projects', 'link', p, `--billing-account=${plan.billingAccount}`, '--quiet']);
+    step('billing', 'linked', plan.billingAccount);
+  } else {
+    step('billing', billingEnabled ? 'enabled' : 'skipped', plan.billingAccount || '');
+  }
+
+  // 3. Enable APIs (in batches of 10 per Service Usage limit)
+  for (let i = 0; i < plan.apis.length; i += 10) {
+    const batch = plan.apis.slice(i, i + 10);
+    execGcloud(['services', 'enable', ...batch, `--project=${p}`, '--quiet']);
+  }
+  step('apis', 'enabled', `${plan.apis.length} APIs`);
+
+  // 4. Service account & IAM bindings
+  let saExists = false;
+  try {
+    const email = execGcloud([
+      'iam',
+      'service-accounts',
+      'describe',
+      project.serviceAccountEmail,
+      `--project=${p}`,
+      '--format=value(email)',
+    ]);
+    saExists = Boolean(email);
+  } catch {
+    saExists = false;
+  }
+  if (!saExists) {
+    execGcloud([
+      'iam',
+      'service-accounts',
+      'create',
+      plan.serviceAccountId,
+      `--project=${p}`,
+      '--display-name=paraclete agent',
+      '--description=The paraclete agent: its VMs run as this account.',
+      '--quiet',
+    ]);
+    step('service-account', 'created', project.serviceAccountEmail);
+  } else {
+    step('service-account', 'exists', project.serviceAccountEmail);
+  }
+
+  for (const role of plan.projectRoles) {
+    iamWithRetry(execGcloud, [
+      'projects',
+      'add-iam-policy-binding',
+      p,
+      `--member=serviceAccount:${project.serviceAccountEmail}`,
+      `--role=${role}`,
+      '--condition=None',
+      '--quiet',
+    ]);
+  }
+  iamWithRetry(execGcloud, [
+    'iam',
+    'service-accounts',
+    'add-iam-policy-binding',
+    project.serviceAccountEmail,
+    `--project=${p}`,
+    `--member=serviceAccount:${project.serviceAccountEmail}`,
+    '--role=roles/iam.serviceAccountUser',
+    '--condition=None',
+    '--quiet',
+  ]);
+  step('iam', 'bound', `${plan.projectRoles.length} project roles`);
+
+  // 5. Firestore Native database
+  let fsType = '';
+  try {
+    fsType = execGcloud([
+      'firestore',
+      'databases',
+      'describe',
+      '--database=(default)',
+      `--project=${p}`,
+      '--format=value(type)',
+    ]);
+  } catch {
+    fsType = '';
+  }
+  if (!fsType) {
+    execGcloud([
+      'firestore',
+      'databases',
+      'create',
+      '--database=(default)',
+      `--location=${plan.region}`,
+      '--type=firestore-native',
+      `--project=${p}`,
+      '--quiet',
+    ]);
+    step('firestore', 'created', plan.region);
+  } else {
+    step('firestore', 'exists', fsType);
+  }
+
+  // 6. GCS bucket
+  let bucketExists = false;
+  try {
+    const bName = execGcloud([
+      'storage',
+      'buckets',
+      'describe',
+      `gs://${project.bucket}`,
+      `--project=${p}`,
+      '--format=value(name)',
+    ]);
+    bucketExists = Boolean(bName);
+  } catch {
+    bucketExists = false;
+  }
+  if (!bucketExists) {
+    execGcloud([
+      'storage',
+      'buckets',
+      'create',
+      `gs://${project.bucket}`,
+      `--project=${p}`,
+      `--location=${plan.region}`,
+      '--uniform-bucket-level-access',
+      '--public-access-prevention',
+      '--quiet',
+    ]);
+    step('bucket', 'created', `gs://${project.bucket}`);
+  } else {
+    step('bucket', 'exists', `gs://${project.bucket}`);
+  }
+  execGcloud([
+    'storage',
+    'buckets',
+    'add-iam-policy-binding',
+    `gs://${project.bucket}`,
+    `--member=serviceAccount:${project.serviceAccountEmail}`,
+    '--role=roles/storage.objectAdmin',
+    '--quiet',
+  ]);
+
+  // 7. Network & IAP SSH firewall rules
+  let networkName = 'default';
+  try {
+    const net = execGcloud(['compute', 'networks', 'describe', 'default', `--project=${p}`, '--format=value(name)']);
+    if (!net) networkName = 'paraclete';
+  } catch {
+    networkName = 'paraclete';
+  }
+  if (networkName === 'paraclete') {
+    let customNetExists = false;
+    try {
+      customNetExists = Boolean(
+        execGcloud(['compute', 'networks', 'describe', 'paraclete', `--project=${p}`, '--format=value(name)']),
+      );
+    } catch {
+      customNetExists = false;
+    }
+    if (!customNetExists) {
+      execGcloud([
+        'compute',
+        'networks',
+        'create',
+        'paraclete',
+        '--subnet-mode=auto',
+        '--description=Created by the paraclete installer',
+        `--project=${p}`,
+        '--quiet',
+      ]);
+    }
+  }
+
+  let allowRuleExists = false;
+  try {
+    allowRuleExists = Boolean(
+      execGcloud(['compute', 'firewall-rules', 'describe', 'paraclete-allow-iap-ssh', `--project=${p}`, '--format=value(name)']),
+    );
+  } catch {
+    allowRuleExists = false;
+  }
+  if (!allowRuleExists) {
+    execGcloud([
+      'compute',
+      'firewall-rules',
+      'create',
+      'paraclete-allow-iap-ssh',
+      `--network=${networkName}`,
+      '--direction=INGRESS',
+      '--action=ALLOW',
+      '--rules=tcp:22',
+      '--source-ranges=35.235.240.0/20',
+      '--target-tags=paraclete',
+      '--priority=1000',
+      '--description=SSH to the paraclete VMs through Identity-Aware Proxy only',
+      `--project=${p}`,
+      '--quiet',
+    ]);
+  }
+
+  let denyRuleExists = false;
+  try {
+    denyRuleExists = Boolean(
+      execGcloud(['compute', 'firewall-rules', 'describe', 'paraclete-deny-ingress', `--project=${p}`, '--format=value(name)']),
+    );
+  } catch {
+    denyRuleExists = false;
+  }
+  if (!denyRuleExists) {
+    execGcloud([
+      'compute',
+      'firewall-rules',
+      'create',
+      'paraclete-deny-ingress',
+      `--network=${networkName}`,
+      '--direction=INGRESS',
+      '--action=DENY',
+      '--rules=all',
+      '--source-ranges=0.0.0.0/0',
+      '--target-tags=paraclete',
+      '--priority=65000',
+      '--description=Nothing else reaches the paraclete VMs',
+      `--project=${p}`,
+      '--quiet',
+    ]);
+  }
+  step('network', 'ready', networkName);
+  return networkName;
+}
+
+/**
+ * Step 8 of provisionGcpLab: the driver's access to the canary's project (lab-canary.mjs). The custom
+ * SSH role is created, brought back from deletion or given the permissions it should have, and left
+ * alone when it already has them; the bindings are added, which changes nothing when they are there.
+ */
+function grantDriverAccess(plan, { execGcloud, recordStep }) {
+  const access = plan.driverAccess;
+  const p = access.projectId;
+  const role = access.sshRole;
+  const wanted = [...role.permissions].sort();
+  let described = null;
+  try {
+    described = execGcloud(['iam', 'roles', 'describe', role.id, `--project=${p}`, '--format=json']);
+  } catch {
+    described = null;
+  }
+  if (described === null) {
+    execGcloud([
+      'iam',
+      'roles',
+      'create',
+      role.id,
+      `--project=${p}`,
+      `--title=${role.title}`,
+      `--description=${role.description}`,
+      `--permissions=${wanted.join(',')}`,
+      '--stage=GA',
+      '--quiet',
+    ]);
+    recordStep('driver-access:ssh-role', 'created', role.name, p);
+  } else {
+    let current = null;
+    try {
+      current = JSON.parse(described);
+    } catch {
+      current = null;
+    }
+    const deleted = current?.deleted === true;
+    if (deleted) execGcloud(['iam', 'roles', 'undelete', role.id, `--project=${p}`, '--quiet']);
+    const have = Array.isArray(current?.includedPermissions) ? [...current.includedPermissions].sort().join(',') : null;
+    const same = have === wanted.join(',');
+    if (!same) execGcloud(['iam', 'roles', 'update', role.id, `--project=${p}`, `--permissions=${wanted.join(',')}`, '--quiet']);
+    recordStep('driver-access:ssh-role', deleted ? 'undeleted' : same ? 'exists' : 'updated', role.name, p);
+  }
+  for (const projectRole of access.projectRoles) {
+    iamWithRetry(execGcloud, [
+      'projects',
+      'add-iam-policy-binding',
+      p,
+      `--member=${access.member}`,
+      `--role=${projectRole}`,
+      '--condition=None',
+      '--quiet',
+    ]);
+  }
+  for (const binding of access.serviceAccountRoles) {
+    iamWithRetry(execGcloud, [
+      'iam',
+      'service-accounts',
+      'add-iam-policy-binding',
+      binding.serviceAccount,
+      `--project=${p}`,
+      `--member=${access.member}`,
+      `--role=${binding.role}`,
+      '--condition=None',
+      '--quiet',
+    ]);
+  }
+  recordStep(
+    'driver-access',
+    'bound',
+    `${access.member}: ${access.projectRoles.length} project roles, ${access.serviceAccountRoles.length} on the canary's account`,
+    p,
+  );
+}
+
+/** A project's VMs, as `gcloud compute instances list` describes them. Throws when gcloud fails. */
+function listInstances(execGcloud, projectId) {
+  const raw = execGcloud(['compute', 'instances', 'list', `--project=${projectId}`, '--format=json']);
+  const list = raw ? JSON.parse(raw) : [];
+  return Array.isArray(list) ? list : [];
+}
+
+/** One listed VM, in the shape lab-status reports. */
+function describeInstance(inst, projectId) {
+  const items = inst?.metadata?.items || [];
+  const meta = (key) => items.find((i) => i.key === key)?.value || null;
+  const machineTypeParts = String(inst.machineType || '').split('/');
+  const zoneParts = String(inst.zone || '').split('/');
+  return {
+    name: inst.name,
+    project: projectId,
+    status: inst.status,
+    machineType: machineTypeParts[machineTypeParts.length - 1] || null,
+    zone: zoneParts[zoneParts.length - 1] || null,
+    role: meta('paraclete-role'),
+    agentName: meta('paraclete-agent-name'),
+    commit: meta('paraclete-ref'),
+    internalIp: inst?.networkInterfaces?.[0]?.networkIP || null,
+    externalIp: inst?.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP || null,
+  };
+}
+
+/** Whether a listed VM was installed as a paraclete: install.sh's metadata names its role and ref. */
+function carriesParaclete(inst) {
+  return (inst?.metadata?.items || []).some((item) => item.key === 'paraclete-role' || item.key === 'paraclete-ref');
+}
+
+/**
+ * What stops provisionGcpLab before it changes anything, or null. It reads only. A project that does
+ * not exist yet, or has no billing, cannot have its APIs enabled unless `--billing` is given, which an
+ * existing lab gaining its canary's project runs into. And a project that already holds a paraclete
+ * other than its own lab VM (another instance's project, named by `--project` or `--canary-project`)
+ * would hold two; in the lab's project, a canary from before is the one other VM allowed, and step 10
+ * reports it.
+ */
+function labPreflight(plan, execGcloud) {
+  for (const project of plan.projects) {
+    const p = project.projectId;
+    let exists = false;
+    try {
+      exists = Boolean(execGcloud(['projects', 'describe', p, '--format=value(projectNumber)']));
+    } catch {
+      exists = false;
+    }
+    if (!plan.billingAccount) {
+      let billed = false;
+      if (exists) {
+        try {
+          billed = /^true$/i.test(String(execGcloud(['billing', 'projects', 'describe', p, '--format=value(billingEnabled)'])).trim());
+        } catch {
+          billed = false;
+        }
+      }
+      if (!billed) {
+        const why = exists ? `${p} has no billing account linked` : `${p} does not exist yet, and a new project has no billing account`;
+        return `${why}, so its APIs cannot be enabled. Run lab-provision again with --billing <account-id>, and --org <org-id> too if the lab is in an organization. Nothing was changed.`;
+      }
+    }
+    if (!exists) continue;
+    let listed;
+    try {
+      listed = listInstances(execGcloud, p);
+    } catch (err) {
+      // Compute Engine not enabled yet: then the project has no VM at all.
+      if (/not enabled|SERVICE_DISABLED|has not been used/i.test(String(err?.stderr || err?.message || ''))) continue;
+      return `the VMs of ${p} could not be listed (${gcloudProblem(err)}), so it is not known whether it already holds a paraclete. Nothing was changed.`;
+    }
+    const allowed = new Set([project.vm, ...(p === plan.projectId ? [LAB_CANARY.vm] : [])]);
+    const others = listed.filter((inst) => !allowed.has(inst?.name) && carriesParaclete(inst)).map((inst) => inst.name);
+    if (others.length) {
+      const flag = p === plan.projectId ? '--project' : '--canary-project';
+      return `${p} already holds a paraclete (${others.join(', ')}), and one project holds one paraclete. Name another project with ${flag}. Nothing was changed.`;
+    }
+  }
+  return null;
+}
+
+/**
+ * A canary left in the lab's own project, from before the canary had a project of its own: two
+ * paracletes in one project, which share its Firestore and bucket. Nothing deletes it on its own.
+ */
+function oldCanaryReport(plan, vm) {
+  const zone = vm.zone || plan.zone;
+  const deleteCommand = oldCanaryDeleteCommand({ projectId: plan.projectId, zone });
+  return {
+    name: vm.name,
+    project: plan.projectId,
+    zone,
+    status: vm.status || null,
+    deleteCommand,
+    note: `${vm.name} still runs in ${plan.projectId}, the driver's project, so two paracletes share its Firestore and bucket. Nothing deletes it on its own. Once the canary in ${plan.canaryProjectId} is up (lab-status), delete this one: ${deleteCommand}`,
+  };
+}
+
+/**
+ * Provision the harness lab idempotently, in two projects (buildGcpLabPlan): the lab's, which holds
+ * `paraclete-h2-driver`, and the canary's, which holds `paraclete-h2-canary`. First, reading only, it
+ * stops with `error` when a project cannot be billed or already holds another paraclete
+ * (labPreflight). Then, for each project:
  * 1. Create or verify the GCP project (and optional organization parent).
  * 2. Link the billing account if billing is not yet enabled.
  * 3. Enable required Google Cloud APIs.
- * 4. Ensure `paraclete-agent` service account and project/self IAM bindings.
+ * 4. Ensure the `paraclete-agent` service account and its project/self IAM bindings.
  * 5. Ensure Native-mode Firestore `(default)` database in `region`.
  * 6. Ensure GCS bucket `gs://<project>-paraclete` and grant `roles/storage.objectAdmin`.
  * 7. Ensure VPC network and IAP SSH ingress/deny firewall rules.
- * 8. Create or update `paraclete-h2-driver` (`e2-standard-8`) and `paraclete-h2-canary` (`e2-standard-4`).
- * 9. Install the follow-main timer on both (lab only; lab-updater.mjs), over IAP SSH.
+ * Then, once:
+ * 8. Give the driver's agent account its access to the canary's project (lab-canary.mjs).
+ * 9. Create or update `paraclete-h2-driver` (`e2-standard-8`) in the lab's project and
+ *    `paraclete-h2-canary` (`e2-standard-4`) in the canary's.
+ * 10. Look for a canary left in the lab's own project. It is never deleted here: the result names it
+ *    (`oldCanary`) with the command that deletes it, to run once the new canary is up.
+ * 11. Over IAP SSH: install the follow-main timer on both VMs (lab only; lab-updater.mjs), then write
+ *    the canary's coordinates into the driver's harness checkout (`.local/instance.env`).
  *
- * Step 9 is an SSH step, not part of the startup script, for three reasons. The startup script runs
+ * Step 11 is an SSH step, not part of the startup script, for three reasons. The startup script runs
  * only at boot, so it cannot reach a VM that is already running, and this function only updates the
  * metadata of an existing VM. It stays install.sh's own stub, so the lab boots the way a product
  * instance does, which is what the canary is there to show. And `lab-follow-main --uninstall` must
  * stick, which it would not if every boot put the timer back. The same install step serves
  * `lab-follow-main --install` (manageLabFollowMain), so the two cannot drift apart. A new VM's SSH
- * may need a minute to come up, so the step is tried `sshAttempts` times. A VM it cannot reach makes
- * the result not ok, with the command to run later; every earlier step stands.
+ * may need a minute to come up, so the step is tried `sshAttempts` times. A VM it cannot reach, or a
+ * driver without its harness checkout yet, makes the result not ok, with the command to run later;
+ * every earlier step stands.
  *
  * @param {object} [opts]
  * @param {string} [opts.projectId]
+ * @param {string} [opts.canaryProjectId]
  * @param {string} [opts.region]
  * @param {string} [opts.zone]
  * @param {string} [opts.organizationId]
@@ -1406,317 +1952,29 @@ export function provisionGcpLab(opts = {}) {
     };
   }
 
+  // 0. Before anything changes: each project can be billed, and none holds another paraclete
+  const refused = labPreflight(plan, execGcloud);
+  if (refused) {
+    return { ok: false, dryRun: false, plan, repo, commit, release, stepsExecuted: [], error: refused };
+  }
+
   const stepsExecuted = [];
-  const recordStep = (step, status, detail = '') => {
-    const entry = { step, status, detail };
+  const recordStep = (step, status, detail = '', project = plan.projectId) => {
+    const entry = { step, project, status, detail };
     stepsExecuted.push(entry);
     onStep(entry);
   };
 
-  // 1. Ensure project exists
-  let projectExists = false;
-  try {
-    const num = execGcloud(['projects', 'describe', plan.projectId, '--format=value(projectNumber)']);
-    projectExists = Boolean(num);
-  } catch {
-    projectExists = false;
-  }
-  if (!projectExists) {
-    const createArgs = ['projects', 'create', plan.projectId, '--name=Paraclete H2 Evolution Lab', '--quiet'];
-    if (plan.organizationId) {
-      createArgs.push(`--organization=${plan.organizationId}`);
-    }
-    execGcloud(createArgs);
-    recordStep('project', 'created', plan.projectId);
-  } else {
-    recordStep('project', 'exists', plan.projectId);
+  // 1-7. Each project, with what its VM needs
+  const networks = {};
+  for (const project of plan.projects) {
+    networks[project.projectId] = provisionLabProject(plan, project, { execGcloud, recordStep });
   }
 
-  // 2. Ensure billing is linked
-  let billingEnabled = false;
-  try {
-    const enabled = execGcloud(['billing', 'projects', 'describe', plan.projectId, '--format=value(billingEnabled)']);
-    billingEnabled = /^true$/i.test(String(enabled).trim());
-  } catch {
-    billingEnabled = false;
-  }
-  if (!billingEnabled && plan.billingAccount) {
-    execGcloud([
-      'billing',
-      'projects',
-      'link',
-      plan.projectId,
-      `--billing-account=${plan.billingAccount}`,
-      '--quiet',
-    ]);
-    recordStep('billing', 'linked', plan.billingAccount);
-  } else {
-    recordStep('billing', billingEnabled ? 'enabled' : 'skipped', plan.billingAccount || '');
-  }
+  // 8. The driver's access to the canary's project
+  grantDriverAccess(plan, { execGcloud, recordStep });
 
-  // 3. Enable APIs (in batches of 10 per Service Usage limit)
-  for (let i = 0; i < plan.apis.length; i += 10) {
-    const batch = plan.apis.slice(i, i + 10);
-    execGcloud(['services', 'enable', ...batch, `--project=${plan.projectId}`, '--quiet']);
-  }
-  recordStep('apis', 'enabled', `${plan.apis.length} APIs`);
-
-  // 4. Service account & IAM bindings
-  let saExists = false;
-  try {
-    const email = execGcloud([
-      'iam',
-      'service-accounts',
-      'describe',
-      plan.serviceAccountEmail,
-      `--project=${plan.projectId}`,
-      '--format=value(email)',
-    ]);
-    saExists = Boolean(email);
-  } catch {
-    saExists = false;
-  }
-  if (!saExists) {
-    execGcloud([
-      'iam',
-      'service-accounts',
-      'create',
-      plan.serviceAccountId,
-      `--project=${plan.projectId}`,
-      '--display-name=paraclete agent',
-      '--description=The paraclete agent: its VMs run as this account.',
-      '--quiet',
-    ]);
-    recordStep('service-account', 'created', plan.serviceAccountEmail);
-  } else {
-    recordStep('service-account', 'exists', plan.serviceAccountEmail);
-  }
-
-  const execIamWithRetry = (args, maxAttempts = 5) => {
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        return execGcloud(args);
-      } catch (err) {
-        const msg = String(err?.stderr || err?.message || '');
-        if (attempt < maxAttempts && msg.includes('does not exist')) {
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3000);
-          continue;
-        }
-        throw err;
-      }
-    }
-  };
-
-  for (const role of plan.projectRoles) {
-    execIamWithRetry([
-      'projects',
-      'add-iam-policy-binding',
-      plan.projectId,
-      `--member=serviceAccount:${plan.serviceAccountEmail}`,
-      `--role=${role}`,
-      '--condition=None',
-      '--quiet',
-    ]);
-  }
-  execIamWithRetry([
-    'iam',
-    'service-accounts',
-    'add-iam-policy-binding',
-    plan.serviceAccountEmail,
-    `--project=${plan.projectId}`,
-    `--member=serviceAccount:${plan.serviceAccountEmail}`,
-    '--role=roles/iam.serviceAccountUser',
-    '--condition=None',
-    '--quiet',
-  ]);
-  recordStep('iam', 'bound', `${plan.projectRoles.length} project roles`);
-
-  // 5. Firestore Native database
-  let fsType = '';
-  try {
-    fsType = execGcloud([
-      'firestore',
-      'databases',
-      'describe',
-      '--database=(default)',
-      `--project=${plan.projectId}`,
-      '--format=value(type)',
-    ]);
-  } catch {
-    fsType = '';
-  }
-  if (!fsType) {
-    execGcloud([
-      'firestore',
-      'databases',
-      'create',
-      '--database=(default)',
-      `--location=${plan.region}`,
-      '--type=firestore-native',
-      `--project=${plan.projectId}`,
-      '--quiet',
-    ]);
-    recordStep('firestore', 'created', plan.region);
-  } else {
-    recordStep('firestore', 'exists', fsType);
-  }
-
-  // 6. GCS bucket
-  let bucketExists = false;
-  try {
-    const bName = execGcloud([
-      'storage',
-      'buckets',
-      'describe',
-      `gs://${plan.bucket}`,
-      `--project=${plan.projectId}`,
-      '--format=value(name)',
-    ]);
-    bucketExists = Boolean(bName);
-  } catch {
-    bucketExists = false;
-  }
-  if (!bucketExists) {
-    execGcloud([
-      'storage',
-      'buckets',
-      'create',
-      `gs://${plan.bucket}`,
-      `--project=${plan.projectId}`,
-      `--location=${plan.region}`,
-      '--uniform-bucket-level-access',
-      '--public-access-prevention',
-      '--quiet',
-    ]);
-    recordStep('bucket', 'created', `gs://${plan.bucket}`);
-  } else {
-    recordStep('bucket', 'exists', `gs://${plan.bucket}`);
-  }
-  execGcloud([
-    'storage',
-    'buckets',
-    'add-iam-policy-binding',
-    `gs://${plan.bucket}`,
-    `--member=serviceAccount:${plan.serviceAccountEmail}`,
-    '--role=roles/storage.objectAdmin',
-    '--quiet',
-  ]);
-
-  // 7. Network & IAP SSH firewall rules
-  let networkName = 'default';
-  try {
-    const net = execGcloud([
-      'compute',
-      'networks',
-      'describe',
-      'default',
-      `--project=${plan.projectId}`,
-      '--format=value(name)',
-    ]);
-    if (!net) networkName = 'paraclete';
-  } catch {
-    networkName = 'paraclete';
-  }
-  if (networkName === 'paraclete') {
-    let customNetExists = false;
-    try {
-      customNetExists = Boolean(
-        execGcloud([
-          'compute',
-          'networks',
-          'describe',
-          'paraclete',
-          `--project=${plan.projectId}`,
-          '--format=value(name)',
-        ]),
-      );
-    } catch {
-      customNetExists = false;
-    }
-    if (!customNetExists) {
-      execGcloud([
-        'compute',
-        'networks',
-        'create',
-        'paraclete',
-        '--subnet-mode=auto',
-        '--description=Created by the paraclete installer',
-        `--project=${plan.projectId}`,
-        '--quiet',
-      ]);
-    }
-  }
-
-  let allowRuleExists = false;
-  try {
-    allowRuleExists = Boolean(
-      execGcloud([
-        'compute',
-        'firewall-rules',
-        'describe',
-        'paraclete-allow-iap-ssh',
-        `--project=${plan.projectId}`,
-        '--format=value(name)',
-      ]),
-    );
-  } catch {
-    allowRuleExists = false;
-  }
-  if (!allowRuleExists) {
-    execGcloud([
-      'compute',
-      'firewall-rules',
-      'create',
-      'paraclete-allow-iap-ssh',
-      `--network=${networkName}`,
-      '--direction=INGRESS',
-      '--action=ALLOW',
-      '--rules=tcp:22',
-      '--source-ranges=35.235.240.0/20',
-      '--target-tags=paraclete',
-      '--priority=1000',
-      '--description=SSH to the paraclete VMs through Identity-Aware Proxy only',
-      `--project=${plan.projectId}`,
-      '--quiet',
-    ]);
-  }
-
-  let denyRuleExists = false;
-  try {
-    denyRuleExists = Boolean(
-      execGcloud([
-        'compute',
-        'firewall-rules',
-        'describe',
-        'paraclete-deny-ingress',
-        `--project=${plan.projectId}`,
-        '--format=value(name)',
-      ]),
-    );
-  } catch {
-    denyRuleExists = false;
-  }
-  if (!denyRuleExists) {
-    execGcloud([
-      'compute',
-      'firewall-rules',
-      'create',
-      'paraclete-deny-ingress',
-      `--network=${networkName}`,
-      '--direction=INGRESS',
-      '--action=DENY',
-      '--rules=all',
-      '--source-ranges=0.0.0.0/0',
-      '--target-tags=paraclete',
-      '--priority=65000',
-      '--description=Nothing else reaches the paraclete VMs',
-      `--project=${plan.projectId}`,
-      '--quiet',
-    ]);
-  }
-  recordStep('network', 'ready', networkName);
-
-  // 8. Provision both VMs (`paraclete-h2-driver` + `paraclete-h2-canary`)
+  // 9. Provision both VMs, each in its own project
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-h2-lab-'));
   const startupFile = path.join(tmpDir, 'startup-script.sh');
   fs.writeFileSync(startupFile, PARACLETE_STARTUP_SCRIPT, 'utf8');
@@ -1731,7 +1989,7 @@ export function provisionGcpLab(opts = {}) {
           'describe',
           vm.name,
           `--zone=${plan.zone}`,
-          `--project=${plan.projectId}`,
+          `--project=${vm.projectId}`,
           '--format=value(name)',
         ]);
         vmExists = Boolean(existingName);
@@ -1745,7 +2003,7 @@ export function provisionGcpLab(opts = {}) {
         `paraclete-release=${release}`,
         `paraclete-role=${vm.role}`,
         `paraclete-agent-name=${vm.agentName}`,
-        `paraclete-bucket=${plan.bucket}`,
+        `paraclete-bucket=${vm.bucket}`,
       ].join(',');
 
       if (!vmExists) {
@@ -1755,15 +2013,15 @@ export function provisionGcpLab(opts = {}) {
           'create',
           vm.name,
           `--zone=${plan.zone}`,
-          `--project=${plan.projectId}`,
+          `--project=${vm.projectId}`,
           `--machine-type=${vm.machineType}`,
           `--boot-disk-size=${vm.bootDiskGb}GB`,
           `--boot-disk-type=${vm.bootDiskType}`,
           `--image-family=${vm.imageFamily}`,
           `--image-project=${vm.imageProject}`,
-          `--service-account=${plan.serviceAccountEmail}`,
+          `--service-account=${vm.serviceAccountEmail}`,
           '--scopes=cloud-platform,https://www.googleapis.com/auth/drive',
-          `--network=${networkName}`,
+          `--network=${networks[vm.projectId]}`,
           '--tags=paraclete',
           '--shielded-secure-boot',
           '--shielded-vtpm',
@@ -1772,7 +2030,7 @@ export function provisionGcpLab(opts = {}) {
           `--metadata-from-file=startup-script=${startupFile}`,
           '--quiet',
         ]);
-        recordStep(`vm:${vm.name}`, 'created', `${vm.machineType} (${vm.role})`);
+        recordStep(`vm:${vm.name}`, 'created', `${vm.machineType} (${vm.role})`, vm.projectId);
       } else {
         execGcloud([
           'compute',
@@ -1780,37 +2038,65 @@ export function provisionGcpLab(opts = {}) {
           'add-metadata',
           vm.name,
           `--zone=${plan.zone}`,
-          `--project=${plan.projectId}`,
+          `--project=${vm.projectId}`,
           `--metadata=${metadataItems}`,
           `--metadata-from-file=startup-script=${startupFile}`,
           '--quiet',
         ]);
-        recordStep(`vm:${vm.name}`, 'updated', `${vm.machineType} (${vm.role})`);
+        recordStep(`vm:${vm.name}`, 'updated', `${vm.machineType} (${vm.role})`, vm.projectId);
       }
     }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 
-  // 9. The follow-main timer (lab only), over IAP SSH
-  const followMain = plan.vms.map((vm) =>
-    followMainOnVm(plan, vm, 'install', {
-      execGcloud,
-      attempts: opts.sshAttempts ?? 8,
-      sleep: opts.sleep,
-    }),
-  );
+  // 10. A canary left in the lab's own project: reported, never deleted
+  let oldCanary = null;
+  try {
+    const left = listInstances(execGcloud, plan.projectId).find((inst) => inst?.name === LAB_CANARY.vm);
+    if (left) oldCanary = oldCanaryReport(plan, describeInstance(left, plan.projectId));
+    recordStep('old-canary', oldCanary ? 'kept' : 'none', oldCanary ? oldCanary.deleteCommand : '', plan.projectId);
+  } catch (err) {
+    recordStep('old-canary', 'unknown', `the lab's VMs could not be listed: ${gcloudProblem(err)}`, plan.projectId);
+  }
+
+  // 11. The follow-main timer (lab only), then the canary's coordinates on the driver, over IAP SSH
+  const sshOptions = { execGcloud, attempts: opts.sshAttempts ?? 8, sleep: opts.sleep };
+  const followMain = plan.vms.map((vm) => followMainOnVm(plan, vm, 'install', sshOptions));
   for (const result of followMain) {
     recordStep(
       `follow-main:${result.name}`,
       result.ok ? result.installed : 'failed',
       result.ok ? `${FOLLOW_MAIN.timerUnit} every ${plan.followMain.intervalMinutes} min` : result.error,
+      result.project,
     );
   }
   const followMainOk = followMain.every((r) => r.ok);
 
+  const driver = plan.vms.find((vm) => vm.name === plan.instanceEnv.vm);
+  const driverAnswered = followMain.find((r) => r.name === driver.name)?.ok === true;
+  const written = driverAnswered
+    ? instanceEnvOnDriver(plan, driver, sshOptions)
+    : { name: driver.name, project: driver.projectId, ok: false, state: 'skipped', error: `${driver.name}: it did not answer over SSH` };
+  const labFlags = labFlagsOf(plan);
+  const instanceEnv = {
+    ...written,
+    path: plan.instanceEnv.path,
+    ...(written.ok
+      ? {}
+      : {
+          hint: `The driver's harness checkout has no coordinates for the canary yet. Once ${driver.name} answers over SSH and ${FOLLOW_MAIN.harnessCheckout} is a checkout the paraclete user owns, run this again; every step is idempotent: node dev/harness2/cli.mjs lab-provision ${labFlags} --interval ${plan.followMain.intervalMinutes}`,
+        }),
+  };
+  recordStep(
+    `instance-env:${driver.name}`,
+    written.ok ? written.state : written.state || 'failed',
+    written.ok ? `${plan.instanceEnv.path} names ${plan.canaryProjectId}` : written.error,
+    driver.projectId,
+  );
+
   return {
-    ok: followMainOk,
+    ok: followMainOk && instanceEnv.ok,
     dryRun: false,
     plan,
     repo,
@@ -1818,51 +2104,71 @@ export function provisionGcpLab(opts = {}) {
     release,
     stepsExecuted,
     followMain,
+    instanceEnv,
+    ...(oldCanary ? { oldCanary } : {}),
     ...(followMainOk
       ? {}
       : {
-          hint: `The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval ${plan.followMain.intervalMinutes} --project ${plan.projectId} --zone ${plan.zone}`,
+          hint: `The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval ${plan.followMain.intervalMinutes} ${labFlags}`,
         }),
   };
 }
 
 /**
- * Runs one follow-main action on one lab VM over IAP SSH (dev-env.mjs sshArgs) and reads back its
- * result. Never throws: a VM that cannot be reached after `attempts` tries is a result with ok false.
+ * Runs one root command on one lab VM over IAP SSH (dev-env.mjs sshArgs, in the VM's own project) and
+ * reads back its result with `interpret`. Tries again, up to `attempts` times, when SSH fails or
+ * `retry(result)` says the script did not get to its end. Never throws: a VM that cannot be reached is
+ * a result with ok false.
  *
- * @param {{projectId: string, zone: string, followMain: {intervalMinutes: number}}} plan
- * @param {{name: string, harnessCheckout?: string|null}} vm
- * @param {'install'|'uninstall'|'status'} action
- * @param {{execGcloud?: Function, attempts?: number, sleep?: Function, retryMs?: number}} [o]
+ * @param {{zone: string}} plan
+ * @param {{name: string, projectId: string}} vm
+ * @param {string} command
+ * @param {(stdout: string) => {ok: boolean, error?: string}} interpret
+ * @param {{execGcloud?: Function, attempts?: number, sleep?: Function, retryMs?: number, retry?: Function}} [o]
  */
-function followMainOnVm(plan, vm, action, { execGcloud = defaultExecGcloud, attempts = 1, sleep = defaultSleep, retryMs = 15_000 } = {}) {
-  const command = followMainCommandFor(action, vm, { intervalMinutes: plan.followMain.intervalMinutes });
-  const args = sshArgs({ VM: vm.name, ZONE: plan.zone, PROJECT_ID: plan.projectId }, command);
+function sshOnLabVm(plan, vm, command, interpret, { execGcloud = defaultExecGcloud, attempts = 1, sleep = defaultSleep, retryMs = 15_000, retry = (r) => !r.ok } = {}) {
+  const args = sshArgs({ VM: vm.name, ZONE: plan.zone, PROJECT_ID: vm.projectId }, command);
+  const where = { name: vm.name, project: vm.projectId };
   let problem = 'not tried';
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     if (attempt > 1) sleep(retryMs);
     try {
-      const result = followMainResult(action, parseFollowMainOutput(execGcloud(args, { interactive: true })));
-      if (result.ok) return { name: vm.name, ...result };
+      const result = interpret(execGcloud(args, { interactive: true }));
+      if (result.ok) return { ...where, ...result };
+      if (!retry(result)) return { ...where, ...result, error: `${vm.name}: ${result.error}` };
       problem = result.error;
     } catch (err) {
-      // Never err.message from execFileSync: it repeats the whole command line.
-      problem = Number.isInteger(err?.status)
-        ? `gcloud compute ssh exited with code ${err.status}`
-        : String(err?.message || err).split('\n')[0].slice(0, 200);
+      problem = gcloudProblem(err, 'gcloud compute ssh');
     }
   }
-  return { name: vm.name, ok: false, error: `${vm.name}: ${problem}${attempts > 1 ? ` (${attempts} tries)` : ''}` };
+  return { ...where, ok: false, error: `${vm.name}: ${problem}${attempts > 1 ? ` (${attempts} tries)` : ''}` };
+}
+
+/** One follow-main action on one lab VM (lab-updater.mjs), over IAP SSH. */
+function followMainOnVm(plan, vm, action, o = {}) {
+  const command = followMainCommandFor(action, vm, { intervalMinutes: plan.followMain.intervalMinutes });
+  return sshOnLabVm(plan, vm, command, (stdout) => followMainResult(action, parseFollowMainOutput(stdout)), o);
+}
+
+/**
+ * Writes the canary's coordinates into the driver's harness checkout (lab-canary.mjs), over IAP SSH.
+ * Tried again only when the script did not get to its end: a missing checkout is an answer.
+ */
+function instanceEnvOnDriver(plan, driver, o = {}) {
+  const command = instanceEnvRemoteCommand({ text: plan.instanceEnv.text, checkout: driver.harnessCheckout });
+  return sshOnLabVm(plan, driver, command, instanceEnvResult, { ...o, retry: (r) => r.state === null });
 }
 
 /**
  * Puts the follow-main timer on the lab's VMs, takes it off, or reports it (lab-updater.mjs), over
- * IAP SSH: `node dev/harness2/cli.mjs lab-follow-main [--install|--uninstall|--status]`. Lab only.
- * Install and uninstall are idempotent; status changes nothing.
+ * IAP SSH, each VM in its own project: `node dev/harness2/cli.mjs lab-follow-main
+ * [--install|--uninstall|--status]`. Lab only. Install and uninstall are idempotent; status changes
+ * nothing.
  *
  * @param {object} [opts]
  * @param {'install'|'uninstall'|'status'} [opts.action]  default status
  * @param {string} [opts.projectId]
+ * @param {string} [opts.canaryProjectId]
  * @param {string} [opts.zone]
  * @param {string} [opts.region]
  * @param {string|number} [opts.intervalMinutes]  install only, default 30
@@ -1885,6 +2191,7 @@ export function manageLabFollowMain(opts = {}) {
     ok: vms.every((vm) => vm.ok),
     action,
     projectId: plan.projectId,
+    canaryProjectId: plan.canaryProjectId,
     zone: plan.zone,
     ...(action === 'install' ? { intervalMinutes: plan.followMain.intervalMinutes } : {}),
     vms,
@@ -1892,12 +2199,16 @@ export function manageLabFollowMain(opts = {}) {
 }
 
 /**
- * Inspect the live status of `paraclete-h2-driver` and `paraclete-h2-canary` in GCP. Each running lab
- * VM also gets `followMain`: its follow-main timer, last run, installed commit and main's head, read
- * over IAP SSH as `lab-follow-main --status` reads them (null for a VM that is not running).
+ * Inspect the live status of the lab's VMs: `paraclete-h2-driver` in the lab's project and
+ * `paraclete-h2-canary` in the canary's, each listed with the project it is in. Each running lab VM
+ * also gets `followMain`: its follow-main timer, last run, installed commit and main's head, read over
+ * IAP SSH as `lab-follow-main --status` reads them (null for a VM that is not running). A canary still
+ * in the lab's own project is flagged (`oldCanary`, with the command that deletes it), and so is a
+ * project whose VMs cannot be listed; `ok` is false while `problems` names any.
  *
  * @param {object} [opts]
  * @param {string} [opts.projectId]
+ * @param {string} [opts.canaryProjectId]
  * @param {string} [opts.zone]
  * @param {string} [opts.region]
  * @param {Function} [opts.execGcloud]
@@ -1905,47 +2216,41 @@ export function manageLabFollowMain(opts = {}) {
 export function inspectGcpLabStatus(opts = {}) {
   const plan = buildGcpLabPlan(opts);
   const execGcloud = opts.execGcloud || defaultExecGcloud;
-  const raw = execGcloud([
-    'compute',
-    'instances',
-    'list',
-    `--project=${plan.projectId}`,
-    '--format=json',
-  ]);
-  const list = raw ? JSON.parse(raw) : [];
-  const vms = list.map((inst) => {
-    const items = inst?.metadata?.items || [];
-    const meta = (key) => items.find((i) => i.key === key)?.value || null;
-    const machineTypeParts = String(inst.machineType || '').split('/');
-    const zoneParts = String(inst.zone || '').split('/');
-    return {
-      name: inst.name,
-      status: inst.status,
-      machineType: machineTypeParts[machineTypeParts.length - 1] || null,
-      zone: zoneParts[zoneParts.length - 1] || null,
-      role: meta('paraclete-role'),
-      agentName: meta('paraclete-agent-name'),
-      commit: meta('paraclete-ref'),
-      internalIp: inst?.networkInterfaces?.[0]?.networkIP || null,
-      externalIp: inst?.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP || null,
-    };
-  });
+  const vms = [];
+  const problems = [];
+  for (const project of plan.projects) {
+    try {
+      for (const inst of listInstances(execGcloud, project.projectId)) vms.push(describeInstance(inst, project.projectId));
+    } catch (err) {
+      problems.push(`the VMs of ${project.projectId} could not be listed: ${gcloudProblem(err)}`);
+    }
+  }
+  let oldCanary = null;
   for (const vm of vms) {
-    const labVm = plan.vms.find((v) => v.name === vm.name);
-    if (!labVm) continue;
+    const labVm = plan.vms.find((v) => v.name === vm.name && v.projectId === vm.project);
+    if (!labVm) {
+      if (vm.name === LAB_CANARY.vm && vm.project === plan.projectId) {
+        vm.oldCanary = true;
+        oldCanary = oldCanaryReport(plan, vm);
+        problems.push(oldCanary.note);
+      }
+      continue;
+    }
     if (vm.status !== 'RUNNING') {
       vm.followMain = null;
       continue;
     }
-    const { name, ...followMain } = followMainOnVm(plan, labVm, 'status', { execGcloud });
+    const { name, project, ...followMain } = followMainOnVm(plan, labVm, 'status', { execGcloud });
     vm.followMain = followMain;
   }
 
   return {
-    ok: true,
+    ok: problems.length === 0,
     projectId: plan.projectId,
+    canaryProjectId: plan.canaryProjectId,
     zone: plan.zone,
     vms,
+    problems,
+    ...(oldCanary ? { oldCanary } : {}),
   };
 }
-

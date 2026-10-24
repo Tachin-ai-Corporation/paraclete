@@ -17,7 +17,7 @@ instance.
 | `release-check.mjs` | Checks main's head on your dev instance (deploy, status, smoke) and only then cuts it as a release, with the check in the tag's message |
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you (a request Firestore refuses with 401 is sent once more with a new token from gcloud, so a long follow outlives its token) |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
-| `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`), and the harness lab (`lab-plan`, `lab-provision`, `lab-status`, `lab-follow-main`) |
+| `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`), and the harness lab, two projects with one paraclete each (`lab-plan`, `lab-provision`, `lab-status`, `lab-follow-main`) |
 | `loop/` | The self-improvement loop: one cycle has a coding agent change a checkout of main to resolve a `loop` issue, checks the change, and opens a pull request a person merges ([loop/README.md](loop/README.md)) |
 
 ## The dev loop commands
@@ -27,7 +27,8 @@ Run them from the repo root with Node 24, in Git Bash on Windows, or on macOS or
 and write the dev project's Firestore, and (for `deploy`) submit builds and deploy to Cloud Run as the
 dashboard's service account; the project's owner can. Each reads your instance from
 `.local/instance.env` and refuses to run without it. How and when to use them:
-[DEVELOPING.md](../DEVELOPING.md) section 7.
+[DEVELOPING.md](../DEVELOPING.md) section 7. SSH goes in as your local user name, unless the file sets
+`SSH_USER` (never `paraclete`, the agent's own user on the VM); the harness lab's driver sets it.
 
 | Command | Does |
 |---|---|
@@ -105,14 +106,75 @@ trajectory harvester (Loop B → Loop A):
 
 Their tests are in `tests/dev/`, against fake programs and the Firestore fake in `tests/fakes/`.
 
-### The harness lab follows main (lab only)
+### The harness lab: two projects, one paraclete each
 
-The harness lab is one GCP project (`paraclete-h2-lab` unless `--project`) with two VMs that
-`lab-provision` creates: `paraclete-h2-driver`, role `paraclete-h2`, which runs the harness from its
-checkout at `/var/lib/paraclete/harness2-repo` (owned by the `paraclete` user), and
-`paraclete-h2-canary`, role `software-engineer`. Each boots install.sh's startup stub, so a full
-paraclete install runs at the commit in its `paraclete-ref` metadata. There is no dashboard, so the
-upgrade path a product instance takes never reaches them. A timer keeps them on main's head instead.
+`lab-provision` creates two VMs, each in a GCP project of its own: `paraclete-h2-driver`, role
+`paraclete-h2`, in the lab's project (`paraclete-h2-lab` unless `--project`), which runs the harness
+from its checkout at `/var/lib/paraclete/harness2-repo` (owned by the `paraclete` user); and
+`paraclete-h2-canary`, role `software-engineer`, in the canary's project (`<lab project>-canary` unless
+`--canary-project`, which a lab project id longer than 23 characters needs, since a project id has at
+most 30). Each boots install.sh's startup stub, so a full paraclete install runs at the commit in its
+`paraclete-ref` metadata. There is no dashboard, so the upgrade path a product instance takes never
+reaches them. A timer keeps them on main's head instead (below).
+
+**Why two projects.** Each VM is a whole paraclete, and one project holds one paraclete
+([PRODUCT.md](../docs/canon/PRODUCT.md), P-1): in one project, both brains would read the same `intake`
+and `work` collections and share one bucket. So `lab-provision` gives each project what its VM needs,
+the same steps in both, each checked first so a second run changes nothing: the project and its billing
+(`--org` and `--billing` apply to both), the APIs, the `paraclete-agent` service account and its roles,
+Firestore, the `<project>-paraclete` bucket, the network and the IAP SSH firewall. Every command that
+addresses the canary uses its project: `lab-status`, `lab-follow-main`, `canary` (whose defaults are
+`paraclete-h2-canary` in the canary's project) and the commands `lab-plan` prints. Each takes
+`--canary-project`.
+
+**The canary runs main's head.** Its follow-main timer (below) moves it back there within one
+interval, so it is where main's head is checked, as a release is checked on a dev instance before it
+goes out, and never where a branch is tested: test a branch on a dev instance of your own. The driver
+checks the canary with the dev/ commands you run against a dev instance, from its checkout: `status`,
+`smoke`, `say`, `query`, `logs` and `trigger`, and `node dev/deploy.mjs <main's head> --vm-only`, which
+the timer agrees with. `dev/harness2/lab-canary.mjs` holds what follows. `lab-provision` gives the
+driver's agent account, on the canary's project only:
+
+| Grant | For |
+|---|---|
+| `roles/iap.tunnelResourceAccessor` | `gcloud compute ssh --tunnel-through-iap` (deploy, status, smoke, logs) |
+| `roles/datastore.user` | Firestore reads (all of them) and writes (say, smoke, trigger) |
+| `roles/run.viewer` | status's dashboard check, which then says there is no dashboard instead of being refused |
+| the custom role `paracleteLabDriverSsh`: `compute.instances.get`, `compute.instances.getGuestAttributes`, `compute.instances.setMetadata`, `compute.projects.get`, `compute.zoneOperations.get` | gcloud putting the driver's SSH key in the canary VM's metadata (the lab does not use OS Login). The predefined roles that may do that can also create and delete VMs |
+| `roles/iam.serviceAccountUser` on the canary's `paraclete-agent` account only | setting metadata on a VM that runs as that account |
+
+SSH with sudo on the canary is root there, so the driver can do whatever the canary's agent account
+can, in the canary's project. That is what a developer has on a dev instance, and it stops at the
+canary's project. Then, over the same IAP SSH step as the follow-main timer, `lab-provision` writes the
+canary's coordinates to `/var/lib/paraclete/harness2-repo/.local/instance.env` in the
+[dev/instance.env.example](instance.env.example) format, as the `paraclete` user, so it is theirs:
+`PROJECT_ID` the canary's project, `VM=paraclete-h2-canary`, no `DASHBOARD_URL`, and
+`SSH_USER=lab-driver`, because gcloud would otherwise log in as the driver's local user, `paraclete`,
+which on the canary is its agent's own user. The file is replaced only when it differs. `.local/` is
+gitignored, so the file never counts as a change to the checkout and never stops the timer's
+fast-forward. Until the checkout exists, nothing is written and the result is not ok, with the
+`lab-provision` command to run again once it does. `status` on the canary always reports that there is
+no dashboard, and `deploy` needs `--vm-only`. `node dev/harness2/cli.mjs canary` reaches no VM yet: on
+its own it fails and says that nothing ran, rather than report a smoke check it never made.
+
+**Where and what.** `--zone` alone puts the lab in the region that zone is in, `--region` alone in that
+region's `-a` zone, and neither in `us-central1-a`; a zone outside `--region` is refused, since the
+canary's `instance.env` would name both. Every command the lab prints names both projects, the region
+and the zone. Before it changes anything, `lab-provision` reads both projects and stops, saying why,
+when one cannot be billed (it does not exist yet, or has no billing account, and no `--billing` was
+given), or already holds a paraclete other than its own lab VM, since one project holds one paraclete:
+name another one with `--project` or `--canary-project`.
+
+**Moving an existing lab to two projects.** Run `lab-provision` again with the lab's own flags, and with
+`--billing` (and `--org`, if the lab is in an organization) given again: the canary's project is new, and
+without them it stops before it changes anything. A canary from before stays where it was:
+`lab-provision` never deletes a `paraclete-h2-canary` it finds in the lab's own project. Its result
+names it (`oldCanary`) with the command that deletes it, and `lab-status` lists it as a problem, until it
+is gone. Retire it once the canary in its own project is up (`lab-status` shows it running and on main's
+head): `gcloud compute instances delete paraclete-h2-canary --project=<lab project> --zone=<its zone>`, as
+`lab-status` prints it. What it wrote to the lab's Firestore and bucket stays there.
+
+### The harness lab follows main (lab only)
 
 **This is for the lab only.** A product instance updates through releases, from its dashboard, and never
 follows main. Nothing of this is in `install/manifest.txt`, and no install has it.
@@ -143,14 +205,14 @@ stores no credential. A run is safe twice over: a second one finds everything cu
 
 | Command | Does |
 |---|---|
-| `node dev/harness2/cli.mjs lab-follow-main --install [--interval <minutes>] [--project <id>] [--zone <zone>]` | Over IAP SSH (`dev-env.mjs` `sshArgs`, with sudo), on both VMs: writes the updater and the two units, and enables and starts the timer. A file whose content is already right is not written again, and systemd reloads only when one changed, so a second install changes nothing. `--interval` is whole minutes from 5 to 1440, default 30; a new interval takes effect at once. The units are in `/usr/local/lib/systemd/system`, because `install/bootstrap.sh` stops and removes any `paraclete-*.service` in `/etc/systemd/system` that a release does not ship |
-| `node dev/harness2/cli.mjs lab-follow-main --uninstall [--project <id>] [--zone <zone>]` | Stops and disables the timer and removes the updater, the units, the busy-since file and the upgrade log. A run in progress, which may be an upgrade, is never stopped: it finishes on its own, and the result says so. Safe twice |
-| `node dev/harness2/cli.mjs lab-follow-main [--status] [--project <id>] [--zone <zone>]` | For each VM: the timer's state, its last run and that run's line, the installed commit, main's head and whether they match, the agent's mission and busy-since, and on the driver the checkout's commit. Changes nothing |
+| `node dev/harness2/cli.mjs lab-follow-main --install [--interval <minutes>] [--project <id>] [--canary-project <id>] [--zone <zone>]` | Over IAP SSH (`dev-env.mjs` `sshArgs`, with sudo), on both VMs, each in its own project: writes the updater and the two units, and enables and starts the timer. A file whose content is already right is not written again, and systemd reloads only when one changed, so a second install changes nothing. `--interval` is whole minutes from 5 to 1440, default 30; a new interval takes effect at once. The units are in `/usr/local/lib/systemd/system`, because `install/bootstrap.sh` stops and removes any `paraclete-*.service` in `/etc/systemd/system` that a release does not ship |
+| `node dev/harness2/cli.mjs lab-follow-main --uninstall [--project <id>] [--canary-project <id>] [--zone <zone>]` | Stops and disables the timer and removes the updater, the units, the busy-since file and the upgrade log. A run in progress, which may be an upgrade, is never stopped: it finishes on its own, and the result says so. Safe twice |
+| `node dev/harness2/cli.mjs lab-follow-main [--status] [--project <id>] [--canary-project <id>] [--zone <zone>]` | For each VM: the timer's state, its last run and that run's line, the installed commit, main's head and whether they match, the agent's mission and busy-since, and on the driver the checkout's commit. Changes nothing |
 
 `lab-provision` (`--interval` too) runs the same install step on both VMs after it creates or updates
 them, and tries a new VM's SSH for about two minutes. A VM it cannot reach makes its result not ok,
-with the `lab-follow-main --install` command to run later. `lab-status` adds each running VM's timer state
-(`followMain`). The timer goes on over SSH, not through the startup script, because the startup script
+with the `lab-follow-main --install` command to run later. `lab-status` lists the VMs of both projects,
+each with its `project`, and adds each running lab VM's timer state (`followMain`). The timer goes on over SSH, not through the startup script, because the startup script
 runs only at boot and cannot reach a running VM, the lab's startup script stays install.sh's own so the
 lab boots the way an instance does, and an `--uninstall` must stick across a reboot.
 

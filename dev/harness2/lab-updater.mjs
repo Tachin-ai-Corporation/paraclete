@@ -200,32 +200,59 @@ printf 'lab-follow-main.service_active=%s\\n' "$running"
 }
 
 /**
- * The remote command that runs `script` as root on a VM: one line, the script gzipped and in base64,
- * so no shell or SSH client on the way (PuTTY's on Windows included) can re-quote it. stdin is
- * /dev/null, so nothing the script runs can wait on the terminal.
+ * The remote command that runs `script` as root on a lab VM: one line, the script gzipped and in
+ * base64, so no shell or SSH client on the way (PuTTY's on Windows included) can re-quote it. stdin is
+ * /dev/null, so nothing the script runs can wait on the terminal. `name` is the script's $0, which
+ * names it in the VM's process list. lab-canary.mjs carries its instance.env script the same way.
  *
  * @param {string} script
+ * @param {string} name
  * @param {string[]} [args]  the script's arguments; fixed words, never user input
  * @returns {string}
  */
-export function followMainRemoteCommand(script, args = []) {
-  for (const arg of args) {
+export function remoteRootCommand(script, name, args = []) {
+  for (const arg of [name, ...args]) {
     if (!/^[A-Za-z0-9._/=-]+$/.test(arg)) throw new Error(`unsafe argument '${arg}'`);
   }
   const encoded = gzipSync(Buffer.from(script, 'utf8'), { level: 9 }).toString('base64');
-  return [`sudo bash -c "$(echo ${encoded} | base64 -d | gunzip)"`, FOLLOW_MAIN.unit, ...args, '< /dev/null'].join(' ');
+  return [`sudo bash -c "$(echo ${encoded} | base64 -d | gunzip)"`, name, ...args, '< /dev/null'].join(' ');
 }
 
 /**
- * The script and arguments a followMainRemoteCommand() carries, for the tests' fake VMs.
+ * The name, script and arguments a remoteRootCommand() carries, for the tests' fake VMs.
+ *
+ * @param {string} command
+ * @returns {{name: string, script: string, args: string[]}|null}
+ */
+export function decodeRemoteRootCommand(command) {
+  const m = /^sudo bash -c "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d \| gunzip\)" (\S+)((?: \S+)*?) < \/dev\/null$/.exec(String(command));
+  if (!m) return null;
+  return { name: m[2], script: gunzipSync(Buffer.from(m[1], 'base64')).toString('utf8'), args: m[3].split(' ').filter(Boolean) };
+}
+
+/**
+ * The remote command that runs a follow-main script as root on a VM (remoteRootCommand), named after
+ * the updater's unit.
+ *
+ * @param {string} script
+ * @param {string[]} [args]
+ * @returns {string}
+ */
+export function followMainRemoteCommand(script, args = []) {
+  return remoteRootCommand(script, FOLLOW_MAIN.unit, args);
+}
+
+/**
+ * The script and arguments a followMainRemoteCommand() carries, for the tests' fake VMs; null for any
+ * other command.
  *
  * @param {string} command
  * @returns {{script: string, args: string[]}|null}
  */
 export function decodeFollowMainRemoteCommand(command) {
-  const m = /^sudo bash -c "\$\(echo ([A-Za-z0-9+/=]+) \| base64 -d \| gunzip\)" (\S+)((?: \S+)*?) < \/dev\/null$/.exec(String(command));
-  if (!m || m[2] !== FOLLOW_MAIN.unit) return null;
-  return { script: gunzipSync(Buffer.from(m[1], 'base64')).toString('utf8'), args: m[3].split(' ').filter(Boolean) };
+  const decoded = decodeRemoteRootCommand(command);
+  if (!decoded || decoded.name !== FOLLOW_MAIN.unit) return null;
+  return { script: decoded.script, args: decoded.args };
 }
 
 /**

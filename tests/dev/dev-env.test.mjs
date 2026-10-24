@@ -72,6 +72,17 @@ test('ssh to the VM is gcloud compute ssh over IAP with the command as one argum
   assert.deepEqual(sshArgs(instance, 'sudo journalctl -n 5'), expectedSsh('sudo journalctl -n 5'));
 });
 
+test('SSH_USER, when set, is the user gcloud compute ssh logs in as; it is never the agent\'s own', () => {
+  const instance = loadInstanceEnv(reading(`${ENV_TEXT}SSH_USER=lab-driver\n`));
+  assert.equal(instance.SSH_USER, 'lab-driver');
+  const args = sshArgs(instance, 'sudo -n true');
+  assert.equal(args[2], 'lab-driver@paraclete');
+  assert.deepEqual(args.slice(3), expectedSsh('sudo -n true').slice(3));
+  assert.equal('SSH_USER' in loadInstanceEnv(reading(ENV_TEXT)), false, 'unset, gcloud uses your local user name');
+  assert.throws(() => loadInstanceEnv(reading(`${ENV_TEXT}SSH_USER=paraclete\n`)), /SSH_USER must not be paraclete, the agent's own user on the VM/);
+  assert.throws(() => loadInstanceEnv(reading(`${ENV_TEXT}SSH_USER=Lab Driver\n`)), /SSH_USER must be a user name such as lab-driver/);
+});
+
 test('on Windows, gcloud runs as the SDK Python on lib/gcloud.py, found through gcloud.cmd on PATH', () => {
   const files = new Set([
     'C:\\sdk\\bin\\gcloud.cmd', 'C:\\sdk\\lib\\gcloud.py', 'C:\\sdk\\platform\\bundledpython\\python.exe',
