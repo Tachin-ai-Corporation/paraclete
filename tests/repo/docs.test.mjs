@@ -164,12 +164,16 @@ function pathExists(word, from = 'README.md') {
   const path = word.replace(/\/$/, '');
   if (inRepo(path) || inRepo(posix.join(posix.dirname(from), path))) return true;
   if (!word.endsWith('/') && !extensions.has(posix.extname(word))) return true; // a Firestore document, not a path
-  try {
-    execFileSync('git', ['check-ignore', '-q', '--no-index', word], { cwd: repoRoot, stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+  // Without its slash too: git refuses a path beyond a symbolic link, such as a worktree's linked node_modules.
+  for (const candidate of new Set([word, path])) {
+    try {
+      execFileSync('git', ['check-ignore', '-q', '--no-index', candidate], { cwd: repoRoot, stdio: 'ignore' });
+      return true;
+    } catch {
+      // not ignored as written; the next form is tried
+    }
   }
+  return false;
 }
 
 test('the checks find what they are for, and only that', () => {
