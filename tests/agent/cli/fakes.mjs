@@ -104,7 +104,8 @@ export function fakeDb(initial = {}) {
   };
 }
 
-/** The instance record the tests run as. */
+/** The instance record the tests run as. Both roots are fresh, empty directories, so a test run on a
+ * paraclete VM never reads that VM's own installed playbooks, prompts or data. */
 export function testInstance(over = {}) {
   return Object.freeze({
     project: 'your-gcp-project',
@@ -112,7 +113,7 @@ export function testInstance(over = {}) {
     zone: 'us-central1-a',
     agent_name: 'Paraclete',
     role: 'generic',
-    install_root: '/opt/paraclete',
+    install_root: mkdtempSync(join(tmpdir(), 'cli-install-')),
     data_root: mkdtempSync(join(tmpdir(), 'cli-data-')),
     bucket: 'your-gcp-project-paraclete',
     workspace: null,

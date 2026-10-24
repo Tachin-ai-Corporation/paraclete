@@ -22,8 +22,8 @@
 *-key.json
 *credentials*.json
 
-# Build output and caches
-node_modules/
+# Build output and caches (node_modules without a slash also covers a linked one, as a worktree has)
+node_modules
 dashboard/.next/
 dist/
 coverage/

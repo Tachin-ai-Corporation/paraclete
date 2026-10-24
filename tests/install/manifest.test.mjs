@@ -119,6 +119,19 @@ test('stageRelease refuses a symbolic link inside a listed directory', (t) => {
   assert.throws(() => stageRelease({ sourceRoot: source, stageRoot: join(source, 'out'), role: 'generic' }), /symbolic link/);
 });
 
+test('stageRelease skips a linked node_modules, as it skips a real one', (t) => {
+  const source = tree(t, { 'install/manifest.txt': 'agent/\n', 'agent/a.mjs': 'a', 'packages/x.js': 'x' });
+  try {
+    symlinkSync(join(source, 'packages'), join(source, 'agent', 'node_modules'), 'junction');
+  } catch {
+    return t.skip('this machine cannot create symbolic links');
+  }
+  const stage = join(source, 'out');
+  stageRelease({ sourceRoot: source, stageRoot: stage, role: 'generic' });
+  assert.ok(existsSync(join(stage, 'agent/a.mjs')));
+  assert.ok(!existsSync(join(stage, 'agent/node_modules')), 'a worktree that links its packages still stages');
+});
+
 test('the command line stages the real repo for the generic role', (t) => {
   const stage = mkdtempSync(join(tmpdir(), 'paraclete-stage-'));
   t.after(() => rmSync(stage, { recursive: true, force: true }));

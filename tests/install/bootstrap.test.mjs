@@ -764,7 +764,8 @@ build_instance_record() { step build_instance_record; }`;
   /** Everything a full install does before the switch, as no-ops. */
   const beforeSwitch = `
 finish_interrupted_dpkg() { :; }; ensure_packages() { :; }; ensure_node() { :; }; download_release() { :; }
-install_role_packages() { :; }; stage_release() { :; }; record_release() { :; }; prepare_host() { :; }`;
+install_role_packages() { :; }; stage_release() { :; }; record_release() { :; }; prepare_host() { :; }
+forget_previous_record() { :; }`;
   const steps = (dir) => (existsSync(join(dir, 'steps')) ? readFileSync(join(dir, 'steps'), 'utf8').trim().split('\n') : []);
   const MIGRATE = 'migrate_as_agent --project=your-gcp-project --root=/opt/paraclete.next --data-root=/var/lib/paraclete';
 

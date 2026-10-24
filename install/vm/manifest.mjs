@@ -129,8 +129,9 @@ export function stageRelease({ sourceRoot, stageRoot, role }) {
       recursive: true,
       force: true,
       filter: (from) => {
+        if (basename(from) === 'node_modules') return false;
         if (lstatSync(from).isSymbolicLink()) throw new Error(`cannot stage the release: ${from} is a symbolic link`);
-        return basename(from) !== 'node_modules';
+        return true;
       },
     });
   }

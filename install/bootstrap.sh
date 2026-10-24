@@ -583,6 +583,10 @@ install_instance_record() {  # install_instance_record <new record>: keeps the l
   CHANGED=1
 }
 
+forget_previous_record() {  # a rollback restores only the record this switch replaced, never an older one
+  rm -f "$INSTANCE_FILE.prev"
+}
+
 # ---- services ------------------------------------------------------------------------------------
 # These functions also run where a failure must not end the script (a switch that is rolled back), so
 # each one checks its own steps and says what failed in SERVICE_FAILURE.
@@ -782,7 +786,7 @@ full_install() {
   record_release
   STEP=prepare
   prepare_host "$STAGE_ROOT"
-  rm -f "$INSTANCE_FILE.prev"
+  forget_previous_record
   STEP=switch
   if ! switch_release; then
     local reason="$SERVICE_FAILURE"
