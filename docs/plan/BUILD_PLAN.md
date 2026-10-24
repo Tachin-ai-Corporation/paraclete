@@ -366,6 +366,10 @@ done.
       training or held-out split. Only such runs are evidence; the evidence also needs a passing
       calibration (the baseline against itself shows no change, a known-bad change shows a loss) and
       no held-out regression. A run stops at its spend cap, and `dev/harness2/PAUSED` stops every cycle.
+    - Since `v2026.10.23.14.1` every cycle is recorded, and a daily health check (`dev/harness2/health.mjs`)
+      keeps one `harness-alarm` issue open for each way the loop has been seen to fail quietly. The
+      development role can also release main after a check on the lab canary (`r-release-check`), off
+      until a maintainer turns it on.
     - Still open: a merge step that squashes and waits for CI; and a check on the dev instance
       before a release that carries promotions.
 

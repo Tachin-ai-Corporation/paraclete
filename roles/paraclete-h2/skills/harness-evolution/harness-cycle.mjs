@@ -5,9 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|report|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--markdown] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--out <path>] [--json]';
+export const USAGE = 'harness-cycle --action <diagnose|validate|run|surface|curriculum|report|health|scaffold-skill|scaffold-role> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--id <id>] [--unit <unit-id>] [--track <organs|engineering_roles|specialist_roles>] [--status] [--suggest] [--max-units <n>] [--state-path <path>] [--markdown] [--iterations <n>] [--candidates <n>] [--trials <n>] [--lens <context|sub_agents|tools|scaffolding>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--include-harvested] [--expand-curriculum] [--apply] [--push-pr] [--library <path>] [--days <n>] [--open-issues] [--dry-run] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'report', 'scaffold-skill', 'scaffold-role']);
+const VALID_ACTIONS = new Set(['diagnose', 'validate', 'run', 'surface', 'curriculum', 'report', 'health', 'scaffold-skill', 'scaffold-role']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 const VALID_LENSES = new Set(['context', 'sub_agents', 'tools', 'scaffolding']);
 
@@ -70,6 +70,9 @@ function parseArgs(argv) {
     else if (arg === '--expand-curriculum') opts.expandCurriculum = true;
     else if (arg === '--apply') opts.apply = true;
     else if (arg === '--push-pr') opts.pushPr = true;
+    else if (arg === '--days') opts.days = Number(argv[++i] || 0);
+    else if (arg === '--open-issues') opts.openIssues = true;
+    else if (arg === '--dry-run') opts.dryRun = true;
     else if (arg === '--library') opts.library = path.resolve(argv[++i] || '');
     else if (arg === '--out') opts.out = path.resolve(argv[++i] || '');
     else if (arg === '--json') opts.json = true;
@@ -96,7 +99,7 @@ async function loadHarness2Modules(repoDir) {
   const optional = (file) => (fs.existsSync(path.join(h2Dir, file))
     ? import(pathToFileURL(path.join(h2Dir, file)).href)
     : Promise.resolve(null));
-  const [surface, validate, substrate, lenses, cli, liveRunner, pause] = await Promise.all([
+  const [surface, validate, substrate, lenses, cli, liveRunner, pause, health] = await Promise.all([
     import(pathToFileURL(path.join(h2Dir, 'surface.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'validate.mjs')).href),
     import(pathToFileURL(path.join(h2Dir, 'substrate.mjs')).href),
@@ -104,8 +107,9 @@ async function loadHarness2Modules(repoDir) {
     import(pathToFileURL(path.join(h2Dir, 'cli.mjs')).href),
     optional('live-runner.mjs'),
     optional('pause.mjs'),
+    optional('health.mjs'),
   ]);
-  return { surface, validate, substrate, lenses, cli, liveRunner, pause };
+  return { surface, validate, substrate, lenses, cli, liveRunner, pause, health };
 }
 
 function writeOut(outPath, payload) {
@@ -247,7 +251,16 @@ export async function main(argv, deps = {}) {
   if (opts.action === 'run') {
     // An evolution is a cycle: the off switch stops it as it stops the CLI's (pause.mjs).
     const paused = h2.pause?.pauseState({ repoRoot: opts.repo });
+    // Recorded in the cycle log like the CLI's cycles, so the health check sees it (health.mjs).
+    const record = (result) => {
+      try {
+        h2.health?.appendCycleRecord(h2.health.cycleRecord({ command: 'run', flags: { 'real-model': false }, result }), { repoRoot: opts.repo });
+      } catch {
+        // a cycle that could not be recorded still ran
+      }
+    };
     if (paused?.paused) {
+      record({ ok: false, paused: true, reason: `the harness is paused: ${paused.reason}` });
       emit(stdout, { ok: false, action: 'run', paused: true, reason: `the harness is paused: ${paused.reason}` }, opts.json, `The harness is paused: ${paused.reason}`);
       return 1;
     }
@@ -266,6 +279,7 @@ export async function main(argv, deps = {}) {
           })
         : undefined,
     });
+    record({ ok: true, attempts: result.attempts || [] });
     const payload = {
       ok: true,
       action: 'run',
@@ -339,6 +353,21 @@ export async function main(argv, deps = {}) {
       ? result.markdown
       : `Paraclete-H2 Status Report (${result.standardVersion}): ${result.statusReport?.curriculum?.completedUnits || 0}/${result.statusReport?.curriculum?.totalUnits || 0} curriculum units, $${result.statusReport?.cost?.totals?.accruedToDateUsd || 0} accrued`;
     emit(stdout, payload, opts.json, summaryText);
+    return result.ok ? 0 : 1;
+  }
+
+  if (opts.action === 'health') {
+    const cliArgs = [
+      'health',
+      ...(opts.days ? ['--days', String(opts.days)] : []),
+      ...(opts.openIssues ? ['--open-issues'] : []),
+      ...(opts.dryRun ? ['--dry-run'] : []),
+      '--markdown',
+    ];
+    const result = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
+    const payload = { ok: Boolean(result.ok), action: 'health', ...result };
+    writeOut(opts.out, payload);
+    emit(stdout, payload, opts.json, result.markdown);
     return result.ok ? 0 : 1;
   }
 

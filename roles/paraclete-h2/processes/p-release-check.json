@@ -1,0 +1,14 @@
+{
+  "id": "p-release-check",
+  "name": "Check main's head on the canary and release it when it passes",
+  "description": "When main's head is newer than the newest release and its CI passed, move the lab canary to it, check its status and a smoke mission, and only then tag the release that every instance's automatic update installs.",
+  "narrative": "1. Run `harness-promote --action release-check --repo . --json`. It runs the repository's `dev/release-check.mjs --vm-only` against the instance named in the checkout's `.local/instance.env`, which on the lab driver is the canary.\n2. It refuses unless main's head is releasable, says when there is nothing to release, and tags the release only after the canary runs that commit, reports healthy and passes its smoke mission.\n3. Report the outcome with its evidence. On a failure, report the step that failed and stop: never tag a release another way, and never change the canary by hand to make the check pass.",
+  "intent_keywords": [
+    "release check",
+    "cut a release",
+    "canary release",
+    "release main"
+  ],
+  "status": "active",
+  "version": 1
+}
