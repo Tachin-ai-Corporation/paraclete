@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // roles/paraclete-h2/skills/harness-release/harness-promote.mjs: Verify promotion gates and generate promotion reports for Paraclete-H2 candidates.
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
+export const USAGE = 'harness-promote --action <verify|report|release-check> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['verify', 'report']);
+const VALID_ACTIONS = new Set(['verify', 'report', 'release-check']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 
 function parseArgs(argv) {
@@ -101,6 +102,22 @@ export async function main(argv, deps = {}) {
   if (opts.help) {
     stdout.write(`Usage: ${USAGE}\n`);
     return 0;
+  }
+
+  // The release check runs the repo's own dev/release-check.mjs against the instance in the checkout's
+  // .local/instance.env (on the lab driver, the canary), without a dashboard.
+  if (opts.action === 'release-check') {
+    const script = path.join(opts.repo, 'dev', 'release-check.mjs');
+    if (! fs.existsSync(script)) {
+      stderr.write(`error: ${script} not found: this checkout has no release check\n`);
+      return 1;
+    }
+    const run = deps.spawn || spawnSync;
+    const res = run(process.execPath, [script, '--vm-only', '--json', ...(opts.dryRun ? ['--no-release'] : [])], {
+      cwd: opts.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    stdout.write(res.stdout || '');
+    return res.status === 0 ? 0 : 1;
   }
 
   const h2 = deps.h2 || await loadHarness2Modules(opts.repo);

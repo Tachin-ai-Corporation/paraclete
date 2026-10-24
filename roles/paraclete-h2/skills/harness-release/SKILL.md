@@ -7,6 +7,8 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 - `harness-promote --action verify [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--judge-committee] [--out <path>] [--json]` — run structural validation, baseline-vs-candidate evaluation, and Capability-First promotion gate checks.
 - `harness-promote --action report [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]` — generate a formatted markdown and JSON promotion report, optionally applying patches and opening a GitHub PR.
 
+- `harness-promote --action release-check [--repo <dir>] [--dry-run] [--json]` — when main's head is newer than the newest release and its CI passed, run the repository's `dev/release-check.mjs --vm-only` against the instance in the checkout's `.local/instance.env` (the lab canary): it moves the canary to main's head, checks its status and a smoke mission, and tags the release only if every check passes. `--dry-run` checks without tagging. Every instance's automatic update installs the newest release, so never tag one another way when the check fails, and never repair the canary by hand to make it pass.
+
 ## Workflow
 
 1. **Verify Promotion Gates**: Run `harness-promote --action verify --repo . --stage stage1 --trials 3 --json` to ensure all 5 promotion gates pass (structural validity, unit tests, integration tests, Pareto dominance, and zero capability regressions).

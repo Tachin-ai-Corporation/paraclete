@@ -4,7 +4,9 @@
 // each side's own files (model-runs.mjs), on the model suite's tasks (model-suite.mjs), within a spend
 // cap (`--max-rollouts`, `--max-tokens`). Only such runs are promotion evidence, and a promotion's
 // evidence also carries a passing calibration (calibration.mjs). While the harness is paused
-// (pause.mjs), evolve, promote and curriculum refuse to start.
+// (pause.mjs), evolve, promote and curriculum refuse to start. Every such cycle, refused or not, is
+// recorded in .local/harness2/cycles.jsonl, which `health` (health.mjs) reads with the repository's
+// pull requests and tags to raise an alarm for each way the loop has been seen to fail quietly.
 
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -19,6 +21,9 @@ import { calibrateMeasurement } from './calibration.mjs';
 import { SpendCapReached, createModelRunContext, estimateRollouts } from './model-runs.mjs';
 import { MODEL_SUITE_VERSION, selectModelTasks } from './model-suite.mjs';
 import { pauseState } from './pause.mjs';
+import {
+  appendCycleRecord, collectHealthInputs, cycleRecord, formatHealthMarkdown, loopHealth, syncHealthIssues,
+} from './health.mjs';
 import { createLineageLibrary } from './library.mjs';
 import {
   evaluatePromotionReadiness,
@@ -101,6 +106,11 @@ Real-model runs (eval, judge, evolve, promote, curriculum):
 
 The off switch: while dev/harness2/PAUSED exists (or PARACLETE_H2_PAUSED is set), evolve, promote and
 curriculum refuse to start.
+
+Loop health:
+  health   [--days <n>] [--repo <owner/name>] [--open-issues] [--dry-run] [--markdown]
+                                   The loop's alarms and numbers, from the cycle log, the harness pull
+                                   requests and the tags; --open-issues keeps one GitHub issue per alarm
 `;
 
 export function parseCliArgs(argv = []) {
@@ -321,6 +331,20 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   const { subcommand, flags } = parseCliArgs(argv);
   const repoRoot = deps.repoRoot || process.cwd();
   const readOnly = subcommand === 'curriculum' && (flags.status || flags.suggest);
+  // A cycle the developer or the driver started is recorded once; the calls it makes are not.
+  const record = CYCLE_COMMANDS.has(subcommand) && !readOnly && !deps.inCycle && deps.cycleLog !== false;
+  const result = await runCycle(argv, record ? { ...deps, inCycle: true } : deps, { subcommand, flags, repoRoot, readOnly });
+  if (record) {
+    try {
+      appendCycleRecord(cycleRecord({ command: subcommand, flags, result, commit: headCommit(repoRoot) }), { repoRoot, path: deps.cycleLogPath });
+    } catch (err) {
+      note(deps, `[WARN] could not record the cycle: ${err.message}`);
+    }
+  }
+  return result;
+}
+
+async function runCycle(argv, deps, { subcommand, flags, repoRoot, readOnly }) {
   if (CYCLE_COMMANDS.has(subcommand) && !readOnly) {
     const pause = pauseState({ repoRoot, env: deps.env || process.env });
     if (pause.paused) return { ok: false, paused: true, reason: `the harness is paused: ${pause.reason}` };
@@ -1059,6 +1083,28 @@ async function runCliCommand(argv, deps) {
       application,
       pullRequest,
       coverage,
+    };
+  }
+
+  if (subcommand === 'health') {
+    const repoRoot = deps.repoRoot || process.cwd();
+    const repo = typeof flags.repo === 'string' ? flags.repo : undefined;
+    const inputs = collectHealthInputs({ repoRoot, repo, execGh: deps.execGh, execGit: deps.execGit, cyclePath: deps.cycleLogPath, env: deps.env });
+    const health = loopHealth({ ...inputs, now: deps.now || new Date(), rules: flags.days ? { days: Number(flags.days) } : {} });
+    const issues = flags['open-issues']
+      ? syncHealthIssues({
+          alarms: health.alarms, repoRoot, repo, execGh: deps.execGh, dryRun: Boolean(flags['dry-run']),
+          closeCleared: inputs.problems.length === 0, now: deps.now || new Date(),
+        })
+      : null;
+    const markdown = formatHealthMarkdown(health);
+    return {
+      ok: health.ok && inputs.problems.length === 0,
+      ...health,
+      problems: inputs.problems,
+      ...(issues ? { issues } : {}),
+      markdown,
+      ...(flags.markdown ? { report: markdown } : {}),
     };
   }
 

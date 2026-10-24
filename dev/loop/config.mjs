@@ -1,0 +1,110 @@
+// dev/loop/config.mjs: the self-improvement loop's fixed settings, in one place: its budget and caps,
+// which paths a proposal may change, which of them change the agent's behaviour (and so must be
+// measured), and where a developer's own proposer settings live. The loop's own runner and every
+// path that judges a change (the referee) are off limits to a proposal: only a person changes them.
+//
+// It reads nothing but the optional local settings file, and decides nothing itself: cycle.mjs applies
+// these rules. Called by cycle.mjs, proposer.mjs and timer.mjs.
+
+import fs from 'node:fs';
+import path from 'node:path';
+
+/** The loop's defaults. A cycle takes one issue; a day takes at most `maxCyclesPerDay` cycles. */
+export const LOOP_DEFAULTS = Object.freeze({
+  /** The label on the issues the loop works on. */
+  label: 'loop',
+  /** Every branch the loop pushes starts with this; its pull requests come from such branches only. */
+  branchPrefix: 'loop/',
+  /** Cycles a day, counted from the cycle log. */
+  maxCyclesPerDay: 4,
+  /** An issue the loop tried and failed is left alone for this long before it is tried again. */
+  retryAfterHours: 24,
+  /** The proposer's budget for one cycle, passed to its command (proposer.mjs). */
+  proposer: Object.freeze({ wallMinutes: 45, maxTurns: 150, maxTokens: 4_000_000 }),
+  /** The suite every change must pass, and how long it may take. */
+  testCommand: Object.freeze(['npm', 'test']),
+  testTimeoutMinutes: 40,
+  /** A behaviour change is measured on both sides with this many runs of every task, within this cap. */
+  measure: Object.freeze({ trials: 3, maxRollouts: 120 }),
+});
+
+/** Developer-local settings: which proposer command to run (never committed: `.local/` is ignored). */
+export const LOCAL_SETTINGS = '.local/loop.json';
+
+const posix = (p) => String(p || '').replace(/\\/g, '/').replace(/^\.\//, '');
+
+/**
+ * The referee: what judges a change, and the loop itself. A proposal that changes any of these is
+ * refused; a person changes them. Patterns are repo-relative.
+ */
+export const REFEREE_PATHS = Object.freeze([
+  /^dev\/loop\//,
+  /^dev\/harness2\/(evidence|evidence-check|calibration|model-suite|model-runs|merge|pause|health|surface|validate)\.mjs$/,
+  /^dev\/release(-check)?\.mjs$/,
+  /^\.github\//,
+  /^install\//,
+  /^migrations\//,
+  /^roles\/[^/]+\/role\.json$/,
+  /^config\/contracts\.mjs$/,
+  /^docs\/canon\//,
+  /^(DEVELOPING|CLAUDE|AGENTS)\.md$/,
+  /(^|\/)package(-lock)?\.json$/,
+]);
+
+/** Never part of a proposal, whatever else it changes. */
+const FORBIDDEN_PATHS = Object.freeze([/^\.local\//, /(^|\/)\.env/, /\.(pem|key)$/, /credentials.*\.json$/]);
+
+/** What a running agent reads: a change to any of these changes how it behaves, so it is measured. */
+const BEHAVIOUR_PATHS = Object.freeze([
+  /^prompts\//,
+  /^config\/contracts\.json$/,
+  /^agent\//,
+  /^skills\//,
+  /^roles\/[^/]+\/(?!role\.json$)/,
+]);
+
+/**
+ * Why a change to one path is refused, or null when it may be part of a proposal. An existing test may
+ * not be changed or removed (the loop may add tests, never weaken the ones it is judged by).
+ *
+ * @param {string} rel     repo path
+ * @param {string} status  git's name-status letter: A, M, D, R, C...
+ * @returns {string|null}
+ */
+export function pathRefusal(rel, status = 'M') {
+  const p = posix(rel);
+  if (FORBIDDEN_PATHS.some((re) => re.test(p))) return `${p} is never part of a proposal`;
+  if (REFEREE_PATHS.some((re) => re.test(p))) return `${p} judges changes or runs the loop: only a person changes it`;
+  if (/^tests\//.test(p) && status !== 'A') return `${p} is an existing test: a proposal may add tests, never change or remove one`;
+  return null;
+}
+
+/** Whether a change to this path changes the agent's behaviour, and so must be measured. */
+export function isBehaviourPath(rel) {
+  const p = posix(rel);
+  return BEHAVIOUR_PATHS.some((re) => re.test(p));
+}
+
+/**
+ * The loop's settings: the defaults, with the developer's local file over them (its `proposer` block
+ * names the command a cycle runs: see proposer.mjs).
+ *
+ * @param {object} [o]
+ * @param {string} [o.repoRoot]
+ * @param {Function} [o.readFile]
+ * @returns {object}
+ */
+export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => fs.readFileSync(p, 'utf8') } = {}) {
+  let local = {};
+  try {
+    local = JSON.parse(readFile(path.join(repoRoot, LOCAL_SETTINGS)));
+  } catch {
+    local = {};
+  }
+  return {
+    ...LOOP_DEFAULTS,
+    ...local,
+    proposer: { ...LOOP_DEFAULTS.proposer, ...(local.proposer || {}) },
+    measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
+  };
+}

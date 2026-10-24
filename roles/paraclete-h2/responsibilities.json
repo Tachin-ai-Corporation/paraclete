@@ -69,6 +69,48 @@
         ],
         "prior_learnings": "Capability scored by the Frontier Model Committee (`vertex-google/gemini-4-argon` and `vertex-anthropic/claude-opus-5-5`) overrides all other metrics. Never accept a candidate with any capability regression, and only optimize reliability or efficiency when capability is strictly improved or preserved."
       }
+    },
+    {
+      "id": "r-harness-health",
+      "name": "Daily Self-Improvement Loop Health Check",
+      "schedule": "30 7 * * *",
+      "timezone": "UTC",
+      "enabled": true,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 600,
+      "processRef": "p-harness-health",
+      "instruction": "Check the self-improvement loop's health: raise an alarm for each way it has been seen to fail quietly, and keep one GitHub issue open per alarm until it clears.",
+      "success_criteria": "The health check ran against the cycle log, the harness pull requests and the releases; every alarm is on an open issue labelled harness-alarm, every cleared alarm's issue is closed, and the report lists each alarm.",
+      "context": {
+        "purpose": "A loop can look busy while improving nothing: every proposal falling back, runs that measure nothing, the same gain on every pull request, merges without evidence, promotions that never reach a release. Each becomes an issue a person or a coding session can act on.",
+        "process": [
+          "STEP 1 - CHECK: run `harness-cycle --action health --repo . --open-issues --json`.",
+          "STEP 2 - REPORT: list each alarm with its summary and its issue; report a pause as a note, with its reason."
+        ],
+        "prior_learnings": "An alarm is for the repository, not for the loop's own state: never clear one by editing the cycle log, the curriculum state or a pull request."
+      }
+    },
+    {
+      "id": "r-release-check",
+      "name": "Daily Release of Main After a Canary Check",
+      "schedule": "0 9 * * *",
+      "timezone": "UTC",
+      "enabled": false,
+      "triggerable": true,
+      "singleton": true,
+      "min_spacing_minutes": 600,
+      "processRef": "p-release-check",
+      "instruction": "When main's head is newer than the newest release and its CI passed, check it on the lab canary (status and a smoke mission) and tag the release only if every check passes. Off until a maintainer turns it on: every instance installs a release on its own.",
+      "success_criteria": "Either there was nothing to release, or the canary ran main's head, reported healthy and passed its smoke mission and the release was tagged, or the step that failed was reported and nothing was tagged.",
+      "context": {
+        "purpose": "Promotions reach instances only in a release, and every instance's automatic update installs the newest release, so a release is checked on a live canary before it exists.",
+        "process": [
+          "STEP 1 - CHECK AND RELEASE: run `harness-promote --action release-check --repo . --json`.",
+          "STEP 2 - REPORT: the outcome, with the commit, the canary's status and the smoke mission; on a failure, the step that failed."
+        ],
+        "prior_learnings": "Never tag a release another way when the check fails, and never repair the canary by hand to make it pass: a failure is a finding for the repository."
+      }
     }
   ]
 }
