@@ -360,9 +360,13 @@ done.
     - Since `v2026.10.23.2.1` a promotion opens only with measured evidence: the candidate against the
       current version on the same tasks, over repeated trials, proposed by a model. Runs that the
       scripted in-process gateway answered are refused as evidence.
-    - Still open: runs that put a candidate's own prompts in front of a model (the in-process gateway
-      is scripted, and a `--gateway-url` gateway reads its installed prompts, so no run measures a
-      prompt change yet); a merge step that squashes and waits for CI; and a check on the dev instance
+    - Since `v2026.10.23.10.1` a `--real-model` run measures a prompt change: each side's rollouts go
+      through the product's own gateway, started from a checkout of that side, to the real model, on
+      the model suite's tasks (`dev/harness2/model-suite.mjs`), each with deterministic checks and a
+      training or held-out split. Only such runs are evidence; the evidence also needs a passing
+      calibration (the baseline against itself shows no change, a known-bad change shows a loss) and
+      no held-out regression. A run stops at its spend cap, and `dev/harness2/PAUSED` stops every cycle.
+    - Still open: a merge step that squashes and waits for CI; and a check on the dev instance
       before a release that carries promotions.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable

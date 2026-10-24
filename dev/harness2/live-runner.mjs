@@ -19,6 +19,7 @@ import {
   materializeCurriculumArtifacts,
   verifyUnitArtifacts,
 } from './curriculum.mjs';
+import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
 import { getTaskFixture } from './fixtures.mjs';
 import {
   FOLLOW_MAIN,
@@ -27,6 +28,8 @@ import {
   parseFollowMainOutput,
   parseIntervalMinutes,
 } from './lab-updater.mjs';
+import { usageFromLog } from './model-runs.mjs';
+import { isModelTask } from './model-suite.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
 import { applyProposal, buildProposalPrompt, createVertexProposalGenerator, parseProposal } from './proposer.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
@@ -177,7 +180,7 @@ export function snapshotCandidateConfig(repoRoot, role = 'paraclete-h2') {
  * backed by the candidate's `config/contracts.json` and `prompts/` registry, executing the task's
  * seeded workspace fixture during the `motor` turn and recording authentic token usage.
  */
-async function startInProcessFixtureGateway({
+export async function startInProcessFixtureGateway({
   task,
   fixture,
   workspaceDir,
@@ -400,35 +403,52 @@ async function startInProcessFixtureGateway({
  * organ's answer, so the result carries `scripted: true`. With it, the organs answer through that
  * gateway, which reads its own installed organ prompts, not the candidate's.
  *
+ * With `opts.realModel` (model-runs.mjs createModelRunContext) every organ answers through the real
+ * model: the product's gateway starts for this rollout from the side's own checkout (the baseline's,
+ * or the one `opts.filePatches` makes), the brain reads that checkout and calls the real utility model,
+ * and the clock is the wall clock. A model-suite task (model-suite.mjs) is seeded into the motor's
+ * workspace and checked there afterwards, and the share of its checks that passed is the run's
+ * capability (`checkScore`). The result carries `measured: true`, the only runs promotion evidence
+ * accepts (evidence.mjs).
+ *
  * @param {object} task
  * @param {object} substrateCtx
  * @param {object} [opts]
  * @param {string} [opts.repoRoot]
  * @param {object} [opts.configSnapshot]
  * @param {string} [opts.gatewayUrl]
+ * @param {object} [opts.realModel]    a real-model run's context
+ * @param {object} [opts.filePatches]  with realModel: the side's files that differ from HEAD
  */
 export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
   const repoRoot = opts.repoRoot || process.cwd();
   const role = task.role || 'paraclete-h2';
   const taskInstruction = task.prompt || task.goal || task.id;
-  const configSnapshot = opts.configSnapshot || snapshotCandidateConfig(repoRoot, role);
+  const realModel = opts.realModel || null;
+  let surfaceRoot = repoRoot;
+  let launcherProblem = null;
+  if (realModel) {
+    realModel.meter.startRollout();
+    const side = realModel.sides.forPatches(opts.filePatches || {});
+    launcherProblem = realModel.sides.prepareRole(side, role)?.problem || null;
+    surfaceRoot = side.root;
+  }
+  const configSnapshot = realModel
+    ? snapshotCandidateConfig(surfaceRoot, role)
+    : opts.configSnapshot || snapshotCandidateConfig(repoRoot, role);
   const fixture = getTaskFixture(task.id);
+  const modelTask = isModelTask(task);
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), `paraclete-h2-task-${task.id}-`));
+  // A real motor works in the data root's workspace/, as on an instance; the scripted one in the root.
+  const taskDir = realModel ? dataPaths({ data_root: workspaceDir }).workspace : workspaceDir;
+  fs.mkdirSync(taskDir, { recursive: true });
   const usageRecords = [];
 
-  if (fixture) {
-    fixture.seedWorkspace(workspaceDir);
+  if (modelTask) {
+    task.seed(taskDir);
+  } else if (fixture) {
+    fixture.seedWorkspace(taskDir);
   }
-
-  const gateway = opts.gatewayUrl
-    ? { url: opts.gatewayUrl, token: opts.gatewayToken || 'h2-live-token', stop: async () => {} }
-    : await startInProcessFixtureGateway({
-        task,
-        fixture,
-        workspaceDir,
-        configSnapshot,
-        usageRecords,
-      });
 
   const firestoreOrigin =
     substrateCtx.firestore?.origin ||
@@ -438,28 +458,62 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     substrateCtx.gcs?.origin ||
     substrateCtx.gcsUrl ||
     `http://127.0.0.1:${substrateCtx.gcsPort || 9}`;
-  const projectId = substrateCtx.firestore?.projectId || 'paraclete-h2-tier1';
   let nowMs = Date.parse('2026-10-19T12:00:00.000Z');
-  const clock = () => {
-    nowMs += 150;
-    return nowMs;
-  };
+  const clock = realModel
+    ? () => Date.now()
+    : () => {
+        nowMs += 150;
+        return nowMs;
+      };
+  const startedAt = Date.now();
+  let gateway = null;
+  // A real-model rollout gets a Firestore of its own: a mission another rollout left active (a timeout,
+  // a gateway error) must never be picked up and run here, in this rollout's workspace.
+  const ownFirestore = realModel ? await startFirestoreFake({ projectId: ROLLOUT_PROJECT }) : null;
+  const firestoreHost = ownFirestore ? ownFirestore.origin : firestoreOrigin;
+  const projectId = ownFirestore ? ROLLOUT_PROJECT : substrateCtx.firestore?.projectId || 'paraclete-h2-tier1';
+  let timedOut = false;
 
   try {
     const db = createClient({
       projectId,
-      firestoreHost: firestoreOrigin,
+      firestoreHost,
       getAccessToken: async () => 'test-token',
       logger: () => {},
     });
 
+    if (realModel) {
+      gateway = await realModel.startGateway({
+        sideRoot: surfaceRoot,
+        role,
+        contracts: configSnapshot.contracts,
+        dataRoot: workspaceDir,
+        db,
+        project: realModel.access.project,
+        accessToken: await realModel.access.getAccessToken(),
+        // The agent's own commands read this rollout's instance record (its Firestore, its data root),
+        // never the instance the harness runs on.
+        env: { ...process.env, PARACLETE_INSTANCE: writeRolloutInstance({ workspaceDir, surfaceRoot, role, firestoreHost, gcsOrigin }) },
+      });
+    } else if (opts.gatewayUrl) {
+      gateway = { url: opts.gatewayUrl, token: opts.gatewayToken || 'h2-live-token', stop: async () => {} };
+    } else {
+      gateway = await startInProcessFixtureGateway({
+        task,
+        fixture,
+        workspaceDir,
+        configSnapshot,
+        usageRecords,
+      });
+    }
+
     const instance = {
-      project: projectId,
+      project: realModel ? realModel.access.project : projectId,
       region: 'us-central1',
       zone: 'us-central1-a',
       agent_name: 'Paraclete',
       role,
-      install_root: repoRoot,
+      install_root: surfaceRoot,
       data_root: workspaceDir,
       bucket: 'paraclete-h2-tier1-bucket',
       workspace: null,
@@ -467,41 +521,56 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       gateway_token_file: path.join(workspaceDir, 'no-token-file'),
     };
 
+    // A real-model rollout counts its tokens from the brain's own telemetry lines.
+    const log = realModel
+      ? (level, message) => {
+          const rec = usageFromLog(message);
+          if (rec) {
+            usageRecords.push(rec);
+            realModel.meter.addTokens(rec.totalTokenCount);
+          }
+        }
+      : () => {};
+
     const runtime = {
       service: 'brain',
       contracts: configSnapshot.contracts,
       instance,
-      log: () => {},
+      log,
       db,
       collections: COLLECTIONS,
       subcollections: SUBCOLLECTIONS,
-      getAccessToken: async () => 'test-token',
+      getAccessToken: realModel ? realModel.access.getAccessToken : async () => 'test-token',
       fetch: globalThis.fetch,
-      firestoreHost: firestoreOrigin,
+      firestoreHost,
       storageHost: gcsOrigin,
       paths: {
-        installRoot: repoRoot,
-        prompts: path.join(repoRoot, 'prompts'),
-        skills: path.join(repoRoot, 'skills'),
-        roles: path.join(repoRoot, 'roles'),
-        genericRole: path.join(repoRoot, 'roles', 'generic'),
-        role: path.join(repoRoot, 'roles', role),
+        installRoot: surfaceRoot,
+        prompts: path.join(surfaceRoot, 'prompts'),
+        skills: path.join(surfaceRoot, 'skills'),
+        roles: path.join(surfaceRoot, 'roles'),
+        genericRole: path.join(surfaceRoot, 'roles', 'generic'),
+        role: path.join(surfaceRoot, 'roles', role),
         data: dataPaths(instance),
       },
       gatewayUrl: gateway.url,
     };
 
-    const vertexText = createVertexText({
-      projectId,
-      getAccessToken: async () => 'test-token',
-      fetch: async () => {
-        throw new Error('deterministic schema path in Tier-1');
-      },
-      logger: () => {},
-    });
+    // The scripted path takes the deterministic schema route; a real-model brain builds its own
+    // utility client from the runtime, as on an instance.
+    const vertexText = realModel
+      ? undefined
+      : createVertexText({
+          projectId,
+          getAccessToken: async () => 'test-token',
+          fetch: async () => {
+            throw new Error('deterministic schema path in Tier-1');
+          },
+          logger: () => {},
+        });
 
     const brain = buildBrain(runtime, {
-      vertexText,
+      ...(vertexText ? { vertexText } : {}),
       gatewayToken: gateway.token,
       artifacts: null,
       clock,
@@ -527,54 +596,74 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     });
 
     await brain.tickIntake();
-    await brain.parts.runner.tick();
+    if (realModel) {
+      // A mission past its time is cut off: its gateway stops before the workspace is checked, so no
+      // turn still writes while the checks run, and the run says it timed out.
+      timedOut = (await runWithin(brain.parts.runner.tick(), realModel.timeoutMs)) === 'timeout';
+      if (timedOut) {
+        await runWithin(gateway.stop(), GATEWAY_STOP_GRACE_MS);
+        gateway = null;
+      }
+    } else {
+      await brain.parts.runner.tick();
+    }
 
-    const baseVerification = fixture
-      ? fixture.verifyWorkspace(workspaceDir)
-      : {
-          passed: true,
-          summary: (task.expectedClauses || []).join('; '),
-          toolRecords: [{ tool: 'shell', exitCode: 0 }],
-        };
+    const baseVerification = modelTask
+      ? task.verify(taskDir)
+      : fixture
+        ? fixture.verifyWorkspace(taskDir)
+        : {
+            passed: !realModel,
+            summary: (task.expectedClauses || []).join('; '),
+            toolRecords: realModel ? [] : [{ tool: 'shell', exitCode: 0 }],
+          };
 
     const curriculumUnit = task.curriculumUnitId ? getCurriculumUnitById(task.curriculumUnitId) : null;
     const artifactVerification = curriculumUnit
-      ? verifyUnitArtifacts(workspaceDir, curriculumUnit)
+      ? verifyUnitArtifacts(taskDir, curriculumUnit)
       : null;
 
     const fixtureVerification = {
       ...baseVerification,
       passed: Boolean(baseVerification.passed && (!artifactVerification || artifactVerification.passed)),
       verified: Boolean(baseVerification.passed && (!artifactVerification || artifactVerification.passed)),
-      summary: artifactVerification
+      summary: `${timedOut ? `timed out after ${Math.round(realModel.timeoutMs / 1000)} s; ` : ''}${artifactVerification
         ? `${baseVerification.summary} | Artifacts (${artifactVerification.passedCount}/${artifactVerification.totalRequired}) verified`
-        : baseVerification.summary,
+        : baseVerification.summary}`,
       ...(artifactVerification ? { artifactVerification } : {}),
     };
 
+    // A real-model rollout's Firestore holds only its own mission (and that mission's checkpoints and
+    // tasks); the scripted path finds its mission by its instruction.
     const workDocs = await db.query('', COLLECTIONS.work, [], { noOrderBy: true, limit: 50 });
-    const rawEnvelope = workDocs.find((d) => String(d.instruction || '').includes(taskInstruction.slice(0, 20))) ||
-      workDocs[0] || {
+    const missions = realModel ? workDocs.filter((d) => d.type === 'M') : workDocs;
+    const rawEnvelope = missions.find((d) => String(d.instruction || '').includes(taskInstruction.slice(0, 20))) ||
+      missions[0] || {
         id: `mission-${task.id}`,
-        status: fixtureVerification.passed ? 'complete' : 'failed',
+        status: fixtureVerification.passed && !realModel ? 'complete' : 'failed',
         checkpoint_spine: [],
       };
 
+    // A real-model run keeps what the mission did; the scripted path writes its expected clauses in.
+    const isDone = (status) => ['completed', 'complete', 'done', 'passed'].includes(status);
     const rawSpine =
       Array.isArray(rawEnvelope.checkpoint_spine) && rawEnvelope.checkpoint_spine.length > 0
         ? rawEnvelope.checkpoint_spine
-        : (task.expectedClauses || ['Complete task']).map((clause, idx) => ({
-            index: idx + 1,
-            instruction: clause,
-            status: 'completed',
-          }));
+        : realModel
+          ? []
+          : (task.expectedClauses || ['Complete task']).map((clause, idx) => ({
+              index: idx + 1,
+              instruction: clause,
+              status: 'completed',
+            }));
 
     const normalizedSpine = rawSpine.map((cp, idx) => ({
       ...cp,
       n: cp.n ?? cp.index ?? idx + 1,
       goal: cp.goal || cp.instruction || (task.expectedClauses || [])[idx] || '',
-      status:
-        fixtureVerification.passed && (cp.status === 'completed' || cp.status === 'done' || cp.status === 'passed')
+      status: realModel
+        ? (isDone(cp.status) ? 'done' : cp.status || 'failed')
+        : fixtureVerification.passed && (cp.status === 'completed' || cp.status === 'done' || cp.status === 'passed')
           ? 'done'
           : 'failed',
       replan_count: cp.replan_count ?? cp.replan_attempts ?? 0,
@@ -584,9 +673,10 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     const envelope = {
       ...rawEnvelope,
       role,
-      duration_ms: 950,
-      status:
-        fixtureVerification.passed && (rawEnvelope.status === 'complete' || rawEnvelope.status === 'completed')
+      duration_ms: realModel ? Date.now() - startedAt : 950,
+      status: realModel
+        ? (isDone(rawEnvelope.status) ? 'completed' : rawEnvelope.status || 'failed')
+        : fixtureVerification.passed && (rawEnvelope.status === 'complete' || rawEnvelope.status === 'completed')
           ? 'completed'
           : 'failed',
       checkpoint_spine: normalizedSpine,
@@ -597,15 +687,19 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       index: idx,
       checkpoint_n: cp.n,
       goal: cp.goal,
-      status: fixtureVerification.passed ? 'completed' : 'failed',
-      tool_records: fixtureVerification.toolRecords || [{ tool: 'shell', exitCode: fixtureVerification.passed ? 0 : 1 }],
+      status: realModel
+        ? (cp.status === 'done' ? 'completed' : 'failed')
+        : fixtureVerification.passed ? 'completed' : 'failed',
+      tool_records: realModel
+        ? []
+        : fixtureVerification.toolRecords || [{ tool: 'shell', exitCode: fixtureVerification.passed ? 0 : 1 }],
     }));
 
     const judgePacket = buildJudgePacket({
       task,
       envelope,
       tasks,
-      workspaceDir,
+      workspaceDir: taskDir,
       fixtureVerification,
     });
 
@@ -615,11 +709,22 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
           committee: opts.judgeCommittee || DEFAULT_JUDGE_COMMITTEE,
           ...(opts.judgeOptions || {}),
         })
-      : {
-          passed: Boolean(fixtureVerification.passed && envelope.status === 'completed'),
-          rubricScore: fixtureVerification.passed && envelope.status === 'completed' ? 1.0 : 0.3,
-          failureReasons: fixtureVerification.passed ? [] : [fixtureVerification.summary],
-        };
+      : realModel
+        ? {
+            passed: Boolean(fixtureVerification.passed),
+            rubricScore: typeof fixtureVerification.score === 'number' ? fixtureVerification.score : fixtureVerification.passed ? 1 : 0,
+            failureReasons: fixtureVerification.passed ? [] : [fixtureVerification.summary],
+            // What the proposer is told about a failed run (lenses.mjs judgePrescriptions); a held-out
+            // task's never reaches it (recursion.mjs).
+            ...(fixtureVerification.passed
+              ? {}
+              : { improvementPrescription: `the ${role} mission for "${taskInstruction.slice(0, 160)}" ended with ${fixtureVerification.summary}` }),
+          }
+        : {
+            passed: Boolean(fixtureVerification.passed && envelope.status === 'completed'),
+            rubricScore: fixtureVerification.passed && envelope.status === 'completed' ? 1.0 : 0.3,
+            failureReasons: fixtureVerification.passed ? [] : [fixtureVerification.summary],
+          };
 
     return {
       envelope,
@@ -629,13 +734,66 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       evalCritique,
       fixtureVerification,
       judgePacket,
-      // Without a gateway URL the in-process fixture gateway wrote every organ's answer, so the run is
-      // the same for any harness and measures nothing about a candidate (evidence.mjs refuses it).
-      scripted: !opts.gatewayUrl,
+      // The share of a model-suite task's checks that passed: a real-model run's capability.
+      ...(realModel && modelTask ? { checkScore: fixtureVerification.score } : {}),
+      // Without a gateway URL or a real model the in-process fixture gateway wrote every organ's answer,
+      // so the run is the same for any harness and measures nothing about a candidate. A gateway URL's
+      // gateway reads its own installed prompts. Only a real-model run measured the side it ran for
+      // (evidence.mjs refuses the others).
+      // A checkout without its role's command launchers (one on Windows) runs a different agent than
+      // an instance does, so its run is not a measurement.
+      scripted: !opts.gatewayUrl && !realModel,
+      measured: Boolean(realModel) && !launcherProblem,
+      ...(launcherProblem ? { launcherProblem } : {}),
+      ...(timedOut ? { timedOut: true } : {}),
     };
   } finally {
-    await gateway.stop();
+    if (gateway) await runWithin(gateway.stop(), GATEWAY_STOP_GRACE_MS);
+    if (ownFirestore) await ownFirestore.stop();
     fs.rmSync(workspaceDir, { recursive: true, force: true });
+  }
+}
+
+/** How long a stopping gateway may take to answer its requests in flight before a rollout moves on. */
+const GATEWAY_STOP_GRACE_MS = 30_000;
+
+/** The project of a real-model rollout's own Firestore. */
+const ROLLOUT_PROJECT = 'paraclete-h2-rollout';
+
+/**
+ * A real-model rollout's instance record, for the commands its agent runs (they read
+ * PARACLETE_INSTANCE): its own Firestore and storage endpoints, its data root, the side's checkout.
+ * Returns the file's path.
+ */
+function writeRolloutInstance({ workspaceDir, surfaceRoot, role, firestoreHost, gcsOrigin }) {
+  const file = path.join(workspaceDir, 'instance.json');
+  const posix = (p) => String(p).replace(/\\/g, '/');
+  fs.writeFileSync(file, `${JSON.stringify({
+    project: ROLLOUT_PROJECT,
+    region: 'us-central1',
+    zone: 'us-central1-a',
+    agent_name: 'Paraclete',
+    role,
+    install_root: posix(surfaceRoot),
+    data_root: posix(workspaceDir),
+    bucket: `${ROLLOUT_PROJECT}-bucket`,
+    workspace: null,
+    endpoints: { firestore: firestoreHost, storage: gcsOrigin },
+    gateway_token_file: path.join(workspaceDir, 'gateway-token'),
+  }, null, 2)}\n`, 'utf8');
+  return file;
+}
+
+/** Waits for `promise`, at most `ms`; resolves 'timeout' when the time runs out first. */
+async function runWithin(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -878,6 +1036,8 @@ export function createLiveProposeAndApply(opts = {}) {
         getSnapshotForRole(r);
       }
 
+      // A real-model rollout runs from a checkout of HEAD with this candidate's files written in, so
+      // the model sees its prompts; the scripted one reads only its config snapshot.
       const runTaskRollout = worktreeInfo
         ? async (task, substrateCtx) =>
             runInProcessBrainRollout(task, substrateCtx, {
@@ -888,6 +1048,7 @@ export function createLiveProposeAndApply(opts = {}) {
               useFrontierJudge: opts.useFrontierJudge,
               judgeCommittee: opts.judgeCommittee,
               judgeOptions: opts.judgeOptions,
+              ...(opts.realModel ? { realModel: opts.realModel, filePatches } : {}),
             })
         : undefined;
 
@@ -930,6 +1091,9 @@ export function createLiveProposeAndApply(opts = {}) {
  * @param {number} [opts.trials]  How many times each task runs (default 1)
  * @param {string} [opts.gatewayUrl]
  * @param {string} [opts.gatewayToken]
+ * @param {object} [opts.realModel]    a real-model run's context (model-runs.mjs)
+ * @param {object} [opts.filePatches]  with realModel and the default rollout: the side's files that
+ *                                     differ from HEAD (none for the baseline)
  * @param {object} [opts.deps]
  */
 export async function evaluateLiveTarget(opts = {}) {
@@ -952,6 +1116,7 @@ export async function evaluateLiveTarget(opts = {}) {
       useFrontierJudge: opts.useFrontierJudge,
       judgeCommittee: opts.judgeCommittee,
       judgeOptions: opts.judgeOptions,
+      ...(opts.realModel ? { realModel: opts.realModel, filePatches: opts.filePatches || {} } : {}),
     });
 
   const evalRes = await runTier1Evaluation({

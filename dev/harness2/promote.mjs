@@ -22,6 +22,16 @@ function defaultExecGit(args, cwd) {
   }).trim();
 }
 
+/** The checkout's branch, or null when it is detached or unknown. */
+function currentBranch(execGit, repoRoot) {
+  try {
+    const name = String(execGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot) || '').trim();
+    return name && name !== 'HEAD' ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 function defaultExecGh(args, cwd) {
   return execFileSync('gh', args, {
     cwd,
@@ -154,7 +164,12 @@ export function applyPromotedCandidate(opts = {}) {
     };
   }
 
+  // The branch the checkout was on, which pushAndCreatePullRequest returns it to once the promotion
+  // is committed: a checkout left on a promotion branch would be the next cycle's baseline, and the
+  // lab's follow-main timer moves only a checkout on main.
+  let returnTo = null;
   if (branch) {
+    returnTo = currentBranch(execGit, repoRoot);
     execGit(['checkout', '-B', branch], repoRoot);
   }
 
@@ -197,6 +212,7 @@ export function applyPromotedCandidate(opts = {}) {
     reason: 'Applied candidate filePatches and verified workspace',
     appliedPaths: relPaths,
     branch: branch || null,
+    ...(returnTo ? { returnTo } : {}),
     validation,
   };
 }
@@ -417,6 +433,8 @@ export function pushAndCreatePullRequest(opts = {}) {
   }
 
   let promotion = { version: null, title: summary };
+  const returnTo = application?.returnTo || currentBranch(execGit, repoRoot);
+  let committed = false;
   try {
     execGit(['fetch', '--quiet', '--tags', remote, baseBranch], repoRoot);
     promotion = versionedPromotion();
@@ -426,6 +444,7 @@ export function pushAndCreatePullRequest(opts = {}) {
       execGit(['add', '--', ...touched], repoRoot);
     }
     execGit(['commit', '--allow-empty', '-m', title], repoRoot);
+    committed = true;
     try {
       execGit(['push', '-u', remote, branch], repoRoot);
     } catch {
@@ -468,6 +487,16 @@ export function pushAndCreatePullRequest(opts = {}) {
       prUrl: null,
       reason: `Failed to push or create PR: ${err.message}`,
     };
+  } finally {
+    // Committed, the change lives on its branch: the checkout goes back where it was. Not committed,
+    // the change is still in the working tree, and switching could carry or lose it, so it stays.
+    if (committed && returnTo && returnTo !== branch) {
+      try {
+        execGit(['checkout', returnTo], repoRoot);
+      } catch {
+        // the result already says what happened to the promotion; the checkout stays on its branch
+      }
+    }
   }
 }
 

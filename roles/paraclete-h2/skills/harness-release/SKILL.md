@@ -4,8 +4,8 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 
 ## Commands
 
-- `harness-promote --action verify [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--judge-committee] [--out <path>] [--json]` — run structural validation, baseline-vs-candidate evaluation, and Capability-First promotion gate checks.
-- `harness-promote --action report [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]` — generate a formatted markdown and JSON promotion report, optionally applying patches and opening a GitHub PR.
+- `harness-promote --action verify [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--judge-committee] [--out <path>] [--json]` — run structural validation, baseline-vs-candidate evaluation, and Capability-First promotion gate checks.
+- `harness-promote --action report [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]` — generate a formatted markdown and JSON promotion report, optionally applying patches and opening a GitHub PR.
 
 ## Workflow
 
@@ -15,7 +15,15 @@ Verify that a candidate harness mutation satisfies all structural, unit, integra
 
 A promotion pull request opens only with measured evidence: the candidate against the current version
 on the same tasks, every task run at least 3 times on both sides, a capability gain larger than the
-run-to-run noise with no task worse, and a change a model proposed. The template fallback's fixed
-edits, the synthetic dry run, and runs the scripted in-process gateway answered (a `--live` run without
-`--gateway-url`) never qualify. When the evidence falls short, `--push-pr` opens nothing
-and its report names each rule that failed; report that, and do not open the pull request another way.
+run-to-run noise with no task worse and the held-out tasks no worse, a change a model proposed, and a
+passing calibration of the measurement. Only a `--real-model` run is evidence: it sends each side's own
+prompts to the model and scores the model suite's checked tasks. The template fallback's fixed edits,
+the synthetic dry run, runs the scripted in-process gateway answered (a `--live` run without
+`--real-model`), and runs through a `--gateway-url` gateway never qualify. When the evidence falls short,
+`--push-pr` opens nothing and its report names each rule that failed; report that, and do not open the
+pull request another way.
+
+A `--real-model` run costs model calls. It stops before it passes its cap (`--max-rollouts`, default 120;
+`--max-tokens`, default 30,000,000) and reports `spendCapReached`; report that rather than raising the
+cap. While `dev/harness2/PAUSED` exists in the checkout, every cycle refuses to start and says why;
+report the reason and stop.
