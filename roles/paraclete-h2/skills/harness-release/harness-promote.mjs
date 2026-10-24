@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // roles/paraclete-h2/skills/harness-release/harness-promote.mjs: Verify promotion gates and generate promotion reports for Paraclete-H2 candidates.
 
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const USAGE = 'harness-promote --action <verify|report> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
+export const USAGE = 'harness-promote --action <verify|report|release-check> [--repo <dir>] [--stage <stage1|stage2|all>] [--role <role-id>] [--trials <n>] [--live] [--real-model] [--max-rollouts <n>] [--max-tokens <n>] [--vertex] [--judge-committee] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--out <path>] [--json]';
 
-const VALID_ACTIONS = new Set(['verify', 'report']);
+const VALID_ACTIONS = new Set(['verify', 'report', 'release-check']);
 const VALID_STAGES = new Set(['stage1', 'stage2', 'all']);
 
 function parseArgs(argv) {
@@ -37,6 +38,9 @@ function parseArgs(argv) {
     else if (arg === '--role') opts.role = argv[++i] || null;
     else if (arg === '--trials') opts.trials = Number(argv[++i] || 2);
     else if (arg === '--live') opts.live = true;
+    else if (arg === '--real-model') opts.realModel = true;
+    else if (arg === '--max-rollouts') opts.maxRollouts = Number(argv[++i] || 0);
+    else if (arg === '--max-tokens') opts.maxTokens = Number(argv[++i] || 0);
     else if (arg === '--vertex') opts.vertex = true;
     else if (arg === '--judge-committee') opts.judgeCommittee = true;
     else if (arg === '--apply') opts.apply = true;
@@ -100,6 +104,22 @@ export async function main(argv, deps = {}) {
     return 0;
   }
 
+  // The release check runs the repo's own dev/release-check.mjs against the instance in the checkout's
+  // .local/instance.env (on the lab driver, the canary), without a dashboard.
+  if (opts.action === 'release-check') {
+    const script = path.join(opts.repo, 'dev', 'release-check.mjs');
+    if (! fs.existsSync(script)) {
+      stderr.write(`error: ${script} not found: this checkout has no release check\n`);
+      return 1;
+    }
+    const run = deps.spawn || spawnSync;
+    const res = run(process.execPath, [script, '--vm-only', '--json', ...(opts.dryRun ? ['--no-release'] : [])], {
+      cwd: opts.repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'],
+    });
+    stdout.write(res.stdout || '');
+    return res.status === 0 ? 0 : 1;
+  }
+
   const h2 = deps.h2 || await loadHarness2Modules(opts.repo);
   if (! h2) {
     stderr.write(`error: dev/harness2 modules not found in repo: ${opts.repo}\n`);
@@ -107,7 +127,7 @@ export async function main(argv, deps = {}) {
   }
 
   const normalizedStage = opts.stage === 'all' ? 'stage2' : opts.stage;
-  if (opts.live && typeof h2.cli?.runCli === 'function') {
+  if ((opts.live || opts.realModel) && typeof h2.cli?.runCli === 'function') {
     const cliArgs = [
       'promote',
       '--stage',
@@ -120,6 +140,9 @@ export async function main(argv, deps = {}) {
       ...(opts.branch ? ['--branch', opts.branch] : []),
       ...(opts.dryRun ? ['--dry-run'] : []),
       ...(opts.role ? ['--role', opts.role] : []),
+      ...(opts.realModel ? ['--real-model'] : []),
+      ...(opts.maxRollouts ? ['--max-rollouts', String(opts.maxRollouts)] : []),
+      ...(opts.maxTokens ? ['--max-tokens', String(opts.maxTokens)] : []),
     ];
     const cliRes = await h2.cli.runCli(cliArgs, { repoRoot: opts.repo });
     const readiness = cliRes.readiness || { ready: Boolean(cliRes.ok), blockers: [] };

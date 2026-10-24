@@ -7,9 +7,14 @@
 //
 // The verdict passes only when every rule holds: a model proposed the change (never the fixed edits
 // of the template fallback), no run was the synthetic dry run (which always completes, so it measures
-// nothing), every task ran at least `minTrials` times on both sides, the capability gain is at least
-// `minGain` and larger than `noiseZ` standard errors of the difference, and no task got worse by more
-// than `taskTolerance`.
+// nothing), no run was answered by the scripted in-process gateway (which gives every harness the
+// same answers, so it measures nothing either), every run was a real-model run that sent its own
+// side's prompts to the model (`measured`, model-runs.mjs), the measurement passed its calibration
+// (calibration.mjs: the baseline against itself shows no gain, and a known-bad change shows a loss),
+// every task ran at least `minTrials` times on both sides, the capability gain is at least `minGain`
+// and larger than `noiseZ` standard errors of the difference, no task got worse by more than
+// `taskTolerance`, and the held-out tasks (model-suite.mjs), which the proposer never saw, got no
+// worse than `holdoutTolerance`.
 //
 // Pure: no git, no network, no files. Called by promote.mjs (readiness, the pull request gate and the
 // report) and cli.mjs (building evidence from an evaluation's trajectories). It does not run anything.
@@ -31,6 +36,12 @@ export const DEFAULT_EVIDENCE_RULES = Object.freeze({
   minGain: 0.01,
   /** No task's mean capability may fall by more than this. */
   taskTolerance: 0.05,
+  /** The held-out tasks' mean capability may fall by no more than this. */
+  holdoutTolerance: 0.01,
+  /** Every run must be a real-model run of its own side (`measured`). */
+  requireMeasured: true,
+  /** The measurement must have passed its calibration (calibration.mjs). */
+  requireCalibration: true,
   /** Proposal sources that are never promoted: the template fallback's fixed edits, or no change. */
   refusedSources: Object.freeze(['template', 'fallback', 'none', 'unknown']),
 });
@@ -45,14 +56,37 @@ function stats(values) {
   return { n, mean: round(mean), sd: round(sd) };
 }
 
-/** Each run's task, trial, whether it was synthetic, and its capability score. */
+/** Each run's task, trial, split, how it ran (synthetic, scripted, measured), and its capability. */
 function capabilityRuns(trajectories, budgets) {
   return (Array.isArray(trajectories) ? trajectories : []).map((t) => ({
     taskId: String(t.taskId ?? t.missionId ?? 'unknown'),
     trial: t.trial ?? null,
+    split: t.split || null,
     synthetic: Boolean(t.synthetic) || /^dryrun-/.test(String(t.missionId || '')),
+    scripted: Boolean(t.scripted),
+    measured: Boolean(t.measured),
     capability: typeof t.capability === 'number' ? t.capability : scoreTrajectory(t, budgets).capability,
   }));
+}
+
+/**
+ * Two sets of runs compared: each side's capability statistics, the difference of their means, and
+ * the standard error of that difference.
+ *
+ * @param {object[]} baseTrajectories
+ * @param {object[]} candTrajectories
+ * @param {object} [budgets]
+ * @returns {{ baseline: object, candidate: object, delta: number, noise: number }}
+ */
+export function compareRuns(baseTrajectories, candTrajectories, budgets) {
+  return compareCapability(capabilityRuns(baseTrajectories, budgets), capabilityRuns(candTrajectories, budgets));
+}
+
+function compareCapability(base, cand) {
+  const b = stats(base.map((r) => r.capability));
+  const c = stats(cand.map((r) => r.capability));
+  const noise = Math.sqrt((b.n ? b.sd ** 2 / b.n : 0) + (c.n ? c.sd ** 2 / c.n : 0));
+  return { baseline: b, candidate: c, delta: round(c.mean - b.mean), noise: round(noise) };
 }
 
 /**
@@ -65,7 +99,9 @@ function capabilityRuns(trajectories, budgets) {
  * @param {object} [p.budgets]               scoring budgets, as trajectory.mjs takes them
  * @returns {object} the evidence, schema EVIDENCE_SCHEMA
  */
-export function buildPromotionEvidence({ candidate = {}, baselineTrajectories = [], candidateTrajectories, budgets } = {}) {
+export function buildPromotionEvidence({
+  candidate = {}, baselineTrajectories = [], candidateTrajectories, budgets, calibration = null, suite = null,
+} = {}) {
   const base = capabilityRuns(baselineTrajectories, budgets);
   const cand = capabilityRuns(candidateTrajectories ?? candidate.trajectories, budgets);
   const taskIds = [...new Set([...base, ...cand].map((r) => r.taskId))].sort();
@@ -78,6 +114,9 @@ export function buildPromotionEvidence({ candidate = {}, baselineTrajectories = 
   const candidateStats = stats(cand.map((r) => r.capability));
   const noise = Math.sqrt((baseline.n ? baseline.sd ** 2 / baseline.n : 0) + (candidateStats.n ? candidateStats.sd ** 2 / candidateStats.n : 0));
   const fewest = (side) => (perTask.length ? Math.min(...perTask.map((t) => t[side].n)) : 0);
+  const all = [...base, ...cand];
+  const heldOut = (runs) => runs.filter((r) => r.split === 'holdout');
+  const holdout = heldOut(all).length ? compareCapability(heldOut(base), heldOut(cand)) : null;
   return {
     schema: EVIDENCE_SCHEMA,
     candidateId: candidate.id || null,
@@ -88,7 +127,12 @@ export function buildPromotionEvidence({ candidate = {}, baselineTrajectories = 
       hypothesis: candidate.proposal?.hypothesis || candidate.hypothesis || null,
     },
     trials: { baseline: fewest('baseline'), candidate: fewest('candidate') },
-    synthetic: [...base, ...cand].some((r) => r.synthetic),
+    synthetic: all.some((r) => r.synthetic),
+    scripted: all.some((r) => r.scripted),
+    measured: all.length > 0 && all.every((r) => r.measured),
+    suite,
+    calibration,
+    holdout,
     capability: {
       baseline,
       candidate: candidateStats,
@@ -118,6 +162,21 @@ export function judgeEvidence(evidence, rules = DEFAULT_EVIDENCE_RULES) {
     problems.push(`the change came from '${source}', not a model: the template fallback's fixed edits are never promoted`);
   }
   if (evidence.synthetic) problems.push('some runs were the synthetic dry run, which always completes and measures nothing');
+  if (evidence.scripted) {
+    problems.push(
+      "some runs were answered by the scripted in-process gateway, which gives every harness the same answers and measures nothing; only runs whose organs answer through a model measure a change",
+    );
+  }
+  if (r.requireMeasured && !evidence.measured && !evidence.synthetic && !evidence.scripted) {
+    problems.push("some runs did not send their own side's prompts to a model; only a --real-model run measures a change");
+  }
+  // Calibration is judged only for measured runs: unmeasured ones are refused above, whatever it says.
+  if (r.requireCalibration && evidence.measured) {
+    if (!evidence.calibration) problems.push('the measurement was not calibrated (calibration.mjs)');
+    else if (!evidence.calibration.ok) {
+      problems.push(`the measurement failed its calibration: ${(evidence.calibration.problems || ['no reason given']).join('; ')}`);
+    }
+  }
   const perTask = Array.isArray(evidence.perTask) ? evidence.perTask : [];
   if (perTask.length === 0) problems.push('no task was run');
   const onlyOneSide = perTask.filter((t) => !t.baseline?.n || !t.candidate?.n).map((t) => t.taskId);
@@ -137,6 +196,10 @@ export function judgeEvidence(evidence, rules = DEFAULT_EVIDENCE_RULES) {
       problems.push(`task ${t.taskId} got worse: capability ${t.baseline.mean} -> ${t.candidate.mean}`);
     }
   }
+  const h = evidence.holdout;
+  if (h?.baseline?.n && h?.candidate?.n && h.candidate.mean < h.baseline.mean - r.holdoutTolerance) {
+    problems.push(`the held-out tasks got worse: capability ${h.baseline.mean} -> ${h.candidate.mean}`);
+  }
   return { ok: problems.length === 0, problems };
 }
 
@@ -154,8 +217,11 @@ export function formatEvidenceMarkdown(evidence, verdict = judgeEvidence(evidenc
     '## Measured Evidence',
     '',
     `- **Proposal**: ${evidence.proposal?.source || 'unknown'}${evidence.proposal?.hypothesis ? ` — ${evidence.proposal.hypothesis}` : ''}`,
-    `- **Runs per task**: baseline ${evidence.trials?.baseline ?? 0}, candidate ${evidence.trials?.candidate ?? 0}${evidence.synthetic ? ' (synthetic dry run)' : ''}`,
+    `- **Runs per task**: baseline ${evidence.trials?.baseline ?? 0}, candidate ${evidence.trials?.candidate ?? 0}${evidence.synthetic ? ' (synthetic dry run)' : ''}${evidence.scripted ? ' (scripted in-process gateway)' : ''}`,
     `- **Capability**: ${cell(evidence.capability.baseline)} -> ${cell(evidence.capability.candidate)}, delta ${evidence.capability.delta}, noise (SE) ${evidence.capability.noise}`,
+    ...(evidence.holdout ? [`- **Held-out tasks**: ${cell(evidence.holdout.baseline)} -> ${cell(evidence.holdout.candidate)}, delta ${evidence.holdout.delta}`] : []),
+    `- **Measured**: ${evidence.measured ? `every run sent its side's own prompts to the model${evidence.suite ? ` (suite ${evidence.suite.name} v${evidence.suite.version})` : ''}` : 'no'}`,
+    `- **Calibration**: ${evidence.calibration ? `${evidence.calibration.ok ? 'passed' : 'failed'}: the baseline against itself ${evidence.calibration.aa?.delta ?? '?'} (noise ${evidence.calibration.aa?.noise ?? '?'}), a known-bad change ${evidence.calibration.knownBad?.delta ?? '?'}` : 'not run'}`,
     `- **Verdict**: ${verdict.ok ? 'measured gain' : `not promotable: ${verdict.problems.join('; ')}`}`,
     '',
     '| Task | Baseline | Candidate | Delta |',

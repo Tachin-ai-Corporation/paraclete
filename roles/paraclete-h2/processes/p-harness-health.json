@@ -1,0 +1,14 @@
+{
+  "id": "p-harness-health",
+  "name": "Check the self-improvement loop's health and keep its alarm issues current",
+  "description": "Read the cycle log, the harness pull requests and the releases, raise an alarm for each way the loop has been seen to fail quietly, and keep one GitHub issue open per alarm until it clears.",
+  "narrative": "1. Run `harness-cycle --action health --repo . --open-issues --json`. It reads the cycle log, the repository's harness pull requests and its tags, and opens, updates or closes one issue labelled `harness-alarm` per alarm.\n2. Report each alarm with its summary and the issue it is on. A note that the harness is paused is not an alarm: report the reason it gives.\n3. Never fix an alarm by changing the loop's own state: an alarm is for a person or a coding session to act on in the repository.",
+  "intent_keywords": [
+    "harness health",
+    "loop health",
+    "harness alarm",
+    "self improvement status"
+  ],
+  "status": "active",
+  "version": 1
+}

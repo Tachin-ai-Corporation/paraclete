@@ -215,7 +215,10 @@ export function scoreTrajectory(trajectory, budgets = DEFAULT_SCORE_BUDGETS) {
   const cpCount = Math.max(1, Number(trajectory.checkpointCount) || 1);
   const cpCompletionRate = clamp01((Number(trajectory.verifiedCheckpointsCount) || 0) / cpCount);
   const rubricScore = clamp01(Number(trajectory.evalCritique?.rubricScore ?? (trajectory.missionCompleted ? 1 : 0)));
-  const rawCapability = clamp01(0.7 * rubricScore + 0.3 * cpCompletionRate);
+  // A run with deterministic checks (a model-suite task) is as capable as the share of them it passed.
+  const rawCapability = typeof trajectory.checkScore === 'number'
+    ? clamp01(trajectory.checkScore)
+    : clamp01(0.7 * rubricScore + 0.3 * cpCompletionRate);
   const hardGateFailed =
     trajectory.evalCritique?.hardGateApplied === true && trajectory.evalCritique?.hardGatePassed === false;
   const capability = hardGateFailed ? Math.min(0.35, rawCapability) : rawCapability;
@@ -302,7 +305,12 @@ export function aggregateTrajectoryScores(trajectories = [], budgets = DEFAULT_S
   const perTrajectory = trajectories.map((t) => ({
     missionId: t.missionId,
     role: t.role,
-    ...(t.taskId !== undefined ? { taskId: t.taskId, trial: t.trial, synthetic: Boolean(t.synthetic) } : {}),
+    ...(t.taskId !== undefined
+      ? {
+          taskId: t.taskId, trial: t.trial, synthetic: Boolean(t.synthetic), scripted: Boolean(t.scripted),
+          measured: Boolean(t.measured), ...(t.split ? { split: t.split } : {}),
+        }
+      : {}),
     ...scoreTrajectory(t, budgets),
   }));
 

@@ -1,5 +1,14 @@
 // dev/harness2/cli.mjs: Command-line entrypoint for Paraclete-H² (validate, eval, evolve, harvest, promote).
+//
+// `--real-model` (eval, judge, evolve, promote, curriculum) runs every organ through the real model from
+// each side's own files (model-runs.mjs), on the model suite's tasks (model-suite.mjs), within a spend
+// cap (`--max-rollouts`, `--max-tokens`). Only such runs are promotion evidence, and a promotion's
+// evidence also carries a passing calibration (calibration.mjs). While the harness is paused
+// (pause.mjs), evolve, promote and curriculum refuse to start. Every such cycle, refused or not, is
+// recorded in .local/harness2/cycles.jsonl, which `health` (health.mjs) reads with the repository's
+// pull requests and tags to raise an alarm for each way the loop has been seen to fail quietly.
 
+import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { PARACLETE_SURFACE, rolesForStage, buildSkillScaffold, buildRoleScaffold } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
@@ -7,7 +16,14 @@ import { runTier1Evaluation, runTier2CanaryEvaluation, selectBenchmarkTasks } fr
 import { selectLensForTrajectories } from './lenses.mjs';
 import { runWithinGenerationRecursion } from './recursion.mjs';
 import { CAPABILITY_CREDO, synthesizeCrossLensCandidate } from './selection.mjs';
-import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence } from './evidence.mjs';
+import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence, judgeEvidence } from './evidence.mjs';
+import { calibrateMeasurement } from './calibration.mjs';
+import { SpendCapReached, createModelRunContext, estimateRollouts } from './model-runs.mjs';
+import { MODEL_SUITE_VERSION, selectModelTasks } from './model-suite.mjs';
+import { pauseState } from './pause.mjs';
+import {
+  appendCycleRecord, collectHealthInputs, cycleRecord, formatHealthMarkdown, loopHealth, syncHealthIssues,
+} from './health.mjs';
 import { createLineageLibrary } from './library.mjs';
 import {
   evaluatePromotionReadiness,
@@ -50,19 +66,19 @@ export const USAGE = `Usage: node dev/harness2/cli.mjs <subcommand> [options]
 Subcommands:
   surface                          Print the Paraclete mutable surface (c1..c7)
   validate [--stage stage1|stage2] Run structural, contract, and prompt budget validation
-  eval     [--stage stage1|stage2] [--role <role>] [--live] [--vertex] [--judge-committee [models]] [--include-harvested] [--suite-path <path>]
+  eval     [--stage stage1|stage2] [--role <role>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--include-harvested] [--suite-path <path>]
                                    Run Tier-1 hermetic or live target benchmark evaluation
   judge    [--stage stage1|stage2] [--role <role>] [--judge-committee [models]]
                                    Score target harness rollouts with the Frontier Model Committee (gemini-4-argon + claude-opus-5-5)
   canary   [--agent <vm-name>] [--stage stage1|stage2] [--role <role>]
                                    Run Tier-2 canary evaluation with read-only smoke check
-  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
+  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
                                    Execute Loop A dual-lens evolutionary harness optimization (Capability-First Credo)
   harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>] [--expand-curriculum]
                                    Filter and distill Loop B trajectories into Loop A benchmarks
-  promote  [--stage stage1|stage2] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
+  promote  [--stage stage1|stage2] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
                                    Verify candidate readiness, optionally apply patches, push branch, and open PR
-  curriculum [--status] [--suggest] [--max-units <n>] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
+  curriculum [--status] [--suggest] [--max-units <n>] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
                                    Step through the Master Curriculum Playbook or synthesize the next curriculum epoch
   report   [--markdown] [--project <id>] [--state-path <path>] [--archive-path <path>] [--suite-path <path>]
                                    Generate the standardized Paraclete-H² Autonomous Loop & GCP Cost Status Report
@@ -76,6 +92,21 @@ Subcommands:
                                    Provision the two-tier GCP lab (paraclete-h2-driver + paraclete-h2-canary)
   lab-status [--project <id>] [--zone <zone>]
                                    Inspect the live status of the two-tier GCP lab VMs
+
+Real-model runs (eval, judge, evolve, promote, curriculum):
+  --real-model                     Every organ answers through the real model, from each side's own files,
+                                   on the model suite's tasks; the only runs a promotion accepts
+  --max-rollouts <n>               Stop the run before it passes n model rollouts (default 120)
+  --max-tokens <n>                 Stop the run before it passes n tokens (default 30000000)
+  --recalibrate                    Calibrate again even when today's calibration for this commit is kept
+
+The off switch: while dev/harness2/PAUSED exists (or PARACLETE_H2_PAUSED is set), evolve, promote and
+curriculum refuse to start.
+
+Loop health:
+  health   [--days <n>] [--repo <owner/name>] [--open-issues] [--dry-run] [--markdown]
+                                   The loop's alarms and numbers, from the cycle log, the harness pull
+                                   requests and the tags; --open-issues keeps one GitHub issue per alarm
 `;
 
 export function parseCliArgs(argv = []) {
@@ -109,6 +140,23 @@ function mergedProposal(invCandidate, domCandidate) {
     source: refused || (sources[0] === sources[1] ? sources[0] : sources.join('+')),
     hypothesis: parts.map((c) => c?.proposal?.hypothesis || c?.hypothesis).filter(Boolean).join(' + '),
   };
+}
+
+/**
+ * The files a cross-lens merge runs with: the parent's patches, then each lens's own changes (its
+ * touchedPaths). A lens's patches also carry its copy of the parent's files, so merging them whole
+ * would let one lens's copy of a parent file undo the other lens's change to it.
+ *
+ * @param {object} parent
+ * @param {object} inv
+ * @param {object} dom
+ * @returns {object} repo path -> text
+ */
+export function mergeLensPatches(parent, inv, dom) {
+  const own = (cand) => Object.fromEntries((cand?.touchedPaths || [])
+    .filter((rel) => cand?.filePatches && rel in cand.filePatches)
+    .map((rel) => [rel, cand.filePatches[rel]]));
+  return { ...(parent?.filePatches || {}), ...own(inv), ...own(dom) };
 }
 
 /**
@@ -241,16 +289,136 @@ export async function runEvolutionLoop(opts = {}) {
     roles: rolesForStage(stage),
     generations: generationSummaries,
     attempts,
+    // The baseline's own runs: a promotion's calibration compares them with its separate baseline
+    // run, a free A/A check (calibration.mjs).
+    baseline: { scores: initialEval.summary, trajectories: initialEval.trajectories },
     winner: currentParent,
   };
 }
 
+/** The commands that run a harness cycle, which the off switch stops. */
+const CYCLE_COMMANDS = new Set(['evolve', 'promote', 'curriculum']);
+
+/** The commands `--real-model` applies to. */
+const REAL_MODEL_COMMANDS = new Set(['eval', 'judge', 'evolve', 'promote', 'curriculum']);
+
+function note(deps, line) {
+  (deps.stderr || process.stderr).write(`${line}\n`);
+}
+
+function headCommit(repoRoot) {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return 'unknown';
+  }
+}
+
 /**
- * Execute a CLI command programmatically.
+ * Execute a CLI command programmatically. A cycle command refuses while the harness is paused. With
+ * `--real-model` (and no real-model context in `deps` yet, as a nested call has) it makes the run's
+ * context, reports the spend cap, and removes the run's checkouts when it ends; a run that reaches its
+ * cap stops and says so.
+ *
+ * @param {string[]} [argv]
+ * @param {object} [deps]
  */
 export async function runCli(argv = process.argv.slice(2), deps = {}) {
   const { subcommand, flags } = parseCliArgs(argv);
+  const repoRoot = deps.repoRoot || process.cwd();
+  const readOnly = subcommand === 'curriculum' && (flags.status || flags.suggest);
+  // A cycle the developer or the driver started is recorded once; the calls it makes are not.
+  const record = CYCLE_COMMANDS.has(subcommand) && !readOnly && !deps.inCycle && deps.cycleLog !== false;
+  const result = await runCycle(argv, record ? { ...deps, inCycle: true } : deps, { subcommand, flags, repoRoot, readOnly });
+  if (record) {
+    try {
+      appendCycleRecord(cycleRecord({ command: subcommand, flags, result, commit: headCommit(repoRoot) }), { repoRoot, path: deps.cycleLogPath });
+    } catch (err) {
+      note(deps, `[WARN] could not record the cycle: ${err.message}`);
+    }
+  }
+  return result;
+}
+
+async function runCycle(argv, deps, { subcommand, flags, repoRoot, readOnly }) {
+  if (CYCLE_COMMANDS.has(subcommand) && !readOnly) {
+    const pause = pauseState({ repoRoot, env: deps.env || process.env });
+    if (pause.paused) return { ok: false, paused: true, reason: `the harness is paused: ${pause.reason}` };
+  }
+  if (deps.realModel || !flags['real-model'] || !REAL_MODEL_COMMANDS.has(subcommand) || readOnly) {
+    return runCliCommand(argv, deps);
+  }
+  const limits = { maxRollouts: flags['max-rollouts'], maxTokens: flags['max-tokens'] };
+  const realModel = (deps.createModelRunContext || createModelRunContext)({ repoRoot, limits });
+  const cap = realModel.meter.summary();
+  note(deps, `[INFO] real-model run: every organ answers through the model; at most ${cap.maxRollouts} rollouts and ${cap.maxTokens} tokens`);
+  try {
+    const res = await runCliCommand(argv, { ...deps, realModel });
+    return { ...res, spend: realModel.meter.summary() };
+  } catch (err) {
+    if (err instanceof SpendCapReached) {
+      return { ok: false, spendCapReached: true, reason: err.message, spend: realModel.meter.summary() };
+    }
+    throw err;
+  } finally {
+    realModel.cleanup();
+  }
+}
+
+/**
+ * A promotion's evidence. A real-model run is calibrated (calibration.mjs) only when the evidence
+ * would pass without it: calibration costs runs, and evidence that fails anyway needs none. The A/A
+ * check reuses the evolution's own baseline runs (`evoRes.baseline`), so only the known-bad change
+ * runs again.
+ */
+async function promotionEvidence({ candidate, baselineRes, evoRes, realModel, tasks, trials, stage, role, flags, deps, judge }) {
+  const suite = realModel ? { name: 'model', version: MODEL_SUITE_VERSION } : null;
+  const first = buildPromotionEvidence({ candidate, baselineTrajectories: baselineRes.trajectories, suite });
+  if (!realModel) return first;
+  if (!judgeEvidence(first, { ...DEFAULT_EVIDENCE_RULES, requireCalibration: false }).ok) return first;
+  const repoRoot = deps.repoRoot || process.cwd();
+  const commit = realModel.sides.commit ? realModel.sides.commit() : headCommit(repoRoot);
+  const evaluate = (filePatches) => evaluateLiveTarget({ stage, role, tasks, trials, realModel, filePatches, repoRoot: deps.repoRoot, deps, ...judge });
+  note(deps, `[INFO] the evidence would pass: calibrating the measurement on ${commit.slice(0, 12)} (a known-bad change, ${tasks.length} task(s) x ${trials})`);
+  const calibration = await calibrateMeasurement({
+    evaluate: async (filePatches) => (Object.keys(filePatches).length === 0 && evoRes?.baseline?.trajectories?.length
+      ? { trajectories: evoRes.baseline.trajectories }
+      : evaluate(filePatches)),
+    baselineTrajectories: baselineRes.trajectories,
+    commit,
+    role: role || null,
+    suiteVersion: MODEL_SUITE_VERSION,
+    taskIds: tasks.map((t) => t.id),
+    trials,
+    repoRoot,
+    refresh: Boolean(flags.recalibrate),
+  });
+  return buildPromotionEvidence({ candidate, baselineTrajectories: baselineRes.trajectories, suite, calibration });
+}
+
+/**
+ * Whether a real-model run fits its cap, said before it spends anything: a run that cannot finish
+ * within it would only reach the cap hours in and promote nothing. Null when it fits (or for a nested
+ * call, whose caller already asked).
+ */
+function overCap(deps, realModel, estimate) {
+  if (!realModel || deps.capChecked) return null;
+  const { maxRollouts } = realModel.meter.summary();
+  note(deps, `[INFO] about ${estimate} model rollouts at most; the cap is ${maxRollouts}`);
+  if (estimate <= maxRollouts) return null;
+  return {
+    ok: false,
+    spendCapWouldBeReached: true,
+    estimate,
+    reason: `this run needs about ${estimate} model rollouts, over its cap of ${maxRollouts}: name a --role, or use fewer --trials, --generations or --recursion, or raise --max-rollouts`,
+  };
+}
+
+async function runCliCommand(argv, deps) {
+  const { subcommand, flags } = parseCliArgs(argv);
   const stage = flags.stage || 'stage1';
+  // A real-model run's context, made once by runCli and shared by nested calls.
+  const realModel = deps.realModel || null;
   // Runs of each task per evaluation (--trials). A run that may open a pull request (--push-pr)
   // defaults to the evidence rules' minimum, since a promotion needs that many on both sides.
   const trials = Math.max(1, Math.floor(Number(flags.trials) || (flags['push-pr'] ? DEFAULT_EVIDENCE_RULES.minTrials : 1)));
@@ -276,7 +444,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     const tasks =
       Array.isArray(deps.tasks) && deps.tasks.length > 0
         ? deps.tasks
-        : selectBenchmarkTasks({
+        : realModel
+          ? selectModelTasks({ role: flags.role })
+          : selectBenchmarkTasks({
             stage,
             role: flags.role,
             includeHarvested: Boolean(flags['include-harvested']),
@@ -287,7 +457,9 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       typeof flags['judge-committee'] === 'string'
         ? parseCommitteeSpec(flags['judge-committee'])
         : DEFAULT_JUDGE_COMMITTEE;
-    const isLive = subcommand === 'judge' || Boolean(flags.live) || useFrontierJudge;
+    const isLive = subcommand === 'judge' || Boolean(flags.live) || useFrontierJudge || Boolean(realModel);
+    const refused = overCap(deps, realModel, estimateRollouts({ tasks: tasks.length, trials, candidates: 0 }));
+    if (refused) return refused;
     const evalRes = isLive
       ? await evaluateLiveTarget({
           stage,
@@ -299,6 +471,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
           gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
           gatewayToken: flags['gateway-token'] || deps.gatewayToken,
           trials,
+          realModel,
           deps,
         })
       : await runTier1Evaluation({ stage, role: flags.role, tasks, trials, deps });
@@ -322,7 +495,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (subcommand === 'evolve') {
-    const isLive = Boolean(flags.live);
+    const isLive = Boolean(flags.live) || Boolean(realModel);
     const useVertex = Boolean(flags.vertex);
     const useFrontierJudge = Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
     const judgeCommittee =
@@ -332,12 +505,20 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
     const tasks =
       Array.isArray(deps.tasks) && deps.tasks.length > 0
         ? deps.tasks
-        : selectBenchmarkTasks({
-            stage,
-            role: flags.role,
-            includeHarvested: Boolean(flags['include-harvested']),
-            suitePath: flags['suite-path'],
-          });
+        : realModel
+          ? selectModelTasks({ role: flags.role })
+          : selectBenchmarkTasks({
+              stage,
+              role: flags.role,
+              includeHarvested: Boolean(flags['include-harvested']),
+              suitePath: flags['suite-path'],
+            });
+    if (realModel) {
+      const generations = Number(flags.generations) || 1;
+      const recursion = Number(flags.recursion) || 2;
+      const refused = overCap(deps, realModel, estimateRollouts({ tasks: tasks.length, trials, candidates: generations * (2 * recursion + 1) }));
+      if (refused) return refused;
+    }
     const liveEvaluate = isLive
       ? async (cand) =>
           evaluateLiveTarget({
@@ -352,6 +533,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
             trials,
+            realModel,
             deps,
           })
       : undefined;
@@ -374,6 +556,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             gatewayUrl: flags['gateway-url'] || deps.gatewayUrl,
             gatewayToken: flags['gateway-token'] || deps.gatewayToken,
             targetMutablePath: flags['target-path'] || deps.targetMutablePath,
+            realModel,
           })
         : undefined,
       evaluateCandidate: liveEvaluate,
@@ -390,14 +573,22 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
                   cachedOrgans: invSnap.cachedOrgans,
                   organPromptTokens: domSnap.organPromptTokens,
                   organPrompts: domSnap.organPrompts || invSnap.organPrompts,
-                  isEvolved: Boolean(invSnap.isEvolved || domSnap.isEvolved),
                 });
               } else if (invSnap || domSnap) {
                 mergedSnapshots.set(r, invSnap || domSnap);
               }
             }
-            const mergedRollout =
-              mergedSnapshots.size > 0
+            const mergedPatches = mergeLensPatches(parentState, invCandidate, domCandidate);
+            const mergedRollout = realModel
+              ? async (task, substrateCtx) =>
+                  runInProcessBrainRollout(task, substrateCtx, {
+                    realModel,
+                    filePatches: mergedPatches,
+                    useFrontierJudge,
+                    judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
+                    judgeOptions: deps.judgeOptions,
+                  })
+              : mergedSnapshots.size > 0
                 ? async (task, substrateCtx) =>
                     runInProcessBrainRollout(task, substrateCtx, {
                       configSnapshot: mergedSnapshots.get(task.role || 'paraclete-h2'),
@@ -411,10 +602,7 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             const touchedPaths = [
               ...new Set([...(invCandidate?.touchedPaths || []), ...(domCandidate?.touchedPaths || [])]),
             ];
-            const filePatches = {
-              ...(invCandidate?.filePatches || {}),
-              ...(domCandidate?.filePatches || {}),
-            };
+            const filePatches = mergedPatches;
             const evalRes = await liveEvaluate({
               touchedPaths,
               runTaskRollout: mergedRollout,
@@ -526,15 +714,29 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       typeof flags['judge-committee'] === 'string'
         ? parseCommitteeSpec(flags['judge-committee'])
         : DEFAULT_JUDGE_COMMITTEE;
-    if (flags.live) {
+    if (flags.live || realModel) {
+      const promoteTasks = realModel
+        ? (Array.isArray(deps.tasks) && deps.tasks.length ? deps.tasks : selectModelTasks({ role: flags.role }))
+        : undefined;
+      if (realModel) {
+        const generations = Number(flags.generations) || 2;
+        const recursion = Number(flags.recursion) || 2;
+        const refused = overCap(deps, realModel, estimateRollouts({
+          tasks: promoteTasks.length, trials, candidates: generations * (2 * recursion + 1), baselines: 2, calibration: true,
+        }));
+        if (refused) return refused;
+      }
+      const promoteDeps = promoteTasks ? { ...deps, tasks: promoteTasks, capChecked: true } : deps;
       const baselineRes = await evaluateLiveTarget({
         stage,
         role: flags.role,
         repoRoot: deps.repoRoot,
+        ...(promoteTasks ? { tasks: promoteTasks } : {}),
         useFrontierJudge,
         judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
         judgeOptions: deps.judgeOptions,
         trials,
+        realModel,
         deps,
       });
       const evoRes = await runCli(
@@ -560,13 +762,17 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
             : []),
           ...(flags.role ? ['--role', flags.role] : []),
         ],
-        deps,
+        promoteDeps,
       );
+      if (evoRes.paused) return evoRes;
       const readiness = evaluatePromotionReadiness({
         candidate: evoRes.winner,
         baselineScores: baselineRes.summary,
         validationResult: baselineRes.validation,
-        evidence: buildPromotionEvidence({ candidate: evoRes.winner, baselineTrajectories: baselineRes.trajectories }),
+        evidence: await promotionEvidence({
+          candidate: evoRes.winner, baselineRes, evoRes, realModel, tasks: promoteTasks || [], trials, stage, role: flags.role, flags, deps,
+          judge: { useFrontierJudge, judgeCommittee: useFrontierJudge ? judgeCommittee : undefined, judgeOptions: deps.judgeOptions },
+        }),
       });
       let application = null;
       if (flags.apply) {
@@ -709,22 +915,36 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
         ? parseCommitteeSpec(flags['judge-committee'])
         : DEFAULT_JUDGE_COMMITTEE;
 
+    // A real-model unit is measured on the model suite's tasks for its role: the unit's own task is
+    // written for the scripted gateway and has no checks a real mission can be held to.
+    const unitTasks = realModel ? selectModelTasks({ role: unit.role }) : [unit.task];
     const unitDeps = {
       ...deps,
-      tasks: [unit.task],
+      tasks: unitTasks,
       targetMutablePath: unit.targetMutablePath,
+      ...(realModel ? { capChecked: true } : {}),
     };
+    if (realModel) {
+      const generations = Number(flags.generations) || 1;
+      const recursion = Number(flags.recursion) || 1;
+      note(deps, `[INFO] curriculum unit ${unit.id} (${unit.role}) on ${unitTasks.length} task(s)`);
+      const refused = overCap(deps, realModel, estimateRollouts({
+        tasks: unitTasks.length, trials, candidates: generations * (2 * recursion + 1), baselines: 2, calibration: true,
+      }));
+      if (refused) return refused;
+    }
 
-    const baselineRes = flags.live
+    const baselineRes = flags.live || realModel
       ? await evaluateLiveTarget({
           stage: unit.stage,
           role: unit.role,
-          tasks: [unit.task],
+          tasks: unitTasks,
           repoRoot: deps.repoRoot,
           useFrontierJudge,
           judgeCommittee: useFrontierJudge ? judgeCommittee : undefined,
           judgeOptions: deps.judgeOptions,
           trials,
+          realModel,
           deps: unitDeps,
         })
       : await runTier1Evaluation({
@@ -764,11 +984,15 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       unitDeps,
     );
 
+    if (evoRes.paused) return evoRes;
     const readiness = evaluatePromotionReadiness({
       candidate: evoRes.winner,
       baselineScores: baselineRes.summary,
       validationResult: baselineRes.validation,
-      evidence: buildPromotionEvidence({ candidate: evoRes.winner, baselineTrajectories: baselineRes.trajectories }),
+      evidence: await promotionEvidence({
+        candidate: evoRes.winner, baselineRes, evoRes, realModel, tasks: unitTasks, trials, stage: unit.stage, role: unit.role, flags, deps,
+        judge: { useFrontierJudge, judgeCommittee: useFrontierJudge ? judgeCommittee : undefined, judgeOptions: deps.judgeOptions },
+      }),
     });
 
     let application = null;
@@ -855,6 +1079,28 @@ export async function runCli(argv = process.argv.slice(2), deps = {}) {
       application,
       pullRequest,
       coverage,
+    };
+  }
+
+  if (subcommand === 'health') {
+    const repoRoot = deps.repoRoot || process.cwd();
+    const repo = typeof flags.repo === 'string' ? flags.repo : undefined;
+    const inputs = collectHealthInputs({ repoRoot, repo, execGh: deps.execGh, execGit: deps.execGit, cyclePath: deps.cycleLogPath, env: deps.env });
+    const health = loopHealth({ ...inputs, now: deps.now || new Date(), rules: flags.days ? { days: Number(flags.days) } : {} });
+    const issues = flags['open-issues']
+      ? syncHealthIssues({
+          alarms: health.alarms, repoRoot, repo, execGh: deps.execGh, dryRun: Boolean(flags['dry-run']),
+          closeCleared: inputs.problems.length === 0, now: deps.now || new Date(),
+        })
+      : null;
+    const markdown = formatHealthMarkdown(health);
+    return {
+      ok: health.ok && inputs.problems.length === 0,
+      ...health,
+      problems: inputs.problems,
+      ...(issues ? { issues } : {}),
+      markdown,
+      ...(flags.markdown ? { report: markdown } : {}),
     };
   }
 

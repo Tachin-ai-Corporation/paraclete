@@ -257,18 +257,35 @@ export async function runTier1Evaluation(opts = {}) {
         };
       }
 
-      // Each run is tagged with its task and trial, and whether it was the synthetic dry run (which
-      // always completes, so it measures nothing): promotion evidence (evidence.mjs) groups by them.
-      const trajectory = { ...extractTrajectory(rollout), taskId: task.id, trial, synthetic };
+      // Each run is tagged with its task and trial, whether it was the synthetic dry run (which always
+      // completes), whether a scripted gateway answered for the organs (the same answers for any
+      // harness), and whether a real model answered from the side's own files (`measured`, the only
+      // runs that measure a candidate). Promotion evidence (evidence.mjs) groups by task and trial and
+      // refuses the others. A model-suite task's split and check score come along too.
+      const trajectory = {
+        ...extractTrajectory(rollout),
+        taskId: task.id,
+        trial,
+        synthetic,
+        scripted: Boolean(rollout?.scripted),
+        measured: Boolean(rollout?.measured),
+        ...(task.split ? { split: task.split } : {}),
+        ...(typeof rollout?.checkScore === 'number' ? { checkScore: rollout.checkScore } : {}),
+      };
       trajectories.push(trajectory);
     }
 
-    const summary = aggregateTrajectoryScores(trajectories, opts.budgets);
+    // With held-out tasks, the summary that steers selection is the training tasks' alone; the
+    // held-out ones are scored apart and reach only the promotion evidence.
+    const holdout = trajectories.filter((t) => t.split === 'holdout');
+    const train = trajectories.filter((t) => t.split !== 'holdout');
+    const summary = aggregateTrajectoryScores(holdout.length && train.length ? train : trajectories, opts.budgets);
     return {
       tier: 'tier1',
       trials,
       trajectories,
       summary,
+      ...(holdout.length ? { holdoutSummary: aggregateTrajectoryScores(holdout, opts.budgets) } : {}),
     };
   } finally {
     await substrate.close();

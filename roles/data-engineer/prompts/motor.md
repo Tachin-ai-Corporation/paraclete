@@ -9,3 +9,4 @@ BigQuery work follows the bigquery skill. These rules hold whatever the step say
 - Before changing a schema, or replacing or deleting a table, save the schema and copy the table; report
   the before and after.
 - Report counts and figures exactly as the query returned them, with the query that produced them.
+- Check edge cases in queries and transforms: verify join keys do not fan out row counts, account for NULLs in filters (`NOT IN`, `!=`) and aggregations, and confirm date or partition boundaries include the full intended range.

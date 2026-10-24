@@ -3,7 +3,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -132,16 +132,29 @@ import { main as runHarnessCycle } from '../../roles/paraclete-h2/skills/harness
 import { main as runHarnessEval } from '../../roles/paraclete-h2/skills/harness-benchmark/harness-eval.mjs';
 import { main as runHarnessPromote } from '../../roles/paraclete-h2/skills/harness-release/harness-promote.mjs';
 
+/** A calibration that passed (calibration.mjs judgeCalibration's shape). */
+const PASSING_CALIBRATION = Object.freeze({
+  ok: true,
+  aa: { delta: 0.004, noise: 0.01, runs: 3 },
+  knownBad: { change: 'prompts/motor.md', delta: -0.6, noise: 0.02, runs: 3, detected: true },
+  problems: [],
+  commit: 'a'.repeat(40),
+});
+
 /**
- * Evidence that passes its verdict: three real runs of one task on each side, the candidate clearly
- * better, and the change proposed by a model. Options make it fail one rule at a time.
+ * Evidence that passes its verdict: three real-model runs of one task on each side, the candidate
+ * clearly better, the change proposed by a model, and a passing calibration. Options make it fail one
+ * rule at a time.
  */
-function measuredEvidence(candidate, { source = 'vertex', base = [0.4, 0.42, 0.38], cand = [0.9, 0.92, 0.88], taskId = 'task-a' } = {}) {
-  const runs = (caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, synthetic: false, capability, missionId: `m-${taskId}-${i}` }));
+function measuredEvidence(candidate, {
+  source = 'vertex', base = [0.4, 0.42, 0.38], cand = [0.9, 0.92, 0.88], taskId = 'task-a', measured = true, calibration = PASSING_CALIBRATION,
+} = {}) {
+  const runs = (caps) => caps.map((capability, i) => ({ taskId, trial: i + 1, synthetic: false, measured, capability, missionId: `m-${taskId}-${i}` }));
   return buildPromotionEvidence({
     candidate: { ...candidate, proposal: { source, hypothesis: 'a measured change' } },
     baselineTrajectories: runs(base),
     candidateTrajectories: runs(cand),
+    calibration,
   });
 }
 
@@ -747,7 +760,8 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
       assert.equal(applied.branch, 'h2/promote-cand-win-1');
       assert.deepEqual(applied.appliedPaths, [targetRel]);
       assert.equal(readFileSync(join(tmpRepo, targetRel), 'utf8'), '# Promoted Cortex Overlay\nConcise rule.\n');
-      assert.deepEqual(gitCalls[0], ['checkout', '-B', 'h2/promote-cand-win-1']);
+      // It notes the branch it was on (to return to after the push), then checks out the promotion's.
+      assert.deepEqual(gitCalls.slice(0, 2), [['rev-parse', '--abbrev-ref', 'HEAD'], ['checkout', '-B', 'h2/promote-cand-win-1']]);
 
       // Verify automatic rollback when post-apply validation fails
       const badCandidate = {
@@ -1428,7 +1442,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         fixture.seedWorkspace(wsBase);
         fixture.seedWorkspace(wsEvo);
         fixture.applyReferenceSolution(wsEvo);
-        materializeCurriculumArtifacts(wsEvo, unit, { evolved: true });
+        materializeCurriculumArtifacts(wsEvo, unit);
 
         const verifyBase = verifyUnitArtifacts(wsBase, unit);
         const verifyEvo = verifyUnitArtifacts(wsEvo, unit);
@@ -1572,7 +1586,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         const pathCheck = classifySurfacePath(dynUnit.targetMutablePath, { stage: 'stage2', allowNewRoles: true });
         assert.equal(pathCheck.allowed, true, `Dynamic unit ${dynUnit.id} targetMutablePath ${dynUnit.targetMutablePath} must be mutable`);
         const ws = join(tmpRoot, `ws-${dynUnit.id}`);
-        materializeCurriculumArtifacts(ws, dynUnit, { evolved: true });
+        materializeCurriculumArtifacts(ws, dynUnit);
         const verified = verifyUnitArtifacts(ws, dynUnit);
         assert.equal(verified.passed, true, `Dynamic unit ${dynUnit.id} artifacts failed verification: ${JSON.stringify(verified)}`);
       }
@@ -1980,7 +1994,7 @@ describe('dev/harness2/promote.mjs: versioned promotions', () => {
     assert.equal(res.pushed, false);
     assert.equal(res.version, null);
     assert.match(res.reason, /could not read from remote/);
-    assert.deepEqual(gitCalls.map((c) => c[0]), ['diff', 'fetch'], 'the lint reads the diff, then the fetch fails');
+    assert.deepEqual(gitCalls.map((c) => c[0]), ['diff', 'rev-parse', 'fetch'], 'the lint reads the diff, the branch is noted, then the fetch fails');
   });
 
   it('a dry run reads the versions of a real clone without fetching, from HEAD when there is no remote', () => {
@@ -2112,6 +2126,63 @@ describe('dev/harness2/evidence.mjs: a promotion carries measured evidence', () 
     const none = await createLiveProposeAndApply({})(spec, { id: 'gen0' });
     assert.equal(none.proposal.source, 'none');
     assert.equal(DEFAULT_EVIDENCE_RULES.refusedSources.includes('none'), true);
+  });
+
+  it('runs the scripted in-process gateway answered measure nothing, and the evidence says so', () => {
+    const runs = (caps, scripted) => caps.map((capability, i) => ({ taskId: 'task-a', trial: i + 1, capability, scripted }));
+    const evidence = buildPromotionEvidence({
+      candidate: { ...CANDIDATE, proposal: { source: 'vertex' } },
+      baselineTrajectories: runs([0.4, 0.42, 0.38], true),
+      candidateTrajectories: runs([0.9, 0.92, 0.88], true),
+    });
+    assert.equal(evidence.scripted, true);
+    const { ok, problems } = judgeEvidence(evidence);
+    assert.equal(ok, false);
+    assert.equal(problems.length, 1, problems.join(' | '));
+    assert.match(problems[0], /scripted in-process gateway, which gives every harness the same answers/);
+    assert.match(formatEvidenceMarkdown(evidence), /\*\*Runs per task\*\*: baseline 3, candidate 3 \(scripted in-process gateway\)/);
+    // Runs a model answered carry no mark and are judged on their numbers.
+    assert.equal(measuredEvidence(CANDIDATE).scripted, false);
+  });
+
+  it('in-process, a candidate that changed a prompt scores exactly as the baseline, and every run is marked scripted', async () => {
+    const task = getCurriculumUnitById('unit-role-security-engineer').task;
+    const overlay = `roles/${task.role}/prompts/cerebellum.md`;
+    const judge = { useFrontierJudge: true, judgeOptions: { mode: 'heuristic' } };
+    // The candidate's worktree, where createIsolatedWorktree would put it; git itself is faked.
+    const wt = join(tmpdir(), 'paraclete-h2-scripted-gen0-dom-1');
+    rmSync(wt, { recursive: true, force: true });
+    try {
+      for (const dir of ['config', 'prompts', join('roles', task.role, 'prompts')]) cpSync(dir, join(wt, dir), { recursive: true });
+      const candidate = await createLiveProposeAndApply({
+        stage: 'stage2',
+        useWorktree: true,
+        execGit: () => '',
+        ...judge,
+        applyMutation: async ({ targetRoot }) => {
+          const abs = join(targetRoot, overlay);
+          writeFileSync(abs, `${readFileSync(abs, 'utf8')}\n- Quote the evidence for every finding.\n`);
+          return { touchedPaths: [overlay], source: 'vertex', hypothesis: 'quote the evidence' };
+        },
+      })({ lens: 'DOM', escalationMode: 'initial_targeted_patch', allowedComponents: ['c5_role_overlays'], priorAttemptsSummary: [] }, { id: 'scripted-gen0' });
+      assert.deepEqual(candidate.touchedPaths, [overlay]);
+
+      const candEval = await runTier1Evaluation({ tasks: [task], runTaskRollout: candidate.runTaskRollout });
+      const baseEval = await evaluateLiveTarget({ tasks: [task], role: task.role, ...judge });
+      const score = (res) => res.summary.perTrajectory.map((p) => [p.capability, p.scripted]);
+      assert.ok(baseEval.summary.capability < 1, 'the judge scored the run, so equal scores mean something');
+      assert.deepEqual(score(candEval), score(baseEval));
+      assert.deepEqual(score(baseEval).map(([, scripted]) => scripted), [true]);
+
+      const evidence = buildPromotionEvidence({
+        candidate: { ...candidate, trajectories: candEval.trajectories },
+        baselineTrajectories: baseEval.trajectories,
+      });
+      assert.equal(evidence.capability.delta, 0);
+      assert.match(judgeEvidence(evidence).problems.join(' | '), /scripted in-process gateway/);
+    } finally {
+      rmSync(wt, { recursive: true, force: true });
+    }
   });
 });
 

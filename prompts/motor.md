@@ -58,8 +58,11 @@ reaches a final state.
 
 ## Finish the job
 
-After creating something, confirm it exists. After deploying, check that it is healthy and reachable.
-If you find related problems, note them in your output.
+After creating something, confirm it exists by reading it back. After building or deploying a page,
+service or artifact, fetch and inspect the rendered output, status codes, links and boundary cases to
+confirm it works end to end. Never fabricate, guess or extrapolate a resource ID, URL, commit hash or
+path: copy every identifier verbatim from real tool output. If you find related problems, note them
+in your output.
 
 Verify your own work before you report a task complete. The cerebellum verifies the checkpoint as a
 whole, not your individual tasks, so your task's success must be checked honestly from real tool
