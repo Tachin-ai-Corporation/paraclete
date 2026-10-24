@@ -175,7 +175,8 @@ Rules:
 - A dev instance is a paraclete installed in a GCP project used only for development. **Never test on
   an instance that someone relies on.**
 - Each project holds one instance, so a dev instance means a dev project. If several developers share
-  one, an upgrade changes it for all of them. Agree on who has it before deploying.
+  one, an upgrade changes it for all of them. Agree on who has it before deploying, and before a
+  release check: `node dev/release-check.mjs` deploys main's head to it (section 10).
 - Its coordinates live in `.local/instance.env`. Copy [dev/instance.env.example](dev/instance.env.example)
   there and fill it in. The `dev/` scripts read this file. Nothing else in the repo knows your
   instance exists.
@@ -311,25 +312,65 @@ have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often b
 ### Cutting a release
 
 A release is a version tag on `main`, `vYYYY.MM.DD.N.N`, published as a GitHub release with notes.
-Dashboards learn of it from GitHub's release list and offer it as an update
-(`agent/release/versions.mjs` defines versions and their order). Its version is the one the released
-commit's subject already starts with, so there is nothing to choose.
+Dashboards learn of it from GitHub's release list, offer it as an update and, with automatic updates
+on, install it by themselves soon after (`agent/release/versions.mjs` defines versions and their
+order). So a release is run on a dev instance before it is tagged, and a bad one can be withdrawn.
+Its version is the one the released commit's subject already starts with, so there is nothing to
+choose.
 
 1. Merge what the release should hold into `main`, and let CI pass on `main`'s head.
 2. On a clean, up-to-date `main`: `node dev/release.mjs --dry-run`. It refuses unless `origin` has the
    same head, every CI check run on it passed, and the head's version is newer than every version tag;
    then it shows the notes the release will carry.
-3. `node dev/release.mjs`: the same checks, then an annotated tag of the version at the head, pushed
-   to `origin`.
+3. Agree on who has the dev instance (section 7), then `node dev/release-check.mjs`. It makes the
+   same checks, deploys the head to your dev instance (`node dev/deploy.mjs <commit>`), and requires
+   `node dev/status.mjs` to find every service up on that commit and `node dev/smoke.mjs` to PASS for
+   the installed role. Only then does it tag, as `dev/release.mjs` does: an annotated tag of the
+   version at the head, pushed to `origin`, whose message records the check (its time, the commit, the
+   status and the smoke test's mission). Right before the tag it makes step 2's checks once more, so
+   a newer release cut, or `main` moved, during the check refuses it. Any failure stops before the
+   tag. `--vm-only` checks an instance without a dashboard; `--no-release` checks and tags nothing.
+   `node dev/release.mjs` alone tags without the check: use it to push a tag a check already made,
+   never to skip the check.
 4. The push starts `.github/workflows/release.yml`. It refuses a tag that is not a version or whose
    commit is not on `main`, runs the tests and the dashboard build at the tag, then publishes the
    release with `node dev/release.mjs notes <tag>` as its notes: one line per commit since the
-   previous version tag, each the commit's subject. Follow it in the repository's Actions tab.
+   previous version tag, each the commit's subject. A withdrawn release is not counted as the
+   previous one: an instance on the release before it moves straight to this one, so these notes list
+   the withdrawn release's changes too (the notes ask GitHub which releases were withdrawn). Follow it
+   in the repository's Actions tab.
 
 A tag whose workflow failed is not a release, and no dashboard offers it. Fix the cause in a new
 commit with a newer version, and release that. Rerunning the workflow (after a GitHub outage, say)
-publishes the release, or updates the notes of one an earlier run published. The commands' options
-are in [dev/README.md](dev/README.md).
+publishes the release, or updates the notes of one an earlier run published, but never those of a
+withdrawn one, for a tag from v2026.10.23.12.1 on (an older tag's own workflow lacks that guard: see
+below). The commands' options are in [dev/README.md](dev/README.md).
+
+### Withdrawing a release
+
+A published release that turns out bad is withdrawn, never deleted:
+`node dev/release.mjs yank <tag> --reason "<why, one line>"`.
+
+- **What it changes.** GitHub marks the release a prerelease, and its notes start with
+  `Withdrawn: <why>`. Running it again with the same reason changes nothing; another reason replaces the
+  line.
+- **What instances do.** A dashboard that checks for withdrawn releases (from v2026.10.23.12.1 on)
+  stops offering it at its next look at GitHub, and starts no new install to it, by hand or
+  automatic: every upgrade asks GitHub first. Two things it cannot stop: an upgrade to it already
+  running finishes, and a dashboard on an older release keeps offering it, and may install it, within
+  the hour it keeps GitHub's list (`dashboard.release_check_ttl_seconds`). So withdraw soon.
+- **Instances already on it** stay on it, and their System tab says it was withdrawn and why. They move
+  on to the next newer release as usual, so fix forward: commit the fix, or a revert, with a newer
+  version, and release that through the check.
+- **The tag stays.** Never delete or move it: every later release must still be newer than it, and
+  instances that run it are ordered by it.
+- **Never rerun the release workflow of a release tagged before v2026.10.23.12.1.** A rerun runs the
+  tag's own copy of `.github/workflows/release.yml`, and before that version its publish step edits an
+  existing release with `--prerelease=false` and fresh notes: it publishes a withdrawn release again.
+  The workflow from v2026.10.23.12.1 on leaves a withdrawn release as it is. `yank` reads the tag's
+  own workflow and warns when it lacks that guard; if such a rerun happened, yank the release again.
+- **Release notes skip it.** The next release's notes start after the last release that was not
+  withdrawn, so they hold every change an instance moving to it receives.
 
 ---
 

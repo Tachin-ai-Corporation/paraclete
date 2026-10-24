@@ -277,10 +277,12 @@ unless you pass `--purge`.
 
 ## 9. Upgrades
 
-1. **Releases.** A maintainer cuts a release from main's head with `dev/release.mjs` once CI is green
-   for it: a tag in the commit version format (`vYYYY.MM.DD.N.N`). The tag's workflow
-   (`.github/workflows/release.yml`) runs the tests again and publishes the GitHub release with notes,
-   one line per commit since the previous release.
+1. **Releases.** A maintainer cuts a release from main's head once CI is green for it, with
+   `dev/release-check.mjs`: it first deploys the head to a dev instance and requires a clean status and
+   a passing smoke mission there, then tags it the way `dev/release.mjs` does: a tag in the commit
+   version format (`vYYYY.MM.DD.N.N`). The tag's workflow (`.github/workflows/release.yml`) runs the
+   tests again and publishes the GitHub release with notes, one line per commit since the previous
+   release.
 2. **Detection.** The dashboard checks this repo's releases (cached hourly in `config/release_check`)
    and shows "Update available" with the notes.
 3. **Install.** An admin clicks Install. The VM goes first: the control service downloads that tag's
@@ -306,6 +308,14 @@ unless you pass `--purge`.
    - `install/install.sh --no-auto-update` installs with it off.
    - An instance installed before automatic updates gets the job and the schedule the next time
      `install.sh` runs.
+7. **Withdrawing.** A bad release is withdrawn with `dev/release.mjs yank <tag> --reason "<why>"`:
+   GitHub lists it as a prerelease whose notes start with `Withdrawn: <why>`, and its tag stays. Each
+   dashboard stops offering it at its next look at GitHub, and one that checks for withdrawn releases
+   starts no new install to it, since every upgrade asks GitHub first. An upgrade to it already running
+   finishes, and a dashboard on an older release may still install it within its cached hour. An
+   instance already on it says so on its version card and moves on to the next newer release as usual.
+   The next release's notes start after the last one not withdrawn. The release workflow of a tag older
+   than v2026.10.23.12.1 is never rerun: it would publish a withdrawn release again.
 
 ---
 
@@ -389,8 +399,13 @@ done.
       an existing test, a failing suite, or a behaviour change that real-model runs do not show to be
       safe, and opens a pull request. Stage 1 is supervised: a person merges. Next: merging low-risk
       classes by itself, the daily release check, and retiring the legacy harness.
-    - Still open: a merge step that squashes and waits for CI; and a check on the dev instance
-      before a release that carries promotions.
+    - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
+      `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
+      and the role's smoke mission to pass, and only then cuts the release, with the check recorded in
+      the tag's message. A bad release is withdrawn with `dev/release.mjs yank`: no new install to it
+      starts on a dashboard that checks for withdrawn releases, and instances on it move on to the next
+      newer release.
+    - Still open: a merge step that squashes and waits for CI.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
     after every merge, and a release with promotions passes the smoke missions on a dev instance.

@@ -206,16 +206,25 @@ first, then builds and deploys the dashboard at the same commit. From the dashbo
 only forward, or installs the same release again to finish an upgrade; going back is
 `install/install.sh --ref <older tag>`. An automatic update is that same upgrade, started by the
 dashboard's own scheduled job instead of an admin, to the newest release only. It is on by default,
-waits for an idle agent, and never moves an instance installed from a branch or commit.
+waits for an idle agent, and never moves an instance installed from a branch or commit. On a
+dashboard that checks for withdrawn releases, no new install starts to a release its maintainers
+withdrew (a prerelease on GitHub, after `dev/release.mjs yank`), by hand or automatically; an upgrade
+to it already running finishes, and a dashboard on an older release may still install it within the
+hour it keeps GitHub's list. An instance on a withdrawn release moves on to the next newer release.
 
 - **Why.** The dashboard imports the agent's own libraries, so the two halves must run the same code.
-  Moving the VM first means a failed VM upgrade leaves the dashboard as it was.
-- **Kept by.** `agent/release/versions.mjs` defines versions and their order;
-  `tests/agent/release/versions.test.mjs` keeps it equal to `versioning.canonical_regex` in
-  `config/contracts.json`. `dev/release.mjs` tags only a head whose CI passed and whose subject starts
-  with a newer version; `.github/workflows/release.yml` refuses a tag that is not a version or not on
-  `main`. `dashboard/lib/server/upgrade.mjs` runs the VM, build and deploy steps in order, and starts
-  only a release newer than the installed one, or the same one again.
+  Moving the VM first means a failed VM upgrade leaves the dashboard as it was. Instances update
+  themselves, forward only, so a bad release would reach every one of them: it is checked on a dev
+  instance before it is tagged, and can be withdrawn after.
+- **Kept by.** `agent/release/versions.mjs` defines versions and their order, and leaves withdrawn
+  releases out of the ones a dashboard may offer; `tests/agent/release/versions.test.mjs` keeps it
+  equal to `versioning.canonical_regex` in `config/contracts.json`. `dev/release-check.mjs` tags a
+  head only after it deployed it to a dev instance, found its status clean and its smoke mission
+  passing. `dev/release.mjs` tags only a head whose CI passed and whose subject starts with a newer
+  version; `.github/workflows/release.yml` refuses a tag that is not a version or not on `main`, and a
+  rerun leaves a withdrawn release as it is. `dashboard/lib/server/upgrade.mjs` runs the VM, build and
+  deploy steps in order, and starts only a release newer than the installed one, or the same one
+  again, after asking GitHub, every time, whether it is still published.
   `dashboard/lib/server/auto-update.mjs` starts automatic updates only through that same `startUpgrade`,
   and `tests/dashboard/lib/server/auto-update.test.mjs` checks what it decides. Every commit's subject
   starts with its version ([DEVELOPING.md](../../DEVELOPING.md), section 10); nothing checks that before the

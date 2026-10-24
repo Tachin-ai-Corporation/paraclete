@@ -2,9 +2,10 @@
 // an admin starts an upgrade to a published release; the VM moves first (the signed `upgrade` command),
 // then Cloud Build builds the dashboard at the release's commit with that commit's own build config,
 // then Cloud Run rolls the dashboard's own service to the new image with nothing else changed. Also:
-// who may start one and to which version; two admins, and two readers, at once; a repeat that finds
-// the image built; every way a step can fail; a step interrupted between its claim and its call; and
-// the names shared with the installer.
+// who may start one and to which version; a release withdrawn since the list was kept, or one GitHub
+// cannot confirm as still published, never started; two admins, and two readers, at once; a repeat
+// that finds the image built; every way a step can fail; a step interrupted between its claim and its
+// call; and the names shared with the installer.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ import {
   IMAGE_REPOSITORY, STEP_START_GRACE_SECONDS, UPGRADE_DOC, VM_MARGIN_SECONDS, buildRequest, imagePath, parseBuildConfig,
   readUpgrade, rolloutJob, rolloutService, startUpgrade, upgradeView,
 } from '../../../../dashboard/lib/server/upgrade.mjs';
-import { RELEASE_CHECK_DOC } from '../../../../dashboard/lib/server/releases.mjs';
+import { RELEASE_CHECK_DOC, readReleases } from '../../../../dashboard/lib/server/releases.mjs';
 import { NAMES, imagePath as installImagePath } from '../../../../install/lib/dashboard.mjs';
 
 const admin = { email: 'admin@example.com', role: 'admin' };
@@ -107,6 +108,7 @@ function fakeCloud() {
   const cloud = {
     calls: [],
     releases: [release(V3), release(V2), release(V1)],
+    releasesStatus: 200,
     commits: { [V1]: A, [V2]: B, [V3]: 'c'.repeat(40) },
     imageTags: [],
     buildConfig: BUILD_CONFIG,
@@ -125,7 +127,9 @@ function fakeCloud() {
     const method = init.method || 'GET';
     cloud.calls.push({ url: u, method, body: init.body ? JSON.parse(init.body) : undefined, auth: init.headers?.Authorization });
     await new Promise((resolve) => setImmediate(resolve));
-    if (u === 'https://api.github.com/repos/your-org/paraclete/releases?per_page=30') return answer(200, cloud.releases);
+    if (u === 'https://api.github.com/repos/your-org/paraclete/releases?per_page=30') {
+      return cloud.releasesStatus === 200 ? answer(200, cloud.releases) : answer(cloud.releasesStatus, { message: 'Server Error' });
+    }
     const commit = /^https:\/\/api\.github\.com\/repos\/your-org\/paraclete\/commits\/(.+)$/.exec(u);
     if (commit) return cloud.commits[commit[1]] ? answer(200, { sha: cloud.commits[commit[1]] }) : answer(422, { message: 'No commit found' });
     if (u.startsWith('https://raw.githubusercontent.com/your-org/paraclete/')) {
@@ -361,6 +365,36 @@ test('who may start one, and to which version', async (t) => {
   const bare = await dashboard(t, { env: { PARACLETE_RELEASE: V1, PARACLETE_COMMIT: A } });
   await assert.rejects(startUpgrade(bare.runtime, { version: V2, user: admin, now: NOW, sign }),
     (err) => err.status === 503 && /without PARACLETE_REPO/.test(err.message));
+});
+
+test('a release withdrawn since the list was kept is never started: every start asks GitHub again first, however young the list', async (t) => {
+  const dash = await dashboard(t);
+  const listings = () => dash.cloud.to('https://api.github.com/repos/your-org/paraclete/releases').length;
+  await readReleases(dash.runtime, { user: admin, now: NOW });
+  assert.equal(listings(), 1);
+  dash.cloud.releases = [{ ...release(V3), prerelease: true, body: `Withdrawn: it breaks uploads\n\n- ${V3}` }, release(V2), release(V1)];
+  await assert.rejects(startUpgrade(dash.runtime, { version: V3, user: admin, now: later(1), sign }),
+    (err) => err.status === 409 && /v2027\.01\.20\.1\.1 was withdrawn by its maintainers \(it breaks uploads\), so no upgrade starts to it/.test(err.message));
+  assert.equal(listings(), 2, 'a list a second old is asked for again');
+  assert.equal(await dash.record(), null, 'nothing was claimed');
+  assert.deepEqual(dash.cloud.to('https://api.github.com/repos/your-org/paraclete/commits/'), []);
+  const card = await readReleases(dash.runtime, { user: admin, now: later(2) });
+  assert.deepEqual(card.newer.map((r) => r.version), [V2], 'and the card stops offering it at once');
+  assert.equal(listings(), 2, 'the card reads the list the upgrade stored');
+
+  const { upgrade } = await startUpgrade(dash.runtime, { version: V2, user: admin, now: later(3), sign });
+  assert.equal(upgrade.version, V2);
+  assert.equal(listings(), 3, 'one request per install attempt');
+});
+
+test('an upgrade GitHub cannot confirm as still published starts nothing', async (t) => {
+  const dash = await dashboard(t);
+  await readReleases(dash.runtime, { user: admin, now: NOW });
+  dash.cloud.releasesStatus = 500;
+  await assert.rejects(startUpgrade(dash.runtime, { version: V2, user: admin, now: later(1), sign }),
+    (err) => err.status === 502
+      && /GitHub could not be asked whether v2027\.01\.15\.2\.1 is still published, so it is not installed now \(GitHub answered 500 for the releases/.test(err.message));
+  assert.equal(await dash.record(), null);
 });
 
 test('a tag GitHub cannot resolve starts nothing', async (t) => {

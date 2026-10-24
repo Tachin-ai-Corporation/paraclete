@@ -3,7 +3,8 @@
 // up to date; the newest release; finishing a half-done upgrade; waiting for an idle agent, at most
 // idle_wait_max_hours), and whole runs against the Firestore fake and a fake GitHub: an upgrade started
 // as the dashboard's own account and followed until the run's time is up, its outcome kept in
-// config/auto_update for the System tab.
+// config/auto_update for the System tab. No upgrade starts to a withdrawn release, even one withdrawn
+// while the kept list still named it, and an instance on one moves on only to a newer release.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startDashboard } from '../../harness.mjs';
@@ -11,7 +12,7 @@ import {
   AUTO_UPDATE_DOC, autoUpdateActor, autoUpdateDecision, readAutoUpdateStatus, runAutoUpdate,
 } from '../../../../dashboard/lib/server/auto-update.mjs';
 import { UPGRADE_DOC } from '../../../../dashboard/lib/server/upgrade.mjs';
-import { installedVersion } from '../../../../dashboard/lib/server/releases.mjs';
+import { installedVersion, loadReleases } from '../../../../dashboard/lib/server/releases.mjs';
 
 const PROJECT = 'your-gcp-project';
 const ACCOUNT = `paraclete-dashboard@${PROJECT}.iam.gserviceaccount.com`;
@@ -71,15 +72,19 @@ test('a busy agent: wait from the first run that found it busy, for at most idle
   assert.equal(decide({ busy: false, waitingSince: NOW.toISOString(), waitingFor: V3 }).action, 'install');
 });
 
-/** GitHub, faked: the releases and their commits. */
-function fakeGitHub() {
+/** A release as GitHub lists it; `withdrawn` makes it a prerelease whose notes say why. */
+const listed = (tag, { withdrawn = false } = {}) => ({
+  tag_name: tag, name: tag, body: withdrawn ? `Withdrawn: it breaks uploads\n\n- ${tag}` : `- ${tag}`, html_url: `https://github.com/x/${tag}`,
+  published_at: '2027-01-20T10:00:00Z', prerelease: withdrawn,
+});
+
+/** GitHub, faked: the releases (`github.releases`, which a test may change) and their commits. */
+function fakeGitHub(github = { releases: [V3, V2, V1].map((tag) => listed(tag)) }) {
   const answer = (status, body) => new Response(JSON.stringify(body), { status });
   const commits = { [V1]: A, [V2]: B, [V3]: C };
   return async (url) => {
     const u = String(url);
-    if (u === 'https://api.github.com/repos/your-org/paraclete/releases?per_page=30') {
-      return answer(200, [V3, V2, V1].map((tag) => ({ tag_name: tag, name: tag, body: `- ${tag}`, html_url: `https://github.com/x/${tag}`, published_at: '2027-01-20T10:00:00Z' })));
-    }
+    if (u === 'https://api.github.com/repos/your-org/paraclete/releases?per_page=30') return answer(200, github.releases);
     const commit = /^https:\/\/api\.github\.com\/repos\/your-org\/paraclete\/commits\/(.+)$/.exec(u);
     if (commit && commits[commit[1]]) return answer(200, { sha: commits[commit[1]] });
     return answer(599, { error: { message: `unexpected call ${u}` } });
@@ -87,8 +92,8 @@ function fakeGitHub() {
 }
 
 /** A dashboard on V1 (agent and dashboard alike), with a virtual clock its runs advance. */
-async function instance(t, { agent = { status: 'ready', release: V1, commit: A, version: V1 }, docs = {} } = {}) {
-  const dash = await startDashboard({ env: { PARACLETE_REPO: 'your-org/paraclete', PARACLETE_RELEASE: V1, PARACLETE_COMMIT: A }, fetch: fakeGitHub() });
+async function instance(t, { agent = { status: 'ready', release: V1, commit: A, version: V1 }, docs = {}, github } = {}) {
+  const dash = await startDashboard({ env: { PARACLETE_REPO: 'your-org/paraclete', PARACLETE_RELEASE: V1, PARACLETE_COMMIT: A }, fetch: fakeGitHub(github) });
   t.after(dash.stop);
   await dash.seed({ 'agent/instance': agent, ...docs });
   let ms = NOW.getTime();
@@ -160,4 +165,46 @@ test('an upgrade an admin started is followed, not started again', async (t) => 
   const result = await dash.run();
   assert.deepEqual([result.action, result.version], ['follow', V2]);
   assert.equal((await dash.doc(`config/${UPGRADE_DOC}`)).requested_by, 'admin@example.com');
+});
+
+test('a withdrawn release is never chosen; an instance on one stays until a newer release, then moves on to it', () => {
+  const V4 = 'v2027.01.25.1.1';
+  const onWithdrawn = decide({ installed: installed(V3, C), releases: [{ version: V2 }, { version: V1 }], withdrawn: [V3] });
+  assert.deepEqual([onWithdrawn.action, onWithdrawn.version], ['none', null], 'never backward, even off a withdrawn release');
+  assert.match(onWithdrawn.reason, /v2027\.01\.20\.1\.1 was withdrawn, and no published release is newer yet; the next one installs as usual/);
+  const fixed = decide({ installed: installed(V3, C), releases: [{ version: V4 }, { version: V2 }, { version: V1 }], withdrawn: [V3] });
+  assert.deepEqual([fixed.action, fixed.version], ['install', V4], 'fix forward');
+});
+
+test('a run with the newest release withdrawn installs the newest one that stands', async (t) => {
+  const dash = await instance(t, { github: { releases: [listed(V3, { withdrawn: true }), listed(V2), listed(V1)] } });
+  const result = await dash.run();
+  assert.deepEqual([result.action, result.version], ['install', V2]);
+  assert.equal((await dash.doc(`config/${UPGRADE_DOC}`)).version, V2);
+});
+
+test('a release withdrawn after the list was kept is not installed: the upgrade asks GitHub first, and the next run takes the one that stands', async (t) => {
+  const github = { releases: [listed(V3), listed(V2), listed(V1)] };
+  const dash = await instance(t, { github });
+  // The list was kept at NOW, with V3 published; V3 is withdrawn soon after, while the list is still fresh.
+  await loadReleases(dash.runtime, { now: NOW });
+  github.releases = [listed(V3, { withdrawn: true }), listed(V2), listed(V1)];
+  const refused = await dash.run(hours(0.5));
+  assert.deepEqual([refused.action, refused.version], ['skip', V3], 'the kept list still named V3');
+  assert.match(refused.reason, /v2027\.01\.20\.1\.1 was withdrawn by its maintainers \(it breaks uploads\), so no upgrade starts to it/);
+  assert.equal(await dash.doc(`config/${UPGRADE_DOC}`), null, 'nothing was started');
+  assert.match((await readAutoUpdateStatus(dash.runtime)).reason, /could not start the upgrade to v2027\.01\.20\.1\.1: v2027\.01\.20\.1\.1 was withdrawn/);
+
+  const next = await dash.run(hours(1));
+  assert.deepEqual([next.action, next.version], ['install', V2]);
+  assert.equal((await dash.doc(`config/${UPGRADE_DOC}`)).version, V2);
+});
+
+test('an instance already on a withdrawn release is not moved until a newer release is published', async (t) => {
+  const github = { releases: [listed(V3, { withdrawn: true }), listed(V2), listed(V1)] };
+  const dash = await instance(t, { github, agent: { status: 'ready', release: V3, commit: C, version: V3 } });
+  const none = await dash.run();
+  assert.deepEqual([none.action, none.version], ['none', null]);
+  assert.match(none.reason, /was withdrawn, and no published release is newer yet/);
+  assert.equal(await dash.doc(`config/${UPGRADE_DOC}`), null);
 });

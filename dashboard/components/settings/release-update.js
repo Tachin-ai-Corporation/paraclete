@@ -102,7 +102,8 @@ export function upgradeSteps(upgrade) {
 }
 
 /**
- * The card's badge and its one-line summary.
+ * The card's badge and its one-line summary. When the installed release was withdrawn, the summary says
+ * so and why, and that the next newer release installs over it.
  *
  * @param {object|null} releases  GET /api/releases
  * @param {object|null} upgrade   GET /api/upgrade's `upgrade`
@@ -133,11 +134,29 @@ export function cardStatus(releases, upgrade, { awaiting = false } = {}) {
   }
   if (showsFailure(releases, upgrade)) return { level: 'danger', label: 'update failed', summary: `Installing ${upgrade.version} failed.` };
   const newer = releases.newer || [];
+  const withdrawn = withdrawnText(releases);
   if (newer.length) {
-    return { level: 'info', label: 'update available', summary: `${newer[0].version} is available; this instance runs ${installed.version}.` };
+    return {
+      level: 'info',
+      label: 'update available',
+      summary: `${newer[0].version} is available; this instance runs ${installed.version}${withdrawn ? `, ${withdrawn}` : ''}.`,
+    };
+  }
+  if (withdrawn) {
+    return { level: 'warn', label: 'withdrawn', summary: `Runs ${installed.version}, ${withdrawn}. The next newer release installs over it as usual.` };
   }
   if (releases.error && !releases.latest) return { level: 'warn', label: 'unknown', summary: `Runs ${installed.version}. Whether a newer release exists is not known.` };
   return { level: 'ok', label: 'up to date', summary: `Runs ${installed.version}, the newest release.` };
+}
+
+/**
+ * The words for a withdrawn installed release, with its maintainers' reason: "which its maintainers
+ * withdrew: why". '' when the installed release is not withdrawn (GET /api/releases `withdrawn`).
+ */
+function withdrawnText(releases) {
+  const withdrawal = releases?.withdrawn;
+  if (!withdrawal?.version || withdrawal.version !== releases.installed?.version) return '';
+  return `which its maintainers withdrew${withdrawal.reason ? `: ${withdrawal.reason}` : ''}`;
 }
 
 /**

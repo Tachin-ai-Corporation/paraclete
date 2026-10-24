@@ -28,9 +28,11 @@
 // The image is <region>-docker.pkg.dev/<project>/<repository>/<image name>:<commit>: the repository
 // is IMAGE_REPOSITORY (install/lib/names.sh creates it; a test pins the two together); the image's
 // name, the build config's path and the build's timeout come from config/contracts.json's `dashboard`
-// section, which install/lib/dashboard.mjs reads too. Which releases exist and which one is installed:
-// releases.mjs. Called by the /api/upgrade route, and by the automatic-update job (auto-update.mjs),
-// which starts and follows an upgrade as the dashboard's own account.
+// section, which install/lib/dashboard.mjs reads too. Which releases exist, which were withdrawn and
+// which one is installed: releases.mjs. Every start asks GitHub for the list afresh, so no upgrade
+// starts to a withdrawn release (startUpgrade); one already running when its release is withdrawn
+// finishes. Called by the /api/upgrade route, and by the automatic-update job (auto-update.mjs), which
+// starts and follows an upgrade as the dashboard's own account.
 
 import { commitUrl, isVersion } from '../../../agent/release/versions.mjs';
 import { StoreConflict, StoreUnavailable } from '../../../agent/storage/firestore.mjs';
@@ -577,8 +579,10 @@ export async function readUpgrade(runtime, { user, now = new Date() }) {
 
 /**
  * Starts an upgrade to a published release: newer than the installed one, or the same one, which
- * finishes an upgrade left half-done. Resolves the tag's commit on GitHub, claims config/upgrade (no
- * other upgrade may be running), and sends the VM its `upgrade` command.
+ * finishes an upgrade left half-done. GitHub's release list is asked for again first, every time (one
+ * request per attempt), and a withdrawn release, or any while GitHub cannot be asked, is refused.
+ * Resolves the tag's commit on GitHub, claims config/upgrade (no other upgrade may be running), and
+ * sends the VM its `upgrade` command.
  *
  * @param {object} runtime
  * @param {object} o
@@ -600,13 +604,19 @@ export async function startUpgrade(runtime, { version, user, now = new Date(), s
     throw new HttpError(409, `an upgrade to ${before.data.version}, started by ${before.data.requested_by || 'an admin'}, is still running`);
   }
 
-  const { repo, installed, check, releases } = await loadReleases(runtime, { now });
+  // GitHub's list, asked for again whatever the kept one's age: no upgrade starts to a withdrawn release.
+  const { repo, installed, check, releases, withdrawn } = await loadReleases(runtime, { now, fresh: true });
   const refusal = installRefusal(wanted, installed.version);
   if (refusal) throw new HttpError(409, refusal);
-  if (!releases.some((r) => r.version === wanted)) {
-    const why = check?.error ? ` (the last look at GitHub failed: ${check.error})` : '';
-    throw new HttpError(409, `${wanted} is not a published release of ${repo}${why}`);
+  const withdrawal = withdrawn.find((w) => w.version === wanted);
+  if (withdrawal) {
+    throw new HttpError(409, `${wanted} was withdrawn by its maintainers${withdrawal.reason ? ` (${withdrawal.reason})` : ''}, so no upgrade starts to it; `
+      + 'a newer release replaces it');
   }
+  if (check?.error) {
+    throw new HttpError(502, `GitHub could not be asked whether ${wanted} is still published, so it is not installed now (${check.error}); try again later`);
+  }
+  if (!releases.some((r) => r.version === wanted)) throw new HttpError(409, `${wanted} is not a published release of ${repo}`);
 
   let commit;
   try {

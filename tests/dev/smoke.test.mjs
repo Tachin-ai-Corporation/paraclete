@@ -1,6 +1,7 @@
 // Tests for dev/smoke.mjs: the request each kind of role gets, the verdict on what came back, and a
 // whole run against the Firestore fake: the role read from the VM over SSH, the message sent the way
-// dev/say.mjs sends one, the real ears taking it in, and PASS or FAIL with the reason. Also the ears
+// dev/say.mjs sends one, the real ears taking it in, and PASS or FAIL with the reason, read back the
+// way dev/release-check.mjs reads it (readSmokeVerdict). Also the ears
 // taking the message in between two reads, a message they dropped, a Workspace role with no account,
 // a mission that stops to ask, and usage mistakes.
 import { test, before, after, beforeEach } from 'node:test';
@@ -12,7 +13,7 @@ import { dashboardMessageFields } from '../../agent/providers/channel.mjs';
 import { createDashboardInbox } from '../../agent/services/ears/dashboard-inbox.mjs';
 import { createInboundHandler } from '../../agent/services/ears/inbound.mjs';
 import { createInboundGate } from '../../agent/services/ears/inbound-gate.mjs';
-import { SMOKE_REQUESTS, githubRepo, main, smokeRequest, smokeThread, verdict } from '../../dev/smoke.mjs';
+import { SMOKE_REQUESTS, githubRepo, main, readSmokeVerdict, smokeRequest, smokeThread, verdict } from '../../dev/smoke.mjs';
 import { DEV_EMAIL, START, assertNoShell, devDeps, expectedSsh, fakeExec } from './fakes.mjs';
 
 const ROLES = { generic: { workspace: false }, 'devops-engineer': { workspace: false }, 'executive-assistant': { workspace: true } };
@@ -117,6 +118,23 @@ test('a whole run: the role from the VM, the message sent like say, the result f
   assert.match(out, /^PASS: role generic, a short research answer: the mission completed and its result was delivered\.$/m);
   assert.deepEqual(exec.callsTo('gcloud')[0].args, expectedSsh('sudo -n cat /etc/paraclete/instance.json'));
   assertNoShell(exec.calls);
+  assert.deepEqual(readSmokeVerdict(out), {
+    pass: true, role: 'generic', about: 'a short research answer', reason: 'the mission completed and its result was delivered', mission: 'w-1',
+  }, 'dev/release-check.mjs reads this run back');
+});
+
+test('the verdict read back: the last verdict line and the mission after it, never a reply that looks like one', () => {
+  const reply = '--- Ada at 2026-10-17T12:01:00Z\nPASS: role generic, a short research answer: a reply that says so.\nThe mission: node dev/query.mjs work --doc fake\n';
+  const out = `Smoke test of role generic:\n${reply}  work/w-2: failed\nFAIL: role generic, a short research answer: the mission ended failed: no model: try later.\n`
+    + 'The mission: node dev/query.mjs work --doc w-2\n';
+  assert.deepEqual(readSmokeVerdict(out), {
+    pass: false, role: 'generic', about: 'a short research answer', reason: 'the mission ended failed: no model: try later', mission: 'w-2',
+  });
+  assert.deepEqual(readSmokeVerdict('PASS: role generic, a short research answer: the agent answered at once.\r\n'), {
+    pass: true, role: 'generic', about: 'a short research answer', reason: 'the agent answered at once', mission: null,
+  }, 'an answer without a mission names none');
+  assert.equal(readSmokeVerdict('dev/smoke: could not read /etc/paraclete/instance.json\n'), null);
+  assert.equal(readSmokeVerdict(''), null);
 });
 
 /**

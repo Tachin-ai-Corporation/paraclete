@@ -1,6 +1,7 @@
 // Tests for dashboard/components/settings/release-update.js: how the version card reads. Release notes
-// become plain lines; an upgrade's three steps; the card's badge and summary in each situation; what an
-// admin is offered to install; and when the page waits for the new dashboard and reloads.
+// become plain lines; an upgrade's three steps; the card's badge and summary in each situation, a
+// withdrawn installed release among them; what an admin is offered to install; and when the page waits
+// for the new dashboard and reloads.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -90,6 +91,25 @@ test('the badge and summary: up to date, an update, half installed, failed, upda
   assert.equal(branch.label, 'not a release');
   assert.match(branch.summary, /runs main \(commit aaaaaaa\), which is not a published release.*install\/install\.sh --ref <version>/);
   assert.equal(cardStatus(null, null).label, 'checking');
+});
+
+test('an instance on a withdrawn release: the summary says so and why, with or without a newer release', () => {
+  const withdrawn = { version: V1, reason: 'it breaks uploads (issue 41)', url: null };
+  assert.deepEqual(cardStatus(releasesOf({ newer: [], latest: null, current: null, withdrawn }), null), {
+    level: 'warn',
+    label: 'withdrawn',
+    summary: `Runs ${V1}, which its maintainers withdrew: it breaks uploads (issue 41). The next newer release installs over it as usual.`,
+  }, 'never "the newest release"');
+  assert.deepEqual(cardStatus(releasesOf({ withdrawn }), null), {
+    level: 'info',
+    label: 'update available',
+    summary: `${V3} is available; this instance runs ${V1}, which its maintainers withdrew: it breaks uploads (issue 41).`,
+  });
+  assert.equal(cardStatus(releasesOf({ newer: [], withdrawn: { version: V1, reason: '', url: null } }), null).summary,
+    `Runs ${V1}, which its maintainers withdrew. The next newer release installs over it as usual.`, 'no reason given');
+  assert.equal(cardStatus(releasesOf({ newer: [], latest: rel(V1), withdrawn: { version: V2, reason: 'x', url: null } }), null).label, 'up to date',
+    'a withdrawal of another release is not this one');
+  assert.equal(cardStatus(releasesOf({ newer: [], latest: rel(V1), withdrawn: null }), null).label, 'up to date');
 });
 
 test('while the page waits for the new dashboard, the card says it is updated and offers nothing', () => {

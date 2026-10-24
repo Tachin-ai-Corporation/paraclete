@@ -9,8 +9,12 @@
 //
 // What a run does is autoUpdateDecision's answer, a pure function of: the admin setting (settings.mjs
 // autoUpdateEnabled), the upgrade in progress, what the instance runs (releases.mjs installedVersion),
-// the published releases, and whether a mission is active. An instance installed from a branch or a
-// commit (a dev instance under test: its agent/instance `release` is not a version) is never moved.
+// the published releases, and whether a mission is active. A withdrawn release is never among the
+// published ones (releases.mjs), and startUpgrade asks GitHub again before every start, so a run
+// starts no new upgrade to one; an upgrade to it already running is followed to its end. An instance
+// that runs one moves on to the next newer release as usual. An instance
+// installed from a branch or a commit (a dev instance under test: its agent/instance `release` is not
+// a version) is never moved.
 // While a mission is active a run waits, from the first run that found one for at most
 // contracts.auto_update.idle_wait_max_hours, then installs anyway: missions resume after the restart.
 //
@@ -47,6 +51,7 @@ export function autoUpdateActor(runtime) {
  * @param {object|null} o.upgrade          config/upgrade as stored, or null
  * @param {object} o.installed             releases.mjs installedVersion()
  * @param {object[]} o.releases            the published releases, newest first
+ * @param {string[]} [o.withdrawn]         the versions withdrawn after they were published
  * @param {string|null} [o.checkError]     why the last look at GitHub failed
  * @param {boolean} o.busy                 whether a mission is active
  * @param {string|null} [o.waitingSince]   when a run first found the agent busy, for this version
@@ -56,7 +61,7 @@ export function autoUpdateActor(runtime) {
  * @returns {{action: string, reason: string, version: string|null, waiting_since: string|null}}
  */
 export function autoUpdateDecision({
-  enabled, upgrade, installed, releases, checkError = null, busy, waitingSince = null, waitingFor = null, now, idleWaitMaxHours,
+  enabled, upgrade, installed, releases, withdrawn = [], checkError = null, busy, waitingSince = null, waitingFor = null, now, idleWaitMaxHours,
 }) {
   const answer = (action, reason, version = null, since = null) => ({ action, reason, version, waiting_since: since });
   if (!enabled) return answer('off', 'automatic updates are off; an admin turns them on on the System tab');
@@ -84,6 +89,9 @@ export function autoUpdateDecision({
   if (!target) {
     const latest = releases[0]?.version;
     if (!latest && checkError) return answer('skip', `the releases are not known: ${checkError}`);
+    if (withdrawn.includes(installed.version)) {
+      return answer('none', `${installed.version} was withdrawn, and no published release is newer yet; the next one installs as usual`);
+    }
     return answer('none', latest && !isNewer(latest, installed.version)
       ? `${installed.version} is the newest release`
       : `no published release is newer than ${installed.version}`);
@@ -154,17 +162,19 @@ export async function runAutoUpdate(runtime, { clock = () => new Date(), sleep =
   const upgrade = await runtime.db.read(`${runtime.collections.config}/${UPGRADE_DOC}`, { strict: true });
   const previous = (await runtime.db.read(statusPath(runtime), { strict: true })) || {};
   let releases = [];
+  let withdrawn = [];
   let checkError = null;
   let installed = null;
   if (enabled) {
     const loaded = await loadReleases(runtime, { now: started });
     releases = loaded.releases;
+    withdrawn = loaded.withdrawn.map((w) => w.version);
     checkError = loaded.problem || loaded.check?.error || null;
     installed = loaded.installed;
   }
   const busy = enabled && !(upgrade && RUNNING_STATES.includes(upgrade.state)) ? await isAgentBusy(runtime) : false;
   const decision = autoUpdateDecision({
-    enabled, upgrade, installed, releases, checkError, busy,
+    enabled, upgrade, installed, releases, withdrawn, checkError, busy,
     waitingSince: previous.waiting_since || null, waitingFor: previous.waiting_for || null,
     now: started, idleWaitMaxHours: rules.idle_wait_max_hours,
   });
