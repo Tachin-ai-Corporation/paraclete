@@ -50,6 +50,7 @@ import {
   provisionGcpLab,
   runInProcessBrainRollout,
 } from './live-runner.mjs';
+import { LAB_CANARY } from './lab-canary.mjs';
 import {
   getCurriculumCoverageReport,
   recordCurriculumUnitAttempt,
@@ -71,8 +72,11 @@ Subcommands:
                                    Run Tier-1 hermetic or live target benchmark evaluation
   judge    [--stage stage1|stage2] [--role <role>] [--judge-committee [models]]
                                    Score target harness rollouts with the Frontier Model Committee (gemini-4-argon + claude-opus-5-5)
-  canary   [--agent <vm-name>] [--stage stage1|stage2] [--role <role>]
-                                   Run Tier-2 canary evaluation with read-only smoke check
+  canary   [--agent <vm-name>] [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>] [--stage stage1|stage2] [--role <role>]
+                                   Run Tier-2 canary evaluation with read-only smoke check, against the lab's canary
+                                   (paraclete-h2-canary in the canary's project) unless --agent names another VM.
+                                   No smoke test is wired to a VM from the command line yet, so on its own it fails and
+                                   says so; check the canary with node dev/smoke.mjs from the driver's checkout
   evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
                                    Execute Loop A dual-lens evolutionary harness optimization (Capability-First Credo)
   harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>] [--expand-curriculum]
@@ -87,13 +91,20 @@ Subcommands:
                                    Generate a skill package scaffold (skill.json, SKILL.md, <cmd>.mjs; a person commits the command)
   scaffold-role  --id <role-id> [--title <title>] [--summary <text>]
                                    Generate a role package scaffold (role.json, README.md, prompts/, responsibilities.json; a person commits role.json)
-  lab-plan [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
-                                   Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
-  lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--interval <minutes>] [--dry-run]
-                                   Provision the two-tier GCP lab (paraclete-h2-driver + paraclete-h2-canary), follow-main timer included
-  lab-status [--project <id>] [--zone <zone>]
-                                   Inspect the live status of the two-tier GCP lab VMs and their follow-main timers
-  lab-follow-main [--install|--uninstall|--status] [--interval <minutes>] [--project <id>] [--zone <zone>]
+  lab-plan [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
+                                   Print the two-tier GCP lab provisioning plan: paraclete-h2-driver in the lab's project
+                                   (paraclete-h2-lab unless --project), paraclete-h2-canary in its own (<lab project>-canary
+                                   unless --canary-project, which a lab project id longer than 23 characters needs).
+                                   --zone alone sets the region it is in; --region alone, its -a zone; default us-central1-a
+  lab-provision [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--interval <minutes>] [--dry-run]
+                                   Provision both projects and VMs, the driver's access to the canary and its .local/instance.env,
+                                   and the follow-main timer. A canary left in the lab's own project is reported, never deleted.
+                                   Stops before any change when a project has no billing and no --billing is given, or already
+                                   holds another paraclete
+  lab-status [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>]
+                                   Inspect the live status of the lab VMs in both projects and their follow-main timers,
+                                   and flag a canary left in the lab's own project
+  lab-follow-main [--install|--uninstall|--status] [--interval <minutes>] [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>]
                                    Lab only: put on, take off or report (the default) the timer that keeps both lab VMs
                                    and the driver's harness checkout on main's head (every 30 minutes unless --interval)
 
@@ -112,6 +123,25 @@ Loop health:
                                    The loop's alarms and numbers, from the cycle log, the harness pull
                                    requests and the tags; --open-issues keeps one GitHub issue per alarm
 `;
+
+/** The lab's coordinates from the flags: both projects and the zone (live-runner.mjs buildGcpLabPlan). */
+function labOptions(flags) {
+  return {
+    projectId: flags.project,
+    canaryProjectId: flags['canary-project'],
+    zone: flags.zone,
+    region: flags.region,
+  };
+}
+
+/** The lab's plan for these flags, or the usage mistake that stops it (a canary project that cannot be worked out). */
+function labPlanFor(flags, extra = {}) {
+  try {
+    return { plan: buildGcpLabPlan({ ...labOptions(flags), ...extra }) };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
 
 export function parseCliArgs(argv = []) {
   const [subcommand = 'help', ...rest] = argv;
@@ -488,14 +518,29 @@ async function runCliCommand(argv, deps) {
   }
 
   if (subcommand === 'canary') {
+    const lab = labPlanFor(flags);
+    if (lab.error) return { ok: false, error: lab.error };
+    const canaryVm = lab.plan.vms.find((vm) => vm.name === LAB_CANARY.vm);
+    const target = { projectId: canaryVm.projectId, zone: lab.plan.zone };
+    if (!deps.canaryRunner && typeof deps.runSmoke !== 'function') {
+      // Nothing here reaches a VM yet: a result without a smoke test would be made up.
+      return {
+        ok: false,
+        ran: false,
+        canaryAgent: flags.agent || canaryVm.name,
+        canaryProject: target.projectId,
+        zone: target.zone,
+        error: "canary ran nothing: no smoke test is wired to a VM here, so there is no result. Check the canary from the driver's harness checkout, whose .local/instance.env names it: node dev/smoke.mjs",
+      };
+    }
     const tasks = selectBenchmarkTasks({ stage, role: flags.role }).slice(0, 2);
-    const canaryRunner = deps.canaryRunner || createDevCanaryRunner({ role: flags.role, runSmoke: deps.runSmoke });
+    const canaryRunner = deps.canaryRunner || createDevCanaryRunner({ role: flags.role, ...target, runSmoke: deps.runSmoke });
     const canaryRes = await runTier2CanaryEvaluation({
-      canaryAgent: flags.agent || 'canary-se-01',
+      canaryAgent: flags.agent || canaryVm.name,
       tasks,
       canaryRunner,
     });
-    return { ok: canaryRes.smokePassed, ...canaryRes };
+    return { ok: canaryRes.smokePassed, canaryProject: target.projectId, zone: target.zone, ...canaryRes };
   }
 
   if (subcommand === 'evolve') {
@@ -1136,21 +1181,15 @@ async function runCliCommand(argv, deps) {
   }
 
   if (subcommand === 'lab-plan') {
-    const plan = buildGcpLabPlan({
-      projectId: flags.project,
-      zone: flags.zone,
-      region: flags.region,
-      organizationId: flags.org,
-      billingAccount: flags.billing,
-    });
-    return { ok: true, plan };
+    const lab = labPlanFor(flags, { organizationId: flags.org, billingAccount: flags.billing });
+    return lab.error ? { ok: false, error: lab.error } : { ok: true, plan: lab.plan };
   }
 
   if (subcommand === 'lab-provision') {
+    const lab = labPlanFor(flags, { intervalMinutes: flags.interval });
+    if (lab.error) return { ok: false, error: lab.error };
     return provisionGcpLab({
-      projectId: flags.project,
-      zone: flags.zone,
-      region: flags.region,
+      ...labOptions(flags),
       organizationId: flags.org,
       billingAccount: flags.billing,
       repo: flags.repo,
@@ -1166,12 +1205,9 @@ async function runCliCommand(argv, deps) {
   }
 
   if (subcommand === 'lab-status') {
-    return inspectGcpLabStatus({
-      projectId: flags.project,
-      zone: flags.zone,
-      region: flags.region,
-      execGcloud: deps.execGcloud,
-    });
+    const lab = labPlanFor(flags);
+    if (lab.error) return { ok: false, error: lab.error };
+    return inspectGcpLabStatus({ ...labOptions(flags), execGcloud: deps.execGcloud });
   }
 
   if (subcommand === 'lab-follow-main') {
@@ -1182,9 +1218,7 @@ async function runCliCommand(argv, deps) {
     try {
       return manageLabFollowMain({
         action,
-        projectId: flags.project,
-        zone: flags.zone,
-        region: flags.region,
+        ...labOptions(flags),
         intervalMinutes: flags.interval,
         execGcloud: deps.execGcloud,
         sleep: deps.sleep,

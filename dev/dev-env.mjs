@@ -2,7 +2,7 @@
 // .local/instance.env, runs gcloud and git with argument lists (never a shell string; on Windows it
 // runs gcloud's own Python entry point, because Node cannot start gcloud.cmd without a shell), gets
 // your own access token and account from gcloud, builds the `gcloud compute ssh` call to the
-// instance's VM, and gives Firestore clients (agent/storage/firestore.mjs) that act as you, asking gcloud
+// instance's VM (as SSH_USER there, when the file names one), and gives Firestore clients (agent/storage/firestore.mjs) that act as you, asking gcloud
 // for a new token when Firestore refuses the one in hand. It runs on your machine (Windows Git Bash,
 // macOS or Linux), never on an instance, and is not a command itself.
 // Used by deploy.mjs, status.mjs, logs.mjs, query.mjs, trigger.mjs and say.mjs.
@@ -40,12 +40,16 @@ export const PLACEHOLDERS = Object.freeze({
 
 const REQUIRED_KEYS = ['PROJECT_ID', 'REGION', 'ZONE', 'VM'];
 
+/** The agent's own user on every VM (install/bootstrap.sh): no login shell, and never a sudoer. */
+const AGENT_USER = 'paraclete';
+
 const FORMATS = {
   PROJECT_ID: [/^(?:[a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/, 'a Google Cloud project id'],
   REGION: [/^[a-z]+-[a-z]+[0-9]+$/, 'a region such as us-central1'],
   ZONE: [/^[a-z]+-[a-z]+[0-9]+-[a-z]$/, 'a zone such as us-central1-a'],
   VM: [/^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/, 'a VM name such as paraclete'],
   DASHBOARD_URL: [/^https:\/\/\S+$/, 'an https URL'],
+  SSH_USER: [/^[a-z_][a-z0-9_-]{0,31}$/, 'a user name such as lab-driver'],
 };
 
 /**
@@ -93,12 +97,14 @@ export function parseEnvFile(text, source = 'instance.env') {
  * Reads and checks your dev instance's coordinates. Refuses, saying what to do, when the file is
  * missing, a required key is missing or malformed, or a value is still the example's placeholder.
  * DASHBOARD_URL is optional until the dashboard exists (build plan phase 6); its placeholder counts as
- * unset.
+ * unset. SSH_USER is optional too: the user `gcloud compute ssh` logs in as, when it must not be your
+ * local one (the harness lab's driver sets it, because its local user is the agent's own). It is
+ * never the agent's own user.
  *
  * @param {object}   [o]
  * @param {Function} [o.readFile] (path) => string
  * @param {string}   [o.path]
- * @returns {Readonly<{PROJECT_ID: string, REGION: string, ZONE: string, VM: string, DASHBOARD_URL: string|null}>}
+ * @returns {Readonly<{PROJECT_ID: string, REGION: string, ZONE: string, VM: string, DASHBOARD_URL: string|null, SSH_USER?: string}>}
  */
 export function loadInstanceEnv({ readFile = (p) => readFileSync(p, 'utf8'), path = INSTANCE_ENV_PATH } = {}) {
   let text;
@@ -127,6 +133,7 @@ export function loadInstanceEnv({ readFile = (p) => readFileSync(p, 'utf8'), pat
   if (!problems.length && !checked.ZONE.startsWith(`${checked.REGION}-`)) {
     problems.push(`ZONE ${checked.ZONE} is not in REGION ${checked.REGION}`);
   }
+  if (checked.SSH_USER === AGENT_USER) problems.push(`SSH_USER must not be ${AGENT_USER}, the agent's own user on the VM`);
   if (problems.length) throw new DevError(`${path}:\n- ${problems.join('\n- ')}`);
   return Object.freeze({
     PROJECT_ID: checked.PROJECT_ID,
@@ -134,6 +141,7 @@ export function loadInstanceEnv({ readFile = (p) => readFileSync(p, 'utf8'), pat
     ZONE: checked.ZONE,
     VM: checked.VM,
     DASHBOARD_URL: dashboardUrl,
+    ...(checked.SSH_USER ? { SSH_USER: checked.SSH_USER } : {}),
   });
 }
 
@@ -224,14 +232,16 @@ export function failureDetail(result) {
 }
 
 /**
- * The arguments of `gcloud compute ssh` that run one command on your dev instance's VM over IAP.
+ * The arguments of `gcloud compute ssh` that run one command on your dev instance's VM over IAP: as
+ * SSH_USER when the instance names one, else as gcloud's default, your local user name.
  *
- * @param {{VM: string, ZONE: string, PROJECT_ID: string}} instance
+ * @param {{VM: string, ZONE: string, PROJECT_ID: string, SSH_USER?: string}} instance
  * @param {string} remoteCommand run by the VM's login shell
  * @returns {string[]}
  */
 export function sshArgs(instance, remoteCommand) {
-  return ['compute', 'ssh', instance.VM, '--zone', instance.ZONE, '--project', instance.PROJECT_ID,
+  const target = instance.SSH_USER ? `${instance.SSH_USER}@${instance.VM}` : instance.VM;
+  return ['compute', 'ssh', target, '--zone', instance.ZONE, '--project', instance.PROJECT_ID,
     '--tunnel-through-iap', '--command', remoteCommand];
 }
 

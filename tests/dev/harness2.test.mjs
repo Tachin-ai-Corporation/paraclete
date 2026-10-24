@@ -107,6 +107,7 @@ import {
 import {
   FOLLOW_MAIN,
   decodeFollowMainRemoteCommand,
+  decodeRemoteRootCommand,
   followMainCommandFor,
   followMainInstallScript,
   followMainRemoteCommand,
@@ -1024,24 +1025,34 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
         throw new Error('not found');
       }
       if (args[0] === 'compute' && args[1] === 'ssh') {
-        // The follow-main install step and status probe (lab-updater.mjs); their own tests are below.
+        // The follow-main install step and status probe (lab-updater.mjs), and the canary's
+        // coordinates on the driver (lab-canary.mjs); their own tests are below and in tests/dev/harness2/.
+        if (decodeRemoteRootCommand(args.at(-1))?.name === 'paraclete-lab-canary-env') return 'lab-canary.instance_env=changed';
         return 'lab-follow-main.installed=changed\nlab-follow-main.timer_enabled=enabled\nlab-follow-main.timer_active=active';
       }
+      if (args[0] === 'iam' && args[1] === 'roles' && args[2] === 'describe') {
+        throw new Error('not found');
+      }
       if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'list') {
-        return JSON.stringify([
-          {
-            name: 'paraclete-h2-driver',
-            status: 'RUNNING',
-            machineType: 'zones/us-central1-a/machineTypes/e2-standard-8',
-            zone: 'zones/us-central1-a',
-            metadata: {
-              items: [
-                { key: 'paraclete-role', value: 'paraclete-h2' },
-                { key: 'paraclete-agent-name', value: 'Paraclete-H2-Driver' },
-              ],
+        // Each VM in its own project: the driver in the lab's, the canary in the canary's.
+        if (args.includes('--project=paraclete-h2-lab')) {
+          return JSON.stringify([
+            {
+              name: 'paraclete-h2-driver',
+              status: 'RUNNING',
+              machineType: 'zones/us-central1-a/machineTypes/e2-standard-8',
+              zone: 'zones/us-central1-a',
+              metadata: {
+                items: [
+                  { key: 'paraclete-role', value: 'paraclete-h2' },
+                  { key: 'paraclete-agent-name', value: 'Paraclete-H2-Driver' },
+                ],
+              },
+              networkInterfaces: [{ networkIP: '10.128.0.10' }],
             },
-            networkInterfaces: [{ networkIP: '10.128.0.10' }],
-          },
+          ]);
+        }
+        return JSON.stringify([
           {
             name: 'paraclete-h2-canary',
             status: 'RUNNING',
@@ -1077,19 +1088,24 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     });
     assert.equal(provRes.ok, true);
     assert.equal(provRes.dryRun, false);
-    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'project' && s.status === 'created'));
-    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'billing' && s.status === 'linked'));
-    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-driver' && s.status === 'created'));
-    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-canary' && s.status === 'created'));
+    for (const project of ['paraclete-h2-lab', 'paraclete-h2-lab-canary']) {
+      assert.ok(provRes.stepsExecuted.some((s) => s.step === 'project' && s.project === project && s.status === 'created'), project);
+      assert.ok(provRes.stepsExecuted.some((s) => s.step === 'billing' && s.project === project && s.status === 'linked'), project);
+    }
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-driver' && s.project === 'paraclete-h2-lab' && s.status === 'created'));
+    assert.ok(provRes.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-canary' && s.project === 'paraclete-h2-lab-canary' && s.status === 'created'));
 
     const statusRes = await runCli(['lab-status', '--project', 'paraclete-h2-lab'], {
       execGcloud: mockExecGcloud,
     });
     assert.equal(statusRes.ok, true);
+    assert.equal(statusRes.canaryProjectId, 'paraclete-h2-lab-canary');
     assert.equal(statusRes.vms.length, 2);
     assert.equal(statusRes.vms[0].name, 'paraclete-h2-driver');
+    assert.equal(statusRes.vms[0].project, 'paraclete-h2-lab');
     assert.equal(statusRes.vms[0].role, 'paraclete-h2');
     assert.equal(statusRes.vms[1].name, 'paraclete-h2-canary');
+    assert.equal(statusRes.vms[1].project, 'paraclete-h2-lab-canary');
     assert.equal(statusRes.vms[1].role, 'software-engineer');
   });
 
@@ -3045,12 +3061,16 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
       assert.equal(r.stdout, 'Usage: paraclete-lab-follow-main [--harness-checkout <dir>] [--status]\n');
     });
 
-    it('install, uninstall and status each run one command per lab VM, through dev-env.mjs sshArgs', () => {
+    it('install, uninstall and status each run one command per lab VM, in its own project, through dev-env.mjs sshArgs', () => {
       const plan = buildGcpLabPlan({ projectId: 'your-gcp-project', zone: 'us-central1-b' });
-      assert.deepEqual(plan.vms.map((vm) => [vm.name, vm.harnessCheckout]), [[DRIVER.name, DRIVER.harnessCheckout], [CANARY.name, null]]);
-      assert.ok(plan.commands.includes('node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --zone us-central1-b'));
+      assert.deepEqual(plan.vms.map((vm) => [vm.name, vm.projectId, vm.harnessCheckout]), [
+        [DRIVER.name, 'your-gcp-project', DRIVER.harnessCheckout],
+        [CANARY.name, 'your-gcp-project-canary', null],
+      ]);
+      assert.ok(plan.commands.includes('node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --canary-project your-gcp-project-canary --region us-central1 --zone us-central1-b'));
 
-      const expectedCommand = (action, vm, o) => sshArgs({ VM: vm.name, ZONE: 'us-central1-b', PROJECT_ID: 'your-gcp-project' }, followMainCommandFor(action, vm, o));
+      const projectOf = { [DRIVER.name]: 'your-gcp-project', [CANARY.name]: 'your-gcp-project-canary' };
+      const expectedCommand = (action, vm, o) => sshArgs({ VM: vm.name, ZONE: 'us-central1-b', PROJECT_ID: projectOf[vm.name] }, followMainCommandFor(action, vm, o));
 
       const install = fakeGcloud(() => INSTALLED_OUTPUT);
       const installed = manageLabFollowMain({ action: 'install', projectId: 'your-gcp-project', zone: 'us-central1-b', intervalMinutes: '20', execGcloud: install.execGcloud });
@@ -3067,10 +3087,11 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
       assert.match(driverInstall, /^OnUnitActiveSec=20min$/m);
       assert.match(driverInstall, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main --harness-checkout \/var\/lib\/paraclete\/harness2-repo$/m);
       assert.match(canaryInstall, /^ExecStart=\/usr\/local\/sbin\/paraclete-lab-follow-main$/m);
-      assert.deepEqual(installed.vms.map((vm) => [vm.name, vm.ok, vm.installed, vm.timer]), [
-        [DRIVER.name, true, 'changed', 'active'],
-        [CANARY.name, true, 'changed', 'active'],
+      assert.deepEqual(installed.vms.map((vm) => [vm.name, vm.project, vm.ok, vm.installed, vm.timer]), [
+        [DRIVER.name, 'your-gcp-project', true, 'changed', 'active'],
+        [CANARY.name, 'your-gcp-project-canary', true, 'changed', 'active'],
       ]);
+      assert.equal(installed.canaryProjectId, 'your-gcp-project-canary');
 
       const uninstall = fakeGcloud(() => 'lab-follow-main.removed=yes\nlab-follow-main.service_active=inactive');
       const removed = manageLabFollowMain({ action: 'uninstall', projectId: 'your-gcp-project', zone: 'us-central1-b', execGcloud: uninstall.execGcloud });
@@ -3161,6 +3182,8 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
         sleep: (ms) => sleeps.push(ms),
         execGcloud: (args) => {
           if (args[0] === 'compute' && args[1] === 'ssh') {
+            // The canary's coordinates on the driver come after the timer (tests/dev/harness2/lab-canary.test.mjs).
+            if (decodeRemoteRootCommand(args.at(-1)).name === 'paraclete-lab-canary-env') return 'lab-canary.instance_env=changed';
             sshTries += 1;
             if (sshTries === 1) {
               const err = new Error('Command failed');
@@ -3170,7 +3193,9 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
             assert.match(decodeFollowMainRemoteCommand(args.at(-1)).script, /^OnActiveSec=20min$/m);
             return INSTALLED_OUTPUT;
           }
-          if (args.includes('describe') || args.includes('list')) return 'exists';
+          if (args.includes('list')) return '[]';
+          if (args[0] === 'billing') return 'True';
+          if (args.includes('describe')) return 'exists';
           return 'True';
         },
       });
@@ -3178,8 +3203,8 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
       assert.equal(sshTries, 3, 'the driver answered on its second try, the canary on its first');
       assert.deepEqual(sleeps, [15_000]);
       assert.deepEqual(
-        provisioned.stepsExecuted.filter((s) => s.step.startsWith('follow-main:')).map((s) => [s.step, s.status]),
-        [['follow-main:paraclete-h2-driver', 'changed'], ['follow-main:paraclete-h2-canary', 'changed']],
+        provisioned.stepsExecuted.filter((s) => s.step.startsWith('follow-main:')).map((s) => [s.step, s.project, s.status]),
+        [['follow-main:paraclete-h2-driver', 'your-gcp-project', 'changed'], ['follow-main:paraclete-h2-canary', 'your-gcp-project-canary', 'changed']],
       );
       assert.equal(provisioned.plan.followMain.intervalMinutes, 20);
 
@@ -3191,14 +3216,17 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
         sleep: () => {},
         execGcloud: (args) => {
           if (args[0] === 'compute' && args[1] === 'ssh') throw Object.assign(new Error('Command failed'), { status: 255 });
-          if (args.includes('describe') || args.includes('list')) return 'exists';
+          if (args.includes('list')) return '[]';
+          if (args[0] === 'billing') return 'True';
+          if (args.includes('describe')) return 'exists';
           return 'True';
         },
       });
       assert.equal(unreachable.ok, false);
       assert.ok(unreachable.stepsExecuted.some((s) => s.step === 'vm:paraclete-h2-driver' && s.status === 'updated'), 'the VMs stand');
       assert.match(unreachable.followMain[0].error, /paraclete-h2-driver: gcloud compute ssh exited with code 255 \(2 tries\)/);
-      assert.equal(unreachable.hint, 'The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --zone us-central1-a');
+      assert.equal(unreachable.hint, 'The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval 30 --project your-gcp-project --canary-project your-gcp-project-canary --region us-central1 --zone us-central1-a');
+      assert.equal(unreachable.instanceEnv.state, 'skipped', 'a driver that did not answer is not asked again');
     });
 
     it('lab-status shows each running lab VM\'s timer, and none for a stopped one', () => {
@@ -3210,20 +3238,27 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
       ].join('\n'));
       const execGcloud = (args, opts) => {
         if (args[0] === 'compute' && args[1] === 'instances' && args[2] === 'list') {
+          if (args.includes('--project=your-gcp-project-canary')) {
+            return JSON.stringify([{ name: CANARY.name, status: 'TERMINATED', metadata: { items: [] } }]);
+          }
           return JSON.stringify([
             { name: DRIVER.name, status: 'RUNNING', metadata: { items: [] } },
-            { name: CANARY.name, status: 'TERMINATED', metadata: { items: [] } },
             { name: 'something-else', status: 'RUNNING', metadata: { items: [] } },
           ]);
         }
         return gcloud.execGcloud(args, opts);
       };
       const status = inspectGcpLabStatus({ projectId: 'your-gcp-project', execGcloud });
-      assert.equal(status.vms[0].followMain.timer, 'active');
-      assert.equal(status.vms[0].followMain.onMainHead, true);
-      assert.equal(status.vms[1].followMain, null);
-      assert.equal('followMain' in status.vms[2], false);
+      const byName = Object.fromEntries(status.vms.map((vm) => [vm.name, vm]));
+      assert.equal(byName[DRIVER.name].followMain.timer, 'active');
+      assert.equal(byName[DRIVER.name].followMain.onMainHead, true);
+      assert.equal('project' in byName[DRIVER.name].followMain, false);
+      assert.equal(byName[CANARY.name].project, 'your-gcp-project-canary');
+      assert.equal(byName[CANARY.name].followMain, null);
+      assert.equal('followMain' in byName['something-else'], false);
       assert.equal(gcloud.calls.length, 1, 'only the running lab VM is asked');
+      assert.equal(status.ok, true);
+      assert.deepEqual(status.problems, []);
     });
   });
 });
