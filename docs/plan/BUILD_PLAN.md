@@ -411,6 +411,10 @@ done.
       `main`'s head, whose CI passed, whose evidence block passes `judgeEvidence` and names every
       file it changes, and whose files stay on the mutable surface (contracts only in tunable keys).
       Then it dispatches CI on `main`. `dev/harness2/PAUSED` stops it.
+    - Since `v2026.10.24.3.1` CI checks every promotion pull request's evidence
+      (`.github/workflows/promotion-evidence.yml`): the block in its description must pass and name every
+      changed file, checked again on each push and each edit of the description, so nothing that merges
+      on CI alone can merge a promotion without it.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
     after every merge, and a release with promotions passes the smoke missions on a dev instance.
