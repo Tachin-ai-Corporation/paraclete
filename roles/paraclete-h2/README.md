@@ -20,6 +20,6 @@ installed on an instance. The harness is build plan phase 11.
 - `roles/paraclete-h2/skills/harness-evolution/` — `harness-cycle` CLI for Loop A diagnosis, validation, and cycle execution.
 - `roles/paraclete-h2/skills/harness-benchmark/` — `harness-eval` CLI for Stage 1 and Stage 2 benchmark evaluation and failure harvesting.
 - `roles/paraclete-h2/skills/harness-release/` — `harness-promote` CLI for Pareto gate verification and promotion readiness.
-- `roles/paraclete-h2/processes/` — reusable processes (`p-harness-evolve.json`, `p-harness-benchmark.json`, `p-harness-promote.json`).
-- `roles/paraclete-h2/responsibilities.json` — recurring responsibilities (`r-harness-evolution-cycle`, `r-failure-harvest`).
+- `roles/paraclete-h2/processes/` — reusable processes (`p-harness-evolve.json`, `p-harness-benchmark.json`, `p-harness-promote.json`, `p-harness-closed-loop.json`, `p-harness-health.json`, `p-release-check.json`).
+- `roles/paraclete-h2/responsibilities.json` — recurring responsibilities (`r-harness-evolution-cycle`, `r-failure-harvest`, `r-harness-closed-loop`, `r-harness-health`, and `r-release-check`, which is off until a maintainer turns it on: it tags releases, and every instance installs the newest release on its own).
 - `roles/paraclete-h2/memory.md` — initial working memory for the `paraclete-h2` role.
