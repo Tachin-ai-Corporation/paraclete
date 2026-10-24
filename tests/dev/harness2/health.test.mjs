@@ -185,3 +185,11 @@ test('runCli records a cycle even when it refuses, and `health` reads the record
   assert.match(health.report, /refused while paused/);
   assert.match(health.notes[0], /paused/);
 });
+
+test("loop cycles are counted apart and set off none of the harness's alarms", () => {
+  const loopCycle = (action, h = 2) => ({ at: hoursAgo(h), command: 'loop', realModel: false, loop: { issue: 7, action } });
+  const h = loopHealth({ cycles: [loopCycle('opened'), loopCycle('tests-failed', 3), loopCycle('no-work', 4), cycle()], now: NOW });
+  assert.deepEqual(h.alarms, [], 'an unmeasured loop cycle is not an unmeasured harness cycle');
+  assert.deepEqual([h.stats.loop_cycles, h.stats.loop_pull_requests, h.stats.loop_refused], [2, 1, 1]);
+  assert.match(formatHealthMarkdown(h), /Loop: 2 cycle\(s\) took an issue, 1 opened a pull request, 1 stopped with a reason on the issue/);
+});

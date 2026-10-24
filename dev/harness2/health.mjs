@@ -166,7 +166,10 @@ export function loopHealth({ cycles = [], pullRequests = [], release = null, pau
     alarm('stalled', `No harness cycle has run for ${hours} hours`, [`The last one was ${last.command} at ${last.at}.`]);
   }
 
-  const working = recent.filter((c) => !c.paused);
+  // The harness's own cycles; the loop's (dev/loop/cycle.mjs, command 'loop') measure only behaviour
+  // changes and propose nothing through the harness, so the harness's alarms leave them out.
+  const working = recent.filter((c) => !c.paused && c.command !== 'loop');
+  const loopCycles = recent.filter((c) => c.command === 'loop' && c.loop && !c.loop.dryRun);
   if (working.length && !working.some((c) => c.realModel)) {
     alarm('unmeasured', `None of the last ${working.length} cycles measured a change`, [
       'Only a --real-model run sends a side\'s own prompts to the model, so no other cycle can open a promotion.',
@@ -260,6 +263,9 @@ export function loopHealth({ cycles = [], pullRequests = [], release = null, pau
     latest_release: release?.latestTag || null,
     promotions_waiting_for_release: waiting.length,
     last_cycle_at: last?.at || null,
+    loop_cycles: loopCycles.filter((c) => c.loop.action !== 'paused' && c.loop.action !== 'no-work' && c.loop.action !== 'capped').length,
+    loop_pull_requests: loopCycles.filter((c) => c.loop.action === 'opened').length,
+    loop_refused: loopCycles.filter((c) => ['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed'].includes(c.loop.action)).length,
   };
   return { ok: alarms.length === 0, alarms, notes, stats };
 }
@@ -379,6 +385,7 @@ export function formatHealthMarkdown(health) {
     `## The last ${s.window_days} days`,
     '',
     `- Cycles: ${s.cycles} (${s.measured_cycles} measured, ${s.paused_cycles} refused while paused); the last at ${s.last_cycle_at || 'never'}`,
+    `- Loop: ${s.loop_cycles ?? 0} cycle(s) took an issue, ${s.loop_pull_requests ?? 0} opened a pull request, ${s.loop_refused ?? 0} stopped with a reason on the issue`,
     `- Proposals: ${s.proposals}, evaluated ${s.evaluated}, accepted ${s.accepted}; evidence passed in ${s.evidence_passed} cycle(s)`,
     `- Pull requests: ${s.pull_requests_opened} opened, ${s.pull_requests_merged} merged`,
     `- Spend: ${s.rollouts} model rollouts, ${s.tokens} tokens`,

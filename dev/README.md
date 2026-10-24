@@ -17,6 +17,7 @@ instance.
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you (a request Firestore refuses with 401 is sent once more with a new token from gcloud, so a long follow outlives its token) |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
 | `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`) |
+| `loop/` | The self-improvement loop: one cycle has a coding agent change a checkout of main to resolve a `loop` issue, checks the change, and opens a pull request a person merges ([loop/README.md](loop/README.md)) |
 
 ## The dev loop commands
 
@@ -63,6 +64,17 @@ on `PATH`, or `CLOUDSDK_ROOT_DIR`, and honor `CLOUDSDK_PYTHON`.
 
 **What it changes.** One annotated tag in this clone and on `origin`, and only without `--dry-run`.
 `notes` and `check` only read.
+
+## The self-improvement loop (`dev/loop/`)
+
+`node dev/loop/cycle.mjs [--issue <n>] [--dry-run] [--json]` runs one cycle of the loop. It takes the
+oldest open GitHub issue labelled `loop`, has a coding agent (named in `.local/loop.json`, never in the
+repo) change a fresh checkout of main to resolve it, and checks the change. A change is refused when it
+touches the referee (what judges a change, and the loop itself), changes an existing test, fails the
+suite, or changes the agent's behaviour without a real-model measurement that shows nothing got worse.
+Otherwise the cycle opens a pull request; a refused change gets a comment on the issue. It stops while
+`dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. Stage 1 is supervised: a person merges.
+How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).
 
 ## Continual harness improvement (`dev/harness2/`)
 
