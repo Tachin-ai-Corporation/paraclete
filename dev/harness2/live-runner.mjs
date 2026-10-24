@@ -1,4 +1,5 @@
 // dev/harness2/live-runner.mjs: In-process Gateway + Brain live rollout adapter, isolated git worktree mutations, and GCP lab planner for Paraclete-H².
+// The lab's follow-main timer (built by lab-updater.mjs; lab only) reaches the lab VMs from here, over IAP SSH.
 
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -12,7 +13,7 @@ import { COLLECTIONS, SUBCOLLECTIONS } from '../../agent/storage/collections.mjs
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
-import { windowsGcloud } from '../dev-env.mjs';
+import { sshArgs, windowsGcloud } from '../dev-env.mjs';
 import {
   getCurriculumUnitById,
   materializeCurriculumArtifacts,
@@ -20,6 +21,13 @@ import {
 } from './curriculum.mjs';
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
 import { getTaskFixture } from './fixtures.mjs';
+import {
+  FOLLOW_MAIN,
+  followMainCommandFor,
+  followMainResult,
+  parseFollowMainOutput,
+  parseIntervalMinutes,
+} from './lab-updater.mjs';
 import { usageFromLog } from './model-runs.mjs';
 import { isModelTask } from './model-suite.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
@@ -36,19 +44,21 @@ function defaultExecGit(args, cwd) {
   }).trim();
 }
 
-function defaultExecGcloud(args) {
+/**
+ * Runs gcloud and returns its trimmed stdout. `interactive` (for `gcloud compute ssh`) leaves stdin and
+ * stderr on your terminal, so a prompt from gcloud or the SSH client shows and can be answered.
+ */
+function defaultExecGcloud(args, { interactive = false } = {}) {
+  const stdio = interactive ? ['inherit', 'pipe', 'inherit'] : ['ignore', 'pipe', 'pipe'];
   if (process.platform === 'win32') {
     const { file, args: prefix, env } = windowsGcloud({ env: process.env });
-    return execFileSync(file, [...prefix, ...args], {
-      env,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
+    return execFileSync(file, [...prefix, ...args], { env, encoding: 'utf8', stdio }).trim();
   }
-  return execFileSync('gcloud', args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
+  return execFileSync('gcloud', args, { encoding: 'utf8', stdio }).trim();
+}
+
+function defaultSleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 function textOf(content) {
@@ -1209,11 +1219,13 @@ exec systemd-run --unit=paraclete-bootstrap --collect --wait --quiet --setenv=HO
  * @param {string} [opts.region]
  * @param {string} [opts.organizationId]
  * @param {string} [opts.billingAccount]
+ * @param {string|number} [opts.intervalMinutes]  the follow-main timer's interval (lab-updater.mjs)
  */
 export function buildGcpLabPlan(opts = {}) {
   const projectId = opts.projectId || 'paraclete-h2-lab';
   const region = opts.region || 'us-central1';
   const zone = opts.zone || `${region}-a`;
+  const intervalMinutes = parseIntervalMinutes(opts.intervalMinutes);
   const bucket = `${projectId}-paraclete`;
   const serviceAccountId = 'paraclete-agent';
   const serviceAccountEmail = [serviceAccountId, `${projectId}.iam.gserviceaccount.com`].join('@');
@@ -1267,6 +1279,7 @@ export function buildGcpLabPlan(opts = {}) {
         bootDiskType: 'pd-ssd',
         imageFamily: 'debian-12',
         imageProject: 'debian-cloud',
+        harnessCheckout: FOLLOW_MAIN.harnessCheckout,
       },
       {
         name: 'paraclete-h2-canary',
@@ -1278,8 +1291,11 @@ export function buildGcpLabPlan(opts = {}) {
         bootDiskType: 'pd-balanced',
         imageFamily: 'debian-12',
         imageProject: 'debian-cloud',
+        harnessCheckout: null,
       },
     ],
+    // Lab only: both VMs follow main's head through upgrade.sh. Product instances follow releases.
+    followMain: { timer: FOLLOW_MAIN.timerUnit, intervalMinutes },
     commands: [
       `gcloud projects create ${projectId} --name="Paraclete H2 Evolution Lab"${opts.organizationId ? ` --organization=${opts.organizationId}` : ''}`,
       ...(opts.billingAccount
@@ -1289,6 +1305,7 @@ export function buildGcpLabPlan(opts = {}) {
       `gcloud services enable ${apis.join(' ')} --project=${projectId}`,
       `gcloud compute instances create paraclete-h2-driver --project=${projectId} --zone=${zone} --machine-type=e2-standard-8 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=100GB --boot-disk-type=pd-ssd --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
       `gcloud compute instances create paraclete-h2-canary --project=${projectId} --zone=${zone} --machine-type=e2-standard-4 --image-family=debian-12 --image-project=debian-cloud --boot-disk-size=50GB --boot-disk-type=pd-balanced --scopes=cloud-platform,https://www.googleapis.com/auth/drive --tags=paraclete`,
+      `node dev/harness2/cli.mjs lab-follow-main --install --interval ${intervalMinutes} --project ${projectId} --zone ${zone}`,
       `node dev/harness2/cli.mjs lab-status --project ${projectId} --zone ${zone}`,
       `node dev/harness2/cli.mjs canary --agent paraclete-h2-canary --role paraclete-h2`,
     ],
@@ -1342,6 +1359,16 @@ function resolveRepoAndCommit(opts = {}) {
  * 6. Ensure GCS bucket `gs://<project>-paraclete` and grant `roles/storage.objectAdmin`.
  * 7. Ensure VPC network and IAP SSH ingress/deny firewall rules.
  * 8. Create or update `paraclete-h2-driver` (`e2-standard-8`) and `paraclete-h2-canary` (`e2-standard-4`).
+ * 9. Install the follow-main timer on both (lab only; lab-updater.mjs), over IAP SSH.
+ *
+ * Step 9 is an SSH step, not part of the startup script, for three reasons. The startup script runs
+ * only at boot, so it cannot reach a VM that is already running, and this function only updates the
+ * metadata of an existing VM. It stays install.sh's own stub, so the lab boots the way a product
+ * instance does, which is what the canary is there to show. And `lab-follow-main --uninstall` must
+ * stick, which it would not if every boot put the timer back. The same install step serves
+ * `lab-follow-main --install` (manageLabFollowMain), so the two cannot drift apart. A new VM's SSH
+ * may need a minute to come up, so the step is tried `sshAttempts` times. A VM it cannot reach makes
+ * the result not ok, with the command to run later; every earlier step stands.
  *
  * @param {object} [opts]
  * @param {string} [opts.projectId]
@@ -1352,10 +1379,13 @@ function resolveRepoAndCommit(opts = {}) {
  * @param {string} [opts.repo]
  * @param {string} [opts.commit]
  * @param {string} [opts.release]
+ * @param {string|number} [opts.intervalMinutes]  the follow-main timer's interval, default 30
  * @param {boolean} [opts.dryRun]
- * @param {Function} [opts.execGcloud]
+ * @param {Function} [opts.execGcloud]  (args, {interactive}) => stdout
  * @param {Function} [opts.execGit]
  * @param {Function} [opts.onStep]
+ * @param {number} [opts.sshAttempts]  tries of the SSH step per VM, default 8
+ * @param {Function} [opts.sleep]  (ms) => void, between SSH tries
  */
 export function provisionGcpLab(opts = {}) {
   const plan = buildGcpLabPlan(opts);
@@ -1762,19 +1792,109 @@ export function provisionGcpLab(opts = {}) {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 
+  // 9. The follow-main timer (lab only), over IAP SSH
+  const followMain = plan.vms.map((vm) =>
+    followMainOnVm(plan, vm, 'install', {
+      execGcloud,
+      attempts: opts.sshAttempts ?? 8,
+      sleep: opts.sleep,
+    }),
+  );
+  for (const result of followMain) {
+    recordStep(
+      `follow-main:${result.name}`,
+      result.ok ? result.installed : 'failed',
+      result.ok ? `${FOLLOW_MAIN.timerUnit} every ${plan.followMain.intervalMinutes} min` : result.error,
+    );
+  }
+  const followMainOk = followMain.every((r) => r.ok);
+
   return {
-    ok: true,
+    ok: followMainOk,
     dryRun: false,
     plan,
     repo,
     commit,
     release,
     stepsExecuted,
+    followMain,
+    ...(followMainOk
+      ? {}
+      : {
+          hint: `The follow-main timer is not on every VM. Once they answer over SSH: node dev/harness2/cli.mjs lab-follow-main --install --interval ${plan.followMain.intervalMinutes} --project ${plan.projectId} --zone ${plan.zone}`,
+        }),
   };
 }
 
 /**
- * Inspect the live status of `paraclete-h2-driver` and `paraclete-h2-canary` in GCP.
+ * Runs one follow-main action on one lab VM over IAP SSH (dev-env.mjs sshArgs) and reads back its
+ * result. Never throws: a VM that cannot be reached after `attempts` tries is a result with ok false.
+ *
+ * @param {{projectId: string, zone: string, followMain: {intervalMinutes: number}}} plan
+ * @param {{name: string, harnessCheckout?: string|null}} vm
+ * @param {'install'|'uninstall'|'status'} action
+ * @param {{execGcloud?: Function, attempts?: number, sleep?: Function, retryMs?: number}} [o]
+ */
+function followMainOnVm(plan, vm, action, { execGcloud = defaultExecGcloud, attempts = 1, sleep = defaultSleep, retryMs = 15_000 } = {}) {
+  const command = followMainCommandFor(action, vm, { intervalMinutes: plan.followMain.intervalMinutes });
+  const args = sshArgs({ VM: vm.name, ZONE: plan.zone, PROJECT_ID: plan.projectId }, command);
+  let problem = 'not tried';
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (attempt > 1) sleep(retryMs);
+    try {
+      const result = followMainResult(action, parseFollowMainOutput(execGcloud(args, { interactive: true })));
+      if (result.ok) return { name: vm.name, ...result };
+      problem = result.error;
+    } catch (err) {
+      // Never err.message from execFileSync: it repeats the whole command line.
+      problem = Number.isInteger(err?.status)
+        ? `gcloud compute ssh exited with code ${err.status}`
+        : String(err?.message || err).split('\n')[0].slice(0, 200);
+    }
+  }
+  return { name: vm.name, ok: false, error: `${vm.name}: ${problem}${attempts > 1 ? ` (${attempts} tries)` : ''}` };
+}
+
+/**
+ * Puts the follow-main timer on the lab's VMs, takes it off, or reports it (lab-updater.mjs), over
+ * IAP SSH: `node dev/harness2/cli.mjs lab-follow-main [--install|--uninstall|--status]`. Lab only.
+ * Install and uninstall are idempotent; status changes nothing.
+ *
+ * @param {object} [opts]
+ * @param {'install'|'uninstall'|'status'} [opts.action]  default status
+ * @param {string} [opts.projectId]
+ * @param {string} [opts.zone]
+ * @param {string} [opts.region]
+ * @param {string|number} [opts.intervalMinutes]  install only, default 30
+ * @param {Function} [opts.execGcloud]
+ * @param {number} [opts.sshAttempts]  default 1
+ * @param {Function} [opts.sleep]
+ */
+export function manageLabFollowMain(opts = {}) {
+  const action = opts.action || 'status';
+  if (!['install', 'uninstall', 'status'].includes(action)) throw new Error(`unknown lab-follow-main action '${action}'`);
+  const plan = buildGcpLabPlan(opts);
+  const vms = plan.vms.map((vm) =>
+    followMainOnVm(plan, vm, action, {
+      execGcloud: opts.execGcloud || defaultExecGcloud,
+      attempts: opts.sshAttempts ?? 1,
+      sleep: opts.sleep,
+    }),
+  );
+  return {
+    ok: vms.every((vm) => vm.ok),
+    action,
+    projectId: plan.projectId,
+    zone: plan.zone,
+    ...(action === 'install' ? { intervalMinutes: plan.followMain.intervalMinutes } : {}),
+    vms,
+  };
+}
+
+/**
+ * Inspect the live status of `paraclete-h2-driver` and `paraclete-h2-canary` in GCP. Each running lab
+ * VM also gets `followMain`: its follow-main timer, last run, installed commit and main's head, read
+ * over IAP SSH as `lab-follow-main --status` reads them (null for a VM that is not running).
  *
  * @param {object} [opts]
  * @param {string} [opts.projectId]
@@ -1810,6 +1930,16 @@ export function inspectGcpLabStatus(opts = {}) {
       externalIp: inst?.networkInterfaces?.[0]?.accessConfigs?.[0]?.natIP || null,
     };
   });
+  for (const vm of vms) {
+    const labVm = plan.vms.find((v) => v.name === vm.name);
+    if (!labVm) continue;
+    if (vm.status !== 'RUNNING') {
+      vm.followMain = null;
+      continue;
+    }
+    const { name, ...followMain } = followMainOnVm(plan, labVm, 'status', { execGcloud });
+    vm.followMain = followMain;
+  }
 
   return {
     ok: true,

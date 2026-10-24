@@ -46,6 +46,7 @@ import {
   createLiveProposeAndApply,
   evaluateLiveTarget,
   inspectGcpLabStatus,
+  manageLabFollowMain,
   provisionGcpLab,
   runInProcessBrainRollout,
 } from './live-runner.mjs';
@@ -88,10 +89,13 @@ Subcommands:
                                    Generate a role package scaffold (role.json, README.md, prompts/, responsibilities.json; a person commits role.json)
   lab-plan [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>]
                                    Print the two-tier GCP lab (paraclete-h2-lab) provisioning plan
-  lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--dry-run]
-                                   Provision the two-tier GCP lab (paraclete-h2-driver + paraclete-h2-canary)
+  lab-provision [--project <id>] [--zone <zone>] [--org <org-id>] [--billing <account-id>] [--interval <minutes>] [--dry-run]
+                                   Provision the two-tier GCP lab (paraclete-h2-driver + paraclete-h2-canary), follow-main timer included
   lab-status [--project <id>] [--zone <zone>]
-                                   Inspect the live status of the two-tier GCP lab VMs
+                                   Inspect the live status of the two-tier GCP lab VMs and their follow-main timers
+  lab-follow-main [--install|--uninstall|--status] [--interval <minutes>] [--project <id>] [--zone <zone>]
+                                   Lab only: put on, take off or report (the default) the timer that keeps both lab VMs
+                                   and the driver's harness checkout on main's head (every 30 minutes unless --interval)
 
 Real-model runs (eval, judge, evolve, promote, curriculum):
   --real-model                     Every organ answers through the real model, from each side's own files,
@@ -1152,10 +1156,12 @@ async function runCliCommand(argv, deps) {
       repo: flags.repo,
       commit: flags.commit,
       release: flags.release,
+      intervalMinutes: flags.interval,
       dryRun: Boolean(flags['dry-run']),
       execGcloud: deps.execGcloud,
       execGit: deps.execGit,
       onStep: deps.onStep,
+      sleep: deps.sleep,
     });
   }
 
@@ -1166,6 +1172,26 @@ async function runCliCommand(argv, deps) {
       region: flags.region,
       execGcloud: deps.execGcloud,
     });
+  }
+
+  if (subcommand === 'lab-follow-main') {
+    const actions = ['install', 'uninstall', 'status'].filter((action) => flags[action]);
+    if (actions.length > 1) return { ok: false, error: 'lab-follow-main takes one of --install, --uninstall and --status.' };
+    const action = actions[0] || 'status';
+    if (flags.interval !== undefined && action !== 'install') return { ok: false, error: '--interval goes with --install.' };
+    try {
+      return manageLabFollowMain({
+        action,
+        projectId: flags.project,
+        zone: flags.zone,
+        region: flags.region,
+        intervalMinutes: flags.interval,
+        execGcloud: deps.execGcloud,
+        sleep: deps.sleep,
+      });
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
   }
 
   return { ok: true, usage: USAGE };

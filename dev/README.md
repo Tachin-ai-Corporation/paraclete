@@ -17,7 +17,7 @@ instance.
 | `release-check.mjs` | Checks main's head on your dev instance (deploy, status, smoke) and only then cuts it as a release, with the check in the tag's message |
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you (a request Firestore refuses with 401 is sent once more with a new token from gcloud, so a long follow outlives its token) |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
-| `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`) |
+| `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`), and the harness lab (`lab-plan`, `lab-provision`, `lab-status`, `lab-follow-main`) |
 | `loop/` | The self-improvement loop: one cycle has a coding agent change a checkout of main to resolve a `loop` issue, checks the change, and opens a pull request a person merges ([loop/README.md](loop/README.md)) |
 
 ## The dev loop commands
@@ -104,3 +104,55 @@ trajectory harvester (Loop B → Loop A):
 - `roles/paraclete-h2`: the self-hosting harness engineer role (`harness-cycle`, `harness-eval`, `harness-promote`) that equips a single Paraclete agent to run Loop A and Loop B end to end. It is a development role (`listed: false`): the installer installs it only when `--role paraclete-h2` names it, and its commands load `dev/harness2/` from a checkout of this repo.
 
 Their tests are in `tests/dev/`, against fake programs and the Firestore fake in `tests/fakes/`.
+
+### The harness lab follows main (lab only)
+
+The harness lab is one GCP project (`paraclete-h2-lab` unless `--project`) with two VMs that
+`lab-provision` creates: `paraclete-h2-driver`, role `paraclete-h2`, which runs the harness from its
+checkout at `/var/lib/paraclete/harness2-repo` (owned by the `paraclete` user), and
+`paraclete-h2-canary`, role `software-engineer`. Each boots install.sh's startup stub, so a full
+paraclete install runs at the commit in its `paraclete-ref` metadata. There is no dashboard, so the
+upgrade path a product instance takes never reaches them. A timer keeps them on main's head instead.
+
+**This is for the lab only.** A product instance updates through releases, from its dashboard, and never
+follows main. Nothing of this is in `install/manifest.txt`, and no install has it.
+
+`paraclete-lab-follow-main.timer` runs `dev/harness2/lab-follow-main.sh` (installed as
+`/usr/local/sbin/paraclete-lab-follow-main`) as root on both VMs, every 30 minutes unless `--interval`.
+Each run:
+
+1. reads the repository from `/opt/paraclete/release.json`, and main's head from
+   `git ls-remote https://github.com/<repo> refs/heads/main`;
+2. skips while the brain reports a mission running (`runner.active_mission` in
+   `/var/lib/paraclete/services/brain/health.json`), and records the first skip in
+   `/var/lib/paraclete/lab-follow-main.busy-since`. Once that skip is 24 hours old, it goes ahead anyway;
+3. when release.json's commit is not main's head, runs `/opt/paraclete/install/upgrade.sh --ref <head>`,
+   the bootstrap and validation gate a release upgrade uses, unless a bootstrap is running. Its output
+   goes to `/var/log/paraclete-lab-follow-main-upgrade.log`. The installed commit survives a reboot;
+4. on the driver, fast-forwards the harness checkout to `origin/main` as the `paraclete` user, and only
+   when it is on main with no changes (untracked files count), no harness process runs (`pgrep -f` for
+   `dev/harness2` and the role's `harness-cycle`, `harness-eval` and `harness-promote`), and the move is a
+   fast-forward. It never resets, stashes or merges, so a dirty or diverged checkout stays as it is. This
+   replaces syncing the checkout by hand;
+5. logs one line, which `sudo journalctl -t paraclete-lab-follow-main` shows: the repository, the installed
+   commit, main's head, the agent, and what happened to the install and to the checkout.
+
+It never prints a remote URL or git's output, because the checkout's remote may hold a token, and it
+stores no credential. A run is safe twice over: a second one finds everything current, or the lock held.
+`sudo systemctl start paraclete-lab-follow-main.service` runs one now.
+
+| Command | Does |
+|---|---|
+| `node dev/harness2/cli.mjs lab-follow-main --install [--interval <minutes>] [--project <id>] [--zone <zone>]` | Over IAP SSH (`dev-env.mjs` `sshArgs`, with sudo), on both VMs: writes the updater and the two units, and enables and starts the timer. A file whose content is already right is not written again, and systemd reloads only when one changed, so a second install changes nothing. `--interval` is whole minutes from 5 to 1440, default 30; a new interval takes effect at once. The units are in `/usr/local/lib/systemd/system`, because `install/bootstrap.sh` stops and removes any `paraclete-*.service` in `/etc/systemd/system` that a release does not ship |
+| `node dev/harness2/cli.mjs lab-follow-main --uninstall [--project <id>] [--zone <zone>]` | Stops and disables the timer and removes the updater, the units, the busy-since file and the upgrade log. A run in progress, which may be an upgrade, is never stopped: it finishes on its own, and the result says so. Safe twice |
+| `node dev/harness2/cli.mjs lab-follow-main [--status] [--project <id>] [--zone <zone>]` | For each VM: the timer's state, its last run and that run's line, the installed commit, main's head and whether they match, the agent's mission and busy-since, and on the driver the checkout's commit. Changes nothing |
+
+`lab-provision` (`--interval` too) runs the same install step on both VMs after it creates or updates
+them, and tries a new VM's SSH for about two minutes. A VM it cannot reach makes its result not ok,
+with the `lab-follow-main --install` command to run later. `lab-status` adds each running VM's timer state
+(`followMain`). The timer goes on over SSH, not through the startup script, because the startup script
+runs only at boot and cannot reach a running VM, the lab's startup script stays install.sh's own so the
+lab boots the way an instance does, and an `--uninstall` must stick across a reboot.
+
+To pin the lab to a branch, take the timer off first (`--uninstall`). Otherwise it moves the lab back to
+main within one interval.
