@@ -945,22 +945,15 @@ export function getCurriculumUnitById(unitId, opts = {}) {
 }
 
 /**
- * Materialize the specialist & organ-specific workspace artifacts for a curriculum unit.
- * When `opts.evolved` is true (i.e. the candidate harness includes an evolved organ/role
- * prompt overlay), the generated artifacts include comprehensive edge-case matrices,
- * cross-checked invariants, and self-verification proofs.
+ * Materialize the specialist & organ-specific workspace artifacts for a curriculum unit: the
+ * reference outputs the scripted in-process rollout writes. They are the same for every harness, so
+ * an in-process score never depends on what a candidate changed.
  *
  * @param {string} workspaceDir
  * @param {object} unit
- * @param {object} [opts]
- * @param {boolean} [opts.evolved]
  */
-export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
+export function materializeCurriculumArtifacts(workspaceDir, unit) {
   if (!unit || !workspaceDir) return;
-  const evolved = Boolean(opts.evolved);
-  const evolutionSection = evolved
-    ? '\n\n## Adversarial Edge-Case & Self-Verification Audit\n- Zero unverified assumptions; all file paths and numeric aggregates read back from disk.\n- Boundary Conditions: Tested empty inputs, boundary thresholds, and schema type invariants.\n- Self-Verification Status: PASS (100% deterministic + rubric clauses satisfied).\n'
-    : '';
 
   const templates = {
     'CORTEX_DECOMPOSITION.json': () =>
@@ -974,25 +967,18 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
             { n: 3, organ: 'cerebellum', goal: 'Verify JSON schema and spine path isolation' },
           ],
           verificationCriteria: ['diagnosis.json exists', 'primaryLens === INV', 'spineViolations isolated'],
-          ...(evolved
-            ? {
-                adversarialChecks: ['immutable spine boundary verified', 'single-lens attribution confirmed'],
-                confidence: 0.99,
-              }
-            : {}),
         },
         null,
         2,
       ),
     'PREFRONTAL_PLAN.md': () =>
-      `# Prefrontal Tactical Plan\n\n## Verification Probes\n- Run \`node --test test/calc.test.mjs\` before and after patching \`src/calc.mjs\`.\n\n## Edge-Case Matrix\n- \`sumInclusiveRange(1, 4) === 10\`\n- Single-element range \`sumInclusiveRange(3, 3) === 3\`${evolutionSection}\n`,
+      `# Prefrontal Tactical Plan\n\n## Verification Probes\n- Run \`node --test test/calc.test.mjs\` before and after patching \`src/calc.mjs\`.\n\n## Edge-Case Matrix\n- \`sumInclusiveRange(1, 4) === 10\`\n- Single-element range \`sumInclusiveRange(3, 3) === 3\`\n`,
     'MOTOR_EXECUTION_LOG.json': () =>
       JSON.stringify(
         {
           patchedFiles: ['src/service.mjs'],
           testExitCode: 0,
           assertionsVerified: ['loadUserProfile accepts injectable fetchProfile dependency'],
-          ...(evolved ? { turnCount: 1, idempotentReadBackVerified: true } : {}),
         },
         null,
         2,
@@ -1004,7 +990,6 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
           evidenceFloorMet: true,
           adversarialProbes: ['empty string input', 'whitespace-only input', 'PORT=8080 key-value pair'],
           regressionCount: 0,
-          ...(evolved ? { boundaryCoveragePct: 100, commandExitCode: 0 } : {}),
         },
         null,
         2,
@@ -1021,9 +1006,9 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         2,
       ),
     'MEMORY_LEDGER.md': () =>
-      `# Episodic Memory Consolidation\n\n## Durable Facts\n- Baseline capability: \`0.80\`\n- Winning candidate: \`cand-pareto-1\` (\`capability: 0.90\`, \`fitness: 0.88\`)\n\n## Known Resources\n- \`candidates.json\`\n- \`promotion-verdict.json\`${evolutionSection}\n`,
+      `# Episodic Memory Consolidation\n\n## Durable Facts\n- Baseline capability: \`0.80\`\n- Winning candidate: \`cand-pareto-1\` (\`capability: 0.90\`, \`fitness: 0.88\`)\n\n## Known Resources\n- \`candidates.json\`\n- \`promotion-verdict.json\`\n`,
     'SYNTHESIS.md': () =>
-      `# Multi-Source Technical Synthesis\n\n- **Latency Winner**: Engine \`alpha\` (\`42ms\` p95 in \`sources/primary-a.json\`) outperforms \`beta\` (\`68ms\` p95 in \`sources/primary-b.json\`) by \`26ms\`.\n- **Cost Winner**: Engine \`beta\` (\`$0.08/1k\` in \`sources/primary-b.json\`) is 33% more cost-efficient than \`alpha\` (\`$0.12/1k\` in \`sources/primary-a.json\`).${evolutionSection}\n`,
+      `# Multi-Source Technical Synthesis\n\n- **Latency Winner**: Engine \`alpha\` (\`42ms\` p95 in \`sources/primary-a.json\`) outperforms \`beta\` (\`68ms\` p95 in \`sources/primary-b.json\`) by \`26ms\`.\n- **Cost Winner**: Engine \`beta\` (\`$0.08/1k\` in \`sources/primary-b.json\`) is 33% more cost-efficient than \`alpha\` (\`$0.12/1k\` in \`sources/primary-a.json\`).\n`,
     'CITATION_GRAPH.json': () =>
       JSON.stringify(
         {
@@ -1050,9 +1035,9 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         2,
       ),
     'HARNESS_IMPROVEMENT_BRIEF.md': () =>
-      `# Harness Improvement Brief\n\n- **Governing Rule**: Capability-First Credo enforced.\n\n## Lens Diagnostics\n- Filtered \`cand-regressed-cap\` despite higher efficiency because capability regressed below baseline.\n- Promoted \`cand-pareto-1\` with +0.10 capability gain.${evolutionSection}\n`,
+      `# Harness Improvement Brief\n\n- **Governing Rule**: Capability-First Credo enforced.\n\n## Lens Diagnostics\n- Filtered \`cand-regressed-cap\` despite higher efficiency because capability regressed below baseline.\n- Promoted \`cand-pareto-1\` with +0.10 capability gain.\n`,
     'CODE_REVIEW_REPORT.md': () =>
-      `# Code Review & Root-Cause Report\n\n## Defect Analysis\n- \`src/calc.mjs\` used strict inequality (\`i < end\`) instead of inclusive upper bound (\`i <= end\`).\n\n## Boundary Verification\n- Verified \`sumInclusiveRange(1, 4) === 10\` and \`sumInclusiveRange(3, 3) === 3\` via \`node --test test/calc.test.mjs\`.${evolutionSection}\n`,
+      `# Code Review & Root-Cause Report\n\n## Defect Analysis\n- \`src/calc.mjs\` used strict inequality (\`i < end\`) instead of inclusive upper bound (\`i <= end\`).\n\n## Boundary Verification\n- Verified \`sumInclusiveRange(1, 4) === 10\` and \`sumInclusiveRange(3, 3) === 3\` via \`node --test test/calc.test.mjs\`.\n`,
     'QA_COVERAGE_MATRIX.json': () =>
       JSON.stringify(
         {
@@ -1065,9 +1050,9 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         2,
       ),
     'INCIDENT_RUNBOOK.md': () =>
-      `# Release Recovery & Systemd Runbook\n\n- **Active Release**: Updated pointer to verified release \`v2026.10.19.1.0\`.\n- **Service Health**: Confirmed \`paraclete-gateway\` is active and ready.${evolutionSection}\n`,
+      `# Release Recovery & Systemd Runbook\n\n- **Active Release**: Updated pointer to verified release \`v2026.10.19.1.0\`.\n- **Service Health**: Confirmed \`paraclete-gateway\` is active and ready.\n`,
     'SECURITY_THREAT_MODEL.md': () =>
-      `# IAM Least-Privilege Threat Model\n\n- **Over-Privileged Principal**: \`serviceAccount:ci-runner@example.com\` held \`roles/owner\`.\n- **Remediation**: Downgraded to \`roles/storage.objectViewer\` and scheduled rotation for \`key-old-01\` (185 days old).${evolutionSection}\n`,
+      `# IAM Least-Privilege Threat Model\n\n- **Over-Privileged Principal**: \`serviceAccount:ci-runner@example.com\` held \`roles/owner\`.\n- **Remediation**: Downgraded to \`roles/storage.objectViewer\` and scheduled rotation for \`key-old-01\` (185 days old).\n`,
     'PIPELINE_LINEAGE.json': () =>
       JSON.stringify(
         {
@@ -1080,7 +1065,7 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         2,
       ),
     'WEB_HARDENING_REPORT.md': () =>
-      `# Web Endpoint Security & Vitals Report\n\n- **Expiring Certificate**: \`https://app.example.com/healthz\` has 9 days remaining (<14-day threshold).\n- **Header Hardening**: Enable \`Strict-Transport-Security\` (HSTS) on \`https://app.example.com/healthz\`.${evolutionSection}\n`,
+      `# Web Endpoint Security & Vitals Report\n\n- **Expiring Certificate**: \`https://app.example.com/healthz\` has 9 days remaining (<14-day threshold).\n- **Header Hardening**: Enable \`Strict-Transport-Security\` (HSTS) on \`https://app.example.com/healthz\`.\n`,
     'EVIDENCE_TABLE.json': () =>
       JSON.stringify(
         {
@@ -1095,25 +1080,25 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         2,
       ),
     'COHORT_EXECUTIVE_MEMO.md': () =>
-      `# Cohort Retention Analysis\n\n- **Anomalous Cohort**: \`cohort-2026-02\` dropped to \`41.5%\` retention (\`-36.5\` percentage points vs \`78.0%\` baseline).\n- **Control Cohorts**: \`cohort-2026-01\` (\`77.5%\`) and \`cohort-2026-03\` (\`79.0%\`) remained stable.${evolutionSection}\n`,
+      `# Cohort Retention Analysis\n\n- **Anomalous Cohort**: \`cohort-2026-02\` dropped to \`41.5%\` retention (\`-36.5\` percentage points vs \`78.0%\` baseline).\n- **Control Cohorts**: \`cohort-2026-01\` (\`77.5%\`) and \`cohort-2026-03\` (\`79.0%\`) remained stable.\n`,
     'CFO_VARIANCE_MEMO.md': () =>
-      `# Q3 Budget vs. Actuals Reconciliation\n\n- **Total Actual Spend**: \`54250\` USD vs \`50000\` USD budget (\`+4250\` USD net variance).\n- **Primary Variance Driver**: \`cloud-compute\` (\`24250\` USD actual vs \`20000\` USD budget).${evolutionSection}\n`,
+      `# Q3 Budget vs. Actuals Reconciliation\n\n- **Total Actual Spend**: \`54250\` USD vs \`50000\` USD budget (\`+4250\` USD net variance).\n- **Primary Variance Driver**: \`cloud-compute\` (\`24250\` USD actual vs \`20000\` USD budget).\n`,
     'REDLINE_MEMORANDUM.md': () =>
-      `# Commercial Contract Redline Memorandum\n\n- **Non-Compliant Clauses**: \`section-8.2\` (uncapped liability) and \`section-11.4\` (2160-hour breach notice).\n- **Required Redlines**: Cap liability at \`12x_annual_fees\` and tighten breach notification window to \`72\` hours.${evolutionSection}\n`,
+      `# Commercial Contract Redline Memorandum\n\n- **Non-Compliant Clauses**: \`section-8.2\` (uncapped liability) and \`section-11.4\` (2160-hour breach notice).\n- **Required Redlines**: Cap liability at \`12x_annual_fees\` and tighten breach notification window to \`72\` hours.\n`,
     'RAID_LOG.md': () =>
-      `# Program RAID Register & Recovery Plan\n\n- **Discrepant Milestone**: \`ms-02\` reported \`on_track\` despite active blocker \`dep-auth-migration\`.\n- **Reconciled Status**: Reclassified \`ms-02\` to \`at_risk\` and assigned critical-path unblocking owner.${evolutionSection}\n`,
+      `# Program RAID Register & Recovery Plan\n\n- **Discrepant Milestone**: \`ms-02\` reported \`on_track\` despite active blocker \`dep-auth-migration\`.\n- **Reconciled Status**: Reclassified \`ms-02\` to \`at_risk\` and assigned critical-path unblocking owner.\n`,
     'EXEC_BRIEFING_PACKET.md': () =>
-      `# Executive Daily Briefing Packet\n\n- **Conflict Resolution**: Urgent request \`thread-104\` collided with busy slot \`2026-10-21T14:00:00Z\`.\n- **Proposed Schedule**: Assigned \`thread-104\` to open slot \`2026-10-21T15:00:00Z\`.${evolutionSection}\n`,
+      `# Executive Daily Briefing Packet\n\n- **Conflict Resolution**: Urgent request \`thread-104\` collided with busy slot \`2026-10-21T14:00:00Z\`.\n- **Proposed Schedule**: Assigned \`thread-104\` to open slot \`2026-10-21T15:00:00Z\`.\n`,
     'BOARD_DECISION_MEMO.md': () =>
-      `# Chief of Staff Decision Memo\n\n## Strategic Trade-Offs\n- Milestone \`ms-02\` is blocked by \`dep-auth-migration\`.\n- Reallocate security engineering bandwidth to clear \`dep-auth-migration\` before Q4 freeze.${evolutionSection}\n`,
+      `# Chief of Staff Decision Memo\n\n## Strategic Trade-Offs\n- Milestone \`ms-02\` is blocked by \`dep-auth-migration\`.\n- Reallocate security engineering bandwidth to clear \`dep-auth-migration\` before Q4 freeze.\n`,
     'REVOPS_INSPECTION_REPORT.md': () =>
-      `# Revenue Operations Pipeline Audit\n\n- **Stage Hygiene**: Flagged \`cohort-2026-02\` conversion drop (\`-36.5%\` vs baseline) for deal-desk inspection.${evolutionSection}\n`,
+      `# Revenue Operations Pipeline Audit\n\n- **Stage Hygiene**: Flagged \`cohort-2026-02\` conversion drop (\`-36.5%\` vs baseline) for deal-desk inspection.\n`,
     'CUSTOMER_RECOVERY_PLAYBOOK.md': () =>
-      `# Enterprise Escalation Recovery Plan\n\n- **Priority Escalation**: Routed urgent escalation \`thread-104\` to immediate executive slot \`2026-10-21T15:00:00Z\`.\n- **SLA Remediation**: Instituted 15-minute response cadence for P0 enterprise threads.${evolutionSection}\n`,
+      `# Enterprise Escalation Recovery Plan\n\n- **Priority Escalation**: Routed urgent escalation \`thread-104\` to immediate executive slot \`2026-10-21T15:00:00Z\`.\n- **SLA Remediation**: Instituted 15-minute response cadence for P0 enterprise threads.\n`,
     'DESIGN_SYSTEM_SPEC.md': () =>
-      `# Design System Token Specification\n\n- **Remediated Component**: \`hero-subtitle\` upgraded from \`3.1:1\` to \`4.8:1\` contrast ratio (WCAG AA compliant) and aligned from \`13px\` to \`16px\` on the 8px spacing grid.${evolutionSection}\n`,
+      `# Design System Token Specification\n\n- **Remediated Component**: \`hero-subtitle\` upgraded from \`3.1:1\` to \`4.8:1\` contrast ratio (WCAG AA compliant) and aligned from \`13px\` to \`16px\` on the 8px spacing grid.\n`,
     'DELIVERABLE_SUMMARY.md': () =>
-      `# Mission Deliverable Summary\n\n## Constraint Verification\n- Primary sources \`sources/primary-a.json\` and \`sources/primary-b.json\` cross-checked: **PASS**.\n- Latency delta (\`26ms\`) and cost ranking verified: **PASS**.${evolutionSection}\n`,
+      `# Mission Deliverable Summary\n\n## Constraint Verification\n- Primary sources \`sources/primary-a.json\` and \`sources/primary-b.json\` cross-checked: **PASS**.\n- Latency delta (\`26ms\`) and cost ranking verified: **PASS**.\n`,
   };
 
   for (const spec of unit.requiredArtifacts || []) {
@@ -1146,13 +1131,6 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
         organ: unit.organ,
         skill: unit.skill,
         verified: true,
-        ...(evolved
-          ? {
-              adversarialChecks: ['immutable spine boundary verified', 'idempotent read-back verified'],
-              idempotentReadBackVerified: true,
-              confidence: 0.99,
-            }
-          : {}),
       };
       for (const key of spec.requiredJsonKeys || []) {
         if (!(key in payload)) {
@@ -1166,7 +1144,7 @@ export function materializeCurriculumArtifacts(workspaceDir, unit, opts = {}) {
       const bodyLines = substrings
         .filter((s) => s !== heading)
         .map((s) => (s.startsWith('#') ? `\n${s}\n- Verified domain invariant.` : `- Verified clause: ${s}`));
-      const md = `${heading}\n\n- **Unit**: \`${unit.id}\` (\`${unit.role}\` / \`${unit.organ}\` / \`${unit.skill}\`)\n${bodyLines.join('\n')}${evolutionSection}\n`;
+      const md = `${heading}\n\n- **Unit**: \`${unit.id}\` (\`${unit.role}\` / \`${unit.organ}\` / \`${unit.skill}\`)\n${bodyLines.join('\n')}\n`;
       writeArtifactFile(workspaceDir, spec.path, md);
     }
   }

@@ -7,9 +7,10 @@
 //
 // The verdict passes only when every rule holds: a model proposed the change (never the fixed edits
 // of the template fallback), no run was the synthetic dry run (which always completes, so it measures
-// nothing), every task ran at least `minTrials` times on both sides, the capability gain is at least
-// `minGain` and larger than `noiseZ` standard errors of the difference, and no task got worse by more
-// than `taskTolerance`.
+// nothing), no run was answered by the scripted in-process gateway (which gives every harness the
+// same answers, so it measures nothing either), every task ran at least `minTrials` times on both
+// sides, the capability gain is at least `minGain` and larger than `noiseZ` standard errors of the
+// difference, and no task got worse by more than `taskTolerance`.
 //
 // Pure: no git, no network, no files. Called by promote.mjs (readiness, the pull request gate and the
 // report) and cli.mjs (building evidence from an evaluation's trajectories). It does not run anything.
@@ -45,12 +46,13 @@ function stats(values) {
   return { n, mean: round(mean), sd: round(sd) };
 }
 
-/** Each run's task, trial, whether it was synthetic, and its capability score. */
+/** Each run's task, trial, whether it was synthetic or scripted, and its capability score. */
 function capabilityRuns(trajectories, budgets) {
   return (Array.isArray(trajectories) ? trajectories : []).map((t) => ({
     taskId: String(t.taskId ?? t.missionId ?? 'unknown'),
     trial: t.trial ?? null,
     synthetic: Boolean(t.synthetic) || /^dryrun-/.test(String(t.missionId || '')),
+    scripted: Boolean(t.scripted),
     capability: typeof t.capability === 'number' ? t.capability : scoreTrajectory(t, budgets).capability,
   }));
 }
@@ -89,6 +91,7 @@ export function buildPromotionEvidence({ candidate = {}, baselineTrajectories = 
     },
     trials: { baseline: fewest('baseline'), candidate: fewest('candidate') },
     synthetic: [...base, ...cand].some((r) => r.synthetic),
+    scripted: [...base, ...cand].some((r) => r.scripted),
     capability: {
       baseline,
       candidate: candidateStats,
@@ -118,6 +121,11 @@ export function judgeEvidence(evidence, rules = DEFAULT_EVIDENCE_RULES) {
     problems.push(`the change came from '${source}', not a model: the template fallback's fixed edits are never promoted`);
   }
   if (evidence.synthetic) problems.push('some runs were the synthetic dry run, which always completes and measures nothing');
+  if (evidence.scripted) {
+    problems.push(
+      "some runs were answered by the scripted in-process gateway, which gives every harness the same answers and measures nothing; only runs whose organs answer through a model measure a change",
+    );
+  }
   const perTask = Array.isArray(evidence.perTask) ? evidence.perTask : [];
   if (perTask.length === 0) problems.push('no task was run');
   const onlyOneSide = perTask.filter((t) => !t.baseline?.n || !t.candidate?.n).map((t) => t.taskId);
@@ -154,7 +162,7 @@ export function formatEvidenceMarkdown(evidence, verdict = judgeEvidence(evidenc
     '## Measured Evidence',
     '',
     `- **Proposal**: ${evidence.proposal?.source || 'unknown'}${evidence.proposal?.hypothesis ? ` — ${evidence.proposal.hypothesis}` : ''}`,
-    `- **Runs per task**: baseline ${evidence.trials?.baseline ?? 0}, candidate ${evidence.trials?.candidate ?? 0}${evidence.synthetic ? ' (synthetic dry run)' : ''}`,
+    `- **Runs per task**: baseline ${evidence.trials?.baseline ?? 0}, candidate ${evidence.trials?.candidate ?? 0}${evidence.synthetic ? ' (synthetic dry run)' : ''}${evidence.scripted ? ' (scripted in-process gateway)' : ''}`,
     `- **Capability**: ${cell(evidence.capability.baseline)} -> ${cell(evidence.capability.candidate)}, delta ${evidence.capability.delta}, noise (SE) ${evidence.capability.noise}`,
     `- **Verdict**: ${verdict.ok ? 'measured gain' : `not promotable: ${verdict.problems.join('; ')}`}`,
     '',
