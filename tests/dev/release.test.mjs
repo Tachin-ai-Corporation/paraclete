@@ -17,7 +17,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  main, versionTags, previousVersion, releaseNotes, remoteTags, ciVerdict, MAIN, REMOTE, WORKFLOW_RERUN_GUARD,
+  main, versionTags, previousVersion, releaseNotes, remoteTags, ciVerdict, HARNESS_MERGE_JOB, MAIN, REMOTE, WORKFLOW_RERUN_GUARD,
 } from '../../dev/release.mjs';
 import { createExec } from '../../dev/dev-env.mjs';
 import { readRepoFile } from '../repo/repo-files.mjs';
@@ -91,6 +91,14 @@ describe('the pure parts', () => {
     assert.equal(mixed.ok, false);
     assert.deepEqual(mixed.pending, ['Dashboard build (in_progress)', 'an unnamed check (no status)']);
     assert.deepEqual(mixed.failed, ['Lint (skipped)', 'Docs (failure)']);
+  });
+
+  test("the hourly harness merger's own run on main's head is not CI, running or failed", () => {
+    for (const status of [{ status: 'in_progress', conclusion: null }, { status: 'completed', conclusion: 'failure' }]) {
+      assert.deepEqual(ciVerdict([...passed('Tests').check_runs, { name: HARNESS_MERGE_JOB, ...status }]),
+        { ok: true, passed: ['Tests'], pending: [], failed: [] });
+    }
+    assert.equal(ciVerdict([{ name: HARNESS_MERGE_JOB, status: 'completed', conclusion: 'success' }]).ok, false, 'alone it is no CI at all');
   });
 });
 

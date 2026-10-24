@@ -1,4 +1,5 @@
-// dev/harness2/cli.mjs: Command-line entrypoint for Paraclete-H² (validate, eval, evolve, harvest, promote).
+// dev/harness2/cli.mjs: Command-line entrypoint for Paraclete-H² (validate, eval, evolve, harvest, promote,
+// merge).
 //
 // `--real-model` (eval, judge, evolve, promote, curriculum) runs every organ through the real model from
 // each side's own files (model-runs.mjs), on the model suite's tasks (model-suite.mjs), within a spend
@@ -31,6 +32,7 @@ import {
   applyPromotedCandidate,
   pushAndCreatePullRequest,
 } from './promote.mjs';
+import { formatMergeReport, mergePromotionPullRequests } from './merge.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, JUDGE_DIMENSIONS, parseCommitteeSpec } from './judge.mjs';
 import {
   harvestMissionTrajectories,
@@ -83,6 +85,8 @@ Subcommands:
                                    Filter and distill Loop B trajectories into Loop A benchmarks
   promote  [--stage stage1|stage2] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run]
                                    Verify candidate readiness, optionally apply patches, push branch, and open PR
+  merge    (--pr <n> | --all) [--dry-run] [--json]
+                                   Squash-merge open promotion PRs (harness2/, h2/) whose CI, evidence and files pass; comment once on the others
   curriculum [--status] [--suggest] [--max-units <n>] [--unit <id>] [--track <track>] [--stage stage1|stage2] [--role <role>] [--organ <organ>] [--generations <G>] [--recursion <R>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--apply] [--branch <branch>] [--push-pr] [--dry-run] [--state-path <path>]
                                    Step through the Master Curriculum Playbook or synthesize the next curriculum epoch
   report   [--markdown] [--project <id>] [--state-path <path>] [--archive-path <path>] [--suite-path <path>]
@@ -908,6 +912,19 @@ async function runCliCommand(argv, deps) {
       pullRequest,
       report: formatPromotionReport(readiness),
     };
+  }
+
+  if (subcommand === 'merge') {
+    const res = await mergePromotionPullRequests({
+      pr: flags.pr,
+      all: Boolean(flags.all),
+      dryRun: Boolean(flags['dry-run']),
+      repoRoot: deps.repoRoot,
+      env: deps.env,
+      exec: deps.exec,
+      now: deps.now,
+    });
+    return flags.json ? res : { ...res, report: formatMergeReport(res) };
   }
 
   if (subcommand === 'curriculum') {

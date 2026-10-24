@@ -5,7 +5,8 @@
 //
 // Cutting one (no command): from main's head, on a maintainer's machine with git and the GitHub CLI
 // (`gh`, logged in). It refuses unless the tree is clean, main's head is the commit origin has, every
-// CI check run on that commit finished with success, the head commit's subject starts with a version,
+// CI check run on that commit finished with success (the hourly harness merger's own run is not CI,
+// and is left out), the head commit's subject starts with a version,
 // and that version is newer than every version tag here and on origin and not taken. Then it makes an
 // annotated tag at the head and pushes it to origin, which starts the workflow. `--dry-run` checks
 // everything and shows the notes, and tags nothing. Running it again after a failed push pushes the
@@ -167,9 +168,17 @@ export function remoteTags(output) {
 }
 
 /**
+ * The job of .github/workflows/harness-merge.yml (dev/harness2/merge.mjs). Every job becomes a check
+ * run on the commit it ran on, and the merger runs every hour on main's head, so its own run is there
+ * while it works and after it ends. It is not CI, and no verdict on a commit counts it.
+ */
+export const HARNESS_MERGE_JOB = 'Merge passing promotions';
+
+/**
  * What GitHub's check runs say about a commit. It passed only when there is at least one run and
  * every run finished with success; a run still queued or in progress, or one that finished any other
- * way (failure, cancelled, skipped, timed out...), holds the release back.
+ * way (failure, cancelled, skipped, timed out...), holds the release back. The harness merger's own
+ * run (HARNESS_MERGE_JOB) is left out. Also used by dev/harness2/merge.mjs.
  *
  * @param {Array<{name?: string, status?: string, conclusion?: string|null}>} runs
  * @returns {{ok: boolean, passed: string[], pending: string[], failed: string[]}}
@@ -179,6 +188,7 @@ export function ciVerdict(runs) {
   const pending = [];
   const failed = [];
   for (const run of runs) {
+    if (run?.name === HARNESS_MERGE_JOB) continue;
     const name = typeof run?.name === 'string' && run.name ? run.name : 'an unnamed check';
     if (run?.status !== 'completed') pending.push(`${name} (${run?.status || 'no status'})`);
     else if (run.conclusion !== 'success') failed.push(`${name} (${run.conclusion || 'no conclusion'})`);
@@ -245,8 +255,16 @@ async function ghRun(ctx, args) {
   return result;
 }
 
-/** The commit's check runs on GitHub, every page, through the GitHub CLI. */
-async function checkRuns(ctx, repo, sha) {
+/**
+ * The commit's check runs on GitHub, every page, through the GitHub CLI. Also used by
+ * dev/harness2/merge.mjs, on a promotion pull request's head commit.
+ *
+ * @param {{exec: Function}} ctx  `exec('gh', args, opts)` as devContext() gives it
+ * @param {string} repo           owner/name
+ * @param {string} sha            a full commit
+ * @returns {Promise<object[]>}   GitHub's check runs, as ciVerdict takes them
+ */
+export async function checkRuns(ctx, repo, sha) {
   const runs = [];
   for (let page = 1; page <= CHECK_RUNS_MAX_PAGES; page += 1) {
     const path = `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=${CHECK_RUNS_PAGE}&page=${page}`;

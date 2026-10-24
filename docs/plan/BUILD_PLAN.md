@@ -405,7 +405,12 @@ done.
       the tag's message. A bad release is withdrawn with `dev/release.mjs yank`: no new install to it
       starts on a dashboard that checks for withdrawn releases, and instances on it move on to the next
       newer release.
-    - Still open: a merge step that squashes and waits for CI.
+    - Since `v2026.10.23.11.1` the merge step is in the repo: the hourly harness-merge workflow
+      (`.github/workflows/harness-merge.yml`, `dev/harness2/merge.mjs`) squash-merges at most one
+      promotion per run, only while CI passed on `main`'s head, and only one whose head contains
+      `main`'s head, whose CI passed, whose evidence block passes `judgeEvidence` and names every
+      file it changes, and whose files stay on the mutable surface (contracts only in tunable keys).
+      Then it dispatches CI on `main`. `dev/harness2/PAUSED` stops it.
 
     *Exit:* a promotion merges only with measured evidence and green CI, `main`'s head is releasable
     after every merge, and a release with promotions passes the smoke missions on a dev instance.
