@@ -1,9 +1,16 @@
 // Tests for dev/loop/test-report.mjs: the failing tests read from node's test-runner output, with their
 // file, line, name and the start of their message; nothing when the run printed no failures; and the
-// Markdown lines a refusal comment carries, capped.
+// Markdown lines a refusal comment carries, capped. A file that could not load is reported with its
+// error and the source it failed on, with the checkout's paths made relative.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { failingTests, failureLines, REPORT_LIMITS } from '../../../dev/loop/test-report.mjs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from '../../../dev/loop/test-report.mjs';
+
+/** A cycle's checkout, as node names it in a load error's location. */
+const ROOT = path.join(os.tmpdir(), 'paraclete-loop-abc123');
 
 /** The end of a failing `npm test`, as node's spec reporter prints it. */
 const OUTPUT = [
@@ -58,7 +65,7 @@ test('a run that printed no failures has none; a failure without a location keep
 /** A run where one test file could not load: its error comes before its result line, not in the block. */
 const LOAD_FAILURE = [
   '✔ an earlier file passed (3ms)',
-  'file:///repo/tests/bad.test.mjs:2',
+  `${pathToFileURL(ROOT).href}/tests/bad.test.mjs:2`,
   "import { b } from '../lib/thing.js';",
   '         ^',
   "SyntaxError: Named export 'b' not found. The requested module '../lib/thing.js' is a CommonJS module.",
@@ -79,16 +86,25 @@ const LOAD_FAILURE = [
 ].join('\n');
 
 test("a file that failed as a whole is reported with the error it printed, not just 'test failed'", () => {
-  assert.deepEqual(failingTests(LOAD_FAILURE), [{
+  assert.deepEqual(failingTests(withoutRoots(LOAD_FAILURE, [ROOT])), [{
     file: 'tests/bad.test.mjs',
     line: 1,
     name: 'tests\\bad.test.mjs',
-    message: "SyntaxError: Named export 'b' not found. The requested module '../lib/thing.js' is a CommonJS module.",
+    message: "SyntaxError: Named export 'b' not found. The requested module '../lib/thing.js' is a CommonJS module. (at tests/bad.test.mjs:2: import { b } from '../lib/thing.js';)",
   }]);
   const noError = LOAD_FAILURE.replace(/^SyntaxError: .*$/m, 'no error line here');
   assert.equal(failingTests(noError)[0].message, "'test failed'", 'nothing better found: the block says it');
+  const unplaced = LOAD_FAILURE.replace(/^file:.*$/m, '');
+  assert.equal(failingTests(unplaced)[0].message, "SyntaxError: Named export 'b' not found. The requested module '../lib/thing.js' is a CommonJS module.", 'no location: the error alone');
   const other = LOAD_FAILURE.replace('✔ an earlier file passed (3ms)\n', "ReferenceError: another test's\n✖ an earlier test (3ms)\n");
   assert.match(failingTests(other)[0].message, /^SyntaxError/, "the search stops at the previous result line, so another test's error is not taken");
+});
+
+test("a checkout's own paths are made relative, as file URLs and as paths", () => {
+  const url = pathToFileURL(ROOT).href;
+  const text = [`${url}/tests/a.test.mjs:3`, `${ROOT}${path.sep}agent${path.sep}x.mjs`, `${ROOT}/agent/y.mjs`, '/elsewhere/z.mjs'].join('\n');
+  assert.equal(withoutRoots(text, [ROOT, ROOT, null]), ['tests/a.test.mjs:3', `agent${path.sep}x.mjs`, 'agent/y.mjs', '/elsewhere/z.mjs'].join('\n'));
+  assert.equal(withoutRoots(text, []), text);
 });
 
 test('the Markdown lines: each failure on one line, and the rest counted', () => {

@@ -29,7 +29,7 @@ from then on the dashboard upgrades itself the same way (see [Updates](#updates)
 | Path | Holds |
 |---|---|
 | `app/` | Routes: a `page.jsx` per page, a `route.js` per API route under `app/api/`. Thin: they call `lib/` |
-| `components/` | Client components, one directory per view (`chat/`, `work/`, `settings/`...), and `ui/` for the shared primitives |
+| `components/` | Client components, one directory per view (`chat/`, `work/`, `settings/`...), and `ui/` for the shared primitives. A component's decisions live in a plain `.js` module beside it, with no JSX (`chat/upload-list.js`, `settings/release-update.js`), which its `.jsx` imports and `tests/dashboard/components/` tests. A test never imports a `.jsx` file: `node --test` cannot parse JSX |
 | `lib/server/` | Server-only code: the runtime, sign-in, users, commands, and one module per kind of data. Plain `.mjs` with no Next.js imports, so `tests/dashboard/` runs it under `node --test` against the Firestore fake |
 | `lib/client/` | Browser helpers: `api()`, `usePoll()`, `useCommand()`, formatting |
 | `app/globals.css` | The design tokens and shared primitives (`.btn`, `.badge`, `.card`, `.table`, `.tabs`, `.markdown`) |

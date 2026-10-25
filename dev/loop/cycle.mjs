@@ -38,7 +38,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal } from './config.mjs';
 import { buildBrief, createCommandProposer } from './proposer.mjs';
-import { failingTests, failureLines, REPORT_LIMITS } from './test-report.mjs';
+import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
 /** Outcomes after a proposer ran: they count toward the day's cycles. */
 const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed', 'ready', 'opened']);
@@ -166,7 +166,14 @@ function defaultRunTests({ worktree, settings }) {
   });
   const out = `${res.stdout || ''}${res.stderr || ''}`;
   const summary = out.split('\n').filter((l) => /^ℹ (tests|pass|fail|skipped) /.test(l)).join(', ') || out.trim().split('\n').slice(-3).join(' ');
-  return { ok: res.status === 0, summary: res.error ? `${res.error.message}` : summary, failures: failingTests(out) };
+  let real = worktree;
+  try {
+    real = fs.realpathSync(worktree);
+  } catch {
+    // the checkout's own path is used as it is
+  }
+  const failures = failingTests(withoutRoots(out, [worktree, real]));
+  return { ok: res.status === 0, summary: res.error ? `${res.error.message}` : summary, failures };
 }
 
 /**
