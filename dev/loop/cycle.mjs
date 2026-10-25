@@ -10,8 +10,10 @@
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
 //   4. run the proposer on it, within its budget, briefed with the issue and those comments;
 //   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test,
-//      changes code without adding a test, or fails the suite; a change to the agent's behaviour must also be measured on both sides with
-//      real-model runs (dev/harness2 `eval --real-model`) and must not make any task worse;
+//      changes code without adding a test, or fails the suite; then commit it, and refuse it unless a
+//      reviewer model (reviewer.mjs) finds it meets every point the issue says it is done when; a change
+//      to the agent's behaviour must also be measured on both sides with real-model runs
+//      (dev/harness2 `eval --real-model`) and must not make any task worse;
 //   6. commit it under the next free version, push the branch and open the pull request, with the
 //      tests' result and any evidence; or, when refused, say why on the issue, naming the files it
 //      changed and the tests that failed, which the next attempt reads;
@@ -39,13 +41,14 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { buildBrief, createCommandProposer } from './proposer.mjs';
+import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
 /** Outcomes after a proposer ran: they count toward the day's cycles. */
-const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unmeasured', 'regressed', 'ready', 'opened']);
+const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'ready', 'opened']);
 
 /** Outcomes that leave an issue alone until `retryAfterHours` have passed. */
-const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unmeasured', 'regressed']);
+const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed']);
 
 /** Packages a checkout borrows from the repo, never part of a change. */
 const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_modules']);
@@ -211,12 +214,14 @@ export function pullRequestComments(pullRequests, prefix) {
     ].map((c) => ({ ...c, on: `#${p.number}` })));
 }
 
-/** A refusal, as the comment it leaves on the issue: why, what the attempt changed, what failed. */
-export function refusalComment({ action, reason, changes, tests, retryAfterHours }) {
+/** A refusal, as the comment it leaves on the issue: why, what the attempt changed, what failed, and
+ * what its reviewer found unmet. */
+export function refusalComment({ action, reason, changes, tests, review, retryAfterHours }) {
   return [
     `The self-improvement loop tried this and stopped (${action}): ${reason}`,
     ...(changes?.length ? ['', `It changed: ${changes.map((c) => `\`${c.path}\` (${c.status})`).join(', ')}.`] : []),
     ...(tests?.failures?.length ? ['', 'Failing tests:', ...failureLines(tests.failures)] : []),
+    ...(review?.review ? ['', "The reviewer's verdict:", formatReviewMarkdown(review.review, review.items)] : []),
     '',
     `It tries again after ${retryAfterHours} hours.`,
   ].join('\n');
@@ -252,6 +257,37 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
   }
 }
 
+/**
+ * The review of a committed change: the reviewer's verdict on every point the issue says it is done
+ * when, the decision on it, and a refusal when the review altered the checkout. A reviewer that cannot
+ * start or answer leaves the change unreviewed.
+ *
+ * @returns {Promise<{ items: string[], review: object|null, ok: boolean, unmet: object[], problems: string[], reason: string|null }>}
+ */
+async function reviewChange({ issue, changes, tests, summary, base, worktree, settings, reviewer, execGit }) {
+  const items = doneWhen(issue);
+  let diff;
+  try {
+    diff = execGit(['diff', base, 'HEAD'], worktree);
+  } catch {
+    diff = '(the diff could not be read: read the changed files)';
+  }
+  const brief = buildReviewBrief({ issue, items, changes, diff, tests, summary, maxDiffChars: settings.reviewer.maxDiffChars });
+  // What git sees in the checkout before the review (the linked packages, where .gitignore does not
+  // cover a link) is not the review's doing; anything it sees after, beyond that, is.
+  const before = new Set(execGit(['status', '--porcelain'], worktree).split('\n').filter(Boolean));
+  let run;
+  try {
+    run = await (reviewer || createCommandReviewer(settings.reviewer))({ worktree, brief, items });
+  } catch (err) {
+    run = { review: null, reason: err.message };
+  }
+  const touched = execGit(['status', '--porcelain'], worktree).split('\n').filter((l) => l && !before.has(l));
+  if (touched.length) return { items, review: null, ok: false, unmet: [], problems: [], reason: `the review changed the checkout (${touched.length} path(s))` };
+  if (!run.review) return { items, review: null, ok: false, unmet: [], problems: [], reason: run.reason || 'the reviewer gave no verdict' };
+  return { items, review: run.review, reason: null, ...judgeReview(run.review, items) };
+}
+
 /** The day's cycles that ran a proposer, and the issues tried and failed lately, from the cycle log. */
 function pastCycles(records, now, retryAfterHours) {
   const day = now.toISOString().slice(0, 10);
@@ -265,11 +301,11 @@ function pastCycles(records, now, retryAfterHours) {
   };
 }
 
-function pullRequestBody({ issue, summary, changes, tests, behaviour, measurement, version }) {
+function pullRequestBody({ issue, summary, changes, tests, review, behaviour, measurement, version }) {
   return [
     `Resolves #${issue.number}.`,
     '',
-    'Opened by the self-improvement loop (`dev/loop/cycle.mjs`). The loop is supervised: a person reviews and merges this.',
+    'Opened by the self-improvement loop (`dev/loop/cycle.mjs`), after its checks and its reviewer passed the change. It waits to be merged.',
     '',
     '## What the proposer did',
     '',
@@ -279,6 +315,10 @@ function pullRequestBody({ issue, summary, changes, tests, behaviour, measuremen
     '',
     `- **Changed**: ${changes.map((c) => `\`${c.path}\` (${c.status})`).join(', ')}`,
     `- **Tests**: passed (${tests.summary})`,
+    '- **Review**: every point the issue says the change is done when was found met (`dev/loop/reviewer.mjs`):',
+    '',
+    formatReviewMarkdown(review.review, review.items),
+    '',
     `- **Behaviour**: ${behaviour ? 'changed, so measured on both sides with real-model runs; no task, the held-out tasks nor the suite got worse' : 'not changed (nothing the running agent reads)'}`,
     ...(measurement?.evidence ? ['', formatEvidenceMarkdown(measurement.evidence)] : []),
     '',
@@ -306,6 +346,7 @@ export async function runCycle({
   execGit = defaultExec('git'),
   execGh = defaultExec('gh'),
   proposer,
+  reviewer,
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -334,7 +375,8 @@ export async function runCycle({
           }),
           loop: {
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
-            tests: result.tests?.ok ?? null, behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
+            tests: result.tests?.ok ?? null, reviewed: result.review ? Boolean(result.review.ok) : null,
+            behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
             ...(result.tests?.failures?.length
               ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
               : {}),
@@ -396,7 +438,7 @@ export async function runCycle({
     if (!dryRun) {
       try {
         execGh(['issue', 'comment', String(issue.number), ...repoArgs, '--body',
-          refusalComment({ action, reason, changes: fields.changes, tests: fields.tests, retryAfterHours: settings.retryAfterHours })], repoRoot);
+          refusalComment({ action, reason, changes: fields.changes, tests: fields.tests, review: fields.review, retryAfterHours: settings.retryAfterHours })], repoRoot);
       } catch (err) {
         log(`[WARN] could not comment on #${issue.number}: ${err.message}`);
       }
@@ -436,6 +478,15 @@ export async function runCycle({
     execGit(['-c', 'user.name=Paraclete loop', '-c', 'user.email=loop@example.com', 'commit', '--quiet', '-m', subject, '-m',
       `Proposed by the self-improvement loop for #${issue.number}.`], worktree);
 
+    // The reviewer judges the committed change against every point the issue says it is done when;
+    // code decides on its verdict. It reads the checkout and must leave it as it was.
+    const review = await reviewChange({ issue, changes, tests, summary: proposal.summary, base, worktree, settings, reviewer, execGit });
+    if (!review.review) return refuse('unreviewed', `the change could not be reviewed: ${review.reason}`, { changes, tests, review });
+    if (!review.ok) {
+      const unmet = review.unmet.map((u) => `point ${u.n} is not met`).concat(review.problems).join('; ');
+      return refuse('rejected', `its reviewer found it does not resolve the issue: ${unmet}`, { changes, tests, review });
+    }
+
     // A change to what the agent reads is measured on both sides, and must not make it worse.
     const behaviour = changes.some((c) => isBehaviourPath(c.path) || (c.oldPath && isBehaviourPath(c.oldPath)));
     let measurement = null;
@@ -448,12 +499,12 @@ export async function runCycle({
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });
     }
 
-    const fields = { changes, tests, behaviour, measurement, version, subject };
+    const fields = { changes, tests, review, behaviour, measurement, version, subject };
     if (dryRun) return finish({ action: 'ready', reason: 'a dry run: nothing pushed', ...fields });
 
     // 7. Push, and open the pull request a person merges.
     execGit(['push', '--quiet', '--force-with-lease', '-u', 'origin', branch], worktree);
-    const body = pullRequestBody({ issue, summary: proposal.summary, changes, tests, behaviour, measurement, version });
+    const body = pullRequestBody({ issue, summary: proposal.summary, changes, tests, review, behaviour, measurement, version });
     const url = execGh(['pr', 'create', ...repoArgs, '--base', 'main', '--head', branch, '--title', subject, '--body', body, '--label', settings.label], worktree);
     return finish({ action: 'opened', pullRequest: String(url).trim().split('\n').pop(), ...fields });
   } finally {

@@ -78,7 +78,8 @@ on your dev instance first, so it needs both, as the dev loop commands do. When 
 oldest open GitHub issue labelled `loop`, has a coding agent (named in `.local/loop.json`, never in the
 repo) change a fresh checkout of main to resolve it, and checks the change. A change is refused when it
 touches the referee (what judges a change, and the loop itself), changes an existing test, changes
-code without adding a test, fails the suite, or changes the agent's behaviour without a real-model measurement that shows nothing got worse.
+code without adding a test, fails the suite, is found by its reviewer model to miss a point of the
+issue's "Done when", or changes the agent's behaviour without a real-model measurement that shows nothing got worse.
 Otherwise the cycle opens a pull request; a refused change gets a comment on the issue. It stops while
 `dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. Stage 1 is supervised: a person merges.
 How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).

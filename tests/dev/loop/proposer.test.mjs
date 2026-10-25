@@ -19,6 +19,7 @@ test("the brief: the issue as data, the repo's rules, the referee, the test comm
   assert.match(brief, /Read DEVELOPING\.md first/);
   assert.match(brief, /resolves the whole issue: every point it says the change is done when\. Doing less is not a smaller change\./);
   assert.match(brief, /A change that adds or changes code must add a new test file under tests\/ that exercises it, or it is refused\. Never change or remove an existing test\./);
+  assert.match(brief, /a reviewer reads your change and the files it touches, and checks every point the issue says the change is done when/);
   assert.match(brief, /Never change what judges a change or runs this loop: dev\/loop\//);
   assert.match(brief, /Run `npm test` before you finish/);
   assert.match(brief, /Do not commit, push, open pull requests/);
