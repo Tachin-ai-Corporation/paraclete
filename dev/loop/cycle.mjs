@@ -5,20 +5,23 @@
 // only edits files.
 //
 //   1. refuse while the harness is paused (dev/harness2/PAUSED), or once today's cycles are spent;
-//   2. pick the issue;
+//   2. pick the issue, and read what its maintainers and earlier attempts said on it;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
-//   4. run the proposer on it, within its budget;
+//   4. run the proposer on it, within its budget, briefed with the issue and those comments;
 //   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test, or
 //      fails the suite; a change to the agent's behaviour must also be measured on both sides with
 //      real-model runs (dev/harness2 `eval --real-model`) and must not make any task worse;
 //   6. commit it under the next free version, push the branch and open the pull request, with the
-//      tests' result and any evidence; or, when refused, say why on the issue;
+//      tests' result and any evidence; or, when refused, say why on the issue, naming the files it
+//      changed and the tests that failed, which the next attempt reads;
 //   7. record the cycle in .local/harness2/cycles.jsonl, which the health check reads.
 //
 // It never merges, releases or changes an instance. Stage 1 of the loop is supervised: the pull
 // request waits for a person. Run by hand or by the driver's timer (timer.mjs):
 //
-//   node dev/loop/cycle.mjs [--issue <n>] [--repo <owner/name>] [--dry-run] [--json]
+//   node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]
+//
+// `--retry` tries the named issue even when it failed within `retryAfterHours`.
 //
 // Exit codes: 0 the cycle ran to an outcome (opened, refused, nothing to do, paused), 1 it broke,
 // 2 a usage mistake.
@@ -35,6 +38,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal } from './config.mjs';
 import { buildBrief, createCommandProposer } from './proposer.mjs';
+import { failingTests, failureLines, REPORT_LIMITS } from './test-report.mjs';
 
 /** Outcomes after a proposer ran: they count toward the day's cycles. */
 const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed', 'ready', 'opened']);
@@ -44,6 +48,14 @@ const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'tests-
 
 /** Packages a checkout borrows from the repo, never part of a change. */
 const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_modules']);
+
+/** Whose comments on an issue a proposer is shown: people with a hand in this repository. On a public
+ * repository anyone can comment, and a stranger's comment must not steer the proposer. */
+const TRUSTED_COMMENTERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+/** How many of those comments the brief carries, newest kept, and how much of each: enough for a
+ * refusal that lists its most failing tests (test-report.mjs REPORT_LIMITS). */
+const NOTE_LIMITS = Object.freeze({ count: 5, chars: 4000 });
 
 const HOUR_MS = 3_600_000;
 
@@ -154,7 +166,33 @@ function defaultRunTests({ worktree, settings }) {
   });
   const out = `${res.stdout || ''}${res.stderr || ''}`;
   const summary = out.split('\n').filter((l) => /^ℹ (tests|pass|fail|skipped) /.test(l)).join(', ') || out.trim().split('\n').slice(-3).join(' ');
-  return { ok: res.status === 0, summary: res.error ? `${res.error.message}` : summary };
+  return { ok: res.status === 0, summary: res.error ? `${res.error.message}` : summary, failures: failingTests(out) };
+}
+
+/**
+ * The comments on an issue the proposer is shown: those of its maintainers, which include the loop's
+ * own refusals of earlier attempts, oldest first and the newest few only. Pure.
+ *
+ * @param {object[]} comments  as `gh issue view --json comments` gives them
+ * @returns {{ at: string, author: string, body: string }[]}
+ */
+export function trustedNotes(comments) {
+  return (comments || [])
+    .filter((c) => TRUSTED_COMMENTERS.has(String(c.authorAssociation || '').toUpperCase()))
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .slice(-NOTE_LIMITS.count)
+    .map((c) => ({ at: c.createdAt, author: c.author?.login || 'unknown', body: String(c.body || '').trim().slice(0, NOTE_LIMITS.chars) }));
+}
+
+/** A refusal, as the comment it leaves on the issue: why, what the attempt changed, what failed. */
+export function refusalComment({ action, reason, changes, tests, retryAfterHours }) {
+  return [
+    `The self-improvement loop tried this and stopped (${action}): ${reason}`,
+    ...(changes?.length ? ['', `It changed: ${changes.map((c) => `\`${c.path}\` (${c.status})`).join(', ')}.`] : []),
+    ...(tests?.failures?.length ? ['', 'Failing tests:', ...failureLines(tests.failures)] : []),
+    '',
+    `It tries again after ${retryAfterHours} hours.`,
+  ].join('\n');
 }
 
 /**
@@ -233,6 +271,7 @@ export async function runCycle({
   repoRoot = process.cwd(),
   repo,
   issueNumber = null,
+  retry = false,
   dryRun = false,
   now = new Date(),
   env = process.env,
@@ -269,6 +308,9 @@ export async function runCycle({
           loop: {
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
             tests: result.tests?.ok ?? null, behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
+            ...(result.tests?.failures?.length
+              ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
+              : {}),
           },
         }, { repoRoot });
       } catch (err) {
@@ -292,7 +334,8 @@ export async function runCycle({
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
   const busy = (n) => openPrs.some((p) => String(p.headRefName || '').startsWith(`${settings.branchPrefix}${n}-`));
-  const issue = issues.find((i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && !past.recentlyFailed.has(i.number));
+  const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
+  const issue = issues.find((i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number));
   if (!issue) {
     return finish({
       action: 'no-work',
@@ -302,6 +345,12 @@ export async function runCycle({
   const branch = `${settings.branchPrefix}${issue.number}-${slugFor(issue.title)}`;
   result = { ...result, issue: issue.number, branch };
   log(`[INFO] loop: issue #${issue.number}: ${issue.title}`);
+  let notes = [];
+  try {
+    notes = trustedNotes(JSON.parse(execGh(['issue', 'view', String(issue.number), ...repoArgs, '--json', 'comments'], repoRoot) || '{}').comments);
+  } catch (err) {
+    log(`[WARN] could not read the comments on #${issue.number}: ${err.message}`);
+  }
 
   // 3. A fresh checkout of main's head, on the cycle's branch.
   execGit(['fetch', '--quiet', '--tags', 'origin', 'main'], repoRoot);
@@ -313,7 +362,7 @@ export async function runCycle({
     if (!dryRun) {
       try {
         execGh(['issue', 'comment', String(issue.number), ...repoArgs, '--body',
-          `The self-improvement loop tried this and stopped (${action}): ${reason}\n\nIt tries again after ${settings.retryAfterHours} hours.`], repoRoot);
+          refusalComment({ action, reason, changes: fields.changes, tests: fields.tests, retryAfterHours: settings.retryAfterHours })], repoRoot);
       } catch (err) {
         log(`[WARN] could not comment on #${issue.number}: ${err.message}`);
       }
@@ -325,7 +374,7 @@ export async function runCycle({
     // 4. The proposer changes the checkout.
     const budget = settings.proposer;
     const propose = proposer || createCommandProposer(settings.proposer);
-    const brief = buildBrief({ issue, testCommand: settings.testCommand, budget });
+    const brief = buildBrief({ issue, notes, testCommand: settings.testCommand, budget });
     const proposal = await propose({ issue, worktree, brief, budget });
     if (!proposal.ok) return refuse('proposer-failed', proposal.reason || 'the proposer failed');
 
@@ -382,16 +431,18 @@ export async function runCycle({
 }
 
 function parseArgs(argv) {
-  const o = { issue: null, repo: null, dryRun: false, json: false };
+  const o = { issue: null, retry: false, repo: null, dryRun: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--issue') o.issue = Number(argv[++i]);
+    else if (a === '--retry') o.retry = true;
     else if (a === '--repo') o.repo = argv[++i] || null;
     else if (a === '--dry-run') o.dryRun = true;
     else if (a === '--json') o.json = true;
     else return { error: `unknown argument: ${a}` };
   }
   if (o.issue !== null && !(Number.isInteger(o.issue) && o.issue > 0)) return { error: '--issue takes an issue number' };
+  if (o.retry && o.issue === null) return { error: '--retry needs --issue: it retries one named issue' };
   return o;
 }
 
@@ -407,11 +458,11 @@ export async function main(argv, deps = {}) {
   const stderr = deps.stderr || process.stderr;
   const opts = parseArgs(argv);
   if (opts.error) {
-    stderr.write(`${opts.error}\nUsage: node dev/loop/cycle.mjs [--issue <n>] [--repo <owner/name>] [--dry-run] [--json]\n`);
+    stderr.write(`${opts.error}\nUsage: node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]\n`);
     return 2;
   }
   try {
-    const res = await runCycle({ ...deps, repo: opts.repo || deps.repo, issueNumber: opts.issue, dryRun: opts.dryRun });
+    const res = await runCycle({ ...deps, repo: opts.repo || deps.repo, issueNumber: opts.issue, retry: opts.retry, dryRun: opts.dryRun });
     const shown = { ...res, measurement: res.measurement ? { measured: res.measurement.measured, reason: res.measurement.reason } : null };
     stdout.write(opts.json ? `${JSON.stringify(shown, null, 2)}\n`
       : `loop: ${res.action}${res.issue ? ` #${res.issue}` : ''}${res.pullRequest ? ` -> ${res.pullRequest}` : ''}${res.reason ? `: ${res.reason}` : ''}\n`);

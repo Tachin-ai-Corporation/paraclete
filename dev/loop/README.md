@@ -12,21 +12,25 @@ merges, releases or changes an instance.
 | `cycle.mjs` | One cycle, and its command line: picks an issue, has the proposer change a checkout of main, checks the change, opens the pull request, records the cycle |
 | `proposer.mjs` | The proposer interface, the brief it is given, and the command proposer that runs a headless coding-agent command named in your local settings |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
+| `test-report.mjs` | Reads which tests failed from the suite's output, for the refusal comment and the cycle record |
 | `timer.mjs` | Prints the systemd units that run a cycle on a schedule on the lab driver, and how to install them. Nothing installs them for you |
 
 ## One cycle
 
-`node dev/loop/cycle.mjs [--issue <n>] [--repo <owner/name>] [--dry-run] [--json]`
+`node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
 
 1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), or once
    today's cycles (`maxCyclesPerDay`, 4) are spent. Cycles are counted from the cycle log.
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
    request from a `loop/<issue>-` branch, and one it tried and failed within `retryAfterHours` (24).
-   `--issue` names one.
+   `--issue` names one; `--retry` tries it even within that wait. It reads the issue's comments by
+   its maintainers (the repository's owner, members and collaborators, never anyone else), which
+   include its own refusals of earlier attempts.
 3. **Checks out** `origin/main` on the branch `loop/<issue>-<slug>`, in a temporary worktree, with the
    repo's installed packages linked in.
 4. **Runs the proposer**, within its budget (`proposer.wallMinutes`, `maxTurns`, `maxTokens`). The
-   proposer only edits files.
+   proposer only edits files. Its brief carries the issue and the newest of those comments, as data,
+   so an attempt learns what earlier ones changed and which tests they failed.
 5. **Checks the change.** It refuses the whole change when:
    - it touches the referee: `dev/loop/`; the evaluation, benchmark, evidence, merge, pause and health
      code in `dev/harness2/`; `dev/release*.mjs`; `.github/`; `install/`; `migrations/`;
@@ -44,8 +48,8 @@ merges, releases or changes an instance.
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
    and carries the proposer's summary, the tests' result and any evidence. When the change is refused,
-   it says why in a comment on the issue instead.
-7. **Records** the cycle in `.local/harness2/cycles.jsonl`. The health check
+   it says why in a comment on the issue instead, with the files it changed and the tests that failed.
+7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
    (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own.
 
 A `--dry-run` cycle does everything up to the pull request, pushes and comments nothing, and does not
