@@ -375,6 +375,8 @@ function nodeOf(env) {
     organ: typeof meta.agent === 'string' ? meta.agent : null,
     step: Number.isInteger(meta.task_step) ? meta.task_step : null,
     checkpoint: Number.isInteger(meta.checkpoint) ? meta.checkpoint : null,
+    approval_id: typeof meta.approval_id === 'string' ? meta.approval_id : null,
+    approval_step: Number.isInteger(meta.approval_task_index) ? meta.approval_task_index + 1 : null,
     accept_criteria: text(env.accept_criteria, TEXT.childInstruction) || null,
     output: clipText(env.output, TEXT.childOutput),
     error: text(env.error, TEXT.childInstruction) || null,
