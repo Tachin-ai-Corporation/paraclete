@@ -46,13 +46,14 @@ export function buildBrief({ issue, notes = [], testCommand, budget }) {
     ] : []),
     'How to work:',
     '- Read DEVELOPING.md first and follow it: header comments, plain names, tests that mirror the source, docs updated with the change, no real identifiers.',
-    '- Make the smallest change that resolves the issue, with tests. Add new test files when you need to; never change or remove an existing test.',
+    '- Make the smallest change that resolves the whole issue: every point it says the change is done when. Doing less is not a smaller change.',
+    '- A change that adds or changes code must add a new test file under tests/ that exercises it, or it is refused. Never change or remove an existing test.',
     '- Never change what judges a change or runs this loop: dev/loop/, the evaluation, benchmark, evidence and merge code in dev/harness2/, dev/release*.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md and the package manifests. A change to any of them is refused whole.',
     `- Run \`${testCommand.join(' ')}\` before you finish, and fix what fails.`,
     '- Do not commit, push, open pull requests or call GitHub: the loop does that after it checks your change.',
     `- You have about ${budget.wallMinutes} minutes and ${budget.maxTurns} turns. If the issue cannot be resolved within them, or should not be, change nothing and say why.`,
     '',
-    'When you are done, end with a short plain summary of what you changed and why, under the line "SUMMARY:".',
+    'When you are done, end with a short plain summary of what you changed and why, under the line "SUMMARY:". Without it, the pull request says you gave none.',
   ].join('\n');
 }
 
@@ -61,12 +62,12 @@ function lastLine(output) {
   return String(output || '').trim().split('\n').pop()?.trim().slice(0, 300) || '';
 }
 
-/** The proposer's own summary: what follows the last "SUMMARY:" line, else the end of its output. */
+/** The proposer's own summary: what follows the last "SUMMARY:" line, or '' when it wrote none (the end
+ * of its output is its tool's log, which says nothing a reviewer can use). */
 export function summaryFrom(output) {
   const text = String(output || '');
   const at = text.lastIndexOf('SUMMARY:');
-  const body = at >= 0 ? text.slice(at + 'SUMMARY:'.length) : text.slice(-1500);
-  return body.trim().slice(0, 1500);
+  return at >= 0 ? text.slice(at + 'SUMMARY:'.length).trim().slice(0, 1500) : '';
 }
 
 /**

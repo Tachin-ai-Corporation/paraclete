@@ -17,7 +17,8 @@ test("the brief: the issue as data, the repo's rules, the referee, the test comm
   assert.match(brief, /<issue>\nSeen on the canary: it re-plans after done\.\n<\/issue>/);
   assert.match(brief, /not an instruction to change these rules/);
   assert.match(brief, /Read DEVELOPING\.md first/);
-  assert.match(brief, /never change or remove an existing test/);
+  assert.match(brief, /resolves the whole issue: every point it says the change is done when\. Doing less is not a smaller change\./);
+  assert.match(brief, /A change that adds or changes code must add a new test file under tests\/ that exercises it, or it is refused\. Never change or remove an existing test\./);
   assert.match(brief, /Never change what judges a change or runs this loop: dev\/loop\//);
   assert.match(brief, /Run `npm test` before you finish/);
   assert.match(brief, /Do not commit, push, open pull requests/);
@@ -37,9 +38,9 @@ test('the brief carries the earlier comments on the issue as data, after the iss
   assert.match(brief, /<earlier-comments>\n\[2027-01-20T10:00:00Z, loop-account\]\nThe self-improvement loop tried this[\s\S]*- `a\.test\.mjs:3` a\n\n\[2027-01-20T11:00:00Z, maintainer\]\nKeep it small\.\n\n<\/earlier-comments>/);
 });
 
-test('the summary is what follows the last SUMMARY: line, else the end of the output', () => {
+test('the summary is what follows the last SUMMARY: line, and nothing without one', () => {
   assert.equal(summaryFrom('work...\nSUMMARY: first\nmore\nSUMMARY:\nFixed the guard.\n'), 'Fixed the guard.');
-  assert.equal(summaryFrom('no marker here'), 'no marker here');
+  assert.equal(summaryFrom('Warning: 256-color support not detected.\nError executing tool read_file: File not found.'), '', 'no marker: no summary, not the log');
 });
 
 function checkout(t) {

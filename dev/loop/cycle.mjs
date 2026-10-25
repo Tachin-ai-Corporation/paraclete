@@ -8,8 +8,8 @@
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
 //   4. run the proposer on it, within its budget, briefed with the issue and those comments;
-//   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test, or
-//      fails the suite; a change to the agent's behaviour must also be measured on both sides with
+//   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test,
+//      changes code without adding a test, or fails the suite; a change to the agent's behaviour must also be measured on both sides with
 //      real-model runs (dev/harness2 `eval --real-model`) and must not make any task worse;
 //   6. commit it under the next free version, push the branch and open the pull request, with the
 //      tests' result and any evidence; or, when refused, say why on the issue, naming the files it
@@ -36,15 +36,15 @@ import { appendCycleRecord, cycleRecord, readCycleRecords } from '../harness2/he
 import { MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
-import { isBehaviourPath, loadLoopSettings, pathRefusal } from './config.mjs';
+import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { buildBrief, createCommandProposer } from './proposer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
 /** Outcomes after a proposer ran: they count toward the day's cycles. */
-const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed', 'ready', 'opened']);
+const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unmeasured', 'regressed', 'ready', 'opened']);
 
 /** Outcomes that leave an issue alone until `retryAfterHours` have passed. */
-const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed']);
+const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unmeasured', 'regressed']);
 
 /** Packages a checkout borrows from the repo, never part of a change. */
 const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_modules']);
@@ -394,6 +394,8 @@ export async function runCycle({
     if (changes.length === 0) return refuse('no-change', proposal.summary ? `the proposer changed nothing: ${proposal.summary.slice(0, 500)}` : 'the proposer changed nothing');
     const refusals = changes.flatMap((c) => [pathRefusal(c.path, c.status), c.oldPath ? pathRefusal(c.oldPath, 'D') : null]).filter(Boolean);
     if (refusals.length) return refuse('refused-paths', refusals.join('; '), { changes });
+    const untested = testRefusal(changes);
+    if (untested) return refuse('untested', untested, { changes });
 
     const tests = await runTests({ worktree, settings });
     if (!tests.ok) return refuse('tests-failed', `the suite failed: ${tests.summary}`, { changes, tests });
