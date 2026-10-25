@@ -29,6 +29,8 @@ export const LOOP_DEFAULTS = Object.freeze({
   testTimeoutMinutes: 40,
   /** A behaviour change is measured on both sides with this many runs of every task, within this cap. */
   measure: Object.freeze({ trials: 3, maxRollouts: 120 }),
+  /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
+  merge: Object.freeze({ maxPerDay: 3 }),
 });
 
 /** Developer-local settings: which proposer command to run (never committed: `.local/` is ignored). */
@@ -134,5 +136,6 @@ export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => f
     proposer: { ...LOOP_DEFAULTS.proposer, ...(local.proposer || {}) },
     reviewer: { ...LOOP_DEFAULTS.reviewer, ...(local.reviewer || {}) },
     measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
+    merge: { ...LOOP_DEFAULTS.merge, ...(local.merge || {}) },
   };
 }

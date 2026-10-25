@@ -160,13 +160,15 @@ export function judgeReview(review, items) {
 
 /**
  * The review as Markdown for a pull request or a refusal: each point, met or not, with its evidence,
- * and the verdict as a fenced block a merger can read.
+ * and the verdict as a fenced block a merger can read (guard.mjs). `files` binds the review to what was
+ * reviewed: each changed path's blob at the reviewed commit, or null for a path it removes.
  *
  * @param {object} review   from parseReview
  * @param {string[]} items
+ * @param {Object<string, string|null>} [files]
  * @returns {string}
  */
-export function formatReviewMarkdown(review, items) {
+export function formatReviewMarkdown(review, items, files = null) {
   const decision = judgeReview(review, items);
   return [
     ...items.map((item, i) => {
@@ -176,7 +178,7 @@ export function formatReviewMarkdown(review, items) {
     ...decision.problems.map((p) => `- Problem: ${p}`),
     '',
     `\`\`\`json ${REVIEW_BLOCK}`,
-    JSON.stringify({ items, review, resolves: decision.ok }),
+    JSON.stringify({ items, review, resolves: decision.ok, ...(files ? { files } : {}) }),
     '```',
   ].join('\n');
 }

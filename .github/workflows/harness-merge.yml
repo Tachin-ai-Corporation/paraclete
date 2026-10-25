@@ -1,6 +1,8 @@
-# Merges the self-improvement harness's promotion pull requests (dev/harness2/merge.mjs), every hour
-# and when run by hand: at most one per run, and none while CI on main's head failed or runs. Only open
-# pull requests from this repository's `harness2/` and `h2/` branches against main are considered,
+# Merges the self-improvement harness's promotion pull requests (dev/harness2/merge.mjs), then the
+# self-improvement loop's (dev/loop/merger.mjs, which passes dev/loop/guard.mjs and closes a loop pull
+# request that cannot pass), every hour and when run by hand. The harness merger merges at most one
+# per run, and none while CI on main's head failed or runs. Only open pull requests from this
+# repository's `harness2/` and `h2/` branches against main are considered,
 # and one is squash-merged only when CI passed on its head commit, its head contains main's head and
 # GitHub can merge it cleanly, its evidence block passes judgeEvidence and names every file it
 # changes, and those files are on the mutable surface (none removed, prompt additions linted,
@@ -25,6 +27,7 @@ permissions:
   pull-requests: write
   actions: write
   checks: read
+  issues: read
 
 concurrency:
   group: harness-merge
@@ -50,3 +53,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PARACLETE_H2_PAUSED: ${{ vars.PARACLETE_H2_PAUSED }}
         run: node dev/harness2/cli.mjs merge --all --json
+      # Runs whether or not the step above failed: one merger's trouble does not stop the other.
+      - name: Merge the loop changes that pass
+        if: success() || failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARACLETE_H2_PAUSED: ${{ vars.PARACLETE_H2_PAUSED }}
+        run: node dev/loop/merger.mjs --json

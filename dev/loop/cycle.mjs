@@ -57,6 +57,10 @@ const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_mod
  * repository anyone can comment, and a stranger's comment must not steer the proposer. */
 const TRUSTED_COMMENTERS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
+/** The login this repository's own workflows comment as, the loop's merger among them: only a workflow
+ * of this repository can comment as it here. */
+const TRUSTED_BOTS = new Set(['github-actions', 'github-actions[bot]']);
+
 /** How many of those comments the brief carries, newest kept, and how much of each: enough for a
  * refusal that lists its most failing tests (test-report.mjs REPORT_LIMITS). */
 const NOTE_LIMITS = Object.freeze({ count: 5, chars: 4000 });
@@ -191,7 +195,8 @@ function defaultRunTests({ worktree, settings }) {
  */
 export function trustedNotes(comments) {
   return (comments || [])
-    .filter((c) => TRUSTED_COMMENTERS.has(String(c.authorAssociation || '').toUpperCase()) && String(c.body || '').trim())
+    .filter((c) => (TRUSTED_COMMENTERS.has(String(c.authorAssociation || '').toUpperCase()) || TRUSTED_BOTS.has(String(c.author?.login || '')))
+      && String(c.body || '').trim())
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(-NOTE_LIMITS.count)
     .map((c) => ({ at: c.createdAt, author: c.author?.login || 'unknown', body: String(c.body || '').trim().slice(0, NOTE_LIMITS.chars), on: c.on || null }));
@@ -285,7 +290,13 @@ async function reviewChange({ issue, changes, tests, summary, base, worktree, se
   const touched = execGit(['status', '--porcelain'], worktree).split('\n').filter((l) => l && !before.has(l));
   if (touched.length) return { items, review: null, ok: false, unmet: [], problems: [], reason: `the review changed the checkout (${touched.length} path(s))` };
   if (!run.review) return { items, review: null, ok: false, unmet: [], problems: [], reason: run.reason || 'the reviewer gave no verdict' };
-  return { items, review: run.review, reason: null, ...judgeReview(run.review, items) };
+  // What was reviewed: each changed path's blob at the committed change, so a merger can tell the change
+  // it merges is this one (guard.mjs).
+  const files = Object.fromEntries(changes.flatMap((c) => [
+    [c.path, c.status === 'D' ? null : execGit(['rev-parse', `HEAD:${c.path}`], worktree)],
+    ...(c.oldPath ? [[c.oldPath, null]] : []),
+  ]));
+  return { items, review: run.review, files, reason: null, ...judgeReview(run.review, items) };
 }
 
 /** The day's cycles that ran a proposer, and the issues tried and failed lately, from the cycle log. */
@@ -317,7 +328,7 @@ function pullRequestBody({ issue, summary, changes, tests, review, behaviour, me
     `- **Tests**: passed (${tests.summary})`,
     '- **Review**: every point the issue says the change is done when was found met (`dev/loop/reviewer.mjs`):',
     '',
-    formatReviewMarkdown(review.review, review.items),
+    formatReviewMarkdown(review.review, review.items, review.files),
     '',
     `- **Behaviour**: ${behaviour ? 'changed, so measured on both sides with real-model runs; no task, the held-out tasks nor the suite got worse' : 'not changed (nothing the running agent reads)'}`,
     ...(measurement?.evidence ? ['', formatEvidenceMarkdown(measurement.evidence)] : []),

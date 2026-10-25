@@ -636,13 +636,15 @@ describe('the workflows', () => {
     assert.match(text, /actions\/checkout@v4\n {8}with:\n {10}ref: main\n {10}fetch-depth: 0\n {10}fetch-tags: true\n {10}persist-credentials: false\n/);
     assert.match(text, /node-version: '24'/);
     const steps = [...text.matchAll(/run: (.+)$/gm)].map((m) => m[1]);
-    assert.deepEqual(steps, ['node dev/harness2/cli.mjs merge --all --json']);
+    assert.deepEqual(steps, ['node dev/harness2/cli.mjs merge --all --json', 'node dev/loop/merger.mjs --json']);
+    assert.match(text, /- name: Merge the loop changes that pass\n {8}if: success\(\) \|\| failure\(\)\n/, "the loop's merger runs even when the harness's failed");
     assert.doesNotMatch(text, /npm (ci|install|run)/);
   });
 
   test('values reach the merger through the environment only', () => {
     const expressions = text.split('\n').filter((line) => line.includes('${{')).map((line) => line.trim());
-    assert.deepEqual(expressions, ['GH_TOKEN: ${{ github.token }}', `${PAUSE_ENV}: \${{ vars.${PAUSE_ENV} }}`]);
+    const pair = ['GH_TOKEN: ${{ github.token }}', `${PAUSE_ENV}: \${{ vars.${PAUSE_ENV} }}`];
+    assert.deepEqual(expressions, [...pair, ...pair], 'the same two for each merger');
   });
 
   test('CI can be dispatched, so a merge made with a workflow token still gets CI on main', () => {

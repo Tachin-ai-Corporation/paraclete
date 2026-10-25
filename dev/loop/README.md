@@ -4,9 +4,10 @@ The self-improvement loop: plain code that, one cycle at a time, has a coding ag
 repository to resolve an issue, checks the change, and opens a pull request. Nothing here is product,
 and nothing here is installed on an instance.
 
-**Stage 1, supervised merging.** The loop opens a pull request only for a change its reviewer found
-resolves the issue; what merges it is not part of the loop yet. It never merges, releases or changes an
-instance.
+**No person in the loop.** A cycle opens a pull request only for a change its reviewer found resolves
+the issue; CI's Loop guard checks it again; the loop's merger merges it once CI passed, or closes it
+with the reasons, which the next attempt reads. The loop never edits its own rules (the referee), never
+releases, and never changes an instance.
 
 | File | What it does |
 |---|---|
@@ -14,6 +15,8 @@ instance.
 | `proposer.mjs` | The proposer interface, the brief it is given, and the command proposer that runs a headless coding-agent command named in your local settings |
 | `reviewer.mjs` | Whether a change resolves its issue: the points to judge (the issue's "Done when"), the reviewer's brief, its verdict parsed and decided by code, and the command reviewer; from the command line, reviews a pull request against an issue |
 | `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
+| `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
+| `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
 | `test-report.mjs` | Reads which tests failed from the suite's output, with each one's error (for a test file that could not load, the error it printed), for the refusal comment and the cycle record |
 | `timer.mjs` | Prints the systemd units that run a cycle on a schedule on the lab driver, and how to install them. Nothing installs them for you |
@@ -107,6 +110,30 @@ different things.
 `node dev/loop/reviewer.mjs --issue <n> --pr <n> [--repo <owner/name>] [--json]` reviews a pull
 request, open or closed, against an issue in a temporary checkout of its head, and changes nothing on
 GitHub. It exits 0 when the change resolves the issue, 1 when it does not or could not be reviewed.
+
+## Merging
+
+`.github/workflows/loop-guard.yml` runs `guard.mjs` on every pull request, with the base branch's code.
+A loop pull request (a `loop/` branch of this repository) passes only when:
+
+- its body says which issue it resolves (`Resolves #<n>.`), and that issue is open and labelled `loop`;
+- none of its files is the referee's, no existing test is changed or removed, and a change to code adds
+  a test;
+- its review block's points are the issue's "Done when" as it reads now, and the verdict passes
+  `judgeReview` judged afresh (the verdict written into the block counts for nothing);
+- its files are exactly the reviewed ones, with the reviewed contents (each file's blob), so a push
+  after the review voids it;
+- a change to what the agent reads carries measured evidence that no task got worse, naming every file.
+
+`node dev/loop/merger.mjs [--dry-run] [--json]` runs each hour in `.github/workflows/harness-merge.yml`,
+after the harness's own merger, in the same job (so its run on `main` is not counted as CI, and the two
+never merge at once). It merges, at most once per run and at most `merge.maxPerDay` (3) a day, a loop
+pull request whose CI passed (the Loop guard among it), that passes the guard again, that GitHub can
+merge cleanly and whose head contains `main`'s head. It squash-merges with the pull request's title
+(moved to the next free version when stale), pinned to the head it checked, then dispatches CI on
+`main`. One that cannot pass (CI failed, a conflict, behind `main`, the guard) is closed with the reasons:
+the loop never updates a pull request it opened, so closing it frees the issue for the next cycle, whose
+proposer reads that comment. Nothing merges while `dev/harness2/PAUSED` exists or CI on `main` failed.
 
 ## On the lab driver
 
