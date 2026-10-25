@@ -34,10 +34,13 @@
 // --admin, and with --dry-run it changes nothing on GitHub (it still fetches main and the tags, so its
 // versions are the ones a real run would use).
 //
-// Called by cli.mjs (`merge`), which .github/workflows/harness-merge.yml runs every hour. It runs git
-// in this checkout and the GitHub CLI (`gh`), through dev-env.mjs's program runner. It does not
-// measure anything, open pull requests, or cut releases.
+// Run every hour by .github/workflows/harness-merge.yml through its own command line,
+// `node dev/harness2/merge.mjs (--pr <n> | --all) [--dry-run] [--json]`: the workflow installs no
+// packages, and cli.mjs (`merge`, the same thing) also loads the real-model runs, which need the
+// gateway's. It runs git in this checkout and the GitHub CLI (`gh`), through dev-env.mjs's program
+// runner. It does not measure anything, open pull requests, or cut releases.
 
+import { pathToFileURL } from 'node:url';
 import { isNewer, versionFromText } from '../../agent/release/versions.mjs';
 import { githubRepoFromUrl } from '../deploy.mjs';
 import { DevError, REPO_ROOT, createExec, failureDetail } from '../dev-env.mjs';
@@ -587,4 +590,33 @@ export function formatMergeReport(result) {
   if (result.error) out.push(`Error: ${result.error}`);
   if (result.dryRun) out.push('Dry run: nothing was changed on GitHub.');
   return `${out.join('\n')}\n`;
+}
+
+/**
+ * The command line, as cli.mjs `merge` takes it.
+ *
+ * @param {string[]} argv
+ * @param {object} [deps]  mergePromotionPullRequests' options, and stdout
+ * @returns {Promise<number>} exit code: 0 the run finished, 1 it did not, 2 a usage mistake
+ */
+export async function main(argv, { stdout = process.stdout, ...deps } = {}) {
+  const flags = { pr: null, all: false, dryRun: false, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--pr') flags.pr = argv[++i] ?? '';
+    else if (a === '--all') flags.all = true;
+    else if (a === '--dry-run') flags.dryRun = true;
+    else if (a === '--json') flags.json = true;
+    else {
+      stdout.write(`unknown argument: ${a}\n${MERGE_USAGE}\n`);
+      return 2;
+    }
+  }
+  const res = await mergePromotionPullRequests({ ...deps, pr: flags.pr, all: flags.all, dryRun: flags.dryRun });
+  stdout.write(flags.json ? `${JSON.stringify(res, null, 2)}\n` : formatMergeReport(res));
+  return res.ok ? 0 : 1;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = await main(process.argv.slice(2));
 }

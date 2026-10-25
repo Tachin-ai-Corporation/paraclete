@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { runCli } from '../../../dev/harness2/cli.mjs';
 import { buildPromotionEvidence, formatEvidenceMarkdown } from '../../../dev/harness2/evidence.mjs';
 import {
-  addedLinesFromPatch, formatMergeReport, isHarnessBranch, mergeBlockers, mergePromotionPullRequests, mergerLogins,
+  addedLinesFromPatch, formatMergeReport, isHarnessBranch, main as mergeMain, mergeBlockers, mergePromotionPullRequests, mergerLogins,
   promotionVersion, refusalMarker, retitle, squashBody,
 } from '../../../dev/harness2/merge.mjs';
 import { PAUSE_ENV, PAUSE_FILE } from '../../../dev/harness2/pause.mjs';
@@ -598,6 +598,18 @@ describe('merging', () => {
 });
 
 describe('the merge subcommand', () => {
+  test("merge.mjs's own command line, which the workflow runs: the same run, its exit code", async (t) => {
+    const out = { text: '', write(s) { this.text += s; } };
+    const deps = (github) => ({ exec: github.exec, env: {}, repoRoot: checkout(t), now: NOW, stdout: out });
+    assert.equal(await mergeMain(['--all', '--json'], deps(fakeGitHub([promotion(7)]))), 0);
+    assert.deepEqual(JSON.parse(out.text).merged, [7]);
+    out.text = '';
+    assert.equal(await mergeMain(['--pr', '7', '--dry-run'], deps(fakeGitHub([promotion(7)]))), 0);
+    assert.match(out.text, /^#7 would merge as /m);
+    assert.equal(await mergeMain(['--bogus'], deps(fakeGitHub([]))), 2);
+    assert.equal(await mergeMain([], deps(fakeGitHub([]))), 1, 'neither --pr nor --all');
+  });
+
   test('--all --json gives the result; without --json a report too; a missing choice is a usage mistake', async (t) => {
     const deps = (github) => ({ exec: github.exec, env: {}, repoRoot: checkout(t), now: NOW });
     const json = await runCli(['merge', '--all', '--json'], deps(fakeGitHub([promotion(7)])));
@@ -636,7 +648,7 @@ describe('the workflows', () => {
     assert.match(text, /actions\/checkout@v4\n {8}with:\n {10}ref: main\n {10}fetch-depth: 0\n {10}fetch-tags: true\n {10}persist-credentials: false\n/);
     assert.match(text, /node-version: '24'/);
     const steps = [...text.matchAll(/run: (.+)$/gm)].map((m) => m[1]);
-    assert.deepEqual(steps, ['node dev/harness2/cli.mjs merge --all --json', 'node dev/loop/merger.mjs --json']);
+    assert.deepEqual(steps, ['node dev/harness2/merge.mjs --all --json', 'node dev/loop/merger.mjs --json'], "merge.mjs's own command line: cli.mjs needs packages the job does not install");
     assert.match(text, /- name: Merge the loop changes that pass\n {8}if: success\(\) \|\| failure\(\)\n/, "the loop's merger runs even when the harness's failed");
     assert.doesNotMatch(text, /npm (ci|install|run)/);
   });
