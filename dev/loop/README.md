@@ -23,9 +23,10 @@ merges, releases or changes an instance.
    today's cycles (`maxCyclesPerDay`, 4) are spent. Cycles are counted from the cycle log.
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
    request from a `loop/<issue>-` branch, and one it tried and failed within `retryAfterHours` (24).
-   `--issue` names one; `--retry` tries it even within that wait. It reads the issue's comments by
-   its maintainers (the repository's owner, members and collaborators, never anyone else), which
-   include its own refusals of earlier attempts.
+   `--issue` names one; `--retry` tries it even within that wait. It reads the comments by the
+   repository's maintainers (its owner, members and collaborators, never anyone else) on the issue,
+   which include its own refusals of earlier attempts, and on its closed `loop/<issue>-` pull requests,
+   which say why a reviewer closed one.
 3. **Checks out** `origin/main` on the branch `loop/<issue>-<slug>`, in a temporary worktree, with the
    repo's installed packages linked in.
 4. **Runs the proposer**, within its budget (`proposer.wallMinutes`, `maxTurns`, `maxTokens`). The

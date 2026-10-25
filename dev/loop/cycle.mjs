@@ -5,7 +5,8 @@
 // only edits files.
 //
 //   1. refuse while the harness is paused (dev/harness2/PAUSED), or once today's cycles are spent;
-//   2. pick the issue, and read what its maintainers and earlier attempts said on it;
+//   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
+//      closed pull requests for it;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
 //   4. run the proposer on it, within its budget, briefed with the issue and those comments;
 //   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test,
@@ -177,18 +178,37 @@ function defaultRunTests({ worktree, settings }) {
 }
 
 /**
- * The comments on an issue the proposer is shown: those of its maintainers, which include the loop's
- * own refusals of earlier attempts, oldest first and the newest few only. Pure.
+ * The comments the proposer is shown: its maintainers', on the issue (which include the loop's own
+ * refusals of earlier attempts) and on the loop's closed pull requests for it (a reviewer's reasons for
+ * closing one), oldest first and the newest few only. Pure.
  *
- * @param {object[]} comments  as `gh issue view --json comments` gives them
- * @returns {{ at: string, author: string, body: string }[]}
+ * @param {object[]} comments  as `gh issue view --json comments` gives them; one from a pull request
+ *                             carries `on` ('#40')
+ * @returns {{ at: string, author: string, body: string, on: string|null }[]}
  */
 export function trustedNotes(comments) {
   return (comments || [])
-    .filter((c) => TRUSTED_COMMENTERS.has(String(c.authorAssociation || '').toUpperCase()))
+    .filter((c) => TRUSTED_COMMENTERS.has(String(c.authorAssociation || '').toUpperCase()) && String(c.body || '').trim())
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
     .slice(-NOTE_LIMITS.count)
-    .map((c) => ({ at: c.createdAt, author: c.author?.login || 'unknown', body: String(c.body || '').trim().slice(0, NOTE_LIMITS.chars) }));
+    .map((c) => ({ at: c.createdAt, author: c.author?.login || 'unknown', body: String(c.body || '').trim().slice(0, NOTE_LIMITS.chars), on: c.on || null }));
+}
+
+/**
+ * The comments and reviews on the loop's earlier pull requests for one issue, shaped as issue comments
+ * with `on` naming the pull request. Pure.
+ *
+ * @param {object[]} pullRequests  as `gh pr list --json number,headRefName,comments,reviews` gives them
+ * @param {string} prefix          the issue's branch prefix: `loop/<issue>-`
+ * @returns {object[]}
+ */
+export function pullRequestComments(pullRequests, prefix) {
+  return (pullRequests || [])
+    .filter((p) => String(p.headRefName || '').startsWith(prefix))
+    .flatMap((p) => [
+      ...(p.comments || []),
+      ...(p.reviews || []).map((r) => ({ ...r, createdAt: r.submittedAt || r.createdAt })),
+    ].map((c) => ({ ...c, on: `#${p.number}` })));
 }
 
 /** A refusal, as the comment it leaves on the issue: why, what the attempt changed, what failed. */
@@ -352,12 +372,19 @@ export async function runCycle({
   const branch = `${settings.branchPrefix}${issue.number}-${slugFor(issue.title)}`;
   result = { ...result, issue: issue.number, branch };
   log(`[INFO] loop: issue #${issue.number}: ${issue.title}`);
-  let notes = [];
+  const comments = [];
   try {
-    notes = trustedNotes(JSON.parse(execGh(['issue', 'view', String(issue.number), ...repoArgs, '--json', 'comments'], repoRoot) || '{}').comments);
+    comments.push(...(JSON.parse(execGh(['issue', 'view', String(issue.number), ...repoArgs, '--json', 'comments'], repoRoot) || '{}').comments || []));
   } catch (err) {
     log(`[WARN] could not read the comments on #${issue.number}: ${err.message}`);
   }
+  try {
+    const closed = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'closed', '--json', 'number,headRefName,comments,reviews', '--limit', '100'], repoRoot) || '[]');
+    comments.push(...pullRequestComments(closed, `${settings.branchPrefix}${issue.number}-`));
+  } catch (err) {
+    log(`[WARN] could not read the loop's earlier pull requests for #${issue.number}: ${err.message}`);
+  }
+  const notes = trustedNotes(comments);
 
   // 3. A fresh checkout of main's head, on the cycle's branch.
   execGit(['fetch', '--quiet', '--tags', 'origin', 'main'], repoRoot);
