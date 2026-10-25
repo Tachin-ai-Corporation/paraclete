@@ -52,7 +52,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PARACLETE_H2_PAUSED: ${{ vars.PARACLETE_H2_PAUSED }}
-        run: node dev/harness2/cli.mjs merge --all --json
+        run: node dev/harness2/merge.mjs --all --json
       # Runs whether or not the step above failed: one merger's trouble does not stop the other.
       - name: Merge the loop changes that pass
         if: success() || failure()
