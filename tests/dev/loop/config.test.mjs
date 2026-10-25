@@ -2,7 +2,7 @@
 // the agent's behaviour, the local settings over the defaults, and the timer units a person installs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LOOP_DEFAULTS, isBehaviourPath, loadLoopSettings, pathRefusal } from '../../../dev/loop/config.mjs';
+import { LOOP_DEFAULTS, isBehaviourPath, isCodePath, loadLoopSettings, pathRefusal, testRefusal } from '../../../dev/loop/config.mjs';
 import { LOOP_UNIT, loopUnits, main as timerMain } from '../../../dev/loop/timer.mjs';
 
 test('the referee and secrets are refused; existing tests may only be added to', () => {
@@ -28,6 +28,22 @@ test("what changes the agent's behaviour is measured", () => {
   for (const rel of ['dashboard/app/page.js', 'docs/INSTALL.md', 'dev/status.mjs', 'tests/agent/x.test.mjs', 'roles/generic/role.json']) {
     assert.equal(isBehaviourPath(rel), false, rel);
   }
+});
+
+test('a change to code must add a test; docs, styles and removals need none', () => {
+  for (const rel of ['agent/work/x.mjs', 'dashboard/components/work/work-plan.js', 'dashboard/components/work/WorkPlan.jsx', 'skills/web-search/web-search.mjs', 'dev/x.sh']) {
+    assert.equal(isCodePath(rel), true, rel);
+  }
+  for (const rel of ['docs/plan/OPEN_ITEMS.md', 'dashboard/components/work/WorkPlan.module.css', 'prompts/motor.md', 'config/contracts.json', 'tests/agent/x.test.mjs', 'tests/fakes/x.mjs']) {
+    assert.equal(isCodePath(rel), false, rel);
+  }
+  const code = { status: 'M', path: 'dashboard/lib/server/work.mjs' };
+  assert.match(testRefusal([code, { status: 'A', path: 'dashboard/components/work/work-plan.js' }]),
+    /^it changes code \(dashboard\/lib\/server\/work\.mjs, dashboard\/components\/work\/work-plan\.js\) and adds no test/);
+  assert.equal(testRefusal([code, { status: 'A', path: 'tests/dashboard/components/work/work-plan.test.mjs' }]), null);
+  assert.match(testRefusal([code, { status: 'A', path: 'tests/fakes/helper.mjs' }]), /adds no test/, 'a helper is not a test');
+  assert.equal(testRefusal([{ status: 'D', path: 'agent/work/old.mjs' }]), null, 'removing code needs no test');
+  assert.equal(testRefusal([{ status: 'M', path: 'docs/guide.md' }, { status: 'M', path: 'prompts/motor.md' }]), null);
 });
 
 test('local settings name the proposer and may tune the budget; the defaults stand otherwise', () => {

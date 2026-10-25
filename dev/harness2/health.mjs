@@ -265,7 +265,7 @@ export function loopHealth({ cycles = [], pullRequests = [], release = null, pau
     last_cycle_at: last?.at || null,
     loop_cycles: loopCycles.filter((c) => c.loop.action !== 'paused' && c.loop.action !== 'no-work' && c.loop.action !== 'capped').length,
     loop_pull_requests: loopCycles.filter((c) => c.loop.action === 'opened').length,
-    loop_refused: loopCycles.filter((c) => ['proposer-failed', 'no-change', 'refused-paths', 'tests-failed', 'unmeasured', 'regressed'].includes(c.loop.action)).length,
+    loop_refused: loopCycles.filter((c) => ['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unmeasured', 'regressed'].includes(c.loop.action)).length,
   };
   return { ok: alarms.length === 0, alarms, notes, stats };
 }

@@ -1,6 +1,7 @@
 // dev/loop/config.mjs: the self-improvement loop's fixed settings, in one place: its budget and caps,
 // which paths a proposal may change, which of them change the agent's behaviour (and so must be
-// measured), and where a developer's own proposer settings live. The loop's own runner and every
+// measured), which are code (and so must come with a new test), and where a developer's own proposer
+// settings live. The loop's own runner and every
 // path that judges a change (the referee) are off limits to a proposal: only a person changes them.
 //
 // It reads nothing but the optional local settings file, and decides nothing itself: cycle.mjs applies
@@ -83,6 +84,30 @@ export function pathRefusal(rel, status = 'M') {
 export function isBehaviourPath(rel) {
   const p = posix(rel);
   return BEHAVIOUR_PATHS.some((re) => re.test(p));
+}
+
+/** Source files: a proposal that adds or changes one must also add a test. */
+const CODE_FILE = /\.(mjs|cjs|js|jsx|ts|tsx|sh|py)$/;
+
+/** Whether this path is code outside the tests: a proposal that adds or changes it must add a test. */
+export function isCodePath(rel) {
+  const p = posix(rel);
+  return CODE_FILE.test(p) && !/^tests\//.test(p);
+}
+
+/**
+ * Why a proposal is refused for its tests, or null. A change that adds or changes code must add at
+ * least one test file (a new `.test.mjs` under `tests/`): passing the suite is not enough, since the
+ * suite cannot fail on code nothing tests. Removing code alone needs none.
+ *
+ * @param {{ status: string, path: string }[]} changes  as cycle.mjs parseNameStatus gives them
+ * @returns {string|null}
+ */
+export function testRefusal(changes) {
+  const code = changes.filter((c) => c.status !== 'D' && isCodePath(c.path)).map((c) => posix(c.path));
+  if (code.length === 0) return null;
+  if (changes.some((c) => c.status === 'A' && /^tests\/.+\.test\.mjs$/.test(posix(c.path)))) return null;
+  return `it changes code (${code.join(', ')}) and adds no test: a change to code must add a test file under tests/ that exercises it`;
 }
 
 /**

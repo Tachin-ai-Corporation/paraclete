@@ -161,6 +161,28 @@ test('a change to the referee or to an existing test is refused whole, with a co
   }
 });
 
+test('a change to code that adds no test is refused before the suite runs; removing code needs none', async (t) => {
+  const r = repo(t);
+  let ran = false;
+  const c = cycle(t, r, {
+    proposer: writes({ 'agent/work/thing.mjs': 'export const thing = 3;\n', 'docs/guide.md': '# G\n' }),
+    runTests: async () => { ran = true; return { ok: true, summary: '' }; },
+  });
+  const res = await c.run();
+  assert.deepEqual([res.action, res.reason], ['untested', 'it changes code (agent/work/thing.mjs) and adds no test: a change to code must add a test file under tests/ that exercises it']);
+  assert.equal(ran, false, 'the suite is not run for it');
+  const comment = c.gh.calls.find((a) => a[1] === 'comment');
+  assert.match(comment[comment.indexOf('--body') + 1], /stopped \(untested\)[\s\S]*It changed: `agent\/work\/thing\.mjs` \(M\), `docs\/guide\.md` \(M\)\./);
+
+  const r2 = repo(t);
+  const removes = async ({ worktree }) => {
+    fs.rmSync(path.join(worktree, 'agent', 'work', 'thing.mjs'));
+    return { ok: true, summary: 'Removed dead code.', exitCode: 0, timedOut: false, reason: null };
+  };
+  const removed = await cycle(t, r2, { proposer: removes, measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }) }).run();
+  assert.equal(removed.action, 'opened', removed.reason);
+});
+
 test('a new test is welcome; a failing suite is refused', async (t) => {
   const r = repo(t);
   const added = await cycle(t, r, { proposer: writes({ 'tests/agent/new.test.mjs': '// new\n', 'docs/guide.md': '# G\n' }) }).run();
@@ -171,7 +193,7 @@ test('a new test is welcome; a failing suite is refused', async (t) => {
 });
 
 test("a change to the agent's behaviour is measured, and refused when unmeasured or worse", async (t) => {
-  const behaviour = writes({ 'agent/work/thing.mjs': 'export const thing = 2;\n' });
+  const behaviour = writes({ 'agent/work/thing.mjs': 'export const thing = 2;\n', 'tests/agent/thing-two.test.mjs': '// two\n' });
   const seen = [];
   const r = repo(t);
   const ok = await cycle(t, r, {
@@ -183,7 +205,7 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   }).run();
   assert.equal(ok.action, 'opened', ok.reason);
   assert.equal(ok.behaviour, true);
-  assert.deepEqual(seen[0].changedPaths, ['agent/work/thing.mjs']);
+  assert.deepEqual(seen[0].changedPaths, ['agent/work/thing.mjs', 'tests/agent/thing-two.test.mjs']);
   assert.equal(seen[0].base, git(r.work, 'rev-parse', 'origin/main'), 'measured against the head it branched from');
   assert.equal(seen[0].head, 'v2027.01.21.1.1: The guide explains the loop', 'the candidate is committed before it is measured');
 

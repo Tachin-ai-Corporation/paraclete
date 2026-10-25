@@ -37,6 +37,9 @@ merges, releases or changes an instance.
      `roles/*/role.json`; `config/contracts.mjs`; `docs/canon/`; `DEVELOPING.md`; the package
      manifests;
    - it changes or removes an existing test (adding tests is welcome);
+   - it adds or changes code (a `.mjs`, `.js`, `.jsx`, `.ts`, `.sh` or `.py` file outside `tests/`) and
+     adds no new `.test.mjs` file under `tests/` (`untested`): the suite cannot fail on code nothing
+     tests, so passing it is not enough. Removing code needs no test. It is checked before the suite runs;
    - the suite (`npm test`) fails.
 
    A change to what the running agent reads (`prompts/`, `config/contracts.json`, `agent/`,
@@ -75,6 +78,7 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
   With `"briefVia": "stdin"` the brief is written to the command's input.
 - The command runs in the cycle's checkout, and is stopped after `proposer.wallMinutes`.
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
+  Without one, the pull request says it gave none (the end of its output is its tool's log).
 - The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `proposer` and `measure`. The referee
   is not a setting.
 
