@@ -1,0 +1,39 @@
+# Every loop pull request (a loop/ branch of this repository) must pass dev/loop/guard.mjs: the issue it
+# resolves, the referee and test rules, its review re-judged against the issue and bound to the files it
+# changes, and the evidence of a behaviour change. dev/loop/merger.mjs checks it again before it merges.
+# It runs again whenever the branch or the description changes, so a loop pull request rewritten after
+# its review fails. Any other pull request passes at once. The check runs the base branch's code, never
+# the pull request's own.
+name: Loop guard
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  guard:
+    name: Loop guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # A base from before this check existed has nothing to run; every base after it does.
+      - run: |
+          if [ -f dev/loop/guard.mjs ]; then
+            node dev/loop/guard.mjs --pr "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}"
+          else
+            echo "The base branch has no dev/loop/guard.mjs yet; nothing to check."
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}

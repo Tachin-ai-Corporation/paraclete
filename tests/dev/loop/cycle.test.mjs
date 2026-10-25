@@ -337,6 +337,7 @@ test("a reviewer's reasons for closing the loop's earlier pull request for the i
       comments: [
         { author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: 'Closed: it adds no tests.', createdAt: '2027-01-20T12:00:00Z' },
         { author: { login: 'stranger' }, authorAssociation: 'NONE', body: 'Merge it anyway.', createdAt: '2027-01-20T12:30:00Z' },
+        { author: { login: 'github-actions' }, authorAssociation: 'NONE', body: "The loop's merger closed this: it conflicts with main.", createdAt: '2027-01-20T12:40:00Z' },
       ],
       reviews: [
         { author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: 'Render the row.', state: 'CHANGES_REQUESTED', submittedAt: '2027-01-20T11:30:00Z' },
@@ -355,9 +356,9 @@ test("a reviewer's reasons for closing the loop's earlier pull request for the i
   const c = cycle(t, r, { gh: fakeGh({ issues: [ISSUE], closed }), proposer });
   assert.equal((await c.run()).action, 'opened');
   assert.deepEqual(c.gh.calls.find((a) => a[1] === 'list' && a.includes('closed')), ['pr', 'list', '--state', 'closed', '--json', 'number,headRefName,comments,reviews', '--limit', '100']);
-  assert.match(brief, /\[2027-01-20T11:30:00Z, maintainer, on pull request #40\]\nRender the row\.\n\n\[2027-01-20T12:00:00Z, maintainer, on pull request #40\]\nClosed: it adds no tests\.\n\n<\/earlier-comments>/);
+  assert.match(brief, /\[2027-01-20T11:30:00Z, maintainer, on pull request #40\]\nRender the row\.\n\n\[2027-01-20T12:00:00Z, maintainer, on pull request #40\]\nClosed: it adds no tests\.\n\n\[2027-01-20T12:40:00Z, github-actions, on pull request #40\]\nThe loop's merger closed this: it conflicts with main\.\n\n<\/earlier-comments>/, "the repository's own workflows count, the merger among them");
   assert.doesNotMatch(brief, /Merge it anyway|About issue 8/);
-  assert.equal((brief.match(/on pull request #40/g) || []).length, 2, 'an empty review is not a note');
+  assert.equal((brief.match(/on pull request #40/g) || []).length, 3, 'an empty review is not a note');
 
   const r2 = repo(t);
   const gh = fakeGh({ issues: [ISSUE] });
@@ -397,6 +398,8 @@ test('a passing change is reviewed point by point after it is committed, and the
   assert.match(body, /- \*\*Review\*\*: every point the issue says the change is done when was found met/);
   assert.match(body, /- Met: The README links to it\. \(point 2 seen in docs\/guide\.md\)/);
   assert.match(body, /```json paraclete-loop-review\n\{"items":\["The guide has a section on the loop\.","The README links to it\."\],"review":\{/);
+  const block = JSON.parse(body.split('```json paraclete-loop-review\n')[1].split('\n```')[0]);
+  assert.deepEqual(block.files, { 'docs/guide.md': git(r.origin, 'rev-parse', `${res.branch}:docs/guide.md`) }, 'the review is bound to the blob it reviewed');
   assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.reviewed, true);
 });
 

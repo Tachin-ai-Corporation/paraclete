@@ -397,8 +397,12 @@ done.
     - Since `v2026.10.24.4.1` the self-improvement loop (`dev/loop/`) runs as plain code: one cycle takes
       a `loop` issue, has a coding agent change a checkout of main, refuses a change to the referee, to
       an existing test, a failing suite, or a behaviour change that real-model runs do not show to be
-      safe, and opens a pull request. Stage 1 is supervised: a person merges. Next: merging low-risk
-      classes by itself, the daily release check, and retiring the legacy harness.
+      safe, and opens a pull request. Since `v2026.10.25.4.1` a reviewer model judges each change
+      against its issue's "Done when" and code decides. Since `v2026.10.25.5.1` no person merges: CI's
+      Loop guard (`dev/loop/guard.mjs`) re-checks every loop pull request, its review bound to the
+      files it changes, and the loop's merger (`dev/loop/merger.mjs`) merges a passing one, at most 3
+      a day, or closes it with the reasons for the next attempt. Next: reverting a merge the lab shows
+      to be bad, an issue planner, the daily release check, and retiring the legacy harness.
     - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
       `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
       and the role's smoke mission to pass, and only then cuts the release, with the check recorded in

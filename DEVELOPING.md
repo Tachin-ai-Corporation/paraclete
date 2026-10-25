@@ -305,7 +305,9 @@ have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often b
   The harness's promotion pull requests (`dev/harness2/promote.mjs`) are titled this way, and the
   harness-merge workflow (`.github/workflows/harness-merge.yml`, running `dev/harness2/merge.mjs`)
   squash-merges them, only once CI passed and their measured evidence and changed files pass its
-  checks. Release notes list the commits a merge commit brought in, so a change merged without
+  checks. The same workflow runs the self-improvement loop's merger (`dev/loop/merger.mjs`), which
+  squash-merges a loop pull request the same way once CI and the Loop guard (`dev/loop/guard.mjs`)
+  passed. Release notes list the commits a merge commit brought in, so a change merged without
   squashing still appears there.
 - Before pushing, run `npm test`.
 - Commit or push only when the developer has asked you to.

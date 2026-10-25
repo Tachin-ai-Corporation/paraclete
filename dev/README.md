@@ -18,7 +18,7 @@ instance.
 | `dev-env.mjs` | What the commands share: `.local/instance.env`, gcloud and git without a shell, SSH over IAP, Firestore as you (a request Firestore refuses with 401 is sent once more with a new token from gcloud, so a long follow outlives its token) |
 | `record-gemini-turn.mjs` | Records one live Gemini 4 tool turn as the fixture the gateway's replay test runs. Re-record when the Gemini SDK or model changes |
 | `harness2/cli.mjs` | Offline Loop A evolutionary harness optimizer and Loop B trajectory harvester (`surface`, `validate`, `eval`, `evolve`, `harvest`, `promote`), the merger of its promotion pull requests (`merge`), and the harness lab, two projects with one paraclete each (`lab-plan`, `lab-provision`, `lab-status`, `lab-follow-main`) |
-| `loop/` | The self-improvement loop: one cycle has a coding agent change a checkout of main to resolve a `loop` issue, checks the change, and opens a pull request a person merges ([loop/README.md](loop/README.md)) |
+| `loop/` | The self-improvement loop: one cycle has a coding agent change a checkout of main to resolve a `loop` issue, checks and reviews the change, and opens a pull request its merger merges ([loop/README.md](loop/README.md)) |
 
 ## The dev loop commands
 
@@ -81,7 +81,10 @@ touches the referee (what judges a change, and the loop itself), changes an exis
 code without adding a test, fails the suite, is found by its reviewer model to miss a point of the
 issue's "Done when", or changes the agent's behaviour without a real-model measurement that shows nothing got worse.
 Otherwise the cycle opens a pull request; a refused change gets a comment on the issue. It stops while
-`dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. Stage 1 is supervised: a person merges.
+`dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. No person merges: CI's Loop guard
+(`dev/loop/guard.mjs`) checks every loop pull request again, and the loop's merger
+(`dev/loop/merger.mjs`, each hour in `.github/workflows/harness-merge.yml`) merges a passing one, at
+most 3 a day, or closes one that cannot pass with the reasons.
 How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).
 
 ## Continual harness improvement (`dev/harness2/`)

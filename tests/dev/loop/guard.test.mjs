@@ -1,0 +1,136 @@
+// Tests for dev/loop/guard.mjs and .github/workflows/loop-guard.yml: a loop pull request passes only with
+// an open `loop` issue it resolves, no referee or existing-test change, a test with any code change, a
+// review whose points are the issue's "Done when" as it reads now and whose verdict passes when judged
+// afresh, the reviewed files exactly, and measured evidence for a behaviour change; any other pull
+// request passes at once; the workflow runs on every change with the base branch's code.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildPromotionEvidence, formatEvidenceMarkdown } from '../../../dev/harness2/evidence.mjs';
+import { isLoopBranch, loopGuard, main, parseReviewBlock, resolvedIssue } from '../../../dev/loop/guard.mjs';
+import { doneWhen, formatReviewMarkdown } from '../../../dev/loop/reviewer.mjs';
+import { readRepoFile } from '../../repo/repo-files.mjs';
+
+const ISSUE = {
+  number: 33,
+  title: 'The mission page shows an approval gate as its own row',
+  body: 'Gates are skipped.\n\n**Done when:**\n- The plan shows each gate as its own row.\n- The change is covered by new tests.\n',
+  state: 'OPEN',
+  labels: [{ name: 'loop' }],
+};
+const ITEMS = doneWhen(ISSUE);
+const SHA = { plan: 'a'.repeat(40), test: 'b'.repeat(40) };
+const FILES = [
+  { filename: 'dashboard/components/work/WorkPlan.jsx', status: 'modified', sha: SHA.plan },
+  { filename: 'tests/dashboard/components/work/work-plan.test.mjs', status: 'added', sha: SHA.test },
+];
+const REVIEWED = { 'dashboard/components/work/WorkPlan.jsx': SHA.plan, 'tests/dashboard/components/work/work-plan.test.mjs': SHA.test };
+const met = (items) => ({ items: items.map((_, i) => ({ n: i + 1, met: true, evidence: 'seen' })), resolves: true, problems: [] });
+
+const body = ({ review = met(ITEMS), items = ITEMS, files = REVIEWED, extra = '' } = {}) => [
+  'Resolves #33.', '', '## Checks', '', formatReviewMarkdown(review, items, files), extra,
+].join('\n');
+const pr = (o = {}) => ({ headRefName: 'loop/33-the-mission-page', isCrossRepository: false, body: body(), ...o });
+const check = (o = {}) => loopGuard({ pr: pr(o.pr), files: o.files || FILES, issue: o.issue === undefined ? ISSUE : o.issue });
+
+test('only a loop branch of this repository is checked; the pieces', () => {
+  assert.equal(isLoopBranch('loop/33-x'), true);
+  assert.equal(isLoopBranch('harness2/x'), false);
+  assert.deepEqual(check({ pr: { headRefName: 'claude/work' } }), { loop: false, ok: true, problems: [], issue: null });
+  assert.deepEqual(check({ pr: { isCrossRepository: true } }), { loop: false, ok: true, problems: [], issue: null }, 'a fork can name its branch anything');
+  assert.equal(resolvedIssue('Resolves #33.\n'), 33);
+  assert.equal(resolvedIssue('Fixes the thing'), null);
+  assert.deepEqual(parseReviewBlock(body()).files, REVIEWED);
+  assert.equal(parseReviewBlock('no block'), null);
+});
+
+test('a loop pull request with a passing review of the files it changes passes', () => {
+  assert.deepEqual(check(), { loop: true, ok: true, problems: [], issue: 33 });
+});
+
+test('the issue: named, open and labelled loop', () => {
+  assert.match(check({ pr: { body: body().replace('Resolves #33.', 'Done.') } }).problems.join(' | '), /names no issue it resolves/);
+  assert.match(check({ issue: null }).problems.join(' | '), /issue #33 could not be read/);
+  assert.match(check({ issue: { ...ISSUE, state: 'CLOSED' } }).problems.join(' | '), /issue #33 is not open/);
+  assert.match(check({ issue: { ...ISSUE, labels: [] } }).problems.join(' | '), /issue #33 is not labelled loop/);
+});
+
+test("the cycle's rules again: the referee, existing tests, and a test with any code change", () => {
+  const referee = [...FILES, { filename: '.github/workflows/ci.yml', status: 'modified', sha: 'c'.repeat(40) }];
+  assert.match(check({ files: referee }).problems.join(' | '), /\.github\/workflows\/ci\.yml judges changes or runs the loop/);
+  const weakened = [...FILES, { filename: 'tests/agent/old.test.mjs', status: 'removed', sha: 'd'.repeat(40) }];
+  assert.match(check({ files: weakened }).problems.join(' | '), /tests\/agent\/old\.test\.mjs is an existing test/);
+  const untested = [FILES[0]];
+  assert.match(check({ files: untested }).problems.join(' | '), /changes code \(dashboard\/components\/work\/WorkPlan\.jsx\) and adds no test/);
+  assert.match(check({ files: [] }).problems.join(' | '), /changes no file/);
+});
+
+test('the review is judged afresh against the issue as it reads now; its own verdict counts for nothing', () => {
+  assert.match(check({ pr: { body: 'Resolves #33.\n' } }).problems.join(' | '), /carries no review block/);
+  const short = { items: [{ n: 1, met: true, evidence: 'e' }, { n: 2, met: false, evidence: 'no test' }], resolves: false, problems: [] };
+  const forged = body({ review: short }).replace('"resolves":false', '"resolves":true');
+  assert.match(check({ pr: { body: forged } }).problems.join(' | '), /its review does not pass: point 2 is not met/);
+  const edited = { ...ISSUE, body: `${ISSUE.body.trim()}\n- The README says so.\n` };
+  assert.match(check({ issue: edited }).problems.join(' | '), /judged points other than issue #33's "Done when" as it reads now/);
+  assert.match(check({ pr: { body: body({ review: met([]), items: [] }) } }).problems.join(' | '), /its review does not pass: it judged no point/);
+});
+
+test('what merges is what was reviewed, file by file', () => {
+  const pushedLater = [{ ...FILES[0], sha: 'e'.repeat(40) }, FILES[1]];
+  assert.match(check({ files: pushedLater }).problems.join(' | '), /it is not the change that was reviewed: dashboard\/components\/work\/WorkPlan\.jsx differ/);
+  const extra = [...FILES, { filename: 'docs/guide.md', status: 'modified', sha: 'f'.repeat(40) }];
+  assert.match(check({ files: extra }).problems.join(' | '), /docs\/guide\.md differ from the reviewed files/);
+  const removedFile = [...FILES, { filename: 'docs/old.md', status: 'removed', sha: '1'.repeat(40) }];
+  assert.equal(check({ files: removedFile, pr: { body: body({ files: { ...REVIEWED, 'docs/old.md': null } }) } }).ok, true, 'a removal is reviewed as null');
+  assert.match(check({ pr: { body: body({ files: {} }) } }).problems.join(' | '), /not the change that was reviewed/, 'a review that names no files binds nothing');
+});
+
+const runs = (caps) => caps.map((capability, i) => ({ taskId: 't', split: 'train', trial: i + 1, capability, measured: true }));
+const evidence = (touchedPaths, cand = [0.8, 0.8, 0.8]) => buildPromotionEvidence({
+  candidate: { id: 'loop-33', lens: 'LOOP', touchedPaths, proposal: { source: 'coding-agent' } },
+  baselineTrajectories: runs([0.8, 0.8, 0.8]), candidateTrajectories: runs(cand),
+});
+
+test("a change to the agent's behaviour carries measured evidence that names its files and shows nothing worse", () => {
+  const agentFiles = [{ filename: 'agent/work/thing.mjs', status: 'modified', sha: SHA.plan }, { filename: 'tests/agent/thing.test.mjs', status: 'added', sha: SHA.test }];
+  const reviewed = { 'agent/work/thing.mjs': SHA.plan, 'tests/agent/thing.test.mjs': SHA.test };
+  const touched = ['agent/work/thing.mjs', 'tests/agent/thing.test.mjs'];
+  const withEvidence = (e) => body({ files: reviewed, extra: e ? `\n${formatEvidenceMarkdown(e)}` : '' });
+  assert.match(check({ files: agentFiles, pr: { body: withEvidence(null) } }).problems.join(' | '), /changes the agent's behaviour and carries no evidence block/);
+  assert.equal(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched)) } }).ok, true);
+  assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(['agent/work/thing.mjs'])) } }).problems.join(' | '), /its evidence did not measure tests\/agent\/thing\.test\.mjs/);
+  assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched, [0.5, 0.5, 0.5])) } }).problems.join(' | '), /got worse/);
+});
+
+test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 2 a usage mistake', () => {
+  const sink = () => ({ text: '', write(s) { this.text += s; } });
+  const run = (view, argv = ['--pr', '45', '--repo', 'your-org/paraclete']) => {
+    const out = sink();
+    const err = sink();
+    const execGh = (args) => {
+      if (view instanceof Error) throw view;
+      if (args[0] === 'pr') return JSON.stringify(view);
+      if (args[0] === 'api') return JSON.stringify(FILES);
+      return JSON.stringify(ISSUE);
+    };
+    return { code: main(argv, { execGh, stdout: out, stderr: err }), out: out.text };
+  };
+  const passing = run(pr());
+  assert.equal(passing.code, 0);
+  assert.match(passing.out, /#45 passes the loop guard: its review of #33 passes/);
+  const failing = run(pr({ body: 'Resolves #33.\n' }));
+  assert.equal(failing.code, 1);
+  assert.match(failing.out, /#45 does not pass the loop guard:\n- its body carries no review block/);
+  assert.equal(run({ headRefName: 'claude/x', body: '' }).code, 0);
+  assert.equal(run(new Error('gh: not logged in')).code, 1);
+  assert.equal(run(pr(), ['--pr', '45']).code, 2);
+});
+
+test('the workflow runs on every change to a pull request, read-only, with the base branch code', () => {
+  const yml = readRepoFile('.github/workflows/loop-guard.yml');
+  assert.match(yml, /types: \[opened, synchronize, reopened, edited\]/);
+  assert.match(yml, /ref: \$\{\{ github\.event\.pull_request\.base\.sha \}\}/, "never the pull request's own code");
+  assert.match(yml, /permissions:\n {2}contents: read\n {2}pull-requests: read\n {2}issues: read\n/);
+  assert.doesNotMatch(yml, /write/);
+  assert.match(yml, /^ {4}name: Loop guard$/m, 'the check name branch protection requires');
+  assert.match(yml, /node dev\/loop\/guard\.mjs --pr "\$\{\{ github\.event\.pull_request\.number \}\}" --repo "\$\{\{ github\.repository \}\}"/);
+});
