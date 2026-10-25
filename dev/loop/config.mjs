@@ -22,6 +22,8 @@ export const LOOP_DEFAULTS = Object.freeze({
   retryAfterHours: 24,
   /** The proposer's budget for one cycle, passed to its command (proposer.mjs). */
   proposer: Object.freeze({ wallMinutes: 45, maxTurns: 150, maxTokens: 4_000_000 }),
+  /** The reviewer's budget for one change, and how much of the diff its brief carries (reviewer.mjs). */
+  reviewer: Object.freeze({ wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000, maxDiffChars: 80_000 }),
   /** The suite every change must pass, and how long it may take. */
   testCommand: Object.freeze(['npm', 'test']),
   testTimeoutMinutes: 40,
@@ -130,6 +132,7 @@ export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => f
     ...LOOP_DEFAULTS,
     ...local,
     proposer: { ...LOOP_DEFAULTS.proposer, ...(local.proposer || {}) },
+    reviewer: { ...LOOP_DEFAULTS.reviewer, ...(local.reviewer || {}) },
     measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
   };
 }

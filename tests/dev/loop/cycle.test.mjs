@@ -5,7 +5,9 @@
 // the worse; it does nothing while paused, past the day's cap, for an issue already in a loop pull
 // request or tried lately (unless retried by name); a dry run pushes nothing; every cycle is recorded
 // and its checkout removed. A refusal names what the attempt changed and the tests that failed, and the
-// next attempt is briefed with the maintainers' comments on the issue, never a stranger's.
+// next attempt is briefed with the maintainers' comments on the issue, never a stranger's. A change that
+// passes the suite is committed and reviewed against the issue's points; it is refused unless the
+// reviewer finds every point met, and when the review cannot run or alters the checkout.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -77,6 +79,12 @@ const writes = (files, { ok = true } = {}) => async ({ worktree }) => {
 };
 
 const passing = async () => ({ ok: true, summary: 'ℹ tests 10, ℹ pass 10, ℹ fail 0' });
+
+/** A reviewer that answers every point with `met`, and says the change resolves the issue when all are. */
+const verdict = (met = () => true) => async ({ items }) => {
+  const answers = items.map((_, i) => ({ n: i + 1, met: met(i + 1), evidence: `point ${i + 1} seen in docs/guide.md` }));
+  return { review: { items: answers, resolves: answers.every((a) => a.met), problems: [] }, reason: null };
+};
 const runs = (caps, split = 'train') => caps.map((capability, i) => ({ taskId: `t-${split}`, split, trial: i + 1, capability, measured: true }));
 const evidence = (cand) => buildPromotionEvidence({
   candidate: { id: 'loop-7', lens: 'LOOP', touchedPaths: ['agent/work/thing.mjs'], proposal: { source: 'coding-agent' } },
@@ -90,6 +98,7 @@ function cycle(t, r, o = {}) {
     run: () => runCycle({
       repoRoot: r.work, now: NOW, env: {}, settings: { ...LOOP_DEFAULTS, ...(o.settings || {}) },
       execGh: gh.exec, proposer: o.proposer || writes({ 'docs/guide.md': '# Guide\n\nThe loop.\n' }), runTests: o.runTests || passing,
+      reviewer: o.reviewer || verdict(),
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -365,6 +374,72 @@ test('--retry tries the named issue again before its wait is over, and only that
   assert.equal((await cycle(t, r, { issueNumber: 7, retry: true }).run()).action, 'opened');
   const quiet = { stdout: { write() {} }, stderr: { write() {} } };
   assert.equal(await main(['--retry'], quiet), 2, '--retry without --issue is a usage mistake');
+});
+
+const DONE = { ...ISSUE, body: 'Add a section.\n\n**Done when:**\n- The guide has a section on the loop.\n- The README links to it.\n' };
+
+test('a passing change is reviewed point by point after it is committed, and the pull request carries the review', async (t) => {
+  const r = repo(t);
+  const seen = [];
+  const reviewer = async (p) => {
+    seen.push({ ...p, head: git(p.worktree, 'log', '-1', '--format=%s') });
+    return verdict()(p);
+  };
+  const c = cycle(t, r, { gh: fakeGh({ issues: [DONE] }), reviewer });
+  const res = await c.run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.deepEqual(seen[0].items, ['The guide has a section on the loop.', 'The README links to it.']);
+  assert.equal(seen[0].head, 'v2027.01.21.1.1: The guide explains the loop', 'the committed change is what is reviewed');
+  assert.match(seen[0].brief, /The points to judge:\n1\. The guide has a section on the loop\.\n2\. The README links to it\./);
+  assert.match(seen[0].brief, /<diff>\ndiff --git a\/docs\/guide\.md b\/docs\/guide\.md[\s\S]*\+The loop\.[\s\S]*<\/diff>/);
+  const create = c.gh.calls.find((a) => a[0] === 'pr' && a[1] === 'create');
+  const body = create[create.indexOf('--body') + 1];
+  assert.match(body, /- \*\*Review\*\*: every point the issue says the change is done when was found met/);
+  assert.match(body, /- Met: The README links to it\. \(point 2 seen in docs\/guide\.md\)/);
+  assert.match(body, /```json paraclete-loop-review\n\{"items":\["The guide has a section on the loop\.","The README links to it\."\],"review":\{/);
+  assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.reviewed, true);
+});
+
+test('a change its reviewer finds short of the issue is refused, with the unmet points on the issue, before it is measured', async (t) => {
+  const r = repo(t);
+  let measured = false;
+  const c = cycle(t, r, {
+    gh: fakeGh({ issues: [DONE] }),
+    proposer: writes({ 'agent/work/thing.mjs': 'export const thing = 2;\n', 'tests/agent/thing-two.test.mjs': '// two\n' }),
+    reviewer: verdict((n) => n !== 2),
+    measure: async () => { measured = true; return { measured: true, evidence: evidence([0.8, 0.8, 0.8]) }; },
+  });
+  const res = await c.run();
+  assert.deepEqual([res.action, res.reason], ['rejected', 'its reviewer found it does not resolve the issue: point 2 is not met']);
+  assert.equal(measured, false, 'a rejected change is not measured');
+  assert.equal(originHas(r, res.branch), false);
+  const comment = c.gh.calls.find((a) => a[1] === 'comment');
+  const body = comment[comment.indexOf('--body') + 1];
+  assert.match(body, /The reviewer's verdict:\n- Met: The guide has a section on the loop\.[^\n]*\n- Not met: The README links to it\. \(point 2 seen in docs\/guide\.md\)/);
+  assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.reviewed, false);
+});
+
+test('a change that cannot be reviewed is refused: no reviewer, no verdict, or a review that alters the checkout', async (t) => {
+  const r = repo(t);
+  const none = await cycle(t, r, { reviewer: async () => { throw new Error('no reviewer command: set reviewer.command in .local/loop.json (see dev/loop/README.md)'); } }).run();
+  assert.deepEqual([none.action, none.reason], ['unreviewed', 'the change could not be reviewed: no reviewer command: set reviewer.command in .local/loop.json (see dev/loop/README.md)']);
+
+  const r2 = repo(t);
+  const silent = await cycle(t, r2, { reviewer: async () => ({ review: null, reason: 'the reviewer gave no verdict in the form asked' }) }).run();
+  assert.deepEqual([silent.action, silent.reason], ['unreviewed', 'the change could not be reviewed: the reviewer gave no verdict in the form asked']);
+
+  const r3 = repo(t);
+  const meddler = async (p) => {
+    fs.writeFileSync(path.join(p.worktree, 'docs', 'guide.md'), '# Rewritten by the reviewer\n');
+    return verdict()(p);
+  };
+  const altered = await cycle(t, r3, { reviewer: meddler }).run();
+  assert.deepEqual([altered.action, altered.reason], ['unreviewed', 'the change could not be reviewed: the review changed the checkout (1 path(s))']);
+  assert.equal(originHas(r3, altered.branch), false);
+
+  const r4 = repo(t);
+  const unsure = await cycle(t, r4, { reviewer: async ({ items }) => ({ review: { items: items.map((_, i) => ({ n: i + 1, met: true, evidence: 'e' })), resolves: false, problems: [] }, reason: null }) }).run();
+  assert.deepEqual([unsure.action, unsure.reason], ['rejected', 'its reviewer found it does not resolve the issue: the reviewer did not say the change resolves the issue']);
 });
 
 test('the pieces: name-status, slugs, and what counts as worse', () => {

@@ -4,13 +4,16 @@ The self-improvement loop: plain code that, one cycle at a time, has a coding ag
 repository to resolve an issue, checks the change, and opens a pull request. Nothing here is product,
 and nothing here is installed on an instance.
 
-**Stage 1, supervised.** The loop opens pull requests; a person reviews and merges them. It never
-merges, releases or changes an instance.
+**Stage 1, supervised merging.** The loop opens a pull request only for a change its reviewer found
+resolves the issue; what merges it is not part of the loop yet. It never merges, releases or changes an
+instance.
 
 | File | What it does |
 |---|---|
 | `cycle.mjs` | One cycle, and its command line: picks an issue, has the proposer change a checkout of main, checks the change, opens the pull request, records the cycle |
 | `proposer.mjs` | The proposer interface, the brief it is given, and the command proposer that runs a headless coding-agent command named in your local settings |
+| `reviewer.mjs` | Whether a change resolves its issue: the points to judge (the issue's "Done when"), the reviewer's brief, its verdict parsed and decided by code, and the command reviewer; from the command line, reviews a pull request against an issue |
+| `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
 | `test-report.mjs` | Reads which tests failed from the suite's output, with each one's error (for a test file that could not load, the error it printed), for the refusal comment and the cycle record |
 | `timer.mjs` | Prints the systemd units that run a cycle on a schedule on the lab driver, and how to install them. Nothing installs them for you |
@@ -43,6 +46,13 @@ merges, releases or changes an instance.
      tests, so passing it is not enough. Removing code needs no test. It is checked before the suite runs;
    - the suite (`npm test`) fails.
 
+   A change that passes is committed and reviewed. A reviewer model (`reviewer.mjs`, the command named
+   by `reviewer` in your local settings) reads the issue, the change, its diff and the checkout, read-only,
+   and answers each point of the issue's "Done when" list (or, without one, the issue as a whole) as met
+   or not, as JSON. Code decides: the change is refused as `rejected` unless every point is met and the
+   reviewer says it resolves the issue, and as `unreviewed` when no reviewer is set, it gives no verdict,
+   or the review altered the checkout. The refusal lists the points it found unmet.
+
    A change to what the running agent reads (`prompts/`, `config/contracts.json`, `agent/`,
    `skills/`, `roles/*/` other than `role.json`) is committed and then measured. The model suite runs on
    main's head and on the change, with real-model runs (`node dev/harness2/cli.mjs eval --real-model`,
@@ -51,8 +61,10 @@ merges, releases or changes an instance.
    have to improve the suite: a fix may not show there.
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
-   and carries the proposer's summary, the tests' result and any evidence. When the change is refused,
-   it says why in a comment on the issue instead, with the files it changed and the tests that failed.
+   and carries the proposer's summary, the tests' result, the review (each point and a
+   `paraclete-loop-review` block a merger can read) and any evidence. When the change is refused, it says
+   why in a comment on the issue instead, with the files it changed, the tests that failed and the points
+   the reviewer found unmet.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
    (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own.
 
@@ -80,8 +92,21 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
 - The command runs in the cycle's checkout, and is stopped after `proposer.wallMinutes`.
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
   Without one, the pull request says it gave none (the end of its output is its tool's log).
-- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `proposer` and `measure`. The referee
-  is not a setting.
+- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `proposer`, `reviewer` and `measure`.
+  The referee is not a setting.
+
+## The reviewer
+
+Name it in the same file, under `reviewer`, the same way: `command`, `args` (with the same
+placeholders), `briefVia` and `env`, and optionally `wallMinutes` (15), `maxTurns`, `maxTokens` and
+`maxDiffChars` (80,000: how much of the diff its brief carries). Run it read-only: it may read the
+checkout to check a point, and a review that changes it is refused. It must end its output with the JSON
+verdict the brief asks for. A reviewer from a different model family than the proposer misses
+different things.
+
+`node dev/loop/reviewer.mjs --issue <n> --pr <n> [--repo <owner/name>] [--json]` reviews a pull
+request, open or closed, against an issue in a temporary checkout of its head, and changes nothing on
+GitHub. It exits 0 when the change resolves the issue, 1 when it does not or could not be reviewed.
 
 ## On the lab driver
 
