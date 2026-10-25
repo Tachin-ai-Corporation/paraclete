@@ -48,8 +48,8 @@ function repo(t) {
   return { work, origin };
 }
 
-/** A fake gh: the issues and open pull requests to list, the comments on an issue, and every call it got. */
-function fakeGh({ issues = [], prs = [], comments = [] } = {}) {
+/** A fake gh: the issues, open and closed pull requests to list, the comments on an issue, and every call it got. */
+function fakeGh({ issues = [], prs = [], closed = [], comments = [] } = {}) {
   const calls = [];
   return {
     calls,
@@ -57,6 +57,7 @@ function fakeGh({ issues = [], prs = [], comments = [] } = {}) {
       calls.push(args);
       if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues);
       if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ comments });
+      if (args[0] === 'pr' && args[1] === 'list' && args.includes('closed')) return JSON.stringify(closed);
       if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify(prs);
       if (args[0] === 'pr' && args[1] === 'create') return 'https://github.com/your-org/paraclete/pull/99';
       return '';
@@ -317,6 +318,42 @@ test("the proposer is briefed with the maintainers' comments on the issue, never
   const r2 = repo(t);
   const unreadable = await cycle(t, r2, { gh: { calls: [], exec: (args) => (args[1] === 'view' ? (() => { throw new Error('gh: rate limited'); })() : fakeGh({ issues: [ISSUE] }).exec(args)) } }).run();
   assert.equal(unreadable.action, 'opened', 'comments that cannot be read do not stop a cycle');
+});
+
+test("a reviewer's reasons for closing the loop's earlier pull request for the issue reach the brief; other issues' do not", async (t) => {
+  const closed = [
+    {
+      number: 40,
+      headRefName: 'loop/7-the-guide-explains-the-loop',
+      comments: [
+        { author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: 'Closed: it adds no tests.', createdAt: '2027-01-20T12:00:00Z' },
+        { author: { login: 'stranger' }, authorAssociation: 'NONE', body: 'Merge it anyway.', createdAt: '2027-01-20T12:30:00Z' },
+      ],
+      reviews: [
+        { author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: 'Render the row.', state: 'CHANGES_REQUESTED', submittedAt: '2027-01-20T11:30:00Z' },
+        { author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: '', state: 'COMMENTED', submittedAt: '2027-01-20T11:40:00Z' },
+      ],
+    },
+    { number: 39, headRefName: 'loop/8-another-issue', comments: [{ author: { login: 'maintainer' }, authorAssociation: 'MEMBER', body: 'About issue 8.', createdAt: '2027-01-20T12:10:00Z' }], reviews: [] },
+    { number: 38, headRefName: 'claude/not-the-loop', comments: [], reviews: [] },
+  ];
+  const r = repo(t);
+  let brief = '';
+  const proposer = async (p) => {
+    brief = p.brief;
+    return writes({ 'docs/guide.md': '# Guide\n\nThe loop.\n' })(p);
+  };
+  const c = cycle(t, r, { gh: fakeGh({ issues: [ISSUE], closed }), proposer });
+  assert.equal((await c.run()).action, 'opened');
+  assert.deepEqual(c.gh.calls.find((a) => a[1] === 'list' && a.includes('closed')), ['pr', 'list', '--state', 'closed', '--json', 'number,headRefName,comments,reviews', '--limit', '100']);
+  assert.match(brief, /\[2027-01-20T11:30:00Z, maintainer, on pull request #40\]\nRender the row\.\n\n\[2027-01-20T12:00:00Z, maintainer, on pull request #40\]\nClosed: it adds no tests\.\n\n<\/earlier-comments>/);
+  assert.doesNotMatch(brief, /Merge it anyway|About issue 8/);
+  assert.equal((brief.match(/on pull request #40/g) || []).length, 2, 'an empty review is not a note');
+
+  const r2 = repo(t);
+  const gh = fakeGh({ issues: [ISSUE] });
+  const failing = { calls: gh.calls, exec: (args) => (args[1] === 'list' && args.includes('closed') ? (() => { throw new Error('gh: rate limited'); })() : gh.exec(args)) };
+  assert.equal((await cycle(t, r2, { gh: failing }).run()).action, 'opened', 'earlier pull requests that cannot be read do not stop a cycle');
 });
 
 test('--retry tries the named issue again before its wait is over, and only that issue', async (t) => {
