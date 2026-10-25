@@ -330,7 +330,10 @@ export async function runCycle({
     if (!proposal.ok) return refuse('proposer-failed', proposal.reason || 'the proposer failed');
 
     // 5. What it changed, and whether that may be proposed.
-    execGit(['add', '--all', '--', '.', ...LINKED_PACKAGES.map((p) => `:!${p}`)], worktree);
+    // The linked packages never count as a change. git refuses a pathspec naming an ignored path, even
+    // to exclude it, so they are taken back out of the index after staging, ignored or not.
+    execGit(['add', '--all', '--', '.'], worktree);
+    execGit(['rm', '--cached', '-r', '-q', '--ignore-unmatch', '--', ...LINKED_PACKAGES], worktree);
     const changes = parseNameStatus(execGit(['diff', '--cached', '--name-status', '-M', base], worktree));
     if (changes.length === 0) return refuse('no-change', proposal.summary ? `the proposer changed nothing: ${proposal.summary.slice(0, 500)}` : 'the proposer changed nothing');
     const refusals = changes.flatMap((c) => [pathRefusal(c.path, c.status), c.oldPath ? pathRefusal(c.oldPath, 'D') : null]).filter(Boolean);

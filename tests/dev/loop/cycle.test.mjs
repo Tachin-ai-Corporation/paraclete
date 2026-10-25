@@ -123,6 +123,23 @@ test('a checked change: committed under the next version, pushed, and opened as 
   assert.deepEqual([rec.command, rec.loop.action, rec.loop.issue, rec.loop.changed, rec.pullRequest], ['loop', 'opened', 7, ['docs/guide.md'], 'https://github.com/your-org/paraclete/pull/99']);
 });
 
+test('the linked packages are never part of a change, whichever way .gitignore covers them', async (t) => {
+  for (const rule of ['node_modules/', 'node_modules']) {
+    const r = repo(t);
+    if (rule === 'node_modules') {
+      fs.writeFileSync(path.join(r.work, '.gitignore'), `.local/\n${rule}\n`);
+      git(r.work, 'commit', '--quiet', '-am', 'ignore a linked node_modules too');
+      git(r.work, 'push', '--quiet', 'origin', 'main');
+    }
+    fs.mkdirSync(path.join(r.work, 'agent', 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(r.work, 'agent', 'node_modules', 'pkg', 'index.js'), 'module.exports = 1;\n');
+    const res = await cycle(t, r).run();
+    assert.equal(res.action, 'opened', `${rule}: ${res.reason}`);
+    assert.deepEqual(readCycleRecords({ repoRoot: r.work })[0].loop.changed, ['docs/guide.md'], rule);
+    assert.doesNotMatch(git(r.origin, 'ls-tree', '-r', '--name-only', res.branch), /node_modules/, rule);
+  }
+});
+
 test('a change to the referee or to an existing test is refused whole, with a comment on the issue', async (t) => {
   for (const [files, reason] of [
     [{ '.github/workflows/ci.yml': 'name: changed\n' }, /\.github\/workflows\/ci\.yml judges changes or runs the loop/],
