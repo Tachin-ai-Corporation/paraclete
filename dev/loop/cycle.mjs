@@ -273,14 +273,17 @@ async function reviewChange({ issue, changes, tests, summary, base, worktree, se
     diff = '(the diff could not be read: read the changed files)';
   }
   const brief = buildReviewBrief({ issue, items, changes, diff, tests, summary, maxDiffChars: settings.reviewer.maxDiffChars });
+  // What git sees in the checkout before the review (the linked packages, where .gitignore does not
+  // cover a link) is not the review's doing; anything it sees after, beyond that, is.
+  const before = new Set(execGit(['status', '--porcelain'], worktree).split('\n').filter(Boolean));
   let run;
   try {
     run = await (reviewer || createCommandReviewer(settings.reviewer))({ worktree, brief, items });
   } catch (err) {
     run = { review: null, reason: err.message };
   }
-  const touched = execGit(['status', '--porcelain'], worktree);
-  if (touched) return { items, review: null, ok: false, unmet: [], problems: [], reason: `the review changed the checkout (${touched.split('\n').length} path(s))` };
+  const touched = execGit(['status', '--porcelain'], worktree).split('\n').filter((l) => l && !before.has(l));
+  if (touched.length) return { items, review: null, ok: false, unmet: [], problems: [], reason: `the review changed the checkout (${touched.length} path(s))` };
   if (!run.review) return { items, review: null, ok: false, unmet: [], problems: [], reason: run.reason || 'the reviewer gave no verdict' };
   return { items, review: run.review, reason: null, ...judgeReview(run.review, items) };
 }
