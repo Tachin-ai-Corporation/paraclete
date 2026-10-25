@@ -74,7 +74,7 @@ on your dev instance first, so it needs both, as the dev loop commands do. When 
 
 ## The self-improvement loop (`dev/loop/`)
 
-`node dev/loop/cycle.mjs [--issue <n>] [--dry-run] [--json]` runs one cycle of the loop. It takes the
+`node dev/loop/cycle.mjs [--issue <n> [--retry]] [--dry-run] [--json]` runs one cycle of the loop. It takes the
 oldest open GitHub issue labelled `loop`, has a coding agent (named in `.local/loop.json`, never in the
 repo) change a fresh checkout of main to resolve it, and checks the change. A change is refused when it
 touches the referee (what judges a change, and the loop itself), changes an existing test, fails the
