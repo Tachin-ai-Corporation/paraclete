@@ -2,11 +2,14 @@
 // a failing run with a "✖ failing tests:" block. When a loop cycle refuses a change for failing the
 // suite, it names these tests on the issue and in its cycle record, so the next attempt knows what
 // broke. A test file that fails as a whole (it could not load, say) shows only 'test failed' in that
-// block; its error was printed above its result line, and is taken from there. It reads text only and
-// runs nothing. Called by cycle.mjs.
+// block; its error was printed above its result line, with the file, line and source it failed on, and
+// is taken from there. It reads text only and runs nothing. Called by cycle.mjs, which first makes the
+// checkout's paths relative.
+
+import { pathToFileURL } from 'node:url';
 
 /** How much of a report is kept: failures listed, and the length of each name and message. */
-export const REPORT_LIMITS = Object.freeze({ failures: 10, name: 200, message: 300 });
+export const REPORT_LIMITS = Object.freeze({ failures: 10, name: 200, message: 400 });
 
 const MESSAGE_LINES = 3;
 const DURATION = /\s+\([\d.]+m?s\)$/;
@@ -15,12 +18,16 @@ const LOCATION = /^test at (.+):(\d+):\d+$/;
 const RESULT_LINE = /^[✔✖﹣] /;
 /** The first line of a thrown error: "SyntaxError: ...", "Error [ERR_MODULE_NOT_FOUND]: ...". */
 const ERROR_LINE = /^(?:[A-Z][A-Za-z]*)?Error(?: \[[A-Z_]+\])?: /;
+/** Where node says a load error is, on a line of its own above the source it quotes: "<file>:<line>". */
+const SOURCE_LOCATION = /^(?:file:\/\/)?(\S+:\d+)$/;
 /** How far above a file's result line its own output is looked for. */
 const LOAD_ERROR_WINDOW = 80;
+const SOURCE_CHARS = 120;
 
 /**
  * The error a test file printed before node reported it failed as a whole: the first error line
- * between the previous result line and the file's own, or null.
+ * between the previous result line and the file's own, with the file, line and source node quoted
+ * above it when it did ("SyntaxError: ... (at x.js:12: <source>)"), or null.
  */
 function loadError(listing, name) {
   const lines = listing.split('\n');
@@ -33,7 +40,16 @@ function loadError(listing, name) {
       break;
     }
   }
-  return lines.slice(start, at).find((l) => ERROR_LINE.test(l))?.trim() || null;
+  const e = lines.findIndex((l, i) => i >= start && i < at && ERROR_LINE.test(l));
+  if (e < 0) return null;
+  const error = lines[e].trim();
+  for (let i = e - 1; i >= start; i -= 1) {
+    const where = SOURCE_LOCATION.exec(lines[i].trim());
+    if (!where) continue;
+    const source = i + 1 < e ? lines[i + 1].trim().slice(0, SOURCE_CHARS) : '';
+    return `${error} (at ${where[1]}${source ? `: ${source}` : ''})`;
+  }
+  return error;
 }
 
 /**
@@ -78,6 +94,24 @@ export function failingTests(output) {
     if (error) f.message = error.slice(0, REPORT_LIMITS.message);
   }
   return failures;
+}
+
+/**
+ * A run's output with a checkout's own paths made relative to it, both as file URLs and as plain
+ * paths, so a report names `tests/x.test.mjs:12`, not a temporary directory on the driver.
+ *
+ * @param {string} output
+ * @param {string[]} roots  the checkout, and its real path when that differs
+ * @returns {string}
+ */
+export function withoutRoots(output, roots) {
+  let text = String(output || '');
+  for (const root of new Set((roots || []).filter(Boolean))) {
+    const plain = root.replace(/[\\/]+$/, '');
+    const url = `${pathToFileURL(plain).href}/`;
+    for (const prefix of [url, `${plain}/`, `${plain}\\`]) text = text.split(prefix).join('');
+  }
+  return text;
 }
 
 /**
