@@ -104,8 +104,6 @@ The dashboard works around each of these today; each names where the fix belongs
 - **An approval in the conversation.** A gate approved from the dashboard leaves no trace in the chat
   that asked for it: the agent's "approve or reject" request is the last word there until the mission
   ends. A short note from the mouth ("Approved by ...; continuing") would close the loop.
-- **The gate on the mission page.** A gate is a step of the plan with no task envelope, so the plan
-  shows "Task 1, Task 3". Show the gate as its own row, with who decided it.
 
 **Checked live on 2026-10-18:** IAP sign-in in Chrome (the header's audience is
 `/projects/<number>/locations/<region>/services/<service>`, as derived); `roles/iap.admin` granted on
