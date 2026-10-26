@@ -37,7 +37,10 @@ releases, and never changes an instance.
    repo's installed packages linked in.
 4. **Runs the proposer**, within its budget (`proposer.wallMinutes`, `maxTurns`, `maxTokens`). The
    proposer only edits files. Its brief carries the issue and the newest of those comments, as data,
-   so an attempt learns what earlier ones changed and which tests they failed.
+   so an attempt learns what earlier ones changed and which tests they failed. When the suite fails
+   (step 5), the proposer runs again on the same checkout with the failing tests, their errors and
+   where they are, up to `repairRounds` (2) times, before the change is refused: the cycle runs the
+   tests whether or not the proposer did.
 5. **Checks the change.** It refuses the whole change when:
    - it touches the referee: `dev/loop/`; the evaluation, benchmark, evidence, merge, pause and health
      code in `dev/harness2/`; `dev/release*.mjs`; `.github/`; `install/`; `migrations/`;
@@ -95,7 +98,8 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
 - The command runs in the cycle's checkout, and is stopped after `proposer.wallMinutes`.
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
   Without one, the pull request says it gave none (the end of its output is its tool's log).
-- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `proposer`, `reviewer` and `measure`.
+- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `proposer`, `reviewer`,
+  `measure` and `merge`.
   The referee is not a setting.
 
 ## The reviewer

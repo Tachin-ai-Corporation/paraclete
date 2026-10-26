@@ -171,6 +171,36 @@ test('a change to the referee or to an existing test is refused whole, with a co
   }
 });
 
+test('a failing suite goes back to the proposer with the failing tests, in the same checkout, until it passes', async (t) => {
+  const r = repo(t);
+  const briefs = [];
+  let runs = 0;
+  const proposer = async (p) => {
+    briefs.push(p.brief);
+    const fixed = briefs.length > 1;
+    return writes({ 'docs/guide.md': fixed ? '# Guide\n\nFixed.\n' : '# Guide\n\nBroken.\n' })(p);
+  };
+  const runTests = async ({ worktree }) => {
+    runs += 1;
+    const text = fs.readFileSync(path.join(worktree, 'docs', 'guide.md'), 'utf8');
+    return text.includes('Fixed')
+      ? { ok: true, summary: 'ℹ tests 10, ℹ fail 0' }
+      : { ok: false, summary: 'ℹ fail 1', failures: [{ file: 'tests/docs.test.mjs', line: 4, name: 'the guide', message: 'SyntaxError: Invalid or unexpected token' }] };
+  };
+  const res = await cycle(t, r, { proposer, runTests }).run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.deepEqual([briefs.length, runs, res.repairs], [2, 2, 1]);
+  assert.ok(briefs[1].startsWith(briefs[0]), 'a repair round carries the first brief: a run remembers nothing');
+  assert.match(briefs[1], /REPAIR ROUND 1 OF 2\. An earlier run already changed this checkout[^\n]*\(ℹ fail 1\):\n\n<failing-tests>\n- `tests\/docs\.test\.mjs:4` the guide: SyntaxError: Invalid or unexpected token\n<\/failing-tests>/);
+  assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.repairs, 1);
+
+  const r2 = repo(t);
+  let calls = 0;
+  const quits = async (p) => (++calls === 1 ? writes({ 'docs/guide.md': '# G\n' })(p) : { ok: false, summary: '', reason: 'the proposer ran past its 45 minutes' });
+  const gaveUp = await cycle(t, r2, { proposer: quits, runTests: async () => ({ ok: false, summary: 'ℹ fail 1' }) }).run();
+  assert.deepEqual([gaveUp.action, gaveUp.reason], ['proposer-failed', 'the proposer ran past its 45 minutes (in repair round 1)']);
+});
+
 test('a change to code that adds no test is refused before the suite runs; removing code needs none', async (t) => {
   const r = repo(t);
   let ran = false;
@@ -199,7 +229,10 @@ test('a new test is welcome; a failing suite is refused', async (t) => {
   assert.equal(added.action, 'opened', added.reason);
   const r2 = repo(t);
   const failing = await cycle(t, r2, { runTests: async () => ({ ok: false, summary: 'ℹ fail 2' }) }).run();
-  assert.deepEqual([failing.action, failing.reason], ['tests-failed', 'the suite failed: ℹ fail 2']);
+  assert.deepEqual([failing.action, failing.reason], ['tests-failed', 'the suite failed after 2 repair rounds: ℹ fail 2']);
+  const r3 = repo(t);
+  const once = await cycle(t, r3, { settings: { repairRounds: 0 }, runTests: async () => ({ ok: false, summary: 'ℹ fail 2' }) }).run();
+  assert.equal(once.reason, 'the suite failed: ℹ fail 2', 'no repair rounds, no repair');
 });
 
 test("a change to the agent's behaviour is measured, and refused when unmeasured or worse", async (t) => {
@@ -286,7 +319,7 @@ test('a failing suite is refused with the files it changed and the tests that fa
   const comment = c.gh.calls.find((a) => a[0] === 'issue' && a[1] === 'comment');
   const body = comment[comment.indexOf('--body') + 1];
   assert.equal(body, [
-    'The self-improvement loop tried this and stopped (tests-failed): the suite failed: ℹ fail 2',
+    'The self-improvement loop tried this and stopped (tests-failed): the suite failed after 2 repair rounds: ℹ fail 2',
     '',
     'It changed: `docs/guide.md` (M).',
     '',

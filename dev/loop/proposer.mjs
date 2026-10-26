@@ -10,6 +10,7 @@
 
 import { spawn } from 'node:child_process';
 import { runAgentCommand } from './command.mjs';
+import { failureLines } from './test-report.mjs';
 
 /**
  * What a proposer is asked to do: resolve one issue in this checkout, within the repo's rules and the
@@ -52,6 +53,32 @@ export function buildBrief({ issue, notes = [], testCommand, budget }) {
     `- You have about ${budget.wallMinutes} minutes and ${budget.maxTurns} turns. If the issue cannot be resolved within them, or should not be, change nothing and say why.`,
     '',
     'When you are done, end with a short plain summary of what you changed and why, under the line "SUMMARY:". Without it, the pull request says you gave none.',
+  ].join('\n');
+}
+
+/**
+ * The brief for a repair round: the first brief again (each run starts with no memory of the last), then
+ * what the change so far fails. The proposer fixes it in the same checkout.
+ *
+ * @param {object} p
+ * @param {string} p.brief   the cycle's first brief
+ * @param {object} p.tests   the failing run: { summary, failures }
+ * @param {number} p.round
+ * @param {number} p.rounds
+ * @returns {string}
+ */
+export function buildRepairBrief({ brief, tests, round, rounds }) {
+  const failing = failureLines(tests.failures || []);
+  return [
+    brief,
+    '',
+    `REPAIR ROUND ${round} OF ${rounds}. An earlier run already changed this checkout to resolve the issue, and that change is still here. It fails the suite (${tests.summary}):`,
+    '',
+    '<failing-tests>',
+    ...(failing.length ? failing : ['(the suite failed without naming a test: run it to see why)']),
+    '</failing-tests>',
+    '',
+    'Fix what fails and keep the rest of the change. Read each failing file at the line named first: a file that cannot load usually has a syntax error there, such as a string broken across two lines where an escape like \\n was meant, or an unclosed bracket. Run each failing test file with `node --test <file>` until it passes, then run `npm test`.',
   ].join('\n');
 }
 
