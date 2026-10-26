@@ -4,7 +4,9 @@
 // change, and opens a pull request a person reviews and merges. Each step is fixed here; the proposer
 // only edits files.
 //
-//   1. refuse while the harness is paused (dev/harness2/PAUSED), or once today's cycles are spent;
+//   1. refuse while the harness is paused (dev/harness2/PAUSED), or the loop is (the repository variable
+//      PARACLETE_LOOP_PAUSED), or once today's cycles are spent; when CI failed on main because of a loop
+//      merge, open its revert and reopen its issue (sentinel.mjs), and change nothing else on a broken main;
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
 //      closed pull requests for it; give up an issue refused `maxAttempts` times (`loop` becomes
 //      `loop-stuck`); when none waits, have the planner (planner.mjs) open one from the open items;
@@ -44,6 +46,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { STUCK_LABEL, planIssue } from './planner.mjs';
+import { checkMain, loopPauseReason } from './sentinel.mjs';
 import { buildBrief, buildRepairBrief, createCommandProposer } from './proposer.mjs';
 import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
@@ -478,6 +481,8 @@ export async function runCycle({
   // 1. The off switch, and the day's cap.
   const pause = pauseState({ repoRoot, env });
   if (pause.paused) return finish({ action: 'paused', reason: `the harness is paused: ${pause.reason}` });
+  const loopPause = loopPauseReason({ repoRoot, repo, execGh });
+  if (loopPause) return finish({ action: 'paused', reason: `the loop is paused: ${loopPause}` });
   const past = pastCycles(records, now, settings.retryAfterHours);
   if (past.today >= settings.maxCyclesPerDay) {
     return finish({ action: 'capped', reason: `today's ${settings.maxCyclesPerDay} cycles are spent` });
@@ -486,6 +491,17 @@ export async function runCycle({
   // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
   // holding its branch, which would stop the next cycle on that issue. No other cycle runs now.
   clearStaleCheckouts({ repoRoot, execGit, log });
+
+  // A loop merge that broke main is reverted first, and nothing new is built on a broken main.
+  let health;
+  try {
+    health = checkMain({ repoRoot, repo, settings, execGit, execGh, now, dryRun, log, removeCheckout });
+  } catch (err) {
+    health = { state: 'unknown', reason: err.message };
+    log(`[WARN] could not read main's CI: ${err.message}`);
+  }
+  if (health.state === 'reverting') return finish({ action: 'reverting', reason: health.reason, pullRequest: health.pullRequest || null });
+  if (health.state === 'broken') return finish({ action: 'main-broken', reason: health.reason });
 
   // 2. The issue: the oldest open one with the label, no open loop pull request, not tried lately.
   const issues = JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', settings.label, '--state', 'open',

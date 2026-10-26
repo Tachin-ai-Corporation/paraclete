@@ -404,8 +404,10 @@ done.
       a day, or closes it with the reasons for the next attempt. Since `v2026.10.26.3.1` the loop finds
       its own work: when no `loop` issue waits, its planner turns an item of `docs/plan/OPEN_ITEMS.md`
       into one, with testable "Done when" points, and an issue refused 6 times is given up as
-      `loop-stuck`. Next: reverting a merge the lab shows to be bad, the daily release check, and
-      retiring the legacy harness.
+      `loop-stuck`. Since `v2026.10.26.7.1` a loop merge that breaks CI on `main` is reverted by the
+      next cycle, through a pull request the Loop guard checks sets exactly that commit's files back, its
+      issue reopened; a second revert in a day pauses the loop (`PARACLETE_LOOP_PAUSED`). Next: the
+      daily release check, and retiring the legacy harness.
     - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
       `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
       and the role's smoke mission to pass, and only then cuts the release, with the check recorded in

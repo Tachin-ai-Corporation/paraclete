@@ -16,6 +16,7 @@ releases, and never changes an instance.
 | `reviewer.mjs` | Whether a change resolves its issue: the points to judge (the issue's "Done when"), the reviewer's brief, its verdict parsed and decided by code, and the command reviewer; from the command line, reviews a pull request against an issue |
 | `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
 | `planner.mjs` | Where the work comes from when no person writes an issue: turns one item of `docs/plan/OPEN_ITEMS.md` into a `loop` issue with testable "Done when" points, chosen and written by a planner model, checked by code |
+| `sentinel.mjs` | What undoes a loop merge that broke main: at a cycle's start, when CI failed on main's head and that head is a loop merge, opens its revert pull request, reopens its issue, and pauses the loop's cycles at the day's second revert; and the check a revert pull request must pass |
 | `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
 | `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
@@ -26,8 +27,10 @@ releases, and never changes an instance.
 
 `node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
 
-1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), or once
-   today's cycles (`maxCyclesPerDay`, 4) are spent. Cycles are counted from the cycle log.
+1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), while the
+   loop is (the repository variable `PARACLETE_LOOP_PAUSED`), or once today's cycles (`maxCyclesPerDay`,
+   4) are spent. Cycles are counted from the cycle log. When CI failed on main's head, it changes nothing
+   on it: a loop merge there is reverted first (see "When a loop merge breaks main").
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
    request from a `loop/<issue>-` branch, and one it tried and failed within `retryAfterHours` (24).
    `--issue` names one; `--retry` tries it even within that wait. It reads the comments by the
@@ -105,7 +108,7 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
 - The command runs in the cycle's checkout, and is stopped after `proposer.wallMinutes`.
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
   Without one, the pull request says it gave none (the end of its output is its tool's log).
-- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `maxAttempts`,
+- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `maxAttempts`, `maxRevertsPerDay`,
   `proposer`, `reviewer`, `planner`, `measure` and `merge`.
   The referee is not a setting.
 
@@ -159,6 +162,21 @@ merge cleanly and whose head contains `main`'s head. It squash-merges with the p
 requests (as the user it runs as, so CI and the Loop guard run again on what would land). One that
 cannot pass (CI failed, a conflict with `main`, the guard) is closed with the reasons: closing it frees
 the issue for the next cycle, whose proposer reads that comment. Nothing merges while `dev/harness2/PAUSED` exists or CI on `main` failed.
+
+## When a loop merge breaks main
+
+The merger merges only what CI passed on the main it lands on, so this is rare; when it happens, the
+merger holds every other merge while CI on main's head fails. A cycle starts by reading that CI
+(`sentinel.mjs`). When it finished with a failure and main's head is a loop merge (the merger's squash
+message), the cycle opens a revert pull request instead of new work: `git revert` of that commit on
+`loop/revert-<sha>`, labelled `loop`, its body naming the commit and the pull request it reverts, as the
+user the cycle runs as (so its CI and the Loop guard run). It reopens the issue that merge resolved,
+saying why. The Loop guard passes a revert only when it sets every file the reverted commit touched back
+to exactly what it was before that commit (by blob) and changes nothing else; the merger takes it first,
+whatever main's CI says and past the day's cap. When it is the day's `maxRevertsPerDay` (2)-th revert,
+the cycle also sets the repository variable `PARACLETE_LOOP_PAUSED`: cycles stop, the merger still
+lands the revert. Delete the variable to resume. When main is broken by anything but a loop merge, or a
+revert cannot be made, the cycle reverts nothing and builds nothing on it.
 
 ## On the lab driver
 
