@@ -424,6 +424,19 @@ export async function runCycle({
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
   const busy = (n) => openPrs.some((p) => String(p.headRefName || '').startsWith(`${settings.branchPrefix}${n}-`));
+  // Loop pull requests main moved past are brought up to date (main merged into them, as the user this
+  // runs as, so their CI and the Loop guard run again): the merger waits for that rather than close
+  // them. One already current, or in conflict (which the merger closes), is left as it is.
+  if (!dryRun) {
+    for (const p of openPrs.filter((x) => String(x.headRefName || '').startsWith(settings.branchPrefix))) {
+      try {
+        execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${p.number}/update-branch`], repoRoot);
+        log(`[INFO] loop: brought #${p.number} up to date with main`);
+      } catch {
+        // current already, or in conflict
+      }
+    }
+  }
   const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
   // An issue refused maxAttempts times is given up: what the loop cannot do stops holding it.
   const stuck = issues.filter((i) => (past.attempts.get(i.number) || 0) >= settings.maxAttempts);

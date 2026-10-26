@@ -112,9 +112,10 @@ test('one that cannot pass is closed with its reasons, which the next attempt re
   assert.match(formatLoopMergeReport(d), /^#6 would close: /);
 });
 
-test('behind main, conflicting or failing CI is closed; still running or still computing is left', async (t) => {
+test('conflicting or failing CI is closed; behind main, still running or still computing is left', async (t) => {
   const cases = [
-    [{ behindBy: 2 }, 'closed', /its head lacks 2 commit\(s\) of main's head/],
+    [{ behindBy: 2 }, 'waiting', /its head lacks 2 commit\(s\) of main's head: the next loop cycle brings it up to date/],
+    [{ behindBy: 2, view: { ...loopPr(7).view, mergeStateStatus: 'DIRTY' } }, 'closed', /it conflicts with main/],
     [{ view: { ...loopPr(7).view, mergeStateStatus: 'DIRTY' } }, 'closed', /it conflicts with main/],
     [{ runs: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }, 'closed', /CI did not pass on 7{12}: Tests \(failure\)/],
     [{ runs: [{ name: 'Tests', status: 'in_progress', conclusion: null }] }, 'waiting', /CI is still running/],

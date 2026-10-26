@@ -151,9 +151,10 @@ never merge at once). It merges, at most once per run and at most `merge.maxPerD
 pull request whose CI passed (the Loop guard among it), that passes the guard again, that GitHub can
 merge cleanly and whose head contains `main`'s head. It squash-merges with the pull request's title
 (moved to the next free version when stale), pinned to the head it checked, then dispatches CI on
-`main`. One that cannot pass (CI failed, a conflict, behind `main`, the guard) is closed with the reasons:
-the loop never updates a pull request it opened, so closing it frees the issue for the next cycle, whose
-proposer reads that comment. Nothing merges while `dev/harness2/PAUSED` exists or CI on `main` failed.
+`main`. One `main` has moved past waits: each cycle starts by merging `main` into the loop's open pull
+requests (as the user it runs as, so CI and the Loop guard run again on what would land). One that
+cannot pass (CI failed, a conflict with `main`, the guard) is closed with the reasons: closing it frees
+the issue for the next cycle, whose proposer reads that comment. Nothing merges while `dev/harness2/PAUSED` exists or CI on `main` failed.
 
 ## On the lab driver
 

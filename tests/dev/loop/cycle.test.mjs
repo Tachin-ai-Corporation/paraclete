@@ -308,6 +308,18 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   assert.equal(originHas(r3, worse.branch), false);
 });
 
+test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {
+  const prs = [{ number: 5, headRefName: 'loop/7-earlier-try', title: 't' }, { number: 6, headRefName: 'claude/other', title: 'o' }];
+  const r = repo(t);
+  const c = cycle(t, r, { gh: fakeGh({ issues: [ISSUE], prs }) });
+  await c.run();
+  const updates = c.gh.calls.filter((a) => a[0] === 'api' && a.includes('PUT'));
+  assert.deepEqual(updates, [['api', '-X', 'PUT', 'repos/{owner}/{repo}/pulls/5/update-branch']], "only the loop's");
+  const dry = cycle(t, repo(t), { gh: fakeGh({ issues: [ISSUE], prs }), dryRun: true });
+  await dry.run();
+  assert.equal(dry.gh.calls.some((a) => a.includes('PUT')), false);
+});
+
 test('nothing to do: paused, the day spent, no issue, an issue already in a pull request, or tried lately', async (t) => {
   const r = repo(t);
   const gh = fakeGh({ issues: [ISSUE] });
