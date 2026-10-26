@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import { loopSquashBody } from '../../../dev/loop/merger.mjs';
-import { LAB_PATHS, labHealth, loopMergesIn, readLab, releaseIfDue, releaseMessage } from '../../../dev/loop/releaser.mjs';
+import { LAB_PATHS, labHealth, loopMergesIn, readLab, releaseIfDue, releaseMessage, runReleaseCheck } from '../../../dev/loop/releaser.mjs';
 import { SERVICES } from '../../../agent/services/control/systemd.mjs';
 
 const NOW = new Date('2026-10-27T12:00:00Z');
@@ -99,4 +99,32 @@ test("no release when off, refused by dev/release.mjs, released already, without
   assert.deepEqual(dry, { action: 'not-due', reason: 'a dry run: v2026.10.27.1.1 would be released', version: 'v2026.10.27.1.1' });
   const first = await run({ check: async () => ({ ...CANDIDATE, previous: null, previousCommit: null }), push: async () => {} });
   assert.equal(first.action, 'released', 'the first release needs no previous one');
+});
+
+const SMOKE = { ...LOOP_DEFAULTS, release: { ...LOOP_DEFAULTS.release, enabled: true, smoke: true } };
+
+test("with smoke on, the release is dev/release-check.mjs's on the canary, and only its own tag counts", async () => {
+  const run = (summary, o = {}) => releaseIfDue({
+    settings: SMOKE, ctx: ctx(), check: async () => CANDIDATE, push: async () => { throw new Error('the releaser tagged it itself'); },
+    lab: () => LAB, now: NOW, canary: () => ({ code: summary?.outcome === 'failed' ? 1 : 0, summary, tail: 'stderr tail' }), ...o,
+  });
+  assert.deepEqual(await run({ outcome: 'released', tag: 'v2026.10.27.1.1', steps: {} }), { action: 'released', reason: null, version: 'v2026.10.27.1.1' });
+  assert.match((await run({ outcome: 'nothing_to_release', steps: {} })).reason, /was released meanwhile/);
+  const smoke = await run({ outcome: 'failed', steps: { release: { ok: true }, deploy: { ok: true }, status: { ok: true }, smoke: { ok: false } }, error: 'the smoke test of role software-engineer failed: no answer.\nmore' });
+  assert.deepEqual(smoke, { action: 'not-due', reason: 'the canary check failed at smoke: the smoke test of role software-engineer failed: no answer.' });
+  assert.match((await run(null)).reason, /the canary check failed: stderr tail/, 'no summary: the tail of what it printed');
+  assert.match((await run(null, { dryRun: true })).reason, /would be checked on the canary and then released/);
+});
+
+test('the canary check runs dev/release-check.mjs --vm-only --json in the checkout and reads its summary back', () => {
+  const calls = [];
+  const spawn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    return { status: 0, stdout: '{"outcome": "released", "tag": "v1"}\n', stderr: 'Step 5 of 5\nPushed v1.\n' };
+  };
+  const res = runReleaseCheck({ cwd: '/repo', minutes: 2, spawn });
+  assert.deepEqual(res, { code: 0, summary: { outcome: 'released', tag: 'v1' }, tail: 'Step 5 of 5 Pushed v1.' });
+  assert.deepEqual(calls[0].args, ['dev/release-check.mjs', '--vm-only', '--json']);
+  assert.deepEqual([calls[0].cmd, calls[0].opts.cwd, calls[0].opts.timeout, 'NODE_TEST_CONTEXT' in calls[0].opts.env], [process.execPath, '/repo', 120_000, false]);
+  assert.equal(runReleaseCheck({ spawn: () => ({ status: null, stdout: '', stderr: 'killed' }) }).summary, null);
 });
