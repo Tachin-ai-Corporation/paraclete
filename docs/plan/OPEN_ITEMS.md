@@ -134,8 +134,6 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
   compared a rendered .docx with its source PDF and fixed a duplicated title). Still to check: that
   Claude on Vertex takes a tool_result image, and that three images at the size cap fit the request
   limits.
-- **The output folder's name.** Set to a shared drive's root, the Drive check calls the folder
-  "Drive" (the root folder's own name); show the shared drive's name instead.
 - **A restricted organization.** The Drive check's advice for an organization that blocks sharing
   outside its domain is untested live: the dev organization allows sharing with the service account.
 - **Renders for the verifier.** The motor rendered its check images to `/tmp` and deleted them; the

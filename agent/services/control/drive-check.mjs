@@ -96,12 +96,12 @@ export async function checkDrive({ drive, db, now = () => new Date() }) {
     return result;
   }
 
-  result.output_folder = await checkOutputFolder({ drive, folderId, now, serviceAccount, email, advise });
+  result.output_folder = await checkOutputFolder({ drive, folderId, sharedDrives: result.shared_drives, now, serviceAccount, email, advise });
   return result;
 }
 
 /** The output folder: its name, its shared drive, and whether a new file can be created in it. */
-async function checkOutputFolder({ drive, folderId, now, serviceAccount, email, advise }) {
+async function checkOutputFolder({ drive, folderId, sharedDrives, now, serviceAccount, email, advise }) {
   const folder = { id: folderId, name: null, drive_id: null, writable: false, error: null };
   const notWritable = (why) => {
     const label = folder.name ? `"${folder.name}" (${folderId})` : folderId;
@@ -122,7 +122,11 @@ async function checkOutputFolder({ drive, folderId, now, serviceAccount, email, 
     notWritable(err.message);
     return folder;
   }
-  folder.name = meta.name ?? null;
+  const sharedRoot = Boolean(meta.driveId && (folderId === meta.driveId || meta.id === meta.driveId));
+  const sharedDriveName = sharedRoot
+    ? sharedDrives?.find((d) => d.id === meta.driveId)?.name || null
+    : null;
+  folder.name = sharedDriveName ?? meta.name ?? null;
   folder.drive_id = meta.driveId ?? null;
   if (meta.mimeType !== FOLDER_MIME) {
     folder.error = `it is a ${describeType(meta.mimeType)}, not a folder`;
