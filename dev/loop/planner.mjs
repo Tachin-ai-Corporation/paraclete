@@ -97,7 +97,7 @@ export function buildPlanBrief({ items }) {
     '- Choose an item one change to this repository can finish within an hour of work, that tests run by `npm test` can show done. Skip an item that asks a person to decide something, needs live infrastructure, another project or a person to check by hand, or would change what judges a change (dev/loop/, the evaluation and merge code in dev/harness2/, dev/release*.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md, the package manifests).',
     '- Prefer the item whose change helps most and is least likely to break something.',
     '',
-    'Write 1 to 5 points the change is done when. Each point is something a reviewer can check by reading the change and its tests: name the files, the behaviour, and the new tests. Do not add a point about OPEN_ITEMS.md: that one is added for you.',
+    'Write 1 to 5 points the change is done when. Each point is something a reviewer can check by reading the change and its tests: name the files, the behaviour, and the new tests. Ask for tests in a new test file under tests/, named for what it tests: a test file that exists already may not be changed by the change. Do not add a point about OPEN_ITEMS.md: that one is added for you.',
     '',
     'End your reply with one JSON block in this form:',
     '```json',
@@ -111,10 +111,13 @@ export function buildPlanBrief({ items }) {
  * The planner's answer, checked: the last ```json block (or the last {...}) in its output.
  *
  * @param {string} output
- * @param {object[]} items  the candidates
+ * @param {object[]} items   the candidates
+ * @param {object} [o]
+ * @param {Function} [o.exists]  (repo path) => whether it exists: a point may not ask to change an
+ *                               existing test file, which the loop's rules forbid a change to
  * @returns {{ plan: object|null, skip: string|null, problems: string[] }}
  */
-export function parsePlan(output, items) {
+export function parsePlan(output, items, { exists = () => false } = {}) {
   const text = String(output || '');
   const blocks = [...text.matchAll(/```json\s*\n([\s\S]*?)```/g)].map((m) => m[1]);
   const last = Math.max(text.lastIndexOf('{"key"'), text.lastIndexOf('{"skip"'));
@@ -138,6 +141,8 @@ export function parsePlan(output, items) {
   const doneWhen = Array.isArray(answer.doneWhen) ? answer.doneWhen.map((p) => String(p).trim()).filter(Boolean) : [];
   if (doneWhen.length < 1 || doneWhen.length > 5) problems.push('it must give 1 to 5 points the change is done when');
   if (doneWhen.some((p) => p.length > 400 || /\n/.test(p))) problems.push('each point must be one line of at most 400 characters');
+  const existing = [...new Set(doneWhen.flatMap((p) => [...p.matchAll(/tests\/[\w./-]+\.test\.mjs/g)].map((m) => m[0])))].filter((p) => exists(p));
+  if (existing.length) problems.push(`its points ask for changes to existing test files, which no change may make: ${existing.join(', ')}`);
   const context = String(answer.context || '').trim().slice(0, 1500);
   if (problems.length) return { plan: null, skip: null, problems };
   return { plan: { key: item.key, title, context, doneWhen }, skip: null, problems: [] };
@@ -209,7 +214,7 @@ export async function planIssue({
   } catch (err) {
     return { issue: null, reason: err.message };
   }
-  const { plan, skip, problems } = parsePlan(run.output, items);
+  const { plan, skip, problems } = parsePlan(run.output, items, { exists: (p) => fs.existsSync(path.join(repoRoot, p)) });
   if (skip) return { issue: null, reason: `the planner found no item to plan: ${skip}` };
   if (!plan) return { issue: null, reason: `the planner's answer was refused: ${problems.join('; ')}${run.reason ? ` (${run.reason})` : ''}` };
   const item = items.find((i) => i.key === plan.key);

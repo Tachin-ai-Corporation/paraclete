@@ -44,6 +44,7 @@ test('the brief: the candidates as data, what to skip, and the form of the answe
   assert.match(brief, /Skip an item that asks a person to decide something, needs live infrastructure/);
   assert.match(brief, /would change what judges a change \(dev\/loop\//);
   assert.match(brief, /Do not add a point about OPEN_ITEMS\.md: that one is added for you\./);
+  assert.match(brief, /Ask for tests in a new test file under tests\/, named for what it tests: a test file that exists already may not be changed/);
   assert.match(brief, /\{"key": "<the key in brackets>", "title": /);
   assert.match(brief, /If no candidate fits, answer \{"skip": "<why>"\} instead\./);
 });
@@ -63,6 +64,10 @@ test("the planner's answer is checked: a candidate's key, a one-line title, 1 to
   assert.match(parsePlan(answer({ doneWhen: ['one\ntwo'] }), ITEMS).problems.join(' | '), /each point must be one line/);
   assert.deepEqual(parsePlan('```json\n{"skip": "each needs a person"}\n```', ITEMS), { plan: null, skip: 'each needs a person', problems: [] });
   assert.match(parsePlan('no answer', ITEMS).problems[0], /no answer in the form asked/);
+  const existing = answer({ doneWhen: ['`tests/agent/services/control/responsibilities.test.mjs` verifies the full instruction.', 'A new tests/dashboard/constants.test.mjs checks them.'] });
+  const exists = (p) => p === 'tests/agent/services/control/responsibilities.test.mjs';
+  assert.match(parsePlan(existing, ITEMS, { exists }).problems.join(' | '), /ask for changes to existing test files, which no change may make: tests\/agent\/services\/control\/responsibilities\.test\.mjs$/);
+  assert.equal(parsePlan(existing, ITEMS).plan.key, 'copied-constants', 'nothing exists: a new test file is fine');
 });
 
 test("the issue: its context, the item quoted, its points, the OPEN_ITEMS point, and the item's marker; the reviewer reads its points", () => {
