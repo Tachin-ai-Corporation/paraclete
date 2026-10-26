@@ -180,6 +180,19 @@ export function windowsGcloud({ env, exists = existsSync }) {
 }
 
 /**
+ * The environment gcloud gets on Linux and macOS. ssh runs `--tunnel-through-iap`'s ProxyCommand with
+ * $SHELL, and the shell of an account that logs in to nothing (nologin or false, which systemd's User=
+ * and sudo hand on as SHELL; the lab driver's paraclete user has one) runs no command, so the tunnel
+ * never opens. Such a SHELL becomes /bin/sh; any other environment is returned as it is.
+ *
+ * @param {object} env
+ * @returns {object}
+ */
+export function gcloudEnv(env) {
+  return /(^|\/)(nologin|false)$/.test(String(env.SHELL || '')) ? { ...env, SHELL: '/bin/sh' } : env;
+}
+
+/**
  * Runs one program with an argument array: stdin stays your terminal (so gcloud and ssh can ask you
  * things), stdout and stderr are read, handed to the callbacks as they arrive, and collected.
  */
@@ -206,7 +219,7 @@ function runProcess(spawnImpl, file, args, { cwd, env, onStdout, onStderr, colle
 /**
  * The real program runner the commands get as `deps.exec`:
  * exec(program, args, { cwd, env, onStdout, onStderr, collect }) => Promise<{ code, stdout, stderr }>.
- * `gcloud` on Windows is started through windowsGcloud().
+ * `gcloud` on Windows is started through windowsGcloud(), and elsewhere with gcloudEnv().
  *
  * @param {object}   [o]
  * @param {object}   [o.env]       the process environment
@@ -221,7 +234,7 @@ export function createExec({ env = process.env, platform = process.platform, exi
       const g = windowsGcloud({ env: childEnv, exists });
       return runProcess(spawnImpl, g.file, [...g.args, ...args], { ...opts, env: g.env });
     }
-    return runProcess(spawnImpl, program, args, { ...opts, env: childEnv });
+    return runProcess(spawnImpl, program, args, { ...opts, env: program === 'gcloud' ? gcloudEnv(childEnv) : childEnv });
   };
 }
 

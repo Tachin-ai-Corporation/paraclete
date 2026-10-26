@@ -66,6 +66,8 @@ function fakeCloud({ ssh, vms = [], projects = [], billing = [], listErrors = {}
     bindings: new Set(),
     roles: new Map(),
     firestore: new Set(),
+    indexes: new Set(),
+    ttls: new Set(),
     buckets: new Set(),
     networks: new Set(projects.map((p) => `${p}/default`)),
     firewalls: new Set(),
@@ -143,6 +145,37 @@ function fakeCloud({ ssh, vms = [], projects = [], billing = [], listErrors = {}
         return '';
       }
     }
+    if (a === 'firestore' && b === 'indexes') {
+      const listing = [...state.indexes].filter((k) => k.startsWith(`${project} `)).map((k, i) => {
+        const [group, scope, fields] = k.slice(project.length + 1).split('|');
+        return {
+          name: `projects/${project}/databases/(default)/collectionGroups/${group}/indexes/ID${i}`,
+          queryScope: scope.toUpperCase().replace(/-/g, '_'),
+          fields: [...fields.split(',').map((f) => ({ fieldPath: f.split('=')[0], order: f.split('=')[1].toUpperCase() })), { fieldPath: '__name__', order: 'DESCENDING' }],
+        };
+      });
+      if (d === 'list') return JSON.stringify(listing);
+      if (d === 'create') {
+        assert.ok(state.firestore.has(project) && args.includes('--async'), 'an index is built in the background, on a database that exists');
+        const fields = args.filter((x) => x.startsWith('--field-config=')).map((x) => x.replace(/^--field-config=field-path=(.*),order=(.*)$/, '$1=$2'));
+        const key = `${project} ${flag(args, 'collection-group')}|${flag(args, 'query-scope')}|${fields.join(',')}`;
+        if (state.indexes.has(key)) throw Object.assign(new Error('ERROR: (gcloud.firestore.indexes.composite.create) ALREADY_EXISTS: index already exists'), { status: 1 });
+        state.indexes.add(key);
+        return '';
+      }
+    }
+    if (a === 'firestore' && b === 'fields' && c === 'ttls') {
+      if (d === 'list') {
+        return JSON.stringify([...state.ttls].filter((k) => k.startsWith(`${project} `)).map((k) => ({
+          name: `projects/${project}/databases/(default)/collectionGroups/${k.split(' ')[1].split('.')[0]}/fields/${k.split('.')[1]}`,
+          ttlConfig: { state: 'CREATING' },
+        })));
+      }
+      if (d === 'update') {
+        state.ttls.add(`${project} ${flag(args, 'collection-group')}.${args[4]}`);
+        return '';
+      }
+    }
     if (a === 'firestore' && c === 'describe') return state.firestore.has(project) ? 'FIRESTORE_NATIVE' : notFound('(default)');
     if (a === 'firestore' && c === 'create') {
       state.firestore.add(project);
@@ -213,7 +246,8 @@ function fakeCloud({ ssh, vms = [], projects = [], billing = [], listErrors = {}
 }
 
 /** The calls that create, link, bring back, change or delete something. */
-const writes = (calls) => calls.map((c) => c.args).filter((a) => a[1] === 'create' || ['create', 'link', 'undelete', 'update', 'delete'].includes(a[2]));
+const writes = (calls) => calls.map((c) => c.args)
+  .filter((a) => a[1] === 'create' || ['create', 'link', 'undelete', 'update', 'delete'].includes(a[2]) || (a[0] === 'firestore' && ['create', 'update'].includes(a[3])));
 
 const provision = (cloud, extra = {}) => provisionGcpLab({
   projectId: LAB,
@@ -291,6 +325,13 @@ describe('lab-provision: two projects, one paraclete each', () => {
     }
     assert.equal(s.projects.size, 2);
     assert.equal(s.firestore.size, 2, 'one Firestore database per paraclete');
+    const indexesFile = JSON.parse(readFileSync(new URL('../../../install/firestore.indexes.json', import.meta.url), 'utf8'));
+    for (const project of [LAB, CANARY_PROJECT]) {
+      const own = [...s.indexes].filter((k) => k.startsWith(`${project} `));
+      assert.equal(own.length, indexesFile.indexes.length, `${project} has every index install.sh creates`);
+      assert.ok(own.includes(`${project} work|collection|status=ascending,created_at=descending`), 'the index dev/status.mjs needs');
+      assert.ok(s.ttls.has(`${project} tool_results.expire_at`), `${project}'s TTL policy`);
+    }
 
     const driver = s.vms.get(`${LAB}/paraclete-h2-driver`);
     const canary = s.vms.get(`${CANARY_PROJECT}/paraclete-h2-canary`);
@@ -413,6 +454,8 @@ describe('lab-provision: two projects, one paraclete each', () => {
       assert.equal(status('billing', project), 'enabled');
       assert.equal(status('service-account', project), 'exists');
       assert.equal(status('firestore', project), 'exists');
+      assert.equal(status('firestore-indexes', project), 'exists');
+      assert.equal(status('firestore-ttls', project), 'exists');
       assert.equal(status('bucket', project), 'exists');
     }
     assert.equal(status('driver-access:ssh-role', CANARY_PROJECT), 'exists');
@@ -421,6 +464,24 @@ describe('lab-provision: two projects, one paraclete each', () => {
     assert.equal(status('follow-main:paraclete-h2-driver', LAB), 'unchanged');
     assert.equal(status('follow-main:paraclete-h2-canary', CANARY_PROJECT), 'unchanged');
     assert.equal(status('instance-env:paraclete-h2-driver', LAB), 'unchanged');
+  });
+
+  it("an index Firestore says already exists counts as made, even when the listing missed it", () => {
+    const cloud = fakeCloud();
+    assert.equal(provision(cloud).ok, true);
+    const before = cloud.snapshot();
+    const blind = (args, opts) => {
+      if (args[0] === 'firestore' && args[1] === 'indexes' && args[3] === 'list') return '[]';
+      return cloud.execGcloud(args, opts);
+    };
+    const again = provision(cloud, { execGcloud: blind });
+    assert.equal(again.ok, true, JSON.stringify(again.error));
+    assert.deepEqual(cloud.snapshot(), before, 'no index twice');
+    const failing = (args, opts) => {
+      if (args[0] === 'firestore' && args[3] === 'create') throw Object.assign(new Error('ERROR: (gcloud) PERMISSION_DENIED'), { status: 1 });
+      return blind(args, opts);
+    };
+    assert.throws(() => provision(cloud, { execGcloud: failing }), /PERMISSION_DENIED/, 'any other failure stops it');
   });
 
   it('a dry run plans both projects and calls nothing', async () => {
