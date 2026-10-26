@@ -241,16 +241,21 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
  * real-model runs (dev/harness2 `eval --real-model`), as promotion evidence.
  */
 async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, execGit, log }) {
-  const baseRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-loop-base-'));
-  execGit(['worktree', 'add', '--detach', '--quiet', baseRoot, base], repoRoot);
-  const links = linkPackages(repoRoot, baseRoot);
+  const sides = [];
   try {
+    // Both sides are measured in clones of their own, never in worktrees of this repo: a measured run
+    // is an agent running model-chosen commands for hours, and through a worktree's shared .git it
+    // could reach this repo, or the cycle's own checkout (one lost its registration that way).
+    const baseSide = isolatedCheckout({ repoRoot, commit: base, execGit, prefix: 'paraclete-loop-base-' });
+    sides.push(baseSide);
+    const candidateSide = isolatedCheckout({ repoRoot, commit: execGit(['rev-parse', 'HEAD'], candidateRoot), execGit, prefix: 'paraclete-loop-measure-' });
+    sides.push(candidateSide);
     const { runCli } = await import('../harness2/cli.mjs');
     const args = ['eval', '--real-model', '--trials', String(settings.measure.trials), '--max-rollouts', String(settings.measure.maxRollouts)];
     const stderr = { write: (line) => log(String(line).trimEnd()) };
-    const baseline = await runCli(args, { repoRoot: baseRoot, stderr });
+    const baseline = await runCli(args, { repoRoot: baseSide.root, stderr });
     if (!baseline.ok) return { measured: false, reason: `main's head could not be measured: ${baseline.reason || 'no result'}` };
-    const candidate = await runCli(args, { repoRoot: candidateRoot, stderr });
+    const candidate = await runCli(args, { repoRoot: candidateSide.root, stderr });
     if (!candidate.ok) return { measured: false, reason: `the change could not be measured: ${candidate.reason || 'no result'}` };
     const evidence = buildPromotionEvidence({
       candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
@@ -262,8 +267,68 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
   } catch (err) {
     return { measured: false, reason: err.message };
   } finally {
-    removeCheckout({ repoRoot, root: baseRoot, links, execGit });
+    for (const side of sides) removeIsolated(side);
   }
+}
+
+/** The temporary checkouts a cycle and a measured run make, by the prefix of their directory's name. */
+const CHECKOUT_PREFIXES = Object.freeze(['paraclete-loop-', 'paraclete-h2-side-']);
+
+/**
+ * Removes the repo's registered worktrees a killed cycle left behind (temporary checkouts named with
+ * CHECKOUT_PREFIXES), links first, and prunes. Any error leaves the rest as it was.
+ */
+export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
+  let listing = '';
+  try {
+    listing = execGit(['worktree', 'list', '--porcelain'], repoRoot);
+  } catch {
+    return [];
+  }
+  const stale = listing.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim())
+    .filter((p) => CHECKOUT_PREFIXES.some((prefix) => path.basename(p).startsWith(prefix)));
+  for (const root of stale) {
+    log(`[INFO] loop: removing ${root}, left by a cycle that did not finish`);
+    const links = LINKED_PACKAGES.map((rel) => path.join(root, rel)).filter((l) => {
+      try {
+        return fs.lstatSync(l).isSymbolicLink();
+      } catch {
+        return false;
+      }
+    });
+    removeCheckout({ repoRoot, root, links, execGit });
+  }
+  return stale;
+}
+
+/**
+ * A checkout of `commit` that shares nothing git writes with the repo: a clone that borrows the repo's
+ * objects (`--shared`), detached at the commit, with the repo's packages linked in. Whatever runs in it,
+ * or in worktrees made from it, cannot reach the repo's refs, index or worktrees.
+ *
+ * @returns {{ root: string, links: string[] }}
+ */
+export function isolatedCheckout({ repoRoot, commit, execGit, prefix }) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  execGit(['clone', '--quiet', '--shared', '--no-checkout', repoRoot, root], repoRoot);
+  execGit(['-c', 'advice.detachedHead=false', 'checkout', '--quiet', '--detach', commit], root);
+  return { root, links: linkPackages(repoRoot, root) };
+}
+
+/** Removes an isolated checkout, its links first, so removing it never reaches into the repo's packages. */
+function removeIsolated({ root, links }) {
+  for (const link of links) {
+    try {
+      fs.unlinkSync(link);
+    } catch {
+      try {
+        fs.rmdirSync(link);
+      } catch {
+        // already gone
+      }
+    }
+  }
+  fs.rmSync(root, { recursive: true, force: true });
 }
 
 /**
@@ -417,6 +482,10 @@ export async function runCycle({
   if (past.today >= settings.maxCyclesPerDay) {
     return finish({ action: 'capped', reason: `today's ${settings.maxCyclesPerDay} cycles are spent` });
   }
+
+  // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
+  // holding its branch, which would stop the next cycle on that issue. No other cycle runs now.
+  clearStaleCheckouts({ repoRoot, execGit, log });
 
   // 2. The issue: the oldest open one with the label, no open loop pull request, not tried lately.
   const issues = JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', settings.label, '--state', 'open',

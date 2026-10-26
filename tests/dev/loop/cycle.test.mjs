@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
-import { main, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes } from '../../../dev/loop/cycle.mjs';
+import { clearStaleCheckouts, isolatedCheckout, main, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes } from '../../../dev/loop/cycle.mjs';
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
 
@@ -533,6 +533,45 @@ test('a change that cannot be reviewed is refused: no reviewer, no verdict, or a
   const r4 = repo(t);
   const unsure = await cycle(t, r4, { reviewer: async ({ items }) => ({ review: { items: items.map((_, i) => ({ n: i + 1, met: true, evidence: 'e' })), resolves: false, problems: [] }, reason: null }) }).run();
   assert.deepEqual([unsure.action, unsure.reason], ['rejected', 'its reviewer found it does not resolve the issue: the reviewer did not say the change resolves the issue']);
+});
+
+test('a measured side is a clone of its own at its commit: nothing run in it reaches the repo or its worktrees', (t) => {
+  const r = repo(t);
+  const first = git(r.work, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(r.work, 'docs', 'guide.md'), '# Guide, later\n');
+  git(r.work, 'commit', '--quiet', '-am', 'later');
+  fs.mkdirSync(path.join(r.work, 'agent', 'node_modules', 'pkg'), { recursive: true });
+  const exec = (args, cwd) => git(cwd, ...args);
+  const side = isolatedCheckout({ repoRoot: r.work, commit: first, execGit: exec, prefix: 'loop-measure-test-' });
+  t.after(() => fs.rmSync(side.root, { recursive: true, force: true }));
+  assert.equal(fs.readFileSync(path.join(side.root, 'docs', 'guide.md'), 'utf8').replace(/\r\n/g, '\n'), '# Guide\n', 'the commit asked for, not the head');
+  assert.ok(fs.existsSync(path.join(side.root, 'agent', 'node_modules', 'pkg')), "the repo's packages are linked in");
+  const own = path.resolve(side.root, git(side.root, 'rev-parse', '--git-common-dir'));
+  assert.equal(own, path.join(side.root, '.git'), 'its own git directory, not the repo\'s');
+  const before = git(r.work, 'worktree', 'list');
+  git(side.root, 'worktree', 'add', '--quiet', '--detach', path.join(side.root, '..', `${path.basename(side.root)}-w`), first);
+  git(side.root, 'worktree', 'prune');
+  t.after(() => fs.rmSync(path.join(side.root, '..', `${path.basename(side.root)}-w`), { recursive: true, force: true }));
+  assert.equal(git(r.work, 'worktree', 'list'), before, "a worktree made from it is not the repo's");
+});
+
+test("a killed cycle's checkouts are cleared before the next one, its branch freed; nothing else is touched", async (t) => {
+  const r = repo(t);
+  fs.mkdirSync(path.join(r.work, 'agent', 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(r.work, 'agent', 'node_modules', 'pkg', 'index.js'), 'kept\n');
+  const left = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-loop-'));
+  git(r.work, 'worktree', 'add', '--quiet', '-B', 'loop/7-the-guide-explains-the-loop', left, 'HEAD');
+  fs.symlinkSync(path.join(r.work, 'agent', 'node_modules'), path.join(left, 'agent', 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  const mine = fs.mkdtempSync(path.join(os.tmpdir(), 'someone-else-'));
+  git(r.work, 'worktree', 'add', '--quiet', '--detach', mine, 'HEAD');
+  t.after(() => fs.rmSync(mine, { recursive: true, force: true }));
+
+  const res = await cycle(t, r).run();
+  assert.equal(res.action, 'opened', `the branch the killed cycle held is free again: ${res.reason}`);
+  assert.equal(fs.existsSync(left), false);
+  assert.equal(fs.readFileSync(path.join(r.work, 'agent', 'node_modules', 'pkg', 'index.js'), 'utf8'), 'kept\n', 'removed through its link, never into the packages');
+  assert.match(git(r.work, 'worktree', 'list'), new RegExp(path.basename(mine)), 'a checkout not named as a cycle\'s is left');
+  assert.deepEqual(clearStaleCheckouts({ repoRoot: r.work, execGit: (args, cwd) => git(cwd, ...args) }), [], 'nothing left to clear');
 });
 
 test('the pieces: name-status, slugs, and what counts as worse', () => {

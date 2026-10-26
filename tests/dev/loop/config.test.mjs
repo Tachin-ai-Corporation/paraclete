@@ -28,6 +28,12 @@ test("what changes the agent's behaviour is measured", () => {
   for (const rel of ['dashboard/app/page.js', 'docs/INSTALL.md', 'dev/status.mjs', 'tests/agent/x.test.mjs', 'roles/generic/role.json']) {
     assert.equal(isBehaviourPath(rel), false, rel);
   }
+  for (const rel of ['agent/services/control/drive-check.mjs', 'agent/services/ears/main.mjs', 'agent/services/mouth/main.mjs']) {
+    assert.equal(isBehaviourPath(rel), false, `${rel}: no measured run loads it`);
+  }
+  for (const rel of ['agent/services/gateway/main.mjs', 'agent/work/approvals.mjs', 'agent/cli/process-ops.mjs', 'agent/services/service-runtime.mjs']) {
+    assert.equal(isBehaviourPath(rel), true, rel);
+  }
 });
 
 test('a change to code must add a test; docs, styles and removals need none', () => {
@@ -62,6 +68,7 @@ test('the timer units: one cycle as the checkout owner, every few hours, install
   assert.match(u.service, /^WorkingDirectory=\/var\/lib\/paraclete\/harness2-repo$/m);
   assert.match(u.service, /^ExecStart=\/usr\/bin\/node dev\/loop\/cycle\.mjs --repo your-org\/paraclete$/m);
   assert.match(u.timer, /^OnUnitActiveSec=6h$/m);
+  assert.match(u.service, /^TimeoutStartSec=12h$/m, 'a measured change takes hours on each side');
   assert.ok(u.install.some((l) => l.includes(`enable --now ${LOOP_UNIT}.timer`)));
   assert.ok(u.uninstall.some((l) => l.includes(`disable --now ${LOOP_UNIT}.timer`)));
   assert.throws(() => loopUnits({ intervalHours: 0 }), /whole number from 1 to 24/);
