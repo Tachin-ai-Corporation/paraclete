@@ -301,7 +301,9 @@ Result:
 ```
 `count` stops at 100 (`capped` then says there are more); `sample` names the newest five. `owner` is
 the owner's email, or null in a shared drive. `can_add_files` is the membership's `canAddChildren`.
-`output_folder` is null when `config/settings` sets no `drive_output_folder`. The writable test
+`output_folder` is null when `config/settings` sets no `drive_output_folder`. When the output
+folder is the root of a shared drive (`id === drive_id`), `name` is the shared drive's name from
+`shared_drives` rather than Drive's root folder name (`"Drive"`). The writable test
 creates `paraclete-drive-check-<time>.txt` in the folder and moves it to the trash (a Content
 manager in a shared drive may trash files but not delete them); a test file that cannot be trashed
 leaves `writable: true` with `error` naming it. `drive_id` is null for a folder in someone's My
