@@ -11,7 +11,8 @@
 //   - at least one loop merge (merger.mjs's squash message) landed since the previous release;
 //   - the previous release is `release.minHoursBetween` hours old or more;
 //   - the lab ran it healthy: this machine's installed release is the head commit, installed
-//     `release.soakHours` or more ago, every agent service active and its heartbeat fresh.
+//     `release.soakHours` or more ago, every agent service active, and every heartbeat it writes fresh
+//     (gateway and control write none, and are judged by their units, as dev/status.mjs judges them).
 //
 // The tag is cut as dev/release.mjs cuts it (pushReleaseTag), with a summary in its message naming the
 // commit, the soak and the loop merges it carries; never the project, the VM or a URL (the tag is
@@ -53,8 +54,9 @@ export function labHealth({ head, release, units, health, now, soakHours }) {
   else if (hours < soakHours) problems.push(`the lab has run it ${hours.toFixed(1)} h, under the ${soakHours} h soak`);
   for (const s of SERVICES) {
     if (units?.[s] !== 'active') problems.push(`${s} is ${units?.[s] || 'unknown'}`);
-    const beat = Date.parse(health?.[s]?.beat_at || '');
-    if (!Number.isFinite(beat)) problems.push(`${s} has no heartbeat`);
+    if (!health?.[s]) continue;
+    const beat = Date.parse(health[s].beat_at || '');
+    if (!Number.isFinite(beat)) problems.push(`${s}'s heartbeat has no time`);
     else if ((now.getTime() - beat) / 1000 > HEARTBEAT_STALE_SECONDS) problems.push(`${s}'s heartbeat is ${Math.round((now.getTime() - beat) / 1000)} s old`);
   }
   return { ok: problems.length === 0, problems, hours };
@@ -93,7 +95,7 @@ export function releaseMessage({ version, head, hours, merges, previous, now }) 
   return [
     `${version}: released by the self-improvement loop (dev/loop/releaser.mjs)`,
     '',
-    `At ${now.toISOString()}: CI passed on ${head}, and the lab ran it ${hours.toFixed(1)} h with every agent service active and beating.`,
+    `At ${now.toISOString()}: CI passed on ${head}, and the lab ran it ${hours.toFixed(1)} h with every agent service active and every heartbeat fresh.`,
     `Loop merges since ${previous || 'the first commit'}: ${merges.map((m) => `#${m.pr} (for #${m.issue})`).join(', ')}.`,
   ].join('\n');
 }

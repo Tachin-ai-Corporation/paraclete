@@ -24,7 +24,10 @@ test('the lab is healthy when it runs the head, soaked, with every service activ
   assert.match(problems({ release: { commit: HEAD } }), /does not say when it installed/);
   assert.match(problems({ units: { ...active, brain: 'failed' } }), /brain is failed/);
   assert.match(problems({ health: { ...beating, mouth: { beat_at: '2026-10-27T11:50:00Z' } } }), /mouth's heartbeat is 600 s old/);
-  assert.match(problems({ health: { ...beating, ears: null } }), /ears has no heartbeat/);
+  assert.match(problems({ health: { ...beating, ears: { status: 'ok' } } }), /ears's heartbeat has no time/);
+  const real = { ...beating, gateway: null, control: null };
+  assert.deepEqual(labHealth({ head: HEAD, ...LAB, health: real, now: NOW, soakHours: 2 }).problems, [],
+    'gateway and control write no heartbeat (as on a real lab VM): their units judge them, as dev/status.mjs does');
 });
 
 test("the lab is read from this machine's release file, unit states and heartbeat files", () => {
@@ -48,7 +51,7 @@ test('the loop merges a release carries, and the tag message that says so', () =
   assert.equal(releaseMessage({ version: 'v2026.10.27.1.1', head: HEAD, hours: 4, merges: [{ pr: 49, issue: 33 }], previous: 'v2026.10.23.3.1', now: NOW }), [
     'v2026.10.27.1.1: released by the self-improvement loop (dev/loop/releaser.mjs)',
     '',
-    `At 2026-10-27T12:00:00.000Z: CI passed on ${HEAD}, and the lab ran it 4.0 h with every agent service active and beating.`,
+    `At 2026-10-27T12:00:00.000Z: CI passed on ${HEAD}, and the lab ran it 4.0 h with every agent service active and every heartbeat fresh.`,
     'Loop merges since v2026.10.23.3.1: #49 (for #33).',
   ].join('\n'));
 });
