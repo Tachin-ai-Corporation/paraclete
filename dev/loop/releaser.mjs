@@ -14,16 +14,19 @@
 //     `release.soakHours` or more ago, every agent service active, and every heartbeat it writes fresh
 //     (gateway and control write none, and are judged by their units, as dev/status.mjs judges them).
 //
-// The tag is cut as dev/release.mjs cuts it (pushReleaseTag), with a summary in its message naming the
-// commit, the soak and the loop merges it carries; never the project, the VM or a URL (the tag is
-// public). A canary in a project of its own, with a smoke mission (dev/release-check.mjs), checks more;
-// this checks what the driver can read of itself. Called by cycle.mjs; reads and changes nothing else.
+// With `release.smoke` on (when the lab has a canary in a project of its own, whose coordinates are this
+// checkout's .local/instance.env), the release is then handed to dev/release-check.mjs --vm-only: it
+// deploys the head to the canary, checks its status, runs the role's smoke mission there, and tags only
+// when all pass. Otherwise the tag is cut here as dev/release.mjs cuts it (pushReleaseTag), with a
+// summary naming the commit, the soak and the loop merges it carries; never the project, the VM or a
+// URL (the tag is public). Called by cycle.mjs; reads and changes nothing else.
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { SERVICES, serviceUnit } from '../../agent/services/control/systemd.mjs';
 import { HEARTBEAT_STALE_SECONDS, RELEASE_FILE } from '../../agent/services/control/introspection.mjs';
+import { REPO_ROOT } from '../dev-env.mjs';
 import { checkCandidate, pushReleaseTag } from '../release.mjs';
 import { loopMergeOf } from './sentinel.mjs';
 
@@ -101,6 +104,29 @@ export function releaseMessage({ version, head, hours, merges, previous, now }) 
 }
 
 /**
+ * The canary check and release: `node dev/release-check.mjs --vm-only --json` in this checkout, its JSON
+ * summary read back ({ outcome: released | nothing_to_release | checked | failed, tag, steps, error }).
+ *
+ * @param {object} [o]  { cwd, minutes, spawn } (spawn for tests)
+ * @returns {{ code: number|null, summary: object|null, tail: string }}
+ */
+export function runReleaseCheck({ cwd = REPO_ROOT, minutes = 90, spawn = spawnSync } = {}) {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const res = spawn(process.execPath, ['dev/release-check.mjs', '--vm-only', '--json'], {
+    cwd, env, encoding: 'utf8', timeout: minutes * 60_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  let summary = null;
+  try {
+    summary = JSON.parse(String(res.stdout || ''));
+  } catch {
+    summary = null;
+  }
+  const tail = String(res.stderr || '').trim().split('\n').slice(-3).join(' ').slice(0, 400);
+  return { code: res.status ?? null, summary, tail };
+}
+
+/**
  * Releases main's head when it is due (see the header).
  *
  * @param {object} o
@@ -109,11 +135,14 @@ export function releaseMessage({ version, head, hours, merges, previous, now }) 
  * @param {Function} [o.check]  dev/release.mjs checkCandidate, for tests
  * @param {Function} [o.push]   dev/release.mjs pushReleaseTag, for tests
  * @param {Function} [o.lab]    () => readLab()'s answer, for tests
+ * @param {Function} [o.canary] runReleaseCheck, for tests
  * @param {Date} [o.now]
  * @param {boolean} [o.dryRun]  say what it would do, and tag nothing
  * @returns {Promise<{ action: 'released'|'not-due', reason: string|null, version?: string }>}
  */
-export async function releaseIfDue({ settings, ctx, check = checkCandidate, push = pushReleaseTag, lab = readLab, now = new Date(), dryRun = false }) {
+export async function releaseIfDue({
+  settings, ctx, check = checkCandidate, push = pushReleaseTag, lab = readLab, canary = runReleaseCheck, now = new Date(), dryRun = false,
+}) {
   const r = settings.release;
   if (!r?.enabled) return { action: 'not-due', reason: 'releasing is off (release.enabled in the local settings)' };
   let candidate;
@@ -136,7 +165,18 @@ export async function releaseIfDue({ settings, ctx, check = checkCandidate, push
   }
   const health = labHealth({ head: candidate.head, ...lab(), now, soakHours: r.soakHours });
   if (!health.ok) return { action: 'not-due', reason: `the lab has not run it healthy long enough: ${health.problems.join('; ')}` };
-  if (dryRun) return { action: 'not-due', reason: `a dry run: ${candidate.version} would be released`, version: candidate.version };
+  if (dryRun) {
+    return { action: 'not-due', reason: `a dry run: ${candidate.version} would be ${r.smoke ? 'checked on the canary and then ' : ''}released`, version: candidate.version };
+  }
+  if (r.smoke) {
+    const checked = canary({ minutes: r.checkMinutes });
+    const s = checked.summary;
+    if (s?.outcome === 'released') return { action: 'released', reason: null, version: s.tag || candidate.version };
+    if (s?.outcome === 'nothing_to_release') return { action: 'not-due', reason: `${candidate.version} was released meanwhile` };
+    const failed = Object.entries(s?.steps || {}).find(([, step]) => step && step.ok === false)?.[0];
+    const why = String(s?.error || checked.tail || `dev/release-check.mjs exited ${checked.code}`).split('\n')[0];
+    return { action: 'not-due', reason: `the canary check ${failed ? `failed at ${failed}` : 'failed'}: ${why}` };
+  }
   await push(ctx, candidate, {
     message: releaseMessage({ version: candidate.version, head: candidate.head, hours: health.hours, merges, previous: candidate.previous, now }),
     again: 'the next cycle pushes it',

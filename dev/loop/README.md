@@ -191,8 +191,10 @@ lab ran the head healthy: the machine the cycle runs on (the driver, itself an i
 has that commit installed for `release.soakHours` (2) hours or more, with every agent service active
 and every heartbeat it writes fresh (gateway and control write none, as `dev/status.mjs` knows). It tags as `dev/release.mjs` does, as the user the cycle runs as, so
 `.github/workflows/release.yml` tests and publishes it; the tag's message names the commit, the soak
-and the loop merges. A canary in a project of its own with a smoke mission (`dev/release-check.mjs`)
-checks more, once one exists.
+and the loop merges. With `release.smoke` as well (once the lab has its canary, a project of its own
+whose coordinates `lab-provision` writes to the driver's `.local/instance.env`), the release is handed
+to `node dev/release-check.mjs --vm-only` instead: it deploys the head to the canary, checks its status
+and runs the role's smoke mission there, and tags only when all pass, within `release.checkMinutes` (90).
 
 ## On the lab driver
 

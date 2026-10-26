@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  DevError, PLACEHOLDERS, REPO_ROOT, INSTANCE_ENV_PATH, autoId, createExec, devContext, isMain, loadInstanceEnv,
+  DevError, PLACEHOLDERS, REPO_ROOT, INSTANCE_ENV_PATH, autoId, createExec, devContext, gcloudEnv, isMain, loadInstanceEnv,
   parseEnvFile, pollUntil, sshArgs, windowsGcloud,
 } from '../../dev/dev-env.mjs';
 import { start as startFirestore } from '../fakes/firestore-server.mjs';
@@ -146,6 +146,18 @@ test('the runner spawns with an argument array and no shell; on Windows gcloud g
   const linux = [];
   await createExec({ env: {}, platform: 'linux', spawn: fakeSpawn(linux) })('gcloud', ['auth', 'print-access-token'], { cwd: '/repo' });
   assert.deepEqual([linux[0].file, linux[0].args, linux[0].options.cwd], ['gcloud', ['auth', 'print-access-token'], '/repo']);
+});
+
+test("gcloud never gets a SHELL that runs nothing: ssh starts the IAP tunnel with it", async () => {
+  assert.equal(gcloudEnv({ SHELL: '/usr/sbin/nologin', HOME: '/h' }).SHELL, '/bin/sh');
+  assert.equal(gcloudEnv({ SHELL: '/bin/false' }).SHELL, '/bin/sh');
+  for (const env of [{ SHELL: '/bin/bash' }, { SHELL: '/usr/bin/zsh' }, {}]) assert.equal(gcloudEnv(env), env, 'a usable shell, or none, is left alone');
+
+  const recorded = [];
+  const exec = createExec({ env: { SHELL: '/usr/sbin/nologin', HOME: '/h' }, platform: 'linux', spawn: fakeSpawn(recorded) });
+  await exec('gcloud', ['compute', 'ssh', 'vm', '--tunnel-through-iap']);
+  await exec('git', ['status']);
+  assert.deepEqual(recorded.map((r) => [r.file, r.options.env.SHELL, r.options.env.HOME]), [['gcloud', '/bin/sh', '/h'], ['git', '/usr/sbin/nologin', '/h']]);
 });
 
 test('the real runner streams output as it comes, can skip collecting it, and reports a missing program', async () => {

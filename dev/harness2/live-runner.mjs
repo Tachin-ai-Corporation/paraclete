@@ -15,6 +15,7 @@ import { COLLECTIONS, SUBCOLLECTIONS } from '../../agent/storage/collections.mjs
 import { createClient } from '../../agent/storage/firestore.mjs';
 import { loadContracts } from '../../config/contracts.mjs';
 import { dataPaths } from '../../config/instance.mjs';
+import { indexIds, indexPlan, ttlPlan, ttlState } from '../../install/lib/indexes.mjs';
 import { sshArgs, windowsGcloud } from '../dev-env.mjs';
 import {
   getCurriculumUnitById,
@@ -1256,6 +1257,46 @@ function labFlagsOf({ projectId, canaryProjectId, region, zone }) {
   return `--project ${projectId} --canary-project ${canaryProjectId} --region ${region} --zone ${zone}`;
 }
 
+/** The indexes and TTL policies the agent's and the dashboard's queries need; install.sh reads it too. */
+const INDEXES_FILE = new URL('../../install/firestore.indexes.json', import.meta.url);
+
+/**
+ * A lab project's Firestore gets what install.sh gives an instance's: every index and TTL policy in
+ * install/firestore.indexes.json that the database lacks is created in the background (--async), so a
+ * second run creates nothing. A create Firestore answers ALREADY_EXISTS made what was wanted (another
+ * creator got there first, or gcloud retried a create that had gone through). Until an index is built,
+ * the query it serves fails and the agent's services and the dev/ commands retry or report it.
+ */
+function ensureFirestoreIndexes(execGcloud, p, step) {
+  const file = JSON.parse(fs.readFileSync(INDEXES_FILE, 'utf8'));
+  const db = ['--database=(default)', `--project=${p}`];
+  const listing = (args) => {
+    try {
+      return JSON.parse(execGcloud([...args, ...db, '--format=json']) || '[]');
+    } catch {
+      return [];
+    }
+  };
+  const have = new Set(indexIds(listing(['firestore', 'indexes', 'composite', 'list'])).map((i) => i.signature));
+  const indexes = indexPlan(file).filter((index) => !have.has(index.signature));
+  for (const index of indexes) {
+    try {
+      execGcloud(['firestore', 'indexes', 'composite', 'create', `--collection-group=${index.group}`, `--query-scope=${index.scope}`,
+        ...index.fields.map((f) => `--field-config=field-path=${f.path},order=${f.order}`), ...db, '--async', '--quiet']);
+    } catch (err) {
+      if (!/ALREADY_EXISTS/.test(`${err?.message || ''}\n${err?.stderr || ''}`)) throw err;
+    }
+  }
+  step('firestore-indexes', indexes.length ? 'created' : 'exists', `${indexes.length} of ${indexPlan(file).length} created`);
+
+  const ttls = listing(['firestore', 'fields', 'ttls', 'list']);
+  const missing = ttlPlan(file).filter((t) => !['ACTIVE', 'CREATING'].includes(ttlState(ttls, t.group, t.field)));
+  for (const t of missing) {
+    execGcloud(['firestore', 'fields', 'ttls', 'update', t.field, `--collection-group=${t.group}`, '--enable-ttl', ...db, '--async', '--quiet']);
+  }
+  step('firestore-ttls', missing.length ? 'created' : 'exists', missing.map((t) => `${t.group}.${t.field}`).join(', '));
+}
+
 /**
  * Generate the harness lab's provisioning plan and exact commands: `paraclete-h2-driver`
  * (`e2-standard-8`) in the lab's project (`paraclete-h2-lab` unless `projectId`), and
@@ -1447,8 +1488,9 @@ function iamWithRetry(execGcloud, args, maxAttempts = 5) {
 
 /**
  * Steps 1 to 7 of provisionGcpLab for one of the lab's projects: the project and its billing, the APIs,
- * the agent's service account and its roles, Firestore, the bucket, the network and the IAP SSH
- * firewall. Each step checks first, so a second run creates nothing. Returns the network's name.
+ * the agent's service account and its roles, Firestore with the indexes install.sh gives it, the
+ * bucket, the network and the IAP SSH firewall. Each step checks first, so a second run creates
+ * nothing. Returns the network's name.
  */
 function provisionLabProject(plan, project, { execGcloud, recordStep }) {
   const p = project.projectId;
@@ -1579,6 +1621,7 @@ function provisionLabProject(plan, project, { execGcloud, recordStep }) {
   } else {
     step('firestore', 'exists', fsType);
   }
+  ensureFirestoreIndexes(execGcloud, p, step);
 
   // 6. GCS bucket
   let bucketExists = false;

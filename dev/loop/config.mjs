@@ -41,8 +41,9 @@ export const LOOP_DEFAULTS = Object.freeze({
   maxRevertsPerDay: 2,
   /** Releasing main once the loop's merges have run healthy on the lab (releaser.mjs): off unless the
    * lab driver's local settings turn it on; the lab must run the head this long, and releases keep
-   * this far apart. */
-  release: Object.freeze({ enabled: false, soakHours: 2, minHoursBetween: 20 }),
+   * this far apart. With `smoke`, the release goes through dev/release-check.mjs on the lab's canary
+   * (a smoke mission there), within `checkMinutes`. */
+  release: Object.freeze({ enabled: false, soakHours: 2, minHoursBetween: 20, smoke: false, checkMinutes: 90 }),
   /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
   merge: Object.freeze({ maxPerDay: 3 }),
 });
