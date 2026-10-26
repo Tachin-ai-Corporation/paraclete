@@ -15,6 +15,7 @@ releases, and never changes an instance.
 | `proposer.mjs` | The proposer interface, the brief it is given, and the command proposer that runs a headless coding-agent command named in your local settings |
 | `reviewer.mjs` | Whether a change resolves its issue: the points to judge (the issue's "Done when"), the reviewer's brief, its verdict parsed and decided by code, and the command reviewer; from the command line, reviews a pull request against an issue |
 | `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
+| `planner.mjs` | Where the work comes from when no person writes an issue: turns one item of `docs/plan/OPEN_ITEMS.md` into a `loop` issue with testable "Done when" points, chosen and written by a planner model, checked by code |
 | `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
 | `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
@@ -32,7 +33,9 @@ releases, and never changes an instance.
    `--issue` names one; `--retry` tries it even within that wait. It reads the comments by the
    repository's maintainers (its owner, members and collaborators, never anyone else) on the issue,
    which include its own refusals of earlier attempts, and on its closed `loop/<issue>-` pull requests,
-   which say why a reviewer closed one.
+   which say why a reviewer closed one. An issue refused `maxAttempts` (6) times is given up: its `loop`
+   label becomes `loop-stuck`, with a comment, and the loop no longer takes it. When no issue waits,
+   the planner opens one (see "The planner") and this cycle takes it.
 3. **Checks out** `origin/main` on the branch `loop/<issue>-<slug>`, in a temporary worktree, with the
    repo's installed packages linked in.
 4. **Runs the proposer**, within its budget (`proposer.wallMinutes`, `maxTurns`, `maxTokens`). The
@@ -98,8 +101,8 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
 - The command runs in the cycle's checkout, and is stopped after `proposer.wallMinutes`.
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
   Without one, the pull request says it gave none (the end of its output is its tool's log).
-- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `proposer`, `reviewer`,
-  `measure` and `merge`.
+- The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `maxAttempts`,
+  `proposer`, `reviewer`, `planner`, `measure` and `merge`.
   The referee is not a setting.
 
 ## The reviewer
@@ -114,6 +117,19 @@ different things.
 `node dev/loop/reviewer.mjs --issue <n> --pr <n> [--repo <owner/name>] [--json]` reviews a pull
 request, open or closed, against an issue in a temporary checkout of its head, and changes nothing on
 GitHub. It exits 0 when the change resolves the issue, 1 when it does not or could not be reviewed.
+
+## The planner
+
+When no `loop` issue waits and fewer than `planner.maxOpen` (2) are open, a cycle runs the planner
+(`planner.mjs`, the command named by `planner` in your local settings, set like the reviewer's and
+read-only the same way). It is offered every item of `docs/plan/OPEN_ITEMS.md` not yet planned, picks
+one a change in this repository can finish and tests can show done (never one that needs a person's
+decision, live infrastructure, or a change to the referee), and answers with the item's key, an issue
+title, a short context and 1 to 5 "Done when" points, as JSON. Code checks the answer, adds the point
+every planned issue shares (the item leaves `OPEN_ITEMS.md`, or says what remains) and a hidden
+`<!-- loop-plan: <key> -->` marker, so the item is never planned twice (a `loop-stuck` issue counts),
+and opens the issue labelled `loop`. `node dev/loop/planner.mjs [--repo <owner/name>] [--dry-run]
+[--json]` plans one now; `--dry-run` prints the issue it would open.
 
 ## Merging
 

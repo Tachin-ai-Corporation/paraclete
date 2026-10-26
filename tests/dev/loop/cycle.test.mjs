@@ -59,6 +59,7 @@ function fakeGh({ issues = [], prs = [], closed = [], comments = [] } = {}) {
       calls.push(args);
       if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues);
       if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ comments });
+      if (args[0] === 'issue' && args[1] === 'create') return 'https://github.com/your-org/paraclete/issues/8';
       if (args[0] === 'pr' && args[1] === 'list' && args.includes('closed')) return JSON.stringify(closed);
       if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify(prs);
       if (args[0] === 'pr' && args[1] === 'create') return 'https://github.com/your-org/paraclete/pull/99';
@@ -99,6 +100,7 @@ function cycle(t, r, o = {}) {
       repoRoot: r.work, now: NOW, env: {}, settings: { ...LOOP_DEFAULTS, ...(o.settings || {}) },
       execGh: gh.exec, proposer: o.proposer || writes({ 'docs/guide.md': '# Guide\n\nThe loop.\n' }), runTests: o.runTests || passing,
       reviewer: o.reviewer || verdict(),
+      planner: o.planner,
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -199,6 +201,49 @@ test('a failing suite goes back to the proposer with the failing tests, in the s
   const quits = async (p) => (++calls === 1 ? writes({ 'docs/guide.md': '# G\n' })(p) : { ok: false, summary: '', reason: 'the proposer ran past its 45 minutes' });
   const gaveUp = await cycle(t, r2, { proposer: quits, runTests: async () => ({ ok: false, summary: 'ℹ fail 1' }) }).run();
   assert.deepEqual([gaveUp.action, gaveUp.reason], ['proposer-failed', 'the proposer ran past its 45 minutes (in repair round 1)']);
+});
+
+test('with no issue waiting, the planner opens one from the open items and the cycle takes it', async (t) => {
+  const r = repo(t);
+  fs.mkdirSync(path.join(r.work, 'docs', 'plan'), { recursive: true });
+  fs.writeFileSync(path.join(r.work, 'docs', 'plan', 'OPEN_ITEMS.md'), '# Open items\n\n## Phase 6\n\n- **Copied constants.** The dashboard copies them.\n');
+  const planner = async () => ({ output: '```json\n{"key": "copied-constants", "title": "The dashboard imports its constants", "context": "It copies them.", "doneWhen": ["The guide says so."]}\n```', reason: null });
+  const gh = fakeGh({ issues: [] });
+  const res = await cycle(t, r, { gh, planner, settings: { planner: { ...LOOP_DEFAULTS.planner, command: 'planner' } } }).run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.equal(res.branch, 'loop/8-the-dashboard-imports-its-constants');
+  const create = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'create');
+  assert.match(create[create.indexOf('--body') + 1], /<!-- loop-plan: copied-constants -->/);
+  assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.planned, true);
+
+  const r2 = repo(t);
+  const none = await cycle(t, r2, { gh: fakeGh({ issues: [] }), planner, settings: { planner: { ...LOOP_DEFAULTS.planner, command: 'planner' } } }).run();
+  assert.equal(none.action, 'no-work', 'no OPEN_ITEMS.md here: the planner broke, and the cycle says there is no work');
+  const r3 = repo(t);
+  assert.equal((await cycle(t, r3, { gh: fakeGh({ issues: [] }) }).run()).action, 'no-work', 'no planner command: no planning');
+});
+
+test('an issue refused maxAttempts times is given up: labelled loop-stuck, commented, and not taken', async (t) => {
+  const r = repo(t);
+  const log = path.join(r.work, CYCLE_LOG);
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  for (let i = 0; i < LOOP_DEFAULTS.maxAttempts; i += 1) {
+    fs.appendFileSync(log, `${JSON.stringify({ command: 'loop', at: new Date(NOW.getTime() - (48 + i) * 3_600_000).toISOString(), loop: { issue: 7, action: 'tests-failed' } })}\n`);
+  }
+  const c = cycle(t, r);
+  const res = await c.run();
+  assert.equal(res.action, 'no-work');
+  const edit = c.gh.calls.find((a) => a[0] === 'issue' && a[1] === 'edit');
+  assert.deepEqual(edit, ['issue', 'edit', '7', '--remove-label', 'loop', '--add-label', 'loop-stuck']);
+  const comment = c.gh.calls.find((a) => a[1] === 'comment');
+  assert.match(comment[comment.indexOf('--body') + 1], /gave this up after 6 refused attempts: it is labelled `loop-stuck` now/);
+
+  const r2 = repo(t);
+  fs.mkdirSync(path.dirname(path.join(r2.work, CYCLE_LOG)), { recursive: true });
+  fs.copyFileSync(log, path.join(r2.work, CYCLE_LOG));
+  const dry = cycle(t, r2, { dryRun: true });
+  await dry.run();
+  assert.equal(dry.gh.calls.some((a) => a[1] === 'edit' || a[1] === 'comment'), false, 'a dry run gives nothing up');
 });
 
 test('a change to code that adds no test is refused before the suite runs; removing code needs none', async (t) => {
