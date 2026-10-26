@@ -87,7 +87,9 @@ Otherwise the cycle opens a pull request; a refused change gets a comment on the
 (`dev/loop/merger.mjs`, each hour in `.github/workflows/harness-merge.yml`) merges a passing one, at
 most 3 a day, or closes one that cannot pass with the reasons. A loop merge that breaks CI on main is
 reverted by the next cycle (`dev/loop/sentinel.mjs`), its issue reopened, and a second revert in a day
-pauses the loop (the repository variable `PARACLETE_LOOP_PAUSED`).
+pauses the loop (the repository variable `PARACLETE_LOOP_PAUSED`). On the lab driver, with `release.enabled` in
+its local settings, a cycle also releases main once the loop's merges since the last release ran healthy
+on the lab (`dev/loop/releaser.mjs`).
 How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).
 
 ## Continual harness improvement (`dev/harness2/`)

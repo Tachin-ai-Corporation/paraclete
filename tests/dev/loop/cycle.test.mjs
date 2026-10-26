@@ -106,6 +106,7 @@ function cycle(t, r, o = {}) {
       execGh: gh.exec, proposer: o.proposer || writes({ 'docs/guide.md': '# Guide\n\nThe loop.\n' }), runTests: o.runTests || passing,
       reviewer: o.reviewer || verdict(),
       planner: o.planner,
+      release: o.release,
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -273,6 +274,20 @@ test('a broken main stops the cycle: a loop merge is reverted first, a person\'s
   const r3 = repo(t);
   const paused = await cycle(t, r3, { gh: fakeGh({ issues: [ISSUE], loopPaused: '2 loop merges reverted within a day' }) }).run();
   assert.deepEqual([paused.action, paused.reason], ['paused', 'the loop is paused: PARACLETE_LOOP_PAUSED: 2 loop merges reverted within a day']);
+});
+
+test('a cycle on a healthy main first releases it when due; a release step that breaks stops nothing', async (t) => {
+  const r = repo(t);
+  const asked = [];
+  const res = await cycle(t, r, { release: async (o) => { asked.push(o); return { action: 'released', reason: null, version: 'v2027.01.21.9.1' }; } }).run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.equal(asked[0].settings.release.enabled, false, 'it is given the settings, whose release is off unless turned on');
+  assert.equal(typeof asked[0].ctx.git, 'function', 'and a checkout to release from');
+  assert.equal(readCycleRecords({ repoRoot: r.work })[0].loop.released, 'v2027.01.21.9.1');
+
+  const r2 = repo(t);
+  const broke = await cycle(t, r2, { release: async () => { throw new Error('gh: rate limited'); } }).run();
+  assert.equal(broke.action, 'opened', 'the release step breaking does not stop the cycle');
 });
 
 test('a change to code that adds no test is refused before the suite runs; removing code needs none', async (t) => {

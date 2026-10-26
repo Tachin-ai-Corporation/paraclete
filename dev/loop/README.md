@@ -17,6 +17,7 @@ releases, and never changes an instance.
 | `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
 | `planner.mjs` | Where the work comes from when no person writes an issue: turns one item of `docs/plan/OPEN_ITEMS.md` into a `loop` issue with testable "Done when" points, chosen and written by a planner model, checked by code |
 | `sentinel.mjs` | What undoes a loop merge that broke main: at a cycle's start, when CI failed on main's head and that head is a loop merge, opens its revert pull request, reopens its issue, and pauses the loop's cycles at the day's second revert; and the check a revert pull request must pass |
+| `releaser.mjs` | Cuts a release of main at a cycle's start once the loop's merges since the last release ran healthy on the lab, so instances install them; off unless your local settings turn it on |
 | `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
 | `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
@@ -30,7 +31,8 @@ releases, and never changes an instance.
 1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), while the
    loop is (the repository variable `PARACLETE_LOOP_PAUSED`), or once today's cycles (`maxCyclesPerDay`,
    4) are spent. Cycles are counted from the cycle log. When CI failed on main's head, it changes nothing
-   on it: a loop merge there is reverted first (see "When a loop merge breaks main").
+   on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a healthy main
+   it releases main when that is due (see "Releases").
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
    request from a `loop/<issue>-` branch, and one it tried and failed within `retryAfterHours` (24).
    `--issue` names one; `--retry` tries it even within that wait. It reads the comments by the
@@ -109,7 +111,7 @@ Name the coding-agent command in `.local/loop.json` (gitignored), not in the rep
 - It should end its output with a summary under a `SUMMARY:` line, which goes in the pull request.
   Without one, the pull request says it gave none (the end of its output is its tool's log).
 - The same file can tune `maxCyclesPerDay`, `retryAfterHours`, `repairRounds`, `maxAttempts`, `maxRevertsPerDay`,
-  `proposer`, `reviewer`, `planner`, `measure` and `merge`.
+  `proposer`, `reviewer`, `planner`, `measure`, `merge` and `release`.
   The referee is not a setting.
 
 ## The reviewer
@@ -177,6 +179,20 @@ whatever main's CI says and past the day's cap. When it is the day's `maxReverts
 the cycle also sets the repository variable `PARACLETE_LOOP_PAUSED`: cycles stop, the merger still
 lands the revert. Delete the variable to resume. When main is broken by anything but a loop merge, or a
 revert cannot be made, the cycle reverts nothing and builds nothing on it.
+
+## Releases
+
+Instances install new releases by themselves, so a release is how the loop's changes reach them. When
+`release.enabled` is set in your local settings (on the lab driver), a cycle on a healthy main starts by
+releasing main's head (`releaser.mjs`) when all of these hold: `dev/release.mjs`'s own checks pass (a
+clean main equal to origin, a version newer than every tag, CI passed on the head); a loop merge landed
+since the previous release; that release is `release.minHoursBetween` (20) hours old or more; and the
+lab ran the head healthy: the machine the cycle runs on (the driver, itself an instance kept on main)
+has that commit installed for `release.soakHours` (2) hours or more, with every agent service active
+and its heartbeat fresh. It tags as `dev/release.mjs` does, as the user the cycle runs as, so
+`.github/workflows/release.yml` tests and publishes it; the tag's message names the commit, the soak
+and the loop merges. A canary in a project of its own with a smoke mission (`dev/release-check.mjs`)
+checks more, once one exists.
 
 ## On the lab driver
 

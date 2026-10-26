@@ -311,7 +311,9 @@ have [docs/canon/BRAIN.md](docs/canon/BRAIN.md). These are the ones most often b
   squashing still appears there.
 - Before pushing, run `npm test`.
 - Commit or push only when the developer has asked you to.
-- Releases are tags that maintainers cut after CI is green. Don't tag a release unless asked.
+- Releases are tags that maintainers cut after CI is green. Don't tag a release unless asked. The
+  self-improvement loop on the harness lab's driver can also cut one, when its local settings turn
+  that on: once its own merges ran healthy on the lab (`dev/loop/releaser.mjs`).
 
 ### Cutting a release
 
