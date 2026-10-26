@@ -642,6 +642,7 @@ describe('the workflows', () => {
 
   test('its token can merge, comment, dispatch CI and read checks, and nothing more', () => {
     assert.match(text, /^permissions:\n {2}contents: write\n {2}pull-requests: write\n {2}actions: write\n {2}checks: read$/m);
+    assert.match(text, /^ {2}checks: read\n {2}issues: write\n\nconcurrency:/m, "the loop's merger closes the issue a merge resolved");
   });
 
   test("it runs main's merger on main's full history and tags, installing nothing", () => {

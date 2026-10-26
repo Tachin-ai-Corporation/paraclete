@@ -17,7 +17,9 @@
 //   - GitHub can merge it cleanly and its head contains main's head, so CI ran on what lands (one main
 //     moved past waits: the next loop cycle merges main into it, and CI and the guard run again);
 // Its title keeps its version when that is newer than main's and every tag's, else takes the next free
-// one (dev/harness2/merge.mjs promotionVersion), so main's head stays releasable.
+// one (dev/harness2/merge.mjs promotionVersion), so main's head stays releasable. After the merge it
+// closes the issue the pull request resolved: GitHub applies no closing keyword ("Resolves #n") to a
+// merge made with a workflow's token, and an issue left open would be taken again.
 //
 // A loop pull request that breaks a rule (CI failed, a conflict with main, the guard) is closed with a
 // comment saying why: the loop never updates a
@@ -227,6 +229,14 @@ export async function mergeLoopPullRequests(o = {}) {
         if (plan.retitled) await gh(exec, ['pr', 'edit', String(number), '--repo', repo, '--title', plan.title], `gh could not retitle #${number}`);
         await gh(exec, ['pr', 'merge', String(number), '--repo', repo, '--squash', '--subject', plan.title,
           '--body', loopSquashBody({ number, sha, issue: guard.issue }), '--match-head-commit', sha], `gh could not merge #${number}`);
+      }
+      if (!dryRun && guard.issue) {
+        try {
+          await gh(exec, ['issue', 'close', String(guard.issue), '--repo', repo, '--reason', 'completed', '--comment',
+            `Resolved by #${number}, merged by the loop's merger (dev/loop/merger.mjs).`], `gh could not close #${guard.issue}`);
+        } catch (err) {
+          errors.push(`#${number} merged, but ${err.message}`);
+        }
       }
       result.mergedToday += 1;
       result.merged.push(number);
