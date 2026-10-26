@@ -62,9 +62,11 @@ releases, and never changes an instance.
    reviewer says it resolves the issue, and as `unreviewed` when no reviewer is set, it gives no verdict,
    or the review altered the checkout. The refusal lists the points it found unmet.
 
-   A change to what the running agent reads (`prompts/`, `config/contracts.json`, `agent/`,
-   `skills/`, `roles/*/` other than `role.json`) is committed and then measured. The model suite runs on
-   main's head and on the change, with real-model runs (`node dev/harness2/cli.mjs eval --real-model`,
+   A change to what the running agent reads on a mission (`prompts/`, `config/contracts.json`,
+   `agent/` other than the control, ears and mouth services, which no measured run loads, `skills/`,
+   `roles/*/` other than `role.json`) is committed and then measured. The model suite runs on main's
+   head and on the change, each in a clone of its own (never a worktree of this repo: the measured agent
+   runs model-chosen commands for hours), with real-model runs (`node dev/harness2/cli.mjs eval --real-model`,
    `measure.trials` runs of each task, within `measure.maxRollouts`). The change is refused when it
    could not be measured, or when any task, the held-out tasks or the whole suite got worse. It does not
    have to improve the suite: a fix may not show there.
@@ -74,6 +76,8 @@ releases, and never changes an instance.
    `paraclete-loop-review` block a merger can read) and any evidence. When the change is refused, it says
    why in a comment on the issue instead, with the files it changed, the tests that failed and the points
    the reviewer found unmet.
+   A measured change takes hours (about 30 real-model runs on each side), so the timer's unit allows a
+   cycle 12 hours. A cycle starts by removing the checkouts a killed one left registered.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
    (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own.
 

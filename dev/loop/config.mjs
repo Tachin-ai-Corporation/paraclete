@@ -66,11 +66,16 @@ export const REFEREE_PATHS = Object.freeze([
 /** Never part of a proposal, whatever else it changes. */
 const FORBIDDEN_PATHS = Object.freeze([/^\.local\//, /(^|\/)\.env/, /\.(pem|key)$/, /credentials.*\.json$/]);
 
-/** What a running agent reads: a change to any of these changes how it behaves, so it is measured. */
+/**
+ * What a running agent reads on a mission: a change to any of these changes how it behaves, so it is
+ * measured. Only what a measured run loads counts (dev/harness2/model-runs.mjs: the gateway, the brain
+ * and what they import, the commands the motor runs): the control, ears and mouth services never run
+ * there, so measuring a change to them takes hours and shows nothing; their tests judge them.
+ */
 const BEHAVIOUR_PATHS = Object.freeze([
   /^prompts\//,
   /^config\/contracts\.json$/,
-  /^agent\//,
+  /^agent\/(?!services\/(control|ears|mouth)\/)/,
   /^skills\//,
   /^roles\/[^/]+\/(?!role\.json$)/,
 ]);
