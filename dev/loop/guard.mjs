@@ -14,6 +14,9 @@
 //   - a change to what the agent reads carries measured evidence that no task got worse
 //     (cycle.mjs regressionProblems) and names every file it changes.
 //
+// A revert pull request (sentinel.mjs, a `loop/revert-` branch) is checked by revertGuard instead: it
+// sets every file the loop merge it names touched back to what it was before, and changes nothing else.
+//
 // It reads; it never merges, comments or changes anything.
 //
 //   node dev/loop/guard.mjs --pr <n> [--repo <owner/name>] [--json]
@@ -26,6 +29,7 @@ import { parseEvidenceBlock } from '../harness2/evidence.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
 import { regressionProblems } from './cycle.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
+import { isRevertBranch, parseRevertBlock, readReverted, revertGuard } from './sentinel.mjs';
 
 /** GitHub's file statuses, as the name-status letters the loop's rules take. */
 const STATUS_LETTER = Object.freeze({ added: 'A', removed: 'D', modified: 'M', changed: 'M', renamed: 'R', copied: 'C' });
@@ -70,10 +74,15 @@ export function changesFromFiles(files) {
  * @param {object} p.pr        { headRefName, isCrossRepository, body }
  * @param {object[]} p.files   as GitHub's REST API lists them: { filename, status, sha, previous_filename }
  * @param {object|null} p.issue  { number, title, body, state, labels: [{ name }] }, the issue it names
- * @returns {{ loop: boolean, ok: boolean, problems: string[], issue: number|null }}
+ * @param {object|null} [p.reverted]  for a revert pull request, the commit it names (sentinel.mjs readReverted)
+ * @returns {{ loop: boolean, revert?: boolean, ok: boolean, problems: string[], issue: number|null }}
  */
-export function loopGuard({ pr, files, issue }) {
+export function loopGuard({ pr, files, issue, reverted = null }) {
   if (!isLoopBranch(pr?.headRefName) || pr?.isCrossRepository) return { loop: false, ok: true, problems: [], issue: null };
+  if (isRevertBranch(pr.headRefName)) {
+    const { ok, problems } = revertGuard({ pr, files, reverted });
+    return { loop: true, revert: true, ok, problems, issue: null };
+  }
   const problems = [];
   const number = resolvedIssue(pr.body);
   if (!number) problems.push('its body names no issue it resolves ("Resolves #<n>.")');
@@ -132,16 +141,21 @@ function defaultExecGh(args) {
  * @param {Function} execGh  (args) => stdout
  * @param {number} number
  * @param {string} repo      owner/name
- * @returns {{ pr: object, files: object[], issue: object|null }}
+ * @returns {Promise<{ pr: object, files: object[], issue: object|null, reverted: object|null }>}
  */
-export function readLoopPullRequest(execGh, number, repo) {
+export async function readLoopPullRequest(execGh, number, repo) {
   const pr = JSON.parse(execGh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,headRefName,isCrossRepository,body,headRefOid']));
-  if (!isLoopBranch(pr.headRefName) || pr.isCrossRepository) return { pr, files: [], issue: null };
+  if (!isLoopBranch(pr.headRefName) || pr.isCrossRepository) return { pr, files: [], issue: null, reverted: null };
   const files = [];
   for (let page = 1; page <= 30; page += 1) {
     const batch = JSON.parse(execGh(['api', '-H', 'Accept: application/vnd.github+json', `repos/${repo}/pulls/${number}/files?per_page=100&page=${page}`]));
     files.push(...batch);
     if (batch.length < 100) break;
+  }
+  if (isRevertBranch(pr.headRefName)) {
+    const block = parseRevertBlock(pr.body);
+    const getJson = (p) => JSON.parse(execGh(['api', '-H', 'Accept: application/vnd.github+json', p]));
+    return { pr, files, issue: null, reverted: block ? await readReverted(getJson, repo, block.reverts) : null };
   }
   const n = resolvedIssue(pr.body);
   let issue = null;
@@ -152,7 +166,7 @@ export function readLoopPullRequest(execGh, number, repo) {
       issue = null;
     }
   }
-  return { pr, files, issue };
+  return { pr, files, issue, reverted: null };
 }
 
 function parseArgs(argv) {
@@ -174,9 +188,9 @@ function parseArgs(argv) {
  *
  * @param {string[]} argv
  * @param {object} [deps]  { execGh, stdout, stderr }
- * @returns {number} exit code
+ * @returns {Promise<number>} exit code
  */
-export function main(argv, { execGh = defaultExecGh, stdout = process.stdout, stderr = process.stderr } = {}) {
+export async function main(argv, { execGh = defaultExecGh, stdout = process.stdout, stderr = process.stderr } = {}) {
   const opts = parseArgs(argv);
   if (opts.error) {
     stderr.write(`${opts.error}\nUsage: node dev/loop/guard.mjs --pr <n> --repo <owner/name> [--json]\n`);
@@ -184,18 +198,19 @@ export function main(argv, { execGh = defaultExecGh, stdout = process.stdout, st
   }
   let verdict;
   try {
-    verdict = loopGuard(readLoopPullRequest(execGh, opts.pr, opts.repo));
+    verdict = loopGuard(await readLoopPullRequest(execGh, opts.pr, opts.repo));
   } catch (err) {
     stderr.write(`could not read pull request #${opts.pr}: ${String(err.message || err).split('\n')[0]}\n`);
     return 1;
   }
   if (opts.json) stdout.write(`${JSON.stringify({ pr: opts.pr, ...verdict }, null, 2)}\n`);
   else if (!verdict.loop) stdout.write(`#${opts.pr} is not a loop pull request; nothing to check.\n`);
+  else if (verdict.ok && verdict.revert) stdout.write(`#${opts.pr} passes the loop guard: it reverts exactly the loop merge it names.\n`);
   else if (verdict.ok) stdout.write(`#${opts.pr} passes the loop guard: its review of #${verdict.issue} passes, for the files it changes.\n`);
   else stdout.write(`#${opts.pr} does not pass the loop guard:\n${verdict.problems.map((p) => `- ${p}`).join('\n')}\n`);
   return verdict.ok ? 0 : 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  process.exitCode = main(process.argv.slice(2));
+  process.exitCode = await main(process.argv.slice(2));
 }

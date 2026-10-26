@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { buildPromotionEvidence, formatEvidenceMarkdown } from '../../../dev/harness2/evidence.mjs';
 import { isLoopBranch, loopGuard, main, parseReviewBlock, resolvedIssue } from '../../../dev/loop/guard.mjs';
 import { doneWhen, formatReviewMarkdown } from '../../../dev/loop/reviewer.mjs';
+import { revertBody } from '../../../dev/loop/sentinel.mjs';
 import { readRepoFile } from '../../repo/repo-files.mjs';
 
 const ISSUE = {
@@ -101,9 +102,9 @@ test("a change to the agent's behaviour carries measured evidence that names its
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched, [0.5, 0.5, 0.5])) } }).problems.join(' | '), /got worse/);
 });
 
-test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 2 a usage mistake', () => {
+test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 2 a usage mistake', async () => {
   const sink = () => ({ text: '', write(s) { this.text += s; } });
-  const run = (view, argv = ['--pr', '45', '--repo', 'your-org/paraclete']) => {
+  const run = async (view, argv = ['--pr', '45', '--repo', 'your-org/paraclete']) => {
     const out = sink();
     const err = sink();
     const execGh = (args) => {
@@ -112,17 +113,33 @@ test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 
       if (args[0] === 'api') return JSON.stringify(FILES);
       return JSON.stringify(ISSUE);
     };
-    return { code: main(argv, { execGh, stdout: out, stderr: err }), out: out.text };
+    const code = await main(argv, { execGh, stdout: out, stderr: err });
+    return { code, out: out.text };
   };
-  const passing = run(pr());
+  const passing = await run(pr());
   assert.equal(passing.code, 0);
   assert.match(passing.out, /#45 passes the loop guard: its review of #33 passes/);
-  const failing = run(pr({ body: 'Resolves #33.\n' }));
+  const failing = await run(pr({ body: 'Resolves #33.\n' }));
   assert.equal(failing.code, 1);
   assert.match(failing.out, /#45 does not pass the loop guard:\n- its body carries no review block/);
-  assert.equal(run({ headRefName: 'claude/x', body: '' }).code, 0);
-  assert.equal(run(new Error('gh: not logged in')).code, 1);
-  assert.equal(run(pr(), ['--pr', '45']).code, 2);
+  assert.equal((await run({ headRefName: 'claude/x', body: '' })).code, 0);
+  assert.equal((await run(new Error('gh: not logged in'))).code, 1);
+  assert.equal((await run(pr(), ['--pr', '45'])).code, 2);
+});
+
+test('a revert pull request is checked as a revert: no review, no issue, the reverted files set back exactly', () => {
+  const sha = 'a'.repeat(40);
+  const reverted = {
+    message: 'v1: x\n\nMerged from #54 at ' + 'b'.repeat(40) + ' by dev/loop/merger.mjs: CI and the loop guard passed, and its reviewer found every point of #52 met.',
+    files: [{ filename: 'agent/work/thing.mjs', status: 'modified' }],
+    before: { 'agent/work/thing.mjs': 'c'.repeat(40) },
+  };
+  const pr = { headRefName: `loop/revert-${sha.slice(0, 12)}`, body: revertBody({ sha, pr: 54, issue: 52, failed: ['Tests'] }) };
+  const files = [{ filename: 'agent/work/thing.mjs', status: 'modified', sha: 'c'.repeat(40) }];
+  assert.deepEqual(loopGuard({ pr, files, issue: null, reverted }), { loop: true, revert: true, ok: true, problems: [], issue: null }, 'code reverted needs no new test');
+  const wrong = loopGuard({ pr, files: [{ ...files[0], sha: 'd'.repeat(40) }], issue: null, reverted });
+  assert.equal(wrong.ok, false);
+  assert.match(wrong.problems.join(' | '), /does not set exactly the reverted commit's files back/);
 });
 
 test('the workflow runs on every change to a pull request, read-only, with the base branch code', () => {

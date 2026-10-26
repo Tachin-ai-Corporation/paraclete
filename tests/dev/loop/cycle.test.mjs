@@ -51,7 +51,7 @@ function repo(t) {
 }
 
 /** A fake gh: the issues, open and closed pull requests to list, the comments on an issue, and every call it got. */
-function fakeGh({ issues = [], prs = [], closed = [], comments = [] } = {}) {
+function fakeGh({ issues = [], prs = [], closed = [], comments = [], mainRuns = [], loopPaused = null } = {}) {
   const calls = [];
   return {
     calls,
@@ -60,6 +60,11 @@ function fakeGh({ issues = [], prs = [], closed = [], comments = [] } = {}) {
       if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues);
       if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ comments });
       if (args[0] === 'issue' && args[1] === 'create') return 'https://github.com/your-org/paraclete/issues/8';
+      if (args[0] === 'api' && String(args[1]).includes('/check-runs')) return JSON.stringify({ check_runs: mainRuns });
+      if (args[0] === 'variable' && args[1] === 'get') {
+        if (loopPaused) return loopPaused;
+        throw new Error('variable PARACLETE_LOOP_PAUSED was not found');
+      }
       if (args[0] === 'pr' && args[1] === 'list' && args.includes('closed')) return JSON.stringify(closed);
       if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify(prs);
       if (args[0] === 'pr' && args[1] === 'create') return 'https://github.com/your-org/paraclete/pull/99';
@@ -244,6 +249,30 @@ test('an issue refused maxAttempts times is given up: labelled loop-stuck, comme
   const dry = cycle(t, r2, { dryRun: true });
   await dry.run();
   assert.equal(dry.gh.calls.some((a) => a[1] === 'edit' || a[1] === 'comment'), false, 'a dry run gives nothing up');
+});
+
+test('a broken main stops the cycle: a loop merge is reverted first, a person\'s is left; the loop\'s pause variable stops it too', async (t) => {
+  const failing = [{ name: 'Tests', status: 'completed', conclusion: 'failure' }];
+  const r = repo(t);
+  fs.writeFileSync(path.join(r.work, 'docs', 'guide.md'), '# Guide, broken\n');
+  git(r.work, 'commit', '--quiet', '-am', `v2027.01.21.1.1: Gates get rows`, '-m',
+    `Merged from #5 at ${'b'.repeat(40)} by dev/loop/merger.mjs: CI and the loop guard passed, and its reviewer found every point of #3 met.`);
+  git(r.work, 'push', '--quiet', 'origin', 'main');
+  let proposed = false;
+  const gh = fakeGh({ issues: [ISSUE], mainRuns: failing });
+  const res = await cycle(t, r, { gh, proposer: async (p) => { proposed = true; return writes({ 'docs/guide.md': 'x\n' })(p); } }).run();
+  assert.equal(res.action, 'reverting');
+  assert.equal(proposed, false, 'nothing new is built on a broken main');
+  assert.ok(gh.calls.some((a) => a[0] === 'pr' && a[1] === 'create' && a.includes('loop/revert-' + git(r.work, 'rev-parse', 'HEAD').slice(0, 12))));
+  assert.ok(gh.calls.some((a) => a[0] === 'issue' && a[1] === 'reopen' && a[2] === '3'));
+
+  const r2 = repo(t);
+  const person = await cycle(t, r2, { gh: fakeGh({ issues: [ISSUE], mainRuns: failing }) }).run();
+  assert.deepEqual([person.action, /which is not a loop merge/.test(person.reason)], ['main-broken', true]);
+
+  const r3 = repo(t);
+  const paused = await cycle(t, r3, { gh: fakeGh({ issues: [ISSUE], loopPaused: '2 loop merges reverted within a day' }) }).run();
+  assert.deepEqual([paused.action, paused.reason], ['paused', 'the loop is paused: PARACLETE_LOOP_PAUSED: 2 loop merges reverted within a day']);
 });
 
 test('a change to code that adds no test is refused before the suite runs; removing code needs none', async (t) => {

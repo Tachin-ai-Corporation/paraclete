@@ -8,8 +8,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { closingComment, formatLoopMergeReport, loopMergeBlockers, main, mergeLoopPullRequests } from '../../../dev/loop/merger.mjs';
+import { closingComment, formatLoopMergeReport, loopMergeBlockers, loopSquashBody, main, mergeLoopPullRequests } from '../../../dev/loop/merger.mjs';
 import { doneWhen, formatReviewMarkdown } from '../../../dev/loop/reviewer.mjs';
+import { loopMergeOf, revertBody } from '../../../dev/loop/sentinel.mjs';
 
 const NOW = new Date('2027-01-21T12:00:00Z');
 const MAIN_HEAD = '0'.repeat(40);
@@ -40,7 +41,7 @@ function loopPr(number, o = {}) {
   };
 }
 
-function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainLog = 'v2027.01.20.1.1: before' } = {}) {
+function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainLog = 'v2027.01.20.1.1: before', commits = {} } = {}) {
   const calls = [];
   const bySha = (sha) => prs.find((p) => p.view.headRefOid === sha);
   const byNumber = (n) => prs.find((p) => String(p.number) === String(n));
@@ -63,6 +64,8 @@ function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainL
       }
       if (where.includes('/compare/')) return ok({ behind_by: bySha(where.split('...')[1]).behindBy, merge_base_commit: { sha: MAIN_HEAD } });
       if (where.includes('/files')) return ok(byNumber(where.split('/pulls/')[1].split('/')[0]).files);
+      if (where in commits) return ok(commits[where]);
+      if (where.includes('/commits/') || where.includes('/contents/')) return { code: 1, stdout: '', stderr: 'HTTP 404' };
     }
     if (a === 'pr' && b === 'list') {
       if (args.includes('merged')) return ok(merged);
@@ -166,6 +169,56 @@ test('a stale version in the title is moved on; nothing happens while paused', a
   const p = await run(t, paused, { env: { GITHUB_REPOSITORY: 'your-org/paraclete', PARACLETE_H2_PAUSED: '1' } });
   assert.equal(p.paused, true);
   assert.equal(paused.calls.length, 0, 'GitHub is not asked');
+});
+
+const BROKE = 'f'.repeat(40);
+const PARENT = 'e'.repeat(40);
+/** A revert pull request of a loop merge (#54 for #33) that broke main, and GitHub's view of that merge. */
+function revertPr(number, o = {}) {
+  const files = [{ filename: 'dashboard/components/work/WorkPlan.jsx', status: 'modified', sha: 'c'.repeat(40) }];
+  return {
+    number,
+    files,
+    runs: PASS,
+    behindBy: 0,
+    view: {
+      number, title: `v2027.01.21.${number}.1: revert #54, which broke CI on main`, state: 'OPEN', isDraft: false, isCrossRepository: false,
+      baseRefName: 'main', headRefName: `loop/revert-${BROKE.slice(0, 12)}`, headRefOid: String(number).repeat(40).slice(0, 40), mergeStateStatus: 'CLEAN',
+      body: revertBody({ sha: BROKE, pr: 54, issue: 33, failed: ['Tests'] }),
+    },
+    ...o,
+  };
+}
+const BROKEN_MERGE = {
+  [`repos/your-org/paraclete/commits/${BROKE}`]: {
+    commit: { message: `v2027.01.21.4.1: Gates get rows\n\n${loopSquashBody({ number: 54, sha: 'd'.repeat(40), issue: 33 })}` },
+    parents: [{ sha: PARENT }],
+    files: [{ filename: 'dashboard/components/work/WorkPlan.jsx', status: 'modified' }],
+  },
+  [`repos/your-org/paraclete/contents/dashboard/components/work/WorkPlan.jsx?ref=${PARENT}`]: { sha: 'c'.repeat(40) },
+};
+
+test('a revert merges first, through a failing main and past the day\'s cap, and its commit is never taken for a loop merge', async (t) => {
+  const merged = [1, 2, 3].map((n) => ({ number: n, headRefName: `loop/${n}-x`, mergedAt: '2027-01-21T03:00:00Z' }));
+  const gh = fakeGitHub({
+    prs: [loopPr(7), revertPr(9)], mainRuns: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }], merged, commits: BROKEN_MERGE,
+  });
+  const r = await run(t, gh);
+  assert.deepEqual(r.merged, [9]);
+  assert.equal(r.results[0].number, 9, 'the revert is considered first');
+  assert.deepEqual(r.results[1], { number: 7, action: 'waiting', reasons: ['one loop change merges per run, and #9 came first'] });
+  const [merge] = gh.did('merge');
+  assert.match(merge, /^gh pr merge 9 .* --body Reverted f{40} \(#54\) through #9 at 9{40}, merged by dev\/loop\/merger\.mjs: CI had failed on main after that merge\.\n --match-head-commit 9{40}$/);
+  assert.equal(loopMergeOf(merge), null, 'the sentinel never reverts a revert');
+  assert.equal(gh.calls.some((c) => c.startsWith('gh issue close')), false, 'a revert resolves no issue');
+});
+
+test('a revert that does not set the merge back exactly is closed', async (t) => {
+  const extra = revertPr(9, { files: [...revertPr(9).files, { filename: 'agent/work/other.mjs', status: 'modified', sha: '1'.repeat(40) }] });
+  const gh = fakeGitHub({ prs: [extra], commits: BROKEN_MERGE });
+  const r = await run(t, gh);
+  assert.deepEqual(r.closed, [9]);
+  assert.match(gh.did('close')[0], /the loop guard: it does not set exactly the reverted commit's files back to what they were before it: agent\/work\/other\.mjs/);
 });
 
 test('the pieces, and the command', async (t) => {

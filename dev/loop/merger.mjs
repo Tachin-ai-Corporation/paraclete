@@ -25,7 +25,9 @@
 // comment saying why: the loop never updates a
 // pull request it opened, so closing it frees its issue for the next cycle, whose proposer reads that
 // comment (cycle.mjs trustedNotes). One that is only waiting (CI running, GitHub still working out
-// whether it can merge, a draft, main's CI, the day's cap, another merge this run) is left alone. With
+// whether it can merge, a draft, main's CI, the day's cap, another merge this run) is left alone. A
+// revert pull request (sentinel.mjs) comes first, and neither a failing main (what it mends) nor the
+// day's cap holds it back. With
 // --dry-run it changes nothing on GitHub.
 //
 //   node dev/loop/merger.mjs [--dry-run] [--json]
@@ -41,6 +43,7 @@ import { PAUSE_FILE, pauseState } from '../harness2/pause.mjs';
 import { MAIN, REMOTE, checkRuns, ciVerdict } from '../release.mjs';
 import { LOOP_DEFAULTS } from './config.mjs';
 import { isLoopBranch, loopGuard, resolvedIssue } from './guard.mjs';
+import { isRevertBranch, parseRevertBlock, readReverted } from './sentinel.mjs';
 
 /** The workflow dispatched on main after a merge, or when main's head has no CI. */
 const CI_WORKFLOW = 'ci.yml';
@@ -91,6 +94,11 @@ export function closingComment(reasons, issue) {
   ].join('\n');
 }
 
+/** A revert's squashed commit body: what it reverts. It is never a loop merge's (sentinel.mjs loopMergeOf). */
+export function revertSquashBody({ number, sha, block }) {
+  return `Reverted ${block?.reverts || 'a loop merge'} (#${block?.pr ?? '?'}) through #${number} at ${sha}, merged by dev/loop/merger.mjs: CI had failed on main after that merge.\n`;
+}
+
 /** The squashed commit's body: where the merge came from and what passed. */
 export function loopSquashBody({ number, sha, issue }) {
   return `Merged from #${number} at ${sha} by dev/loop/merger.mjs: CI and the loop guard passed, and its reviewer found every point of #${issue} met.\n`;
@@ -131,11 +139,16 @@ async function readForGuard(exec, repo, number) {
     files.push(...batch);
     if (batch.length < 100) break;
   }
+  if (isRevertBranch(pr.headRefName)) {
+    const block = parseRevertBlock(pr.body);
+    const getJson = (p) => ghJson(exec, ['api', ...API_JSON, p], p);
+    return { pr, files, issue: null, reverted: block ? await readReverted(getJson, repo, block.reverts) : null };
+  }
   const n = resolvedIssue(pr.body);
   const issue = n
     ? await ghJson(exec, ['issue', 'view', String(n), '--repo', repo, '--json', 'number,title,body,state,labels'], `issue #${n}`).catch(() => null)
     : null;
-  return { pr, files, issue };
+  return { pr, files, issue, reverted: null };
 }
 
 /**
@@ -192,7 +205,8 @@ export async function mergeLoopPullRequests(o = {}) {
     result.mergedToday = mergedLately.filter((p) => isLoopBranch(p.headRefName) && String(p.mergedAt || '').slice(0, 10) >= day).length;
     const open = await ghJson(exec, ['pr', 'list', '--repo', repo, '--state', 'open', '--base', MAIN, '--limit', '200',
       '--json', 'number,headRefName,isCrossRepository'], 'the open pull requests');
-    listed = open.filter((p) => isLoopBranch(p.headRefName) && !p.isCrossRepository).sort((a, b) => a.number - b.number);
+    listed = open.filter((p) => isLoopBranch(p.headRefName) && !p.isCrossRepository)
+      .sort((a, b) => Number(isRevertBranch(b.headRefName)) - Number(isRevertBranch(a.headRefName)) || a.number - b.number);
   } catch (err) {
     return { ...result, ok: false, error: err.message };
   }
@@ -204,11 +218,11 @@ export async function mergeLoopPullRequests(o = {}) {
       continue;
     }
     try {
-      const { pr, files, issue } = await readForGuard(exec, repo, number);
+      const { pr, files, issue, reverted } = await readForGuard(exec, repo, number);
       const sha = String(pr.headRefOid || '');
       const runs = await checkRuns({ exec }, repo, sha);
       const compare = await ghJson(exec, ['api', ...API_JSON, `repos/${repo}/compare/${result.mainHead}...${sha}`], `how #${number} compares with ${MAIN}`);
-      const guard = loopGuard({ pr, files, issue });
+      const guard = loopGuard({ pr, files, issue, reverted });
       const { refusals, waits } = loopMergeBlockers({ pr, runs, behindBy: compare?.behind_by, guard });
       if (refusals.length) {
         if (!dryRun) {
@@ -218,7 +232,9 @@ export async function mergeLoopPullRequests(o = {}) {
         result.closed.push(number);
         continue;
       }
-      const hold = waits.length ? waits : result.hold ? [result.hold] : result.mergedToday >= maxPerDay ? [`today's ${maxPerDay} loop merges are done`] : [];
+      const hold = waits.length ? waits
+        : guard.revert ? []
+          : result.hold ? [result.hold] : result.mergedToday >= maxPerDay ? [`today's ${maxPerDay} loop merges are done`] : [];
       if (hold.length) {
         result.results.push({ number, action: 'waiting', reasons: hold });
         continue;
@@ -228,7 +244,8 @@ export async function mergeLoopPullRequests(o = {}) {
       if (!dryRun) {
         if (plan.retitled) await gh(exec, ['pr', 'edit', String(number), '--repo', repo, '--title', plan.title], `gh could not retitle #${number}`);
         await gh(exec, ['pr', 'merge', String(number), '--repo', repo, '--squash', '--subject', plan.title,
-          '--body', loopSquashBody({ number, sha, issue: guard.issue }), '--match-head-commit', sha], `gh could not merge #${number}`);
+          '--body', guard.revert ? revertSquashBody({ number, sha, block: parseRevertBlock(pr.body) }) : loopSquashBody({ number, sha, issue: guard.issue }),
+          '--match-head-commit', sha], `gh could not merge #${number}`);
       }
       if (!dryRun && guard.issue) {
         try {

@@ -85,7 +85,9 @@ Otherwise the cycle opens a pull request; a refused change gets a comment on the
 `dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. No person merges: CI's Loop guard
 (`dev/loop/guard.mjs`) checks every loop pull request again, and the loop's merger
 (`dev/loop/merger.mjs`, each hour in `.github/workflows/harness-merge.yml`) merges a passing one, at
-most 3 a day, or closes one that cannot pass with the reasons.
+most 3 a day, or closes one that cannot pass with the reasons. A loop merge that breaks CI on main is
+reverted by the next cycle (`dev/loop/sentinel.mjs`), its issue reopened, and a second revert in a day
+pauses the loop (the repository variable `PARACLETE_LOOP_PAUSED`).
 How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).
 
 ## Continual harness improvement (`dev/harness2/`)

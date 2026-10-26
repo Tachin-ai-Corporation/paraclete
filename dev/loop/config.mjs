@@ -36,6 +36,9 @@ export const LOOP_DEFAULTS = Object.freeze({
   planner: Object.freeze({ maxOpen: 2, wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000 }),
   /** After this many refused attempts on one issue the loop gives it up: `loop` becomes `loop-stuck`. */
   maxAttempts: 6,
+  /** The loop reverts a merge of its own that broke main (sentinel.mjs); this many reverts within a day
+   * pause its cycles. */
+  maxRevertsPerDay: 2,
   /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
   merge: Object.freeze({ maxPerDay: 3 }),
 });
