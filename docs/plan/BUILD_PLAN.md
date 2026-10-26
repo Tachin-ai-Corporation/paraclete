@@ -401,8 +401,11 @@ done.
       against its issue's "Done when" and code decides. Since `v2026.10.25.5.1` no person merges: CI's
       Loop guard (`dev/loop/guard.mjs`) re-checks every loop pull request, its review bound to the
       files it changes, and the loop's merger (`dev/loop/merger.mjs`) merges a passing one, at most 3
-      a day, or closes it with the reasons for the next attempt. Next: reverting a merge the lab shows
-      to be bad, an issue planner, the daily release check, and retiring the legacy harness.
+      a day, or closes it with the reasons for the next attempt. Since `v2026.10.26.3.1` the loop finds
+      its own work: when no `loop` issue waits, its planner turns an item of `docs/plan/OPEN_ITEMS.md`
+      into one, with testable "Done when" points, and an issue refused 6 times is given up as
+      `loop-stuck`. Next: reverting a merge the lab shows to be bad, the daily release check, and
+      retiring the legacy harness.
     - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
       `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
       and the role's smoke mission to pass, and only then cuts the release, with the check recorded in

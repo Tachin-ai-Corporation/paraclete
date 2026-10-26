@@ -32,6 +32,10 @@ export const LOOP_DEFAULTS = Object.freeze({
   testTimeoutMinutes: 40,
   /** A behaviour change is measured on both sides with this many runs of every task, within this cap. */
   measure: Object.freeze({ trials: 3, maxRollouts: 120 }),
+  /** The planner (planner.mjs) opens an issue only while fewer loop issues than this are open. */
+  planner: Object.freeze({ maxOpen: 2, wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000 }),
+  /** After this many refused attempts on one issue the loop gives it up: `loop` becomes `loop-stuck`. */
+  maxAttempts: 6,
   /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
   merge: Object.freeze({ maxPerDay: 3 }),
 });
@@ -138,6 +142,7 @@ export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => f
     ...local,
     proposer: { ...LOOP_DEFAULTS.proposer, ...(local.proposer || {}) },
     reviewer: { ...LOOP_DEFAULTS.reviewer, ...(local.reviewer || {}) },
+    planner: { ...LOOP_DEFAULTS.planner, ...(local.planner || {}) },
     measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
     merge: { ...LOOP_DEFAULTS.merge, ...(local.merge || {}) },
   };

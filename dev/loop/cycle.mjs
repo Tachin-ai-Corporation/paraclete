@@ -6,7 +6,8 @@
 //
 //   1. refuse while the harness is paused (dev/harness2/PAUSED), or once today's cycles are spent;
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
-//      closed pull requests for it;
+//      closed pull requests for it; give up an issue refused `maxAttempts` times (`loop` becomes
+//      `loop-stuck`); when none waits, have the planner (planner.mjs) open one from the open items;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
 //   4. run the proposer on it, within its budget, briefed with the issue and those comments; when the
 //      suite fails, run it again on the same checkout with the failing tests, up to `repairRounds`
@@ -42,6 +43,7 @@ import { MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
+import { STUCK_LABEL, planIssue } from './planner.mjs';
 import { buildBrief, buildRepairBrief, createCommandProposer } from './proposer.mjs';
 import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
@@ -301,12 +303,16 @@ async function reviewChange({ issue, changes, tests, summary, base, worktree, se
   return { items, review: run.review, files, reason: null, ...judgeReview(run.review, items) };
 }
 
-/** The day's cycles that ran a proposer, and the issues tried and failed lately, from the cycle log. */
+/** The day's cycles that ran a proposer, the issues tried and failed lately, and each issue's refused
+ * attempts, from the cycle log. */
 function pastCycles(records, now, retryAfterHours) {
   const day = now.toISOString().slice(0, 10);
   // A dry run spends nothing a person would count, and refuses nothing for good.
   const loop = records.filter((c) => c.command === 'loop' && c.loop && !c.loop.dryRun);
+  const attempts = new Map();
+  for (const c of loop.filter((r) => FAILED.has(r.loop.action))) attempts.set(c.loop.issue, (attempts.get(c.loop.issue) || 0) + 1);
   return {
+    attempts,
     today: loop.filter((c) => String(c.at).slice(0, 10) === day && ATTEMPTED.has(c.loop.action)).length,
     recentlyFailed: new Set(loop
       .filter((c) => FAILED.has(c.loop.action) && now.getTime() - Date.parse(c.at) < retryAfterHours * HOUR_MS)
@@ -360,6 +366,7 @@ export async function runCycle({
   execGh = defaultExec('gh'),
   proposer,
   reviewer,
+  planner,
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -389,6 +396,7 @@ export async function runCycle({
           loop: {
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
             tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
+            ...(result.planned ? { planned: true } : {}),
             behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
             ...(result.tests?.failures?.length
               ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
@@ -416,14 +424,63 @@ export async function runCycle({
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
   const busy = (n) => openPrs.some((p) => String(p.headRefName || '').startsWith(`${settings.branchPrefix}${n}-`));
+  // Loop pull requests main moved past are brought up to date (main merged into them, as the user this
+  // runs as, so their CI and the Loop guard run again): the merger waits for that rather than close
+  // them. One already current, or in conflict (which the merger closes), is left as it is.
+  if (!dryRun) {
+    for (const p of openPrs.filter((x) => String(x.headRefName || '').startsWith(settings.branchPrefix))) {
+      try {
+        execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${p.number}/update-branch`], repoRoot);
+        log(`[INFO] loop: brought #${p.number} up to date with main`);
+      } catch {
+        // current already, or in conflict
+      }
+    }
+  }
   const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
-  const issue = issues.find((i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number));
+  // An issue refused maxAttempts times is given up: what the loop cannot do stops holding it.
+  const stuck = issues.filter((i) => (past.attempts.get(i.number) || 0) >= settings.maxAttempts);
+  for (const s of stuck) {
+    log(`[INFO] loop: giving up #${s.number} after ${past.attempts.get(s.number)} refused attempts`);
+    if (dryRun) continue;
+    try {
+      try {
+        execGh(['label', 'create', STUCK_LABEL, ...repoArgs, '--description', 'The self-improvement loop gave this up', '--color', 'B60205'], repoRoot);
+      } catch {
+        // it exists
+      }
+      execGh(['issue', 'edit', String(s.number), ...repoArgs, '--remove-label', settings.label, '--add-label', STUCK_LABEL], repoRoot);
+      execGh(['issue', 'comment', String(s.number), ...repoArgs, '--body',
+        `The self-improvement loop gave this up after ${past.attempts.get(s.number)} refused attempts: it is labelled \`${STUCK_LABEL}\` now, and the loop no longer takes it. Label it \`${settings.label}\` again to have the loop try it anew.`], repoRoot);
+    } catch (err) {
+      log(`[WARN] could not give up #${s.number}: ${err.message}`);
+    }
+  }
+  const takeable = (i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number) && !stuck.includes(i);
+  let issue = issues.find(takeable);
+  let planned = false;
+  // No issue waits: the planner opens one from the open items, and this cycle takes it.
+  if (!issue && !issueNumber && settings.planner.command) {
+    let res;
+    try {
+      res = await planIssue({ repoRoot, repo, settings, execGh, planner, dryRun, log });
+    } catch (err) {
+      res = { issue: null, reason: `the planner broke: ${err.message}` };
+    }
+    if (res.issue) {
+      issue = res.issue;
+      planned = true;
+    } else {
+      log(`[INFO] loop: nothing planned: ${res.reason}`);
+    }
+  }
   if (!issue) {
     return finish({
       action: 'no-work',
       reason: issueNumber ? `issue #${issueNumber} is not open with the ${settings.label} label, has an open loop pull request, or was tried lately` : `no open ${settings.label} issue is waiting`,
     });
   }
+  result = { ...result, planned };
   const branch = `${settings.branchPrefix}${issue.number}-${slugFor(issue.title)}`;
   result = { ...result, issue: issue.number, branch };
   log(`[INFO] loop: issue #${issue.number}: ${issue.title}`);

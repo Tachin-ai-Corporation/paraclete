@@ -27,7 +27,7 @@ permissions:
   pull-requests: write
   actions: write
   checks: read
-  issues: read
+  issues: write
 
 concurrency:
   group: harness-merge

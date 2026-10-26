@@ -91,6 +91,8 @@ test('a passing loop pull request is squash-merged at its head with its version,
   const [merge] = gh.did('merge');
   assert.match(merge, /^gh pr merge 5 --repo your-org\/paraclete --squash --subject v2027\.01\.21\.5\.1: Gates get rows --body Merged from #5 at 5{40} by dev\/loop\/merger\.mjs: CI and the loop guard passed, and its reviewer found every point of #33 met\.\n --match-head-commit 5{40}$/);
   assert.equal(gh.did('workflow').length, 1, 'CI is dispatched on main after the merge');
+  assert.ok(gh.calls.includes("gh issue close 33 --repo your-org/paraclete --reason completed --comment Resolved by #5, merged by the loop's merger (dev/loop/merger.mjs)."),
+    "the issue it resolved is closed: GitHub applies no closing keyword to a workflow token's merge");
   assert.equal(gh.calls.some((c) => c.includes('pr view 4 ')), false, 'another branch is never read');
   assert.match(formatLoopMergeReport(r), /^#5 merged as v2027\.01\.21\.5\.1: Gates get rows\nLoop merges today: 1\.\nDispatched ci\.yml on main\.\n$/);
 });
@@ -112,9 +114,10 @@ test('one that cannot pass is closed with its reasons, which the next attempt re
   assert.match(formatLoopMergeReport(d), /^#6 would close: /);
 });
 
-test('behind main, conflicting or failing CI is closed; still running or still computing is left', async (t) => {
+test('conflicting or failing CI is closed; behind main, still running or still computing is left', async (t) => {
   const cases = [
-    [{ behindBy: 2 }, 'closed', /its head lacks 2 commit\(s\) of main's head/],
+    [{ behindBy: 2 }, 'waiting', /its head lacks 2 commit\(s\) of main's head: the next loop cycle brings it up to date/],
+    [{ behindBy: 2, view: { ...loopPr(7).view, mergeStateStatus: 'DIRTY' } }, 'closed', /it conflicts with main/],
     [{ view: { ...loopPr(7).view, mergeStateStatus: 'DIRTY' } }, 'closed', /it conflicts with main/],
     [{ runs: [{ name: 'Tests', status: 'completed', conclusion: 'failure' }] }, 'closed', /CI did not pass on 7{12}: Tests \(failure\)/],
     [{ runs: [{ name: 'Tests', status: 'in_progress', conclusion: null }] }, 'waiting', /CI is still running/],

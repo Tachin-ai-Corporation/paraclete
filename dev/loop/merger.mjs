@@ -14,11 +14,15 @@
 //   - the loop guard passes here too (guard.mjs: the issue, the referee and test rules, the review
 //     re-judged against the issue as it reads now and bound to the files it changes, the evidence of a
 //     behaviour change);
-//   - GitHub can merge it cleanly and its head contains main's head, so CI ran on what lands.
+//   - GitHub can merge it cleanly and its head contains main's head, so CI ran on what lands (one main
+//     moved past waits: the next loop cycle merges main into it, and CI and the guard run again);
 // Its title keeps its version when that is newer than main's and every tag's, else takes the next free
-// one (dev/harness2/merge.mjs promotionVersion), so main's head stays releasable.
+// one (dev/harness2/merge.mjs promotionVersion), so main's head stays releasable. After the merge it
+// closes the issue the pull request resolved: GitHub applies no closing keyword ("Resolves #n") to a
+// merge made with a workflow's token, and an issue left open would be taken again.
 //
-// A loop pull request that breaks a rule is closed with a comment saying why: the loop never updates a
+// A loop pull request that breaks a rule (CI failed, a conflict with main, the guard) is closed with a
+// comment saying why: the loop never updates a
 // pull request it opened, so closing it frees its issue for the next cycle, whose proposer reads that
 // comment (cycle.mjs trustedNotes). One that is only waiting (CI running, GitHub still working out
 // whether it can merge, a draft, main's CI, the day's cap, another merge this run) is left alone. With
@@ -69,7 +73,9 @@ export function loopMergeBlockers({ pr, runs, behindBy, guard }) {
   if (state === 'UNKNOWN') waits.push('GitHub has not worked out yet whether it can be merged');
   else if (state === 'DIRTY') refusals.push(`it conflicts with ${MAIN}`);
   else if (state !== 'CLEAN' && ci.ok) refusals.push(`GitHub cannot merge it cleanly (mergeStateStatus ${state})`);
-  if (!(behindBy === 0)) refusals.push(`its head lacks ${Number.isInteger(behindBy) ? `${behindBy} commit(s)` : 'commits'} of ${MAIN}'s head, so its CI and review did not see the ${MAIN} it would land on`);
+  // Behind main is not a fault of the change: the next loop cycle merges main into it (cycle.mjs), and
+  // its CI and the guard run again on what would land. A conflict is DIRTY, and closes it above.
+  if (!(behindBy === 0) && state !== 'DIRTY') waits.push(`its head lacks ${Number.isInteger(behindBy) ? `${behindBy} commit(s)` : 'commits'} of ${MAIN}'s head: the next loop cycle brings it up to date`);
   refusals.push(...(guard?.problems || []).map((p) => `the loop guard: ${p}`));
   return { refusals, waits };
 }
@@ -223,6 +229,14 @@ export async function mergeLoopPullRequests(o = {}) {
         if (plan.retitled) await gh(exec, ['pr', 'edit', String(number), '--repo', repo, '--title', plan.title], `gh could not retitle #${number}`);
         await gh(exec, ['pr', 'merge', String(number), '--repo', repo, '--squash', '--subject', plan.title,
           '--body', loopSquashBody({ number, sha, issue: guard.issue }), '--match-head-commit', sha], `gh could not merge #${number}`);
+      }
+      if (!dryRun && guard.issue) {
+        try {
+          await gh(exec, ['issue', 'close', String(guard.issue), '--repo', repo, '--reason', 'completed', '--comment',
+            `Resolved by #${number}, merged by the loop's merger (dev/loop/merger.mjs).`], `gh could not close #${guard.issue}`);
+        } catch (err) {
+          errors.push(`#${number} merged, but ${err.message}`);
+        }
       }
       result.mergedToday += 1;
       result.merged.push(number);
