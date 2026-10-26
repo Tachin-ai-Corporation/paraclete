@@ -8,7 +8,9 @@
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
 //      closed pull requests for it;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
-//   4. run the proposer on it, within its budget, briefed with the issue and those comments;
+//   4. run the proposer on it, within its budget, briefed with the issue and those comments; when the
+//      suite fails, run it again on the same checkout with the failing tests, up to `repairRounds`
+//      times (the proposer need not choose to run the tests itself: the cycle does, and says what failed);
 //   5. refuse a change that touches the referee (config.mjs), changes or removes an existing test,
 //      changes code without adding a test, or fails the suite; then commit it, and refuse it unless a
 //      reviewer model (reviewer.mjs) finds it meets every point the issue says it is done when; a change
@@ -40,7 +42,7 @@ import { MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
-import { buildBrief, createCommandProposer } from './proposer.mjs';
+import { buildBrief, buildRepairBrief, createCommandProposer } from './proposer.mjs';
 import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
@@ -386,7 +388,7 @@ export async function runCycle({
           }),
           loop: {
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
-            tests: result.tests?.ok ?? null, reviewed: result.review ? Boolean(result.review.ok) : null,
+            tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
             behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
             ...(result.tests?.failures?.length
               ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
@@ -462,23 +464,39 @@ export async function runCycle({
     const budget = settings.proposer;
     const propose = proposer || createCommandProposer(settings.proposer);
     const brief = buildBrief({ issue, notes, testCommand: settings.testCommand, budget });
-    const proposal = await propose({ issue, worktree, brief, budget });
+    let proposal = await propose({ issue, worktree, brief, budget });
     if (!proposal.ok) return refuse('proposer-failed', proposal.reason || 'the proposer failed');
 
-    // 5. What it changed, and whether that may be proposed.
-    // The linked packages never count as a change. git refuses a pathspec naming an ignored path, even
-    // to exclude it, so they are taken back out of the index after staging, ignored or not.
-    execGit(['add', '--all', '--', '.'], worktree);
-    execGit(['rm', '--cached', '-r', '-q', '--ignore-unmatch', '--', ...LINKED_PACKAGES], worktree);
-    const changes = parseNameStatus(execGit(['diff', '--cached', '--name-status', '-M', base], worktree));
-    if (changes.length === 0) return refuse('no-change', proposal.summary ? `the proposer changed nothing: ${proposal.summary.slice(0, 500)}` : 'the proposer changed nothing');
-    const refusals = changes.flatMap((c) => [pathRefusal(c.path, c.status), c.oldPath ? pathRefusal(c.oldPath, 'D') : null]).filter(Boolean);
-    if (refusals.length) return refuse('refused-paths', refusals.join('; '), { changes });
-    const untested = testRefusal(changes);
-    if (untested) return refuse('untested', untested, { changes });
+    // 5. What it changed, and whether that may be proposed; and the suite, with repair rounds.
+    let changes;
+    let tests;
+    let repairs = 0;
+    for (;;) {
+      // The linked packages never count as a change. git refuses a pathspec naming an ignored path, even
+      // to exclude it, so they are taken back out of the index after staging, ignored or not.
+      execGit(['add', '--all', '--', '.'], worktree);
+      execGit(['rm', '--cached', '-r', '-q', '--ignore-unmatch', '--', ...LINKED_PACKAGES], worktree);
+      changes = parseNameStatus(execGit(['diff', '--cached', '--name-status', '-M', base], worktree));
+      if (changes.length === 0) return refuse('no-change', proposal.summary ? `the proposer changed nothing: ${proposal.summary.slice(0, 500)}` : 'the proposer changed nothing', { repairs });
+      const refusals = changes.flatMap((c) => [pathRefusal(c.path, c.status), c.oldPath ? pathRefusal(c.oldPath, 'D') : null]).filter(Boolean);
+      if (refusals.length) return refuse('refused-paths', refusals.join('; '), { changes, repairs });
+      const untested = testRefusal(changes);
+      if (untested) return refuse('untested', untested, { changes, repairs });
 
-    const tests = await runTests({ worktree, settings });
-    if (!tests.ok) return refuse('tests-failed', `the suite failed: ${tests.summary}`, { changes, tests });
+      tests = await runTests({ worktree, settings });
+      if (tests.ok || repairs >= settings.repairRounds) break;
+      repairs += 1;
+      log(`[INFO] loop: the suite failed (${tests.summary}); repair round ${repairs} of ${settings.repairRounds}`);
+      const repair = await propose({
+        issue, worktree, brief: buildRepairBrief({ brief, tests, round: repairs, rounds: settings.repairRounds }), budget,
+      });
+      if (!repair.ok) return refuse('proposer-failed', `${repair.reason || 'the proposer failed'} (in repair round ${repairs})`, { changes, tests, repairs });
+      if (repair.summary) proposal = { ...proposal, summary: repair.summary };
+    }
+    if (!tests.ok) {
+      const after = repairs ? ` after ${repairs} repair round${repairs === 1 ? '' : 's'}` : '';
+      return refuse('tests-failed', `the suite failed${after}: ${tests.summary}`, { changes, tests, repairs });
+    }
 
     // 6. Commit under the next free version (main's, the tags', and the open pull requests' titles).
     const subjects = [...execGit(['log', '--format=%s', 'origin/main'], repoRoot).split('\n'), ...openPrs.map((p) => p.title)];
@@ -510,7 +528,7 @@ export async function runCycle({
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });
     }
 
-    const fields = { changes, tests, review, behaviour, measurement, version, subject };
+    const fields = { changes, tests, repairs, review, behaviour, measurement, version, subject };
     if (dryRun) return finish({ action: 'ready', reason: 'a dry run: nothing pushed', ...fields });
 
     // 7. Push, and open the pull request a person merges.

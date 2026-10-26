@@ -22,6 +22,9 @@ export const LOOP_DEFAULTS = Object.freeze({
   retryAfterHours: 24,
   /** The proposer's budget for one cycle, passed to its command (proposer.mjs). */
   proposer: Object.freeze({ wallMinutes: 45, maxTurns: 150, maxTokens: 4_000_000 }),
+  /** How many times a change that fails the suite goes back to the proposer, with the failing tests,
+   * before the cycle refuses it. Each round is a proposer run within the proposer's budget. */
+  repairRounds: 2,
   /** The reviewer's budget for one change, and how much of the diff its brief carries (reviewer.mjs). */
   reviewer: Object.freeze({ wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000, maxDiffChars: 80_000 }),
   /** The suite every change must pass, and how long it may take. */

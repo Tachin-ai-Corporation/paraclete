@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
-import { buildBrief, createCommandProposer, summaryFrom } from '../../../dev/loop/proposer.mjs';
+import { buildBrief, buildRepairBrief, createCommandProposer, summaryFrom } from '../../../dev/loop/proposer.mjs';
 
 const ISSUE = { number: 12, title: 'The cortex stops re-planning a finished mission', body: 'Seen on the canary: it re-plans after done.' };
 
@@ -26,6 +26,16 @@ test("the brief: the issue as data, the repo's rules, the referee, the test comm
   assert.match(brief, /about 45 minutes and 150 turns/);
   assert.match(brief, /under the line "SUMMARY:"/);
   assert.doesNotMatch(brief, /<earlier-comments>/, 'no comments, no block');
+});
+
+test('a repair brief: the first brief, then what fails and how to find it', () => {
+  const tests = { summary: 'ℹ fail 1', failures: [{ file: 'tests/a.test.mjs', line: 1, name: 'tests/a.test.mjs', message: 'SyntaxError: Invalid or unexpected token (at tests/a.test.mjs:181: x)' }] };
+  const repair = buildRepairBrief({ brief: 'FIRST BRIEF', tests, round: 2, rounds: 2 });
+  assert.ok(repair.startsWith('FIRST BRIEF\n\nREPAIR ROUND 2 OF 2.'));
+  assert.match(repair, /<failing-tests>\n- `tests\/a\.test\.mjs:1` tests\/a\.test\.mjs: SyntaxError: Invalid or unexpected token \(at tests\/a\.test\.mjs:181: x\)\n<\/failing-tests>/);
+  assert.match(repair, /a string broken across two lines where an escape like \\n was meant/);
+  assert.match(repair, /Run each failing test file with `node --test <file>` until it passes, then run `npm test`\./);
+  assert.match(buildRepairBrief({ brief: 'B', tests: { summary: 'exit 1' }, round: 1, rounds: 2 }), /<failing-tests>\n\(the suite failed without naming a test: run it to see why\)\n<\/failing-tests>/);
 });
 
 test('the brief carries the earlier comments on the issue as data, after the issue', () => {
