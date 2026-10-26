@@ -189,7 +189,7 @@ clean main equal to origin, a version newer than every tag, CI passed on the hea
 since the previous release; that release is `release.minHoursBetween` (20) hours old or more; and the
 lab ran the head healthy: the machine the cycle runs on (the driver, itself an instance kept on main)
 has that commit installed for `release.soakHours` (2) hours or more, with every agent service active
-and its heartbeat fresh. It tags as `dev/release.mjs` does, as the user the cycle runs as, so
+and every heartbeat it writes fresh (gateway and control write none, as `dev/status.mjs` knows). It tags as `dev/release.mjs` does, as the user the cycle runs as, so
 `.github/workflows/release.yml` tests and publishes it; the tag's message names the commit, the soak
 and the loop merges. A canary in a project of its own with a smoke mission (`dev/release-check.mjs`)
 checks more, once one exists.
