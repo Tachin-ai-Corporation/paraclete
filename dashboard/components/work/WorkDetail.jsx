@@ -301,7 +301,7 @@ export function WorkDetail({ id }) {
         {view.plan && (
           <section className={styles.block}>
             <h2>Plan</h2>
-            <WorkPlan plan={view.plan} />
+            <WorkPlan plan={view.plan} approvals={view.approvals} />
           </section>
         )}
 

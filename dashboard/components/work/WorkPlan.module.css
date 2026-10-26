@@ -27,7 +27,10 @@
 
 .tasks { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
 
-.task + .task { border-top: 1px solid var(--border); }
+.task + .task,
+.task + .gate,
+.gate + .task,
+.gate + .gate { border-top: 1px solid var(--border); }
 .taskHead {
   display: flex;
   align-items: center;
@@ -36,13 +39,16 @@
   cursor: pointer;
   list-style: none;
 }
+.gate > .taskHead { cursor: default; }
 .taskHead::-webkit-details-marker { display: none; }
-.taskHead:hover { background: var(--bg-hover); }
+.task > .taskHead:hover { background: var(--bg-hover); }
 .task[open] > .taskHead { background: var(--bg-raised); }
 .taskNum { flex: none; width: 52px; color: var(--text-muted); font-size: 12px; font-weight: 600; }
 .organ { flex: none; width: 84px; color: var(--text-secondary); font-size: 13px; }
 .taskTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .taskMeta { flex: none; display: flex; align-items: center; gap: var(--space-2); font-size: 12px; }
+.gateNote { padding: 0 var(--space-3) var(--space-2); font-size: 13px; }
+.gateReason { color: var(--text-secondary); font-style: italic; overflow-wrap: anywhere; }
 .taskBody { padding: var(--space-3); border-top: 1px solid var(--border); }
 .taskBody > * + * { margin-top: var(--space-3); }
 .instruction { color: var(--text-secondary); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -1,13 +1,15 @@
 'use client';
 // dashboard/components/work/WorkPlan.jsx: a mission's plan as the dashboard shows it. One card per
 // checkpoint, in order: what it must achieve, the verifier's verdict on it (with its caveats or its
-// reasons), and its tasks, each with the organ that ran it and its output folded. A checkpoint tried
-// more than once shows its latest attempt, with the earlier ones folded below; one not started yet
-// shows the tasks it is planned to run. Also the task list used on a checkpoint's own page.
+// reasons), and its steps: its tasks (each with the organ that ran it and its output folded) and its
+// approval gates (each in its place among the tasks, with its state and who decided it and when). A
+// checkpoint tried more than once shows its latest attempt, with the earlier ones folded below; one not
+// started yet shows the steps it is planned to run. Also the task list used on a checkpoint's own page.
 import Link from 'next/link';
-import { formatDate } from '@/lib/client/format.js';
+import { formatDate, timeAgo } from '@/lib/client/format.js';
 import { TurnOutput } from './ExpandableText.jsx';
 import { OrganName, StatusBadge, VERDICT, VerdictBadge, duration } from './status.jsx';
+import { attemptRows } from './work-plan.js';
 import styles from './WorkPlan.module.css';
 
 /** The verifier's verdict, its meaning, and what it said. */
@@ -58,18 +60,63 @@ export function TaskRow({ task }) {
   );
 }
 
-function Attempt({ attempt }) {
+/**
+ * One approval gate in its place among a checkpoint's tasks: its state (pending, approved, rejected, or
+ * no longer needed), who decided it and when, and why if a reason was given.
+ */
+export function GateRow({ gate }) {
+  const decided = gate.state === 'approved' || gate.state === 'rejected';
   return (
-    <div className="stack">
-      <VerdictCard verdict={attempt.verdict} />
-      {attempt.tasks.length > 0
-        ? <div className={styles.tasks}>{attempt.tasks.map((task) => <TaskRow key={task.id} task={task} />)}</div>
-        : attempt.outcome === 'awaiting_approval' && <p className="muted">Paused at its approval gate; the tasks after it run once it is approved.</p>}
+    <div className={styles.gate}>
+      <div className={styles.taskHead}>
+        <span className={styles.taskNum}>{gate.step ? `Gate ${gate.step}` : 'Gate'}</span>
+        <span className={styles.organ}>Approval</span>
+        <span className={styles.taskTitle}>{gate.title}</span>
+        <span className={styles.taskMeta}>
+          {decided && (
+            <span className="muted">
+              by <strong>{gate.resolved_by}</strong>
+              {gate.resolved_at && (
+                <> <span title={formatDate(gate.resolved_at)}>{timeAgo(gate.resolved_at)}</span></>
+              )}
+            </span>
+          )}
+          {gate.state === 'pending' && gate.requested_at && (
+            <span className="muted" title={formatDate(gate.requested_at)}>asked {timeAgo(gate.requested_at)}</span>
+          )}
+          <span className={`badge ${gate.badge}`}>{gate.label}</span>
+        </span>
+      </div>
+      {(gate.reason || gate.stale_reason) && (
+        <div className={styles.gateNote}>
+          {gate.reason && <span className={styles.gateReason}>“{gate.reason}”</span>}
+          {gate.stale_reason && <span className="muted">No longer needed: {gate.stale_reason}.</span>}
+        </div>
+      )}
     </div>
   );
 }
 
-function CheckpointCard({ entry }) {
+function Attempt({ entry, attempt, approvals, isLatest }) {
+  const rows = attemptRows(entry, attempt, approvals, { isLatest });
+  return (
+    <div className="stack">
+      <VerdictCard verdict={attempt.verdict} />
+      {rows.length > 0 && (
+        <div className={styles.tasks}>
+          {rows.map((row) => (row.kind === 'gate'
+            ? <GateRow key={row.key} gate={row} />
+            : <TaskRow key={row.key} task={row.task} />))}
+        </div>
+      )}
+      {attempt.outcome === 'awaiting_approval' && (
+        <p className="muted">Paused at its approval gate; the tasks after it run once it is approved.</p>
+      )}
+    </div>
+  );
+}
+
+function CheckpointCard({ entry, approvals }) {
   const attempts = entry.attempts;
   const latest = attempts[attempts.length - 1] || null;
   const earlier = attempts.slice(0, -1).reverse();
@@ -91,7 +138,7 @@ function CheckpointCard({ entry }) {
         <p className={styles.criteria}><span className={styles.criteriaLabel}>Done when</span> {entry.accept_criteria}</p>
       )}
       {latest ? (
-        <Attempt attempt={latest} />
+        <Attempt entry={entry} attempt={latest} approvals={approvals} isLatest />
       ) : (
         <div>
           <p className="muted">Not started.</p>
@@ -112,17 +159,17 @@ function CheckpointCard({ entry }) {
           <summary>
             Earlier attempt {attempts.length - 1 - i}: <VerdictBadge verdict={attempt.verdict.verdict} />
           </summary>
-          <Attempt attempt={attempt} />
+          <Attempt entry={entry} attempt={attempt} approvals={approvals} isLatest={false} />
         </details>
       ))}
     </section>
   );
 }
 
-/** The plan of a mission: `plan` from GET /api/work/:id. */
-export function WorkPlan({ plan }) {
+/** The plan of a mission: `plan` and `approvals` from GET /api/work/:id. */
+export function WorkPlan({ plan, approvals = [] }) {
   if (!plan || plan.length === 0) return <p className="muted">This mission has no checkpoint plan: it was answered without one, or it has not been planned yet.</p>;
-  return <div className="stack">{plan.map((entry) => <CheckpointCard key={entry.n} entry={entry} />)}</div>;
+  return <div className="stack">{plan.map((entry) => <CheckpointCard key={entry.n} entry={entry} approvals={approvals} />)}</div>;
 }
 
 /** A checkpoint's tasks, on the checkpoint's own page. */
