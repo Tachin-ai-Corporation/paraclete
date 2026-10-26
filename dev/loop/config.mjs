@@ -39,6 +39,10 @@ export const LOOP_DEFAULTS = Object.freeze({
   /** The loop reverts a merge of its own that broke main (sentinel.mjs); this many reverts within a day
    * pause its cycles. */
   maxRevertsPerDay: 2,
+  /** Releasing main once the loop's merges have run healthy on the lab (releaser.mjs): off unless the
+   * lab driver's local settings turn it on; the lab must run the head this long, and releases keep
+   * this far apart. */
+  release: Object.freeze({ enabled: false, soakHours: 2, minHoursBetween: 20 }),
   /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
   merge: Object.freeze({ maxPerDay: 3 }),
 });
@@ -153,5 +157,6 @@ export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => f
     planner: { ...LOOP_DEFAULTS.planner, ...(local.planner || {}) },
     measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
     merge: { ...LOOP_DEFAULTS.merge, ...(local.merge || {}) },
+    release: { ...LOOP_DEFAULTS.release, ...(local.release || {}) },
   };
 }

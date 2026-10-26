@@ -7,6 +7,8 @@
 //   1. refuse while the harness is paused (dev/harness2/PAUSED), or the loop is (the repository variable
 //      PARACLETE_LOOP_PAUSED), or once today's cycles are spent; when CI failed on main because of a loop
 //      merge, open its revert and reopen its issue (sentinel.mjs), and change nothing else on a broken main;
+//      on a healthy main, release it once the loop's merges since the last release ran healthy on the lab
+//      (releaser.mjs, when turned on);
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
 //      closed pull requests for it; give up an issue refused `maxAttempts` times (`loop` becomes
 //      `loop-stuck`); when none waits, have the planner (planner.mjs) open one from the open items;
@@ -47,6 +49,8 @@ import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { STUCK_LABEL, planIssue } from './planner.mjs';
 import { checkMain, loopPauseReason } from './sentinel.mjs';
+import { releaseIfDue } from './releaser.mjs';
+import { devContext } from '../dev-env.mjs';
 import { buildBrief, buildRepairBrief, createCommandProposer } from './proposer.mjs';
 import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
@@ -435,6 +439,7 @@ export async function runCycle({
   proposer,
   reviewer,
   planner,
+  release = (o) => releaseIfDue(o),
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -465,6 +470,7 @@ export async function runCycle({
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
             tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
             ...(result.planned ? { planned: true } : {}),
+            ...(result.released ? { released: result.released } : {}),
             behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
             ...(result.tests?.failures?.length
               ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
@@ -502,6 +508,20 @@ export async function runCycle({
   }
   if (health.state === 'reverting') return finish({ action: 'reverting', reason: health.reason, pullRequest: health.pullRequest || null });
   if (health.state === 'broken') return finish({ action: 'main-broken', reason: health.reason });
+
+  // The loop's merges reach instances in a release, cut once they ran healthy on the lab.
+  try {
+    const out = { write: (text) => log(String(text).trimEnd()) };
+    const released = await release({ settings, ctx: devContext({ stdout: out, stderr: out }), now, dryRun });
+    if (released.action === 'released') {
+      log(`[INFO] loop: released ${released.version}`);
+      result = { ...result, released: released.version };
+    } else {
+      log(`[INFO] loop: no release: ${released.reason}`);
+    }
+  } catch (err) {
+    log(`[WARN] the release step broke: ${err.message}`);
+  }
 
   // 2. The issue: the oldest open one with the label, no open loop pull request, not tried lately.
   const issues = JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', settings.label, '--state', 'open',
