@@ -161,7 +161,7 @@ const SUMMARY = {
   suiteVersion: MODEL_SUITE_VERSION, commit: 'c'.repeat(40), at: '2027-01-21T06:00:00.000Z', trials: 2, measured: true,
   tasks: [
     { id: 'se-fix-failing-test', role: 'software-engineer', split: 'train', runs: 2, measuredRuns: 2, score: 0.5,
-      checks: [{ name: 'tests pass', runs: 2, failed: 2, detail: 'not ok 1 - sums a range' }, { name: 'only the source changed', runs: 2, failed: 1 }] },
+      checks: [{ name: 'tests pass', runs: 2, failed: 2, detail: 'not ok 1 - sums a range' }, { name: 'only the source changed', runs: 3, failed: 1 }] },
     { id: 'se-implement-from-spec', role: 'software-engineer', split: 'holdout', runs: 2, measuredRuns: 2, score: 0 },
   ],
 };
@@ -176,7 +176,7 @@ test("a training task main's head fails is planned first, by code, with its fail
   const body = res.issue.body;
   assert.match(body, /^On main's head \(`cccccccccccc`\), the agent fails checks of the model suite's training task `se-fix-failing-test` \(role `software-engineer`\): 2 real-model run\(s\) in the baseline of 2027-01-21, capability 0\.5\./);
   assert.match(body, /\n- `tests pass` failed in 2 of 2 runs: not ok 1 - sums a range\n/);
-  assert.doesNotMatch(body, /only the source changed/, 'a check failing in half the runs is not named');
+  assert.doesNotMatch(body, /only the source changed/, 'a check failing in fewer than half the runs is not named');
   assert.doesNotMatch(body, /se-implement-from-spec/, 'a held-out task never reaches an issue');
   assert.match(body, /\nThe task asks the agent:\n\n> /);
   assert.equal(issueTarget(body), 'se-fix-failing-test');

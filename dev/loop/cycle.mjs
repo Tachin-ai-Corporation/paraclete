@@ -50,7 +50,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { STUCK_LABEL, planIssue } from './planner.mjs';
-import { baselineDue, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline } from './baseline.mjs';
+import { baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline } from './baseline.mjs';
 import { checkMain, loopPauseReason } from './sentinel.mjs';
 import { releaseIfDue } from './releaser.mjs';
 import { devContext } from '../dev-env.mjs';
@@ -565,7 +565,7 @@ export async function runCycle({
           : !summary.measured ? 'some runs of the baseline were not real-model runs' : null;
         writeBaseline({ repoRoot, kept, summary: reason ? null : summary, attempt: { at: now.toISOString(), commit: head, ok: !reason, reason } });
         if (reason) return finish({ action: 'baseline-failed', reason, baseline: { commit: head } });
-        const failing = summary.tasks.filter((t) => t.split === 'train' && (t.checks || []).some((c) => c.failed * 2 > c.runs)).map((t) => t.id);
+        const failing = failingTasks(summary).map((t) => t.id);
         return finish({
           action: 'baselined',
           reason: `measured main's head on ${summary.tasks.length} tasks; training tasks failing a check: ${failing.join(', ') || 'none'}`,

@@ -46,25 +46,26 @@ test("a real-model run's trajectory carries its checks, and the summary counts t
   assert.deepEqual(failingTasks(scripted), [], 'nothing is planned from runs that were not real-model runs');
 });
 
-test('the training tasks main fails: a check failing in most measured runs, worst task first, this suite only', () => {
+test('the training tasks main fails: a check failing in half its measured runs or more, worst task first, this suite only', () => {
   const task = (id, score, checks, split = 'train') => ({ id, role: 'generic', split, runs: 2, measuredRuns: 2, score, checks });
   const summary = {
     suiteVersion: MODEL_SUITE_VERSION, measured: true,
     tasks: [
       task('b-task', 0.5, [{ name: 'half', runs: 2, failed: 1 }, { name: 'always', runs: 2, failed: 2 }]),
-      task('a-task', 0.25, [{ name: 'mostly', runs: 3, failed: 2 }]),
+      task('a-task', 0.25, [{ name: 'mostly', runs: 3, failed: 2 }, { name: 'once in three', runs: 3, failed: 1 }]),
       task('c-task', 1, [{ name: 'fine', runs: 2, failed: 0 }]),
       task('d-task', 0, [{ name: 'held', runs: 2, failed: 2 }], 'holdout'),
     ],
   };
   const failing = failingTasks(summary);
-  assert.deepEqual(failing.map((t) => [t.id, t.failing.map((c) => c.name)]), [['a-task', ['mostly']], ['b-task', ['always']]]);
+  assert.deepEqual(failing.map((t) => [t.id, t.failing.map((c) => c.name)]), [['a-task', ['mostly']], ['b-task', ['half', 'always']]],
+    'half the runs counts; one run in three does not');
   assert.deepEqual(failingTasks({ ...summary, suiteVersion: MODEL_SUITE_VERSION + 1 }), [], 'another version of the suite');
 
   const key = taskPlanKey(failing[1]);
   assert.match(key, new RegExp(`^model-b-task-v${MODEL_SUITE_VERSION}-[0-9a-f]{8}$`));
   assert.equal(taskPlanKey({ ...failing[1] }), key, 'the same failure, the same key');
-  assert.notEqual(taskPlanKey({ ...failing[1], failing: [{ name: 'half' }] }), key, 'other failing checks, a new key');
+  assert.notEqual(taskPlanKey({ ...failing[1], failing: [{ name: 'always' }] }), key, 'other failing checks, a new key');
 });
 
 test('a baseline is due once a day at most, never again on a head already measured', () => {
