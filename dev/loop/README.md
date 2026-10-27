@@ -41,7 +41,8 @@ releases, and never changes an instance.
    which include its own refusals of earlier attempts, and on its closed `loop/<issue>-` pull requests,
    which say why a reviewer closed one. An issue refused `maxAttempts` (6) times is given up: its `loop`
    label becomes `loop-stuck`, with a comment, and the loop no longer takes it. When no issue waits,
-   the planner opens one (see "The planner") and this cycle takes it.
+   the planner opens one (see "The planner") and this cycle takes it; when it plans none, the cycle
+   finds no work, and its record says why the planner did not.
 3. **Checks out** `origin/main` on the branch `loop/<issue>-<slug>`, in a temporary worktree, with the
    repo's installed packages linked in.
 4. **Runs the proposer**, within its budget (`proposer.wallMinutes`, `maxTurns`, `maxTokens`). The
@@ -85,7 +86,8 @@ releases, and never changes an instance.
    A measured change takes hours (about 30 real-model runs on each side), so the timer's unit allows a
    cycle 12 hours. A cycle starts by removing the checkouts a killed one left registered.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
-   (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own.
+   (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own, and raises
+   `loop-idle` when the loop's last 3 cycles, the newest within a day, all found no work.
 
 A `--dry-run` cycle does everything up to the pull request, pushes and comments nothing, and does not
 count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, nothing to do, paused),

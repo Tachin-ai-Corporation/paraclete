@@ -4,7 +4,8 @@
 // on passing evidence (promote.mjs), it merges (merge.mjs), a release carries it (dev/release.mjs), and
 // instances install the release. A loop can look busy while doing nothing: every proposal falling back
 // to the template, runs that measure nothing, a gain that is the same number on every pull request,
-// merges without evidence, promotions waiting for a release. `loopHealth` names each one it sees.
+// merges without evidence, promotions waiting for a release, and the self-improvement loop's cycles
+// (dev/loop/cycle.mjs) finding no work, cycle after cycle. `loopHealth` names each one it sees.
 //
 // `loopHealth` is pure. `collectHealthInputs` reads the cycle log, the repository's harness pull
 // requests (gh) and its tags (git); `syncHealthIssues` opens a GitHub issue per alarm (label
@@ -38,6 +39,9 @@ export const DEFAULT_HEALTH_RULES = Object.freeze({
   releaseStalledDays: 3,
   /** This many cycles stopped by the spend cap in the window. */
   spendCapCycles: 2,
+  /** This many loop cycles in a row that found no work, the last within loopIdleHours, is an idle loop. */
+  loopIdleCycles: 3,
+  loopIdleHours: 24,
 });
 
 const HARNESS_BRANCH = /^(harness2|h2)\//;
@@ -235,6 +239,23 @@ export function loopHealth({ cycles = [], pullRequests = [], release = null, pau
     alarm('merged-without-evidence', `${unproven.length} harness promotions merged without passing evidence`, [
       `Pull requests ${unproven.map((p) => `#${p.number}`).join(', ')}.`,
       'Only the in-repo merger (merge.mjs) should merge a promotion, and it re-judges the evidence block.',
+    ]);
+  }
+
+  // The loop runs and does nothing: its last cycles all found no issue to take (and the planner planned
+  // none), and none of them released. A pause or the day's cap is a different action, and a loop that
+  // stopped running is `stalled`.
+  const idle = [];
+  for (const c of [...loopCycles].reverse()) {
+    if (c.loop.action !== 'no-work' || c.loop.released) break;
+    idle.push(c);
+  }
+  if (idle.length >= r.loopIdleCycles && now.getTime() - Date.parse(idle[0].at) <= r.loopIdleHours * HOUR_MS) {
+    const first = idle.at(-1);
+    alarm('loop-idle', `The loop's last ${idle.length} cycles found no work`, [
+      `Every cycle since ${first.at} found no loop issue to take, planned none and released nothing.`,
+      ...[...new Set(idle.slice(0, 3).map((c) => c.reason).filter(Boolean))].map((x) => `Reason given: ${x}`),
+      'When no issue waits, the planner (dev/loop/planner.mjs) opens one from docs/plan/OPEN_ITEMS.md; its reason says why it did not. With every item planned, the loop needs new items or issues.',
     ]);
   }
 

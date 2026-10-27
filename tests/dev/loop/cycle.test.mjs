@@ -225,8 +225,16 @@ test('with no issue waiting, the planner opens one from the open items and the c
   const r2 = repo(t);
   const none = await cycle(t, r2, { gh: fakeGh({ issues: [] }), planner, settings: { planner: { ...LOOP_DEFAULTS.planner, command: 'planner' } } }).run();
   assert.equal(none.action, 'no-work', 'no OPEN_ITEMS.md here: the planner broke, and the cycle says there is no work');
+  assert.match(none.reason, /^no open loop issue is waiting, and the planner planned none: the planner broke: /);
+  assert.equal(readCycleRecords({ repoRoot: r2.work }).at(-1).reason, none.reason, "the record keeps the planner's reason");
+  const skip = async () => ({ output: '{"skip": "every item needs a person"}', reason: null });
+  fs.mkdirSync(path.join(r2.work, 'docs', 'plan'), { recursive: true });
+  fs.writeFileSync(path.join(r2.work, 'docs', 'plan', 'OPEN_ITEMS.md'), '# Open items\n\n## Phase 6\n\n- **Copied constants.** The dashboard copies them.\n');
+  const skipped = await cycle(t, r2, { gh: fakeGh({ issues: [] }), planner: skip, settings: { planner: { ...LOOP_DEFAULTS.planner, command: 'planner' } } }).run();
+  assert.equal(skipped.reason, 'no open loop issue is waiting, and the planner planned none: the planner found no item to plan: every item needs a person');
   const r3 = repo(t);
-  assert.equal((await cycle(t, r3, { gh: fakeGh({ issues: [] }) }).run()).action, 'no-work', 'no planner command: no planning');
+  const unplanned = await cycle(t, r3, { gh: fakeGh({ issues: [] }) }).run();
+  assert.deepEqual([unplanned.action, unplanned.reason], ['no-work', 'no open loop issue is waiting'], 'no planner command: no planning');
 });
 
 test('an issue refused maxAttempts times is given up: labelled loop-stuck, commented, and not taken', async (t) => {
