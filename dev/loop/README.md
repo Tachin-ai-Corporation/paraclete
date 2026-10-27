@@ -84,8 +84,9 @@ never changes an instance; it reaches instances only through a release (see "Rel
    `paraclete-loop-review` block a merger can read) and any evidence. When the change is refused, it says
    why in a comment on the issue instead, with the files it changed, the tests that failed and the points
    the reviewer found unmet.
-   A measured change takes hours (about 30 real-model runs on each side), so the timer's unit allows a
-   cycle 12 hours. A cycle starts by removing the checkouts a killed one left registered.
+   A measured change takes hours (three real-model runs of each of the model suite's 16 tasks on each
+   side, about 8 minutes a run), so the timer's unit allows a cycle 20 hours; a long cycle only delays the
+   next. A cycle starts by removing the checkouts a killed one left registered.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
    (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own, and raises
    `loop-idle` when the loop's last 3 cycles, the newest within a day, all found no work.

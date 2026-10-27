@@ -40,9 +40,10 @@ export function loopUnits({ intervalHours = 6, checkout = '/var/lib/paraclete/ha
     `User=${user}`,
     `WorkingDirectory=${checkout}`,
     `ExecStart=/usr/bin/node dev/loop/cycle.mjs${repo ? ` --repo ${repo}` : ''}`,
-    // A change to what the agent reads is measured on both sides, about 30 real-model runs each, which
-    // takes hours; a cycle never runs twice at once, so a long one only delays the next.
-    'TimeoutStartSec=12h',
+    // A change to what the agent reads is measured on both sides, three real-model runs of each model
+    // suite task (48 a side), about 8 minutes each; a cycle never runs twice at once, so a long one only
+    // delays the next.
+    'TimeoutStartSec=20h',
     'Nice=10',
     '',
   ].join('\n');
