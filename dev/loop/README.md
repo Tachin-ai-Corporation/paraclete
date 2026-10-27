@@ -135,7 +135,10 @@ When no `loop` issue waits and fewer than `planner.maxOpen` (2) are open, a cycl
 read-only the same way). It is offered every item of `docs/plan/OPEN_ITEMS.md` not yet planned, picks
 one a change in this repository can finish and tests can show done (never one that needs a person's
 decision, live infrastructure, or a change to the referee), and answers with the item's key, an issue
-title, a short context and 1 to 5 "Done when" points, as JSON. Code checks the answer, adds the point
+title, a short context and 1 to 5 "Done when" points, as JSON, within the limits its brief states
+(`PLAN_LIMITS`: a title of 10 to 120 characters, points of one line up to 400). An answer that fails a
+check is refused, and the planner is asked again `planner.retries` (1) times with its answer and the
+problems named; one still refused opens nothing. Code checks the answer, adds the point
 every planned issue shares (the item leaves `OPEN_ITEMS.md`, or says what remains) and a hidden
 `<!-- loop-plan: <key> -->` marker, so the item is never planned twice (a `loop-stuck` issue counts),
 and opens the issue labelled `loop`. `node dev/loop/planner.mjs [--repo <owner/name>] [--dry-run]

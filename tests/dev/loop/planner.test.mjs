@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
-  buildPlanBrief, issueBody, itemKey, main, openItems, parsePlan, planIssue, plannedKeys,
+  PLAN_LIMITS, buildPlanBrief, buildPlanRetryBrief, issueBody, itemKey, main, openItems, parsePlan, planIssue, plannedKeys,
 } from '../../../dev/loop/planner.mjs';
 import { doneWhen } from '../../../dev/loop/reviewer.mjs';
 
@@ -47,6 +47,17 @@ test('the brief: the candidates as data, what to skip, and the form of the answe
   assert.match(brief, /Ask for tests in a new test file under tests\/, named for what it tests: a test file that exists already may not be changed/);
   assert.match(brief, /\{"key": "<the key in brackets>", "title": /);
   assert.match(brief, /If no candidate fits, answer \{"skip": "<why>"\} instead\./);
+  assert.match(brief, /the title is one line of 10 to 120 characters; each point is one line of at most 400 characters \(split a longer one into two points\)/,
+    'the brief states every limit parsePlan refuses past');
+});
+
+test('a retry brief repeats the brief, quotes the refused answer as data, and names the problems', () => {
+  const brief = buildPlanBrief({ items: ITEMS });
+  const retry = buildPlanRetryBrief({ brief, output: `I looked around.\n${answer({ doneWhen: ['x'.repeat(401)] })}`, problems: ['each point must be one line of at most 400 characters (point 1 has 401)'] });
+  assert.ok(retry.startsWith(brief));
+  assert.match(retry, /<answer>\n```json\n\{"key":"copied-constants"/);
+  assert.doesNotMatch(retry, /I looked around/, 'only the answer is quoted');
+  assert.match(retry, /Why it was refused:\n- each point must be one line of at most 400 characters \(point 1 has 401\)/);
 });
 
 const answer = (o) => `I read the code.\n\`\`\`json\n${JSON.stringify({ key: 'copied-constants', title: 'The dashboard imports the agent constants it copies', context: 'It copies them.', doneWhen: ['dashboard/lib imports AGENT_SENDER from agent/providers/channel.mjs.', 'A new test under tests/dashboard/ checks the values match.'], ...o })}\n\`\`\`\n`;
@@ -61,7 +72,9 @@ test("the planner's answer is checked: a candidate's key, a one-line title, 1 to
   assert.match(parsePlan(answer({ title: 'Short' }), ITEMS).problems.join(' | '), /one line of 10 to 120 characters/);
   assert.match(parsePlan(answer({ doneWhen: [] }), ITEMS).problems.join(' | '), /1 to 5 points/);
   assert.match(parsePlan(answer({ doneWhen: ['a', 'b', 'c', 'd', 'e', 'f'] }), ITEMS).problems.join(' | '), /1 to 5 points/);
-  assert.match(parsePlan(answer({ doneWhen: ['one\ntwo'] }), ITEMS).problems.join(' | '), /each point must be one line/);
+  assert.match(parsePlan(answer({ doneWhen: ['one\ntwo'] }), ITEMS).problems.join(' | '), /each point must be one line .*\(point 1 has 7 and breaks lines\)/);
+  assert.match(parsePlan(answer({ doneWhen: ['ok', 'y'.repeat(PLAN_LIMITS.pointMax + 1)] }), ITEMS).problems.join(' | '), /at most 400 characters \(point 2 has 401\)/);
+  assert.ok(parsePlan(answer({ doneWhen: ['z'.repeat(PLAN_LIMITS.pointMax)] }), ITEMS).plan, 'a point of exactly the limit passes');
   assert.deepEqual(parsePlan('```json\n{"skip": "each needs a person"}\n```', ITEMS), { plan: null, skip: 'each needs a person', problems: [] });
   assert.match(parsePlan('no answer', ITEMS).problems[0], /no answer in the form asked/);
   const existing = answer({ doneWhen: ['`tests/agent/services/control/responsibilities.test.mjs` verifies the full instruction.', 'A new tests/dashboard/constants.test.mjs checks them.'] });
@@ -118,6 +131,27 @@ test('an issue is planned from an item not yet planned, and opened with the loop
   const create = gh.calls.find((a) => a[1] === 'create');
   assert.deepEqual([create[create.indexOf('--label') + 1], create[create.indexOf('--title') + 1]], ['loop', 'The dashboard imports the agent constants it copies']);
   assert.match(create[create.indexOf('--body') + 1], /<!-- loop-plan: copied-constants -->/);
+});
+
+test("a refused answer is asked for again with its problems, planner.retries times, and only then refused", async () => {
+  const briefs = [];
+  const answers = [answer({ doneWhen: ['w'.repeat(500)] }), answer({})];
+  const gh = fakeGh();
+  const res = await plan(gh, { planner: async ({ brief }) => { briefs.push(brief); return { output: answers.shift(), reason: null }; } });
+  assert.equal(res.issue.number, 77, 'the second answer passed and opened the issue');
+  assert.equal(briefs.length, 2);
+  assert.match(briefs[1], /Why it was refused:\n- each point must be one line of at most 400 characters \(point 1 has 500\)/);
+
+  let asked = 0;
+  const refused = await plan(fakeGh(), { planner: async () => { asked += 1; return { output: answer({ key: 'nope' }), reason: null }; } });
+  assert.equal(asked, 1 + LOOP_DEFAULTS.planner.retries);
+  assert.match(refused.reason, /the planner's answer was refused: 'nope' is not one of the candidates/);
+  let once = 0;
+  await plan(fakeGh(), { settings: { ...settings, planner: { ...settings.planner, retries: 0 } }, planner: async () => { once += 1; return { output: answer({ key: 'nope' }), reason: null }; } });
+  assert.equal(once, 1, 'retries 0: asked once');
+  let skipped = 0;
+  await plan(fakeGh(), { planner: async () => { skipped += 1; return { output: '{"skip": "none fits"}', reason: null }; } });
+  assert.equal(skipped, 1, 'a skip is an answer: not asked again');
 });
 
 test('nothing is planned past the open limit, with every item planned, on a skip, a refused answer, or in a dry run', async () => {
