@@ -234,16 +234,19 @@ export async function reviewPullRequest({
   const summary = /## What the proposer did\s*\n([\s\S]*?)\n## /.exec(pr.body || '')?.[1]?.trim() || '';
   const brief = buildReviewBrief({ issue, items, changes, diff, summary, maxDiffChars: settings.reviewer.maxDiffChars });
   const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-loop-review-'));
-  execGit(['worktree', 'add', '--detach', '--quiet', worktree, head], repoRoot);
   try {
+    execGit(['worktree', 'add', '--detach', '--quiet', worktree, head], repoRoot);
     const run = await (reviewer || createCommandReviewer(settings.reviewer))({ worktree, brief, items });
     return { items, review: run.review, decision: judgeReview(run.review, items), reason: run.reason };
   } finally {
+    // The checkout is unregistered, then its directory goes in any case: a `worktree add` that failed,
+    // or a remove that left it, never leaves it behind.
     try {
       execGit(['worktree', 'remove', '--force', worktree], repoRoot);
     } catch {
-      fs.rmSync(worktree, { recursive: true, force: true });
+      // never added, or already gone
     }
+    fs.rmSync(worktree, { recursive: true, force: true });
   }
 }
 
