@@ -434,9 +434,9 @@ export function buildLoopStatusReport(opts = {}) {
     },
     automation: {
       schedules: opts.schedules || {
-        curriculumTimer: 'every 6 hours (paraclete-h2-curriculum.timer)',
-        closedLoopResponsibility: 'daily 04:00 UTC (r-harness-closed-loop)',
-        failureHarvestResponsibility: 'every 6 hours (r-failure-harvest)',
+        curriculumTimer: 'none (the lab driver runs dev/loop/cycle.mjs from paraclete-loop-cycle.timer)',
+        closedLoopResponsibility: 'off (r-harness-closed-loop)',
+        failureHarvestResponsibility: 'off (r-failure-harvest)',
         memoryConsolidationResponsibility: 'daily 08:00 UTC (r-memory-consolidation)',
       },
       recentMissions: Array.isArray(opts.missions) ? opts.missions : [],
