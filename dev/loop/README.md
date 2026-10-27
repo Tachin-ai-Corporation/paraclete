@@ -142,7 +142,8 @@ summary in `.local/loop/baseline.json`: per task its capability, and for a train
 how many runs failed it. A held-out task stays a score, so none of its checks reaches an issue or the
 proposer, and the measurement's held-out check means what it says.
 
-The planner plans from it first. A training task with a check failing in most of its runs becomes a
+The planner plans from it first. A training task with a check failing in half its runs or more (a
+request that comes back wrong half the time is a weakness to fix) becomes a
 `loop` issue written by code: the failing checks with what they saw, what the task asks, where the fix
 belongs (what the agent reads or runs, never `dev/harness2/`), and two "Done when" points the reviewer
 judges: the change is to the agent, and it gives the agent what it lacked in general terms, naming

@@ -13,7 +13,7 @@
 //   summarizeBaseline(result, { commit, at })  the summary of an `eval --real-model` result
 //   readBaseline / writeBaseline               the kept file: the latest summary and the last attempt
 //   baselineDue({ kept, head, now, everyHours })
-//   failingTasks(summary)                      the training tasks with a check failing in most runs
+//   failingTasks(summary)                      the training tasks with a check failing in half their runs or more
 //   taskPlanKey / TARGET_MARKER / issueTarget  how a planned issue names its task
 //   targetProblems(evidence, target)           why a measurement does not show the target improved
 //
@@ -113,15 +113,15 @@ export function baselineDue({ kept, head, now = new Date(), everyHours = 24 }) {
 }
 
 /**
- * The training tasks main's head fails: each with the checks that failed in more than half of its
- * measured runs, worst task first. Nothing from a summary that was not all real-model runs, or of
- * another version of the suite.
+ * The training tasks main's head fails: each with the checks that failed in half of its measured runs
+ * or more (a request that comes back wrong half the time is a weakness to fix), worst task first.
+ * Nothing from a summary that was not all real-model runs, or of another version of the suite.
  */
 export function failingTasks(summary) {
   if (!summary?.measured || summary.suiteVersion !== MODEL_SUITE_VERSION) return [];
   return (summary.tasks || [])
     .filter((t) => t.split === 'train' && t.measuredRuns > 0)
-    .map((t) => ({ ...t, failing: (t.checks || []).filter((c) => c.runs > 0 && c.failed * 2 > c.runs) }))
+    .map((t) => ({ ...t, failing: (t.checks || []).filter((c) => c.runs > 0 && c.failed * 2 >= c.runs) }))
     .filter((t) => t.failing.length)
     .sort((a, b) => (a.score ?? 0) - (b.score ?? 0) || a.id.localeCompare(b.id));
 }
