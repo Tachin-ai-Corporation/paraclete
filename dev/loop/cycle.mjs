@@ -567,6 +567,7 @@ export async function runCycle({
   const takeable = (i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number) && !stuck.includes(i);
   let issue = issues.find(takeable);
   let planned = false;
+  let planReason = null;
   // No issue waits: the planner opens one from the open items, and this cycle takes it.
   if (!issue && !issueNumber && settings.planner.command) {
     let res;
@@ -579,13 +580,16 @@ export async function runCycle({
       issue = res.issue;
       planned = true;
     } else {
+      planReason = res.reason;
       log(`[INFO] loop: nothing planned: ${res.reason}`);
     }
   }
   if (!issue) {
     return finish({
       action: 'no-work',
-      reason: issueNumber ? `issue #${issueNumber} is not open with the ${settings.label} label, has an open loop pull request, or was tried lately` : `no open ${settings.label} issue is waiting`,
+      reason: issueNumber
+        ? `issue #${issueNumber} is not open with the ${settings.label} label, has an open loop pull request, or was tried lately`
+        : `no open ${settings.label} issue is waiting${planReason ? `, and the planner planned none: ${planReason}` : ''}`,
     });
   }
   result = { ...result, planned };

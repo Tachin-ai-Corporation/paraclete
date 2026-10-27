@@ -186,6 +186,26 @@ test('runCli records a cycle even when it refuses, and `health` reads the record
   assert.match(health.notes[0], /paused/);
 });
 
+test('a loop whose last cycles all found no work is idle; an attempt, a release, a pause or the cap ends the run', () => {
+  const noWork = (h, o = {}) => ({ at: hoursAgo(h), command: 'loop', realModel: false, reason: "no open loop issue is waiting, and the planner planned none: the planner's answer was refused: each point must be one line", loop: { issue: null, action: 'no-work', ...o } });
+  const loopCycle = (action, h) => ({ at: hoursAgo(h), command: 'loop', realModel: false, loop: { issue: 7, action } });
+  const idle = loopHealth({ cycles: [loopCycle('opened', 30), noWork(18), noWork(12), noWork(6), cycle()], now: NOW });
+  assert.deepEqual(keys(idle), ['loop-idle']);
+  assert.equal(idle.alarms[0].summary, "The loop's last 3 cycles found no work");
+  assert.match(idle.alarms[0].detail[0], new RegExp(`^Every cycle since ${hoursAgo(18)} found no loop issue to take`));
+  assert.match(idle.alarms[0].detail[1], /^Reason given: no open loop issue is waiting, and the planner planned none: the planner's answer was refused/);
+  assert.equal(idle.alarms[0].detail.length, 3, 'one reason, given once');
+
+  assert.deepEqual(keys(loopHealth({ cycles: [noWork(12), noWork(6), cycle()], now: NOW })), [], 'two are not yet a run');
+  assert.deepEqual(keys(loopHealth({ cycles: [noWork(18), noWork(12), loopCycle('tests-failed', 9), noWork(6), cycle()], now: NOW })), [], 'an attempt in between ends the run');
+  assert.deepEqual(keys(loopHealth({ cycles: [noWork(18), noWork(12, { released: 'v2027.01.21.1.1' }), noWork(6), cycle()], now: NOW })), [], 'a release is work');
+  for (const action of ['paused', 'capped']) {
+    assert.deepEqual(keys(loopHealth({ cycles: [noWork(18), noWork(12), loopCycle(action, 6), cycle()], now: NOW })), [], `${action} is not idle`);
+  }
+  assert.deepEqual(keys(loopHealth({ cycles: [noWork(50), noWork(44), noWork(38), cycle()], now: NOW })), [], 'a run that ended over a day ago is not raised');
+  assert.deepEqual(keys(loopHealth({ cycles: [noWork(18, { dryRun: true }), noWork(12), noWork(6), cycle()], now: NOW })), [], 'a dry run is not counted');
+});
+
 test("loop cycles are counted apart and set off none of the harness's alarms", () => {
   const loopCycle = (action, h = 2) => ({ at: hoursAgo(h), command: 'loop', realModel: false, loop: { issue: 7, action } });
   const h = loopHealth({ cycles: [loopCycle('opened'), loopCycle('tests-failed', 3), loopCycle('no-work', 4), cycle()], now: NOW });
