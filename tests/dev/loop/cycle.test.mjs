@@ -252,13 +252,16 @@ test('an issue refused maxAttempts times is given up: labelled loop-stuck, comme
   assert.equal(dry.gh.calls.some((a) => a[1] === 'edit' || a[1] === 'comment'), false, 'a dry run gives nothing up');
 });
 
-test('a broken main stops the cycle: a loop merge is reverted first, a person\'s is left; the loop\'s pause variable stops it too', async (t) => {
+test('a broken main stops the cycle: a loop merge is reverted first, on a spent day too, a person\'s is left; the loop\'s pause variable stops it too', async (t) => {
   const failing = [{ name: 'Tests', status: 'completed', conclusion: 'failure' }];
   const r = repo(t);
   fs.writeFileSync(path.join(r.work, 'docs', 'guide.md'), '# Guide, broken\n');
   git(r.work, 'commit', '--quiet', '-am', `v2027.01.21.1.1: Gates get rows`, '-m',
     `Merged from #5 at ${'b'.repeat(40)} by dev/loop/merger.mjs: CI and the loop guard passed, and its reviewer found every point of #3 met.`);
   git(r.work, 'push', '--quiet', 'origin', 'main');
+  const log = path.join(r.work, CYCLE_LOG);
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  for (let i = 0; i < LOOP_DEFAULTS.maxCyclesPerDay; i += 1) fs.appendFileSync(log, `${JSON.stringify({ command: 'loop', at: NOW.toISOString(), loop: { issue: 100 + i, action: 'opened' } })}\n`);
   let proposed = false;
   const gh = fakeGh({ issues: [ISSUE], mainRuns: failing });
   const res = await cycle(t, r, { gh, proposer: async (p) => { proposed = true; return writes({ 'docs/guide.md': 'x\n' })(p); } }).run();
@@ -376,6 +379,9 @@ test('nothing to do: paused, the day spent, no issue, an issue already in a pull
   fs.mkdirSync(path.dirname(log), { recursive: true });
   for (let i = 0; i < LOOP_DEFAULTS.maxCyclesPerDay; i += 1) record('opened', 100 + i);
   assert.equal((await cycle(t, r).run()).action, 'capped');
+  const released = await cycle(t, r, { release: async () => ({ action: 'released', reason: null, version: 'v2027.01.21.9.1' }) }).run();
+  assert.deepEqual([released.action, released.released], ['capped', 'v2027.01.21.9.1'], 'a spent day still releases: the cap holds back attempts only');
+  assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).loop.released, 'v2027.01.21.9.1');
 
   const r2 = repo(t);
   assert.equal((await cycle(t, r2, { gh: fakeGh({ issues: [] }) }).run()).action, 'no-work');

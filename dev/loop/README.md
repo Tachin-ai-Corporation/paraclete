@@ -28,11 +28,12 @@ releases, and never changes an instance.
 
 `node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
 
-1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), while the
-   loop is (the repository variable `PARACLETE_LOOP_PAUSED`), or once today's cycles (`maxCyclesPerDay`,
-   4) are spent. Cycles are counted from the cycle log. When CI failed on main's head, it changes nothing
-   on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a healthy main
-   it releases main when that is due (see "Releases").
+1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), or while the
+   loop is (the repository variable `PARACLETE_LOOP_PAUSED`). When CI failed on main's head, it changes
+   nothing on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a
+   healthy main it releases main when that is due (see "Releases"). Then it stops once today's attempts
+   (`maxCyclesPerDay`, 4, counted from the cycle log) are spent: the cap holds back new attempts, which
+   spend model time, never a revert or a release, which keep limits of their own.
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
    request from a `loop/<issue>-` branch, and one it tried and failed within `retryAfterHours` (24).
    `--issue` names one; `--retry` tries it even within that wait. It reads the comments by the
