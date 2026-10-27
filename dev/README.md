@@ -75,12 +75,14 @@ on your dev instance first, so it needs both, as the dev loop commands do. When 
 ## The self-improvement loop (`dev/loop/`)
 
 `node dev/loop/cycle.mjs [--issue <n> [--retry]] [--dry-run] [--json]` runs one cycle of the loop. It takes the
-oldest open GitHub issue labelled `loop` (when none waits, its planner, `dev/loop/planner.mjs`, opens one
-from `docs/plan/OPEN_ITEMS.md`), has a coding agent (named in `.local/loop.json`, never in the
+oldest open GitHub issue labelled `loop` (when none waits, its planner, `dev/loop/planner.mjs`, opens one:
+from a training task of the model suite that main's head fails in the latest baseline, or from
+`docs/plan/OPEN_ITEMS.md`), has a coding agent (named in `.local/loop.json`, never in the
 repo) change a fresh checkout of main to resolve it, and checks the change. A change is refused when it
 touches the referee (what judges a change, and the loop itself), changes an existing test, changes
 code without adding a test, fails the suite, is found by its reviewer model to miss a point of the
-issue's "Done when", or changes the agent's behaviour without a real-model measurement that shows nothing got worse.
+issue's "Done when", or changes the agent's behaviour without a real-model measurement that shows nothing got worse
+(and, for an issue planned from a failing task, that the task scores higher).
 Otherwise the cycle opens a pull request; a refused change gets a comment on the issue. It stops while
 `dev/harness2/PAUSED` exists, and after `maxCyclesPerDay` cycles. No person merges: CI's Loop guard
 (`dev/loop/guard.mjs`) checks every loop pull request again, and the loop's merger
@@ -89,7 +91,8 @@ most 3 a day, or closes one that cannot pass with the reasons. A loop merge that
 reverted by the next cycle (`dev/loop/sentinel.mjs`), its issue reopened, and a second revert in a day
 pauses the loop (the repository variable `PARACLETE_LOOP_PAUSED`). On the lab driver, with `release.enabled` in
 its local settings, a cycle also releases main once the loop's merges since the last release ran healthy
-on the lab (`dev/loop/releaser.mjs`).
+on the lab (`dev/loop/releaser.mjs`); with `baseline.enabled`, a cycle measures main's head on the model
+suite once a day at most (`dev/loop/baseline.mjs`), so the planner finds the tasks the agent fails.
 How it works, its settings and the driver's timer: [loop/README.md](loop/README.md).
 
 ## Continual harness improvement (`dev/harness2/`)

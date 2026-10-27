@@ -6,8 +6,8 @@ and nothing here is installed on an instance.
 
 **No person in the loop.** A cycle opens a pull request only for a change its reviewer found resolves
 the issue; CI's Loop guard checks it again; the loop's merger merges it once CI passed, or closes it
-with the reasons, which the next attempt reads. The loop never edits its own rules (the referee), never
-releases, and never changes an instance.
+with the reasons, which the next attempt reads. The loop never edits its own rules (the referee) and
+never changes an instance; it reaches instances only through a release (see "Releases").
 
 | File | What it does |
 |---|---|
@@ -15,7 +15,8 @@ releases, and never changes an instance.
 | `proposer.mjs` | The proposer interface, the brief it is given, and the command proposer that runs a headless coding-agent command named in your local settings |
 | `reviewer.mjs` | Whether a change resolves its issue: the points to judge (the issue's "Done when"), the reviewer's brief, its verdict parsed and decided by code, and the command reviewer; from the command line, reviews a pull request against an issue |
 | `command.mjs` | Runs a headless coding-agent command named in your local settings, in a checkout, within a time budget, for the proposer and the reviewer |
-| `planner.mjs` | Where the work comes from when no person writes an issue: turns one item of `docs/plan/OPEN_ITEMS.md` into a `loop` issue with testable "Done when" points, chosen and written by a planner model, checked by code |
+| `planner.mjs` | Where the work comes from when no person writes an issue: a training task main's head fails in the latest baseline, written up by code, or else one item of `docs/plan/OPEN_ITEMS.md`, chosen and written by a planner model and checked by code; either becomes a `loop` issue with testable "Done when" points |
+| `baseline.mjs` | How the agent does on the model suite at main's head: a real-model run's summary per task, when the next is due, which training tasks fail a check, the target an issue planned from one names, and whether a measurement shows that target improved |
 | `sentinel.mjs` | What undoes a loop merge that broke main: at a cycle's start, when CI failed on main's head and that head is a loop merge, opens its revert pull request, reopens its issue, and pauses the loop's cycles at the day's second revert; and the check a revert pull request must pass |
 | `releaser.mjs` | Cuts a release of main at a cycle's start once the loop's merges since the last release ran healthy on the lab, so instances install them; off unless your local settings turn it on |
 | `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
@@ -130,9 +131,30 @@ different things.
 request, open or closed, against an issue in a temporary checkout of its head, and changes nothing on
 GitHub. It exits 0 when the change resolves the issue, 1 when it does not or could not be reviewed.
 
+## Measured work: the agent's own weak spots
+
+With `baseline.enabled` in your local settings (on the lab driver), a cycle measures main's head on the
+model suite (`dev/harness2/model-suite.mjs`: requests a person could send, each checked by code
+afterwards) with real-model runs, as a change is measured, `baseline.trials` (2) runs of every task
+within `baseline.maxRollouts` (40). It does so at most once in `baseline.everyHours` (24), only when main
+moved since the last, and the cycle stops there, since a baseline takes hours. `baseline.mjs` keeps the
+summary in `.local/loop/baseline.json`: per task its capability, and for a training task each check with
+how many runs failed it. A held-out task stays a score, so none of its checks reaches an issue or the
+proposer, and the measurement's held-out check means what it says.
+
+The planner plans from it first. A training task with a check failing in most of its runs becomes a
+`loop` issue written by code: the failing checks with what they saw, what the task asks, where the fix
+belongs (what the agent reads or runs, never `dev/harness2/`), and two "Done when" points the reviewer
+judges: the change is to the agent, and it gives the agent what it lacked in general terms, naming
+nothing of the task. A hidden `<!-- loop-target: <task> -->` marker names the task. The change is
+measured like any behaviour change, and the cycle refuses it (`unimproved`) unless that task's
+capability on the change is above main's; the Loop guard checks the same in the pull request's evidence.
+The same failure (the task, the suite's version and the failing checks) is planned once.
+
 ## The planner
 
-When no `loop` issue waits and fewer than `planner.maxOpen` (2) are open, a cycle runs the planner
+When no `loop` issue waits, fewer than `planner.maxOpen` (2) are open, and the baseline has no failing
+training task left to plan (see above), a cycle runs the planner
 (`planner.mjs`, the command named by `planner` in your local settings, set like the reviewer's and
 read-only the same way). It is offered every item of `docs/plan/OPEN_ITEMS.md` not yet planned, picks
 one a change in this repository can finish and tests can show done (never one that needs a person's

@@ -26,6 +26,7 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseEvidenceBlock } from '../harness2/evidence.mjs';
+import { issueTarget, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
 import { regressionProblems } from './cycle.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
@@ -118,7 +119,10 @@ export function loopGuard({ pr, files, issue, reverted = null }) {
     if (differ.length) problems.push(`it is not the change that was reviewed: ${differ.join(', ')} differ from the reviewed files`);
   }
 
-  if (changes.some((c) => isBehaviourPath(c.path) || (c.oldPath && isBehaviourPath(c.oldPath)))) {
+  const behaviour = changes.some((c) => isBehaviourPath(c.path) || (c.oldPath && isBehaviourPath(c.oldPath)));
+  const target = issue && issue.number === number ? issueTarget(issue.body) : null;
+  if (target && !behaviour) problems.push(`its issue targets the task ${target}, and it changes nothing the agent reads`);
+  if (behaviour) {
     const evidence = parseEvidenceBlock(pr.body);
     if (!evidence) problems.push("it changes the agent's behaviour and carries no evidence block (```json paraclete-h2-evidence)");
     else {
@@ -126,6 +130,7 @@ export function loopGuard({ pr, files, issue, reverted = null }) {
       const measured = new Set((evidence.touchedPaths || []).map((p) => String(p).replace(/\\/g, '/')));
       const unmeasured = changes.map((c) => c.path).filter((p) => !measured.has(p));
       if (unmeasured.length) problems.push(`its evidence did not measure ${unmeasured.join(', ')}`);
+      if (target) problems.push(...targetProblems(evidence, target));
     }
   }
   return { loop: true, ok: problems.length === 0, problems, issue: number };

@@ -47,6 +47,10 @@ export const LOOP_DEFAULTS = Object.freeze({
   release: Object.freeze({ enabled: false, soakHours: 2, minHoursBetween: 20, smoke: false, checkMinutes: 90 }),
   /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
   merge: Object.freeze({ maxPerDay: 3 }),
+  /** Measuring main's head on the model suite (baseline.mjs), so the planner finds the tasks the agent
+   * fails: off unless the lab driver's local settings turn it on, as it spends model time; at most once
+   * in `everyHours`, with this many runs of every task, within this cap. */
+  baseline: Object.freeze({ enabled: false, everyHours: 24, trials: 2, maxRollouts: 40 }),
 });
 
 /** Developer-local settings: which proposer command to run (never committed: `.local/` is ignored). */
@@ -160,5 +164,6 @@ export function loadLoopSettings({ repoRoot = process.cwd(), readFile = (p) => f
     measure: { ...LOOP_DEFAULTS.measure, ...(local.measure || {}) },
     merge: { ...LOOP_DEFAULTS.merge, ...(local.merge || {}) },
     release: { ...LOOP_DEFAULTS.release, ...(local.release || {}) },
+    baseline: { ...LOOP_DEFAULTS.baseline, ...(local.baseline || {}) },
   };
 }

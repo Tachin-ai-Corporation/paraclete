@@ -4,6 +4,8 @@
 // limit, when every item is planned, on a skip or a refused answer, or in a dry run; the command line.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
+import { issueTarget, taskPlanKey } from '../../../dev/loop/baseline.mjs';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
   PLAN_LIMITS, buildPlanBrief, buildPlanRetryBrief, issueBody, itemKey, main, openItems, parsePlan, planIssue, plannedKeys,
@@ -152,6 +154,45 @@ test("a refused answer is asked for again with its problems, planner.retries tim
   let skipped = 0;
   await plan(fakeGh(), { planner: async () => { skipped += 1; return { output: '{"skip": "none fits"}', reason: null }; } });
   assert.equal(skipped, 1, 'a skip is an answer: not asked again');
+});
+
+/** A baseline in which main's head fails `tests pass` of se-fix-failing-test in both runs. */
+const SUMMARY = {
+  suiteVersion: MODEL_SUITE_VERSION, commit: 'c'.repeat(40), at: '2027-01-21T06:00:00.000Z', trials: 2, measured: true,
+  tasks: [
+    { id: 'se-fix-failing-test', role: 'software-engineer', split: 'train', runs: 2, measuredRuns: 2, score: 0.5,
+      checks: [{ name: 'tests pass', runs: 2, failed: 2, detail: 'not ok 1 - sums a range' }, { name: 'only the source changed', runs: 2, failed: 1 }] },
+    { id: 'se-implement-from-spec', role: 'software-engineer', split: 'holdout', runs: 2, measuredRuns: 2, score: 0 },
+  ],
+};
+
+test("a training task main's head fails is planned first, by code, with its failing checks and its target", async () => {
+  const gh = fakeGh();
+  let asked = 0;
+  const res = await plan(gh, { baseline: () => SUMMARY, planner: async () => { asked += 1; return { output: answer({}), reason: null }; } });
+  assert.equal(asked, 0, 'no planner model is asked');
+  assert.equal(res.issue.number, 77);
+  assert.equal(res.issue.title, "The software-engineer agent passes the se-fix-failing-test task's checks");
+  const body = res.issue.body;
+  assert.match(body, /^On main's head \(`cccccccccccc`\), the agent fails checks of the model suite's training task `se-fix-failing-test` \(role `software-engineer`\): 2 real-model run\(s\) in the baseline of 2027-01-21, capability 0\.5\./);
+  assert.match(body, /\n- `tests pass` failed in 2 of 2 runs: not ok 1 - sums a range\n/);
+  assert.doesNotMatch(body, /only the source changed/, 'a check failing in half the runs is not named');
+  assert.doesNotMatch(body, /se-implement-from-spec/, 'a held-out task never reaches an issue');
+  assert.match(body, /\nThe task asks the agent:\n\n> /);
+  assert.equal(issueTarget(body), 'se-fix-failing-test');
+  const task = { ...SUMMARY.tasks[0], failing: [SUMMARY.tasks[0].checks[0]] };
+  assert.match(body, new RegExp(`<!-- loop-plan: ${taskPlanKey(task)} -->`));
+  const points = doneWhen(res.issue);
+  assert.equal(points.length, 2);
+  assert.match(points[0], /^The change is to what the agent reads or runs/);
+  assert.match(points[1], /nothing in it names this task, its files or its wording\.$/);
+  const create = gh.calls.find((a) => a[1] === 'create');
+  assert.equal(create[create.indexOf('--label') + 1], 'loop');
+
+  const planned = await plan(fakeGh({ all: [{ body: `<!-- loop-plan: ${taskPlanKey(task)} -->` }] }), { baseline: () => SUMMARY });
+  assert.equal(planned.issue.title, 'The dashboard imports the agent constants it copies', 'a failure planned already: on to the open items');
+  const dry = await plan(fakeGh(), { baseline: () => SUMMARY, dryRun: true });
+  assert.deepEqual([dry.issue, dry.plan.target], [null, 'se-fix-failing-test']);
 });
 
 test('nothing is planned past the open limit, with every item planned, on a skip, a refused answer, or in a dry run', async () => {

@@ -261,7 +261,9 @@ export async function runTier1Evaluation(opts = {}) {
       // completes), whether a scripted gateway answered for the organs (the same answers for any
       // harness), and whether a real model answered from the side's own files (`measured`, the only
       // runs that measure a candidate). Promotion evidence (evidence.mjs) groups by task and trial and
-      // refuses the others. A model-suite task's split and check score come along too.
+      // refuses the others. A model-suite task's split and check score come along too, and its checks
+      // (each one's name and whether it passed, with a short detail of a failed one), which a loop
+      // baseline (dev/loop/baseline.mjs) reads.
       const trajectory = {
         ...extractTrajectory(rollout),
         taskId: task.id,
@@ -271,6 +273,15 @@ export async function runTier1Evaluation(opts = {}) {
         measured: Boolean(rollout?.measured),
         ...(task.split ? { split: task.split } : {}),
         ...(typeof rollout?.checkScore === 'number' ? { checkScore: rollout.checkScore } : {}),
+        ...(typeof rollout?.checkScore === 'number' && Array.isArray(rollout?.fixtureVerification?.checks)
+          ? {
+              checks: rollout.fixtureVerification.checks.map((c) => ({
+                name: String(c.name),
+                ok: Boolean(c.ok),
+                ...(!c.ok && c.detail ? { detail: String(c.detail).slice(0, 300) } : {}),
+              })),
+            }
+          : {}),
       };
       trajectories.push(trajectory);
     }

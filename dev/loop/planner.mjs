@@ -1,6 +1,10 @@
-// dev/loop/planner.mjs: where the loop's work comes from when no person writes an issue. The open items
-// of docs/plan/OPEN_ITEMS.md are what one phase handed to a later one; when no `loop` issue waits, a
-// cycle has the planner turn one of them into an issue. A planner model (read-only in the checkout,
+// dev/loop/planner.mjs: where the loop's work comes from when no person writes an issue. First the
+// agent's measured weak spots: a training task of the model suite that main's head fails, in the
+// latest baseline (baseline.mjs), becomes an issue written by code, naming the failing checks and
+// marked with the task as its target, so the change must make that task score higher. Then the open
+// items of docs/plan/OPEN_ITEMS.md, what one phase handed to a later one: when no `loop` issue waits
+// and no failing task is left to plan, a cycle has the planner turn one of them into an issue. A
+// planner model (read-only in the checkout,
 // named in the developer's local settings, like the reviewer) picks one item a change in this
 // repository can finish and writes what the change is done when; code checks its answer, adds the
 // point every planned issue shares (the item leaves OPEN_ITEMS.md, or says what remains), marks the
@@ -11,6 +15,7 @@
 //                            PLAN_LIMITS, which the brief states
 //   buildPlanRetryBrief      the brief again, with a refused answer and why it was refused
 //   issueBody(plan, item)    the issue it opens
+//   taskIssueBody(task, summary, key)  the issue a failing task opens
 //   planIssue(...)           all of it, within `planner.maxOpen` open loop issues
 //
 // It never changes the referee (only issues are written), and a model's answer that fails a check
@@ -25,6 +30,8 @@ import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { MODEL_SUITE } from '../harness2/model-suite.mjs';
+import { TARGET_MARKER, failingTasks, readBaseline, taskPlanKey } from './baseline.mjs';
 import { runAgentCommand } from './command.mjs';
 import { LOOP_DEFAULTS, loadLoopSettings } from './config.mjs';
 
@@ -227,6 +234,47 @@ export function createCommandPlanner(settings = {}, { spawnFn = spawn } = {}) {
   };
 }
 
+/** The title of the issue a failing task opens. */
+export function taskIssueTitle(task) {
+  return `The ${task.role || 'generic'} agent passes the ${task.id} task's checks`.slice(0, PLAN_LIMITS.titleMax);
+}
+
+/**
+ * The issue a training task main's head fails opens: the failing checks as the baseline measured them,
+ * what the task asks, where the fix belongs, its "Done when" points, and its plan and target markers.
+ *
+ * @param {object} task     one of failingTasks(summary)
+ * @param {object} summary  the baseline summary it comes from
+ * @param {string} key      taskPlanKey(task)
+ * @returns {string}
+ */
+export function taskIssueBody(task, summary, key) {
+  const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim().slice(0, 300);
+  const prompt = String(MODEL_SUITE.find((x) => x.id === task.id)?.prompt || '').trim().slice(0, 1200);
+  return [
+    `On main's head (\`${String(summary.commit || '').slice(0, 12)}\`), the agent fails checks of the model suite's training task \`${task.id}\` (role \`${task.role}\`): ${task.measuredRuns} real-model run(s) in the baseline of ${String(summary.at || '').slice(0, 10)}, capability ${task.score}.`,
+    '',
+    ...task.failing.map((c) => `- \`${c.name}\` failed in ${c.failed} of ${c.runs} runs${c.detail ? `: ${oneLine(c.detail)}` : ''}`),
+    '',
+    'The task asks the agent:',
+    '',
+    ...prompt.split('\n').map((l) => `> ${l}`),
+    '',
+    `The task and its checks are in \`dev/harness2/model-suite.mjs\`, which no loop change may touch. The fix is to the agent: what its organs read and the commands it runs (\`prompts/\`, \`skills/\`, \`roles/${task.role}/\` or \`roles/generic/\`, \`agent/\`).`,
+    '',
+    '**Done when:**',
+    '- The change is to what the agent reads or runs (`prompts/`, `skills/`, `roles/`, `agent/`), and nothing in `dev/harness2/` changes.',
+    '- The change gives the agent what it lacked to pass the failing checks above, in general terms that serve any similar request: nothing in it names this task, its files or its wording.',
+    '',
+    `The loop measures the change on the model suite before it opens a pull request, and refuses it unless \`${task.id}\`'s capability rises above main's, with no task and not the held-out tasks worse.`,
+    '',
+    'Planned by the self-improvement loop from a measured baseline (`dev/loop/baseline.mjs`).',
+    '',
+    `<!-- ${PLAN_MARKER}: ${key} -->`,
+    `<!-- ${TARGET_MARKER}: ${task.id} -->`,
+  ].join('\n');
+}
+
 function defaultExec(file) {
   return (args, cwd) => execFileSync(file, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }).trim();
 }
@@ -235,12 +283,13 @@ function defaultExec(file) {
  * Plans one issue when fewer than `planner.maxOpen` loop issues are open: reads the open items, leaves
  * out those already planned, asks the planner, checks its answer, and opens the issue (not in a dry run).
  *
- * @param {object} o  { repoRoot, repo, settings, execGh, planner, readFile, dryRun, log }
+ * @param {object} o  { repoRoot, repo, settings, execGh, planner, readFile, baseline, dryRun, log }
+ *                    (baseline: () => the latest baseline summary, for tests)
  * @returns {Promise<{ issue: object|null, reason: string|null, plan?: object }>}
  */
 export async function planIssue({
   repoRoot = process.cwd(), repo, settings = loadLoopSettings({ repoRoot }), execGh = defaultExec('gh'), planner,
-  readFile = (p) => fs.readFileSync(p, 'utf8'), dryRun = false, log = () => {},
+  readFile = (p) => fs.readFileSync(p, 'utf8'), baseline = () => readBaseline({ repoRoot }).latest, dryRun = false, log = () => {},
 } = {}) {
   const repoArgs = repo ? ['--repo', repo] : [];
   const list = (label, state) => JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', label, '--state', state,
@@ -248,6 +297,25 @@ export async function planIssue({
   const open = list(settings.label, 'open');
   if (open.length >= settings.planner.maxOpen) return { issue: null, reason: `${open.length} loop issue(s) are open, the planner's limit is ${settings.planner.maxOpen}` };
   const planned = plannedKeys([...list(settings.label, 'all'), ...list(STUCK_LABEL, 'all')]);
+  const openIssue = (title, body) => {
+    const url = String(execGh(['issue', 'create', ...repoArgs, '--title', title, '--body', body, '--label', settings.label], repoRoot)).trim().split('\n').pop();
+    const number = Number(/\/issues\/(\d+)/.exec(url)?.[1]);
+    return Number.isInteger(number) ? { number, title, body, url, createdAt: new Date().toISOString() } : { error: url };
+  };
+
+  // The agent's measured weak spots first: a training task main's head fails, written by code.
+  const summary = baseline();
+  const measured = failingTasks(summary).map((task) => ({ task, key: taskPlanKey(task) })).filter((m) => !planned.has(m.key));
+  if (measured.length) {
+    const { task, key } = measured[0];
+    const plan = { key, target: task.id, title: taskIssueTitle(task), body: taskIssueBody(task, summary, key) };
+    if (dryRun) return { issue: null, reason: 'a dry run: nothing opened', plan };
+    const issue = openIssue(plan.title, plan.body);
+    if (issue.error) return { issue: null, reason: `GitHub gave no issue number for the planned issue (${issue.error})` };
+    log(`[INFO] loop: planned #${issue.number} from the baseline: ${task.id} fails ${task.failing.length} check(s)`);
+    return { issue, reason: null, plan };
+  }
+
   const items = openItems(readFile(path.join(repoRoot, OPEN_ITEMS))).filter((i) => i.key && !planned.has(i.key));
   if (!items.length) return { issue: null, reason: `every item of ${OPEN_ITEMS} has been planned` };
   let ask;
@@ -277,11 +345,10 @@ export async function planIssue({
   const item = items.find((i) => i.key === plan.key);
   const body = issueBody(plan, item);
   if (dryRun) return { issue: null, reason: 'a dry run: nothing opened', plan: { ...plan, body } };
-  const url = String(execGh(['issue', 'create', ...repoArgs, '--title', plan.title, '--body', body, '--label', settings.label], repoRoot)).trim().split('\n').pop();
-  const number = Number(/\/issues\/(\d+)/.exec(url)?.[1]);
-  if (!Number.isInteger(number)) return { issue: null, reason: `GitHub gave no issue number for the planned issue (${url})` };
-  log(`[INFO] loop: planned #${number} from "${item.title}"`);
-  return { issue: { number, title: plan.title, body, url, createdAt: new Date().toISOString() }, reason: null, plan };
+  const issue = openIssue(plan.title, body);
+  if (issue.error) return { issue: null, reason: `GitHub gave no issue number for the planned issue (${issue.error})` };
+  log(`[INFO] loop: planned #${issue.number} from "${item.title}"`);
+  return { issue, reason: null, plan };
 }
 
 function parseArgs(argv) {
