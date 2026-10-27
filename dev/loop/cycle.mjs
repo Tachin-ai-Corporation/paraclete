@@ -484,15 +484,11 @@ export async function runCycle({
     return result;
   };
 
-  // 1. The off switch, and the day's cap.
+  // 1. The off switch.
   const pause = pauseState({ repoRoot, env });
   if (pause.paused) return finish({ action: 'paused', reason: `the harness is paused: ${pause.reason}` });
   const loopPause = loopPauseReason({ repoRoot, repo, execGh });
   if (loopPause) return finish({ action: 'paused', reason: `the loop is paused: ${loopPause}` });
-  const past = pastCycles(records, now, settings.retryAfterHours);
-  if (past.today >= settings.maxCyclesPerDay) {
-    return finish({ action: 'capped', reason: `today's ${settings.maxCyclesPerDay} cycles are spent` });
-  }
 
   // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
   // holding its branch, which would stop the next cycle on that issue. No other cycle runs now.
@@ -521,6 +517,13 @@ export async function runCycle({
     }
   } catch (err) {
     log(`[WARN] the release step broke: ${err.message}`);
+  }
+
+  // The day's cap holds back new attempts, which spend model time. The revert and the release above keep
+  // limits of their own (maxRevertsPerDay, release.minHoursBetween), so a spent day stops neither.
+  const past = pastCycles(records, now, settings.retryAfterHours);
+  if (past.today >= settings.maxCyclesPerDay) {
+    return finish({ action: 'capped', reason: `today's ${settings.maxCyclesPerDay} cycles are spent` });
   }
 
   // 2. The issue: the oldest open one with the label, no open loop pull request, not tried lately.
