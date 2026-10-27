@@ -409,8 +409,11 @@ done.
       issue reopened; a second revert in a day pauses the loop (`PARACLETE_LOOP_PAUSED`). Since
       `v2026.10.26.10.1` the loop releases `main` once its merges since the last release ran healthy on the
       lab (the driver runs the head for 2 hours, every service active), at most once in 20 hours, so
-      instances install them. Next: a smoke mission on a canary of its own before a release, and retiring
-      the legacy harness.
+      instances install them; since `v2026.10.26.12.2` the release goes through the lab canary's smoke
+      mission first. Since `v2026.10.27.4.1` the loop measures the agent itself: once a day a cycle runs
+      the model suite on `main`'s head with the real model (`dev/loop/baseline.mjs`), and the planner
+      turns a training task that fails a check into an issue whose change must make that task score
+      higher, no task or the held-out tasks worse. Next: retiring the legacy harness.
     - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
       `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
       and the role's smoke mission to pass, and only then cuts the release, with the check recorded in

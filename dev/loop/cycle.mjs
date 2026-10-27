@@ -1,17 +1,19 @@
 // dev/loop/cycle.mjs: one cycle of the self-improvement loop, as plain code. A cycle takes the oldest
 // open GitHub issue labelled `loop` that has no open loop pull request and was not just tried, has a
 // proposer (a coding agent: proposer.mjs) change a fresh checkout of main to resolve it, checks the
-// change, and opens a pull request a person reviews and merges. Each step is fixed here; the proposer
-// only edits files.
+// change, and opens a pull request, which the loop's merger (merger.mjs) merges once CI and the Loop
+// guard pass. Each step is fixed here; the proposer only edits files.
 //
 //   1. refuse while the harness is paused (dev/harness2/PAUSED), or the loop is (the repository variable
 //      PARACLETE_LOOP_PAUSED), or once today's cycles are spent; when CI failed on main because of a loop
 //      merge, open its revert and reopen its issue (sentinel.mjs), and change nothing else on a broken main;
 //      on a healthy main, release it once the loop's merges since the last release ran healthy on the lab
-//      (releaser.mjs, when turned on);
+//      (releaser.mjs, when turned on); then, when a baseline is due (baseline.mjs, when turned on),
+//      measure main's head on the model suite, keep the summary, and stop there;
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
 //      closed pull requests for it; give up an issue refused `maxAttempts` times (`loop` becomes
-//      `loop-stuck`); when none waits, have the planner (planner.mjs) open one from the open items;
+//      `loop-stuck`); when none waits, have the planner (planner.mjs) open one, from a training task the
+//      baseline found failing or from the open items;
 //   3. check out origin/main on a branch of its own (`loop/<issue>-<slug>`), in a temporary worktree;
 //   4. run the proposer on it, within its budget, briefed with the issue and those comments; when the
 //      suite fails, run it again on the same checkout with the failing tests, up to `repairRounds`
@@ -20,14 +22,14 @@
 //      changes code without adding a test, or fails the suite; then commit it, and refuse it unless a
 //      reviewer model (reviewer.mjs) finds it meets every point the issue says it is done when; a change
 //      to the agent's behaviour must also be measured on both sides with real-model runs
-//      (dev/harness2 `eval --real-model`) and must not make any task worse;
+//      (dev/harness2 `eval --real-model`) and must not make any task worse, and one for an issue planned
+//      from a failing task must make that task score higher;
 //   6. commit it under the next free version, push the branch and open the pull request, with the
 //      tests' result and any evidence; or, when refused, say why on the issue, naming the files it
 //      changed and the tests that failed, which the next attempt reads;
 //   7. record the cycle in .local/harness2/cycles.jsonl, which the health check reads.
 //
-// It never merges, releases or changes an instance. Stage 1 of the loop is supervised: the pull
-// request waits for a person. Run by hand or by the driver's timer (timer.mjs):
+// It never merges or changes an instance. Run by hand or by the driver's timer (timer.mjs):
 //
 //   node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]
 //
@@ -48,6 +50,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { STUCK_LABEL, planIssue } from './planner.mjs';
+import { baselineDue, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline } from './baseline.mjs';
 import { checkMain, loopPauseReason } from './sentinel.mjs';
 import { releaseIfDue } from './releaser.mjs';
 import { devContext } from '../dev-env.mjs';
@@ -56,10 +59,10 @@ import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
 /** Outcomes after a proposer ran: they count toward the day's cycles. */
-const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'ready', 'opened']);
+const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved', 'ready', 'opened']);
 
 /** Outcomes that leave an issue alone until `retryAfterHours` have passed. */
-const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed']);
+const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved']);
 
 /** Packages a checkout borrows from the repo, never part of a change. */
 const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_modules']);
@@ -278,6 +281,24 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
   }
 }
 
+/**
+ * A baseline: the model suite run on main's head with real-model runs, in a clone of its own, as
+ * defaultMeasure runs each side. Returns runCli's result.
+ */
+async function defaultBaseline({ repoRoot, head, settings, execGit, log }) {
+  let side = null;
+  try {
+    side = isolatedCheckout({ repoRoot, commit: head, execGit, prefix: 'paraclete-loop-baseline-' });
+    const { runCli } = await import('../harness2/cli.mjs');
+    const args = ['eval', '--real-model', '--trials', String(settings.baseline.trials), '--max-rollouts', String(settings.baseline.maxRollouts)];
+    return await runCli(args, { repoRoot: side.root, stderr: { write: (line) => log(String(line).trimEnd()) } });
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  } finally {
+    if (side) removeIsolated(side);
+  }
+}
+
 /** The temporary checkouts a cycle and a measured run make, by the prefix of their directory's name. */
 const CHECKOUT_PREFIXES = Object.freeze(['paraclete-loop-', 'paraclete-h2-side-']);
 
@@ -440,6 +461,7 @@ export async function runCycle({
   reviewer,
   planner,
   release = (o) => releaseIfDue(o),
+  baseline = defaultBaseline,
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -459,7 +481,7 @@ export async function runCycle({
             commit: base,
             now,
             result: {
-              ok: !FAILED.has(result.action) && result.action !== 'capped',
+              ok: !FAILED.has(result.action) && !['capped', 'baseline-failed'].includes(result.action),
               paused: result.action === 'paused',
               reason: result.reason,
               readiness: result.measurement?.evidence ? { evidence: result.measurement.evidence } : null,
@@ -471,6 +493,7 @@ export async function runCycle({
             tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
             ...(result.planned ? { planned: true } : {}),
             ...(result.released ? { released: result.released } : {}),
+            ...(result.baseline ? { baseline: result.baseline } : {}),
             behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
             ...(result.tests?.failures?.length
               ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
@@ -517,6 +540,39 @@ export async function runCycle({
     }
   } catch (err) {
     log(`[WARN] the release step broke: ${err.message}`);
+  }
+
+  // The agent's own measured weak spots: main's head on the model suite, at most once a day and only
+  // after main moved, so the planner can turn a task it fails into an issue. A cycle that measures
+  // stops there: a baseline takes hours, and an attempt measured after it could outrun the unit.
+  if (settings.baseline.enabled) {
+    let head = null;
+    try {
+      execGit(['fetch', '--quiet', 'origin', 'main'], repoRoot);
+      head = execGit(['rev-parse', 'origin/main'], repoRoot);
+    } catch (err) {
+      log(`[WARN] could not read main's head for a baseline: ${err.message}`);
+    }
+    const kept = readBaseline({ repoRoot });
+    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours })) {
+      if (dryRun) {
+        log(`[INFO] loop: a dry run: main's head ${head.slice(0, 12)} would be measured on the model suite`);
+      } else {
+        log(`[INFO] loop: measuring main's head ${head.slice(0, 12)} on the model suite (a baseline)`);
+        const ran = await baseline({ repoRoot, head, settings, execGit, log });
+        const summary = ran?.ok ? summarizeBaseline(ran, { commit: head, at: now.toISOString() }) : null;
+        const reason = !ran?.ok ? `main's head could not be measured: ${ran?.reason || ran?.error || 'no result'}`
+          : !summary.measured ? 'some runs of the baseline were not real-model runs' : null;
+        writeBaseline({ repoRoot, kept, summary: reason ? null : summary, attempt: { at: now.toISOString(), commit: head, ok: !reason, reason } });
+        if (reason) return finish({ action: 'baseline-failed', reason, baseline: { commit: head } });
+        const failing = summary.tasks.filter((t) => t.split === 'train' && (t.checks || []).some((c) => c.failed * 2 > c.runs)).map((t) => t.id);
+        return finish({
+          action: 'baselined',
+          reason: `measured main's head on ${summary.tasks.length} tasks; training tasks failing a check: ${failing.join(', ') || 'none'}`,
+          baseline: { commit: head, tasks: summary.tasks.length, failing },
+        });
+      }
+    }
   }
 
   // The day's cap holds back new attempts, which spend model time. The revert and the release above keep
@@ -568,8 +624,9 @@ export async function runCycle({
   let issue = issues.find(takeable);
   let planned = false;
   let planReason = null;
-  // No issue waits: the planner opens one from the open items, and this cycle takes it.
-  if (!issue && !issueNumber && settings.planner.command) {
+  // No issue waits: the planner opens one, from a task the baseline found failing or from the open
+  // items, and this cycle takes it.
+  if (!issue && !issueNumber && (settings.planner.command || settings.baseline.enabled)) {
     let res;
     try {
       res = await planIssue({ repoRoot, repo, settings, execGh, planner, dryRun, log });
@@ -695,6 +752,13 @@ export async function runCycle({
       if (!measurement.measured) return refuse('unmeasured', `it changes the agent's behaviour and could not be measured: ${measurement.reason}`, { changes, tests, behaviour, measurement });
       const worse = regressionProblems(measurement.evidence);
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });
+    }
+    // An issue planned from a task main's head fails is resolved only by a change that makes the agent
+    // pass more of it: one that changes nothing the agent reads cannot.
+    const target = issueTarget(issue.body);
+    if (target) {
+      const missed = behaviour ? targetProblems(measurement.evidence, target) : [`it changes nothing the agent reads, so it cannot improve the target task ${target}`];
+      if (missed.length) return refuse('unimproved', missed.join('; '), { changes, tests, behaviour, measurement });
     }
 
     const fields = { changes, tests, repairs, review, behaviour, measurement, version, subject };

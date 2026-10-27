@@ -102,6 +102,17 @@ test("a change to the agent's behaviour carries measured evidence that names its
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched, [0.5, 0.5, 0.5])) } }).problems.join(' | '), /got worse/);
 });
 
+test("a pull request for an issue planned from a failing task must show that task improved", () => {
+  const targeted = { ...ISSUE, body: `${ISSUE.body}\n<!-- loop-target: t -->` };
+  assert.deepEqual(doneWhen(targeted), ITEMS, 'the marker is not a point');
+  assert.match(check({ issue: targeted }).problems.join(' | '), /its issue targets the task t, and it changes nothing the agent reads/);
+  const agentFiles = [{ filename: 'prompts/cortex.md', status: 'modified', sha: SHA.plan }];
+  const reviewed = { 'prompts/cortex.md': SHA.plan };
+  const withEvidence = (e) => body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(e)}` });
+  assert.match(check({ issue: targeted, files: agentFiles, pr: { body: withEvidence(evidence(['prompts/cortex.md'])) } }).problems.join(' | '), /the target task t did not improve: capability 0\.8 -> 0\.8/);
+  assert.equal(check({ issue: targeted, files: agentFiles, pr: { body: withEvidence(evidence(['prompts/cortex.md'], [0.9, 0.9, 0.9])) } }).ok, true);
+});
+
 test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 2 a usage mistake', async () => {
   const sink = () => ({ text: '', write(s) { this.text += s; } });
   const run = async (view, argv = ['--pr', '45', '--repo', 'your-org/paraclete']) => {

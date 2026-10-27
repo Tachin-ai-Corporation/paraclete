@@ -107,6 +107,7 @@ function cycle(t, r, o = {}) {
       reviewer: o.reviewer || verdict(),
       planner: o.planner,
       release: o.release,
+      baseline: o.baseline,
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -361,6 +362,47 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   assert.equal(worse.action, 'regressed');
   assert.match(worse.reason, /task t-train got worse: capability 0\.8 -> 0\.5067/);
   assert.equal(originHas(r3, worse.branch), false);
+});
+
+test("an issue planned from a failing task is refused unless the measurement shows that task improved", async (t) => {
+  const behaviour = writes({ 'prompts/cortex.md': '# Cortex\n\nRun the tests before you say they pass.\n' });
+  const targeted = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- The prompt says so.\n\n<!-- loop-target: t-train -->' };
+  const run = (r, o) => cycle(t, r, { gh: fakeGh({ issues: [targeted] }), proposer: behaviour, ...o }).run();
+  const same = await run(repo(t), { measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }) });
+  assert.deepEqual([same.action, same.reason], ['unimproved', 'the target task t-train did not improve: capability 0.8 -> 0.8']);
+  const better = await run(repo(t), { measure: async () => ({ measured: true, evidence: evidence([0.9, 0.9, 0.9]) }) });
+  assert.equal(better.action, 'opened', better.reason);
+  const docs = await cycle(t, repo(t), { gh: fakeGh({ issues: [targeted] }) }).run();
+  assert.deepEqual([docs.action, docs.reason], ['unimproved', 'it changes nothing the agent reads, so it cannot improve the target task t-train']);
+});
+
+test("with baselines on, a cycle measures main's head once a day, keeps the summary, and stops there", async (t) => {
+  const settings = { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } };
+  const trajectories = [1, 2].map((trial) => ({ taskId: 'se-fix-failing-test', split: 'train', trial, measured: true, checkScore: 0.5,
+    checks: [{ name: 'tests pass', ok: false, detail: 'not ok 1' }, { name: 'only the source changed', ok: true }] }));
+  const asked = [];
+  const r = repo(t);
+  let proposed = false;
+  const first = await cycle(t, r, { settings, baseline: async (o) => { asked.push(o); return { ok: true, trials: 2, trajectories }; },
+    proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
+  assert.equal(first.action, 'baselined', first.reason);
+  assert.equal(first.reason, "measured main's head on 1 tasks; training tasks failing a check: se-fix-failing-test");
+  assert.equal(proposed, false, 'a cycle that measures stops there');
+  assert.equal(asked[0].head, git(r.work, 'rev-parse', 'origin/main'));
+  const kept = JSON.parse(fs.readFileSync(path.join(r.work, '.local', 'loop', 'baseline.json'), 'utf8'));
+  assert.deepEqual([kept.latest.commit, kept.latest.tasks[0].checks[0], kept.attempt.ok], [asked[0].head, { name: 'tests pass', runs: 2, failed: 2, detail: 'not ok 1' }, true]);
+  assert.deepEqual(readCycleRecords({ repoRoot: r.work }).at(-1).loop.baseline, { commit: asked[0].head, tasks: 1, failing: ['se-fix-failing-test'] });
+
+  const second = await cycle(t, r, { settings, baseline: async () => { throw new Error('measured twice'); } }).run();
+  assert.equal(second.action, 'opened', 'main has not moved: no baseline, on to the issue');
+
+  const r2 = repo(t);
+  const failed = await cycle(t, r2, { settings, baseline: async () => ({ ok: false, reason: 'no Google Cloud project' }) }).run();
+  assert.deepEqual([failed.action, failed.reason], ['baseline-failed', "main's head could not be measured: no Google Cloud project"]);
+  assert.equal(readCycleRecords({ repoRoot: r2.work }).at(-1).ok, false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(r2.work, '.local', 'loop', 'baseline.json'), 'utf8')).latest, null);
+  const dry = await cycle(t, repo(t), { settings, dryRun: true, baseline: async () => { throw new Error('a dry run measured'); } }).run();
+  assert.equal(dry.action, 'ready', 'a dry run measures nothing and goes on');
 });
 
 test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {
