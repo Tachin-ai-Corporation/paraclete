@@ -153,7 +153,17 @@ test('a pull request reviewed against its issue in a checkout of its head, with 
   assert.deepEqual(calls.slice(0, 3), ['fetch --quiet origin main', 'fetch --quiet origin pull/40/head', 'rev-parse FETCH_HEAD']);
   assert.ok(calls.includes(`worktree add --detach --quiet ${worktree} ${'h'.repeat(40)}`), 'the head is checked out');
   assert.ok(calls.includes(`worktree remove --force ${worktree}`), 'and removed');
+  assert.equal(fs.existsSync(worktree), false, 'its directory too, even when git left it');
   assert.equal(seen[0].worktree, worktree);
+  const failedAdd = (args) => {
+    if (args[0] === 'worktree' && args[1] === 'add') {
+      worktree = args[4];
+      throw new Error('fatal: invalid reference');
+    }
+    return execGit(args);
+  };
+  await assert.rejects(reviewPullRequest({ issueNumber: 33, prNumber: 40, repoRoot: '/repo', settings: { reviewer: LOOP_DEFAULTS.reviewer }, execGit: failedAdd, execGh, reviewer }), /invalid reference/);
+  assert.equal(fs.existsSync(worktree), false, 'a checkout that could not be made leaves nothing behind');
   assert.match(seen[0].brief, /<summary>\nAdded a helper\.\n<\/summary>/);
 
   const out = { text: '', write(s) { this.text += s; } };
