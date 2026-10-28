@@ -31,7 +31,12 @@ const body = ({ review = met(ITEMS), items = ITEMS, files = REVIEWED, extra = ''
   'Resolves #33.', '', '## Checks', '', formatReviewMarkdown(review, items, files), extra,
 ].join('\n');
 const pr = (o = {}) => ({ headRefName: 'loop/33-the-mission-page', isCrossRepository: false, body: body(), ...o });
-const check = (o = {}) => loopGuard({ pr: pr(o.pr), files: o.files || FILES, issue: o.issue === undefined ? ISSUE : o.issue });
+const check = (o = {}) => loopGuard({
+  pr: pr(o.pr), files: o.files || FILES, issue: o.issue === undefined ? ISSUE : o.issue, mainChanged: o.mainChanged === undefined ? [] : o.mainChanged,
+});
+/** The marker a measured pull request carries: the commit of main it was measured against. */
+const MEASURED_ON = 'e'.repeat(40);
+const measuredOn = `\n<!-- loop-measured-base: ${MEASURED_ON} -->`;
 
 test('only a loop branch of this repository is checked; the pieces', () => {
   assert.equal(isLoopBranch('loop/33-x'), true);
@@ -95,7 +100,7 @@ test("a change to the agent's behaviour carries measured evidence that names its
   const agentFiles = [{ filename: 'agent/work/thing.mjs', status: 'modified', sha: SHA.plan }, { filename: 'tests/agent/thing.test.mjs', status: 'added', sha: SHA.test }];
   const reviewed = { 'agent/work/thing.mjs': SHA.plan, 'tests/agent/thing.test.mjs': SHA.test };
   const touched = ['agent/work/thing.mjs', 'tests/agent/thing.test.mjs'];
-  const withEvidence = (e) => body({ files: reviewed, extra: e ? `\n${formatEvidenceMarkdown(e)}` : '' });
+  const withEvidence = (e) => body({ files: reviewed, extra: e ? `\n${formatEvidenceMarkdown(e)}${measuredOn}` : '' });
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(null) } }).problems.join(' | '), /changes the agent's behaviour and carries no evidence block/);
   assert.equal(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched)) } }).ok, true);
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(['agent/work/thing.mjs'])) } }).problems.join(' | '), /its evidence did not measure tests\/agent\/thing\.test\.mjs/);
@@ -108,9 +113,22 @@ test("a pull request for an issue planned from a failing task must show that tas
   assert.match(check({ issue: targeted }).problems.join(' | '), /its issue targets the task t, and it changes nothing the agent reads/);
   const agentFiles = [{ filename: 'prompts/cortex.md', status: 'modified', sha: SHA.plan }];
   const reviewed = { 'prompts/cortex.md': SHA.plan };
-  const withEvidence = (e) => body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(e)}` });
+  const withEvidence = (e) => body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(e)}${measuredOn}` });
   assert.match(check({ issue: targeted, files: agentFiles, pr: { body: withEvidence(evidence(['prompts/cortex.md'])) } }).problems.join(' | '), /the target task t did not improve: capability 0\.8 -> 0\.8/);
   assert.equal(check({ issue: targeted, files: agentFiles, pr: { body: withEvidence(evidence(['prompts/cortex.md'], [0.9, 0.9, 0.9])) } }).ok, true);
+});
+
+test('a measured change is refused once what the agent reads changed on main since it was measured', () => {
+  const agentFiles = [{ filename: 'agent/work/thing.mjs', status: 'modified', sha: SHA.plan }, { filename: 'tests/agent/thing.test.mjs', status: 'added', sha: SHA.test }];
+  const reviewed = { 'agent/work/thing.mjs': SHA.plan, 'tests/agent/thing.test.mjs': SHA.test };
+  const touched = ['agent/work/thing.mjs', 'tests/agent/thing.test.mjs'];
+  const measured = (marker = measuredOn) => body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(evidence(touched))}${marker}` });
+  const verdict = (o) => check({ files: agentFiles, pr: { body: measured(o.marker) }, mainChanged: o.mainChanged });
+  assert.equal(verdict({ mainChanged: ['docs/guide.md', 'dev/loop/cycle.mjs'] }).ok, true, 'main moved, but nothing the agent reads');
+  assert.match(verdict({ mainChanged: ['docs/guide.md', 'agent/services/brain/main.mjs', 'prompts/cortex.md'] }).problems.join(' | '),
+    /it was measured against eeeeeeeeeeee, and what the agent reads changed on main since \(agent\/services\/brain\/main\.mjs, prompts\/cortex\.md\): it must be measured again/);
+  assert.match(verdict({ mainChanged: null }).problems.join(' | '), /what main changed since eeeeeeeeeeee, the commit it was measured against, could not be read/);
+  assert.match(verdict({ marker: '', mainChanged: [] }).problems.join(' | '), /its body names no commit it was measured against/);
 });
 
 test('the command: 0 passes or not a loop pull request, 1 fails or cannot read, 2 a usage mistake', async () => {

@@ -11,7 +11,8 @@
 //     for nothing;
 //   - the files it changes are exactly the ones reviewed, with the reviewed contents (each file's blob,
 //     as the block records it), so nothing pushed after the review merges unreviewed;
-//   - a change to what the agent reads carries measured evidence that no task got worse
+//   - a change to what the agent reads carries measured evidence that no task got worse, measured
+//     against a commit since which nothing the agent reads changed on main (its measured-base marker)
 //     (cycle.mjs regressionProblems) and names every file it changes.
 //
 // A revert pull request (sentinel.mjs, a `loop/revert-` branch) is checked by revertGuard instead: it
@@ -26,7 +27,7 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { parseEvidenceBlock } from '../harness2/evidence.mjs';
-import { issueTarget, targetProblems } from './baseline.mjs';
+import { MEASURED_BASE_MARKER, issueTarget, measuredBase, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
 import { regressionProblems } from './cycle.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
@@ -78,7 +79,26 @@ export function changesFromFiles(files) {
  * @param {object|null} [p.reverted]  for a revert pull request, the commit it names (sentinel.mjs readReverted)
  * @returns {{ loop: boolean, revert?: boolean, ok: boolean, problems: string[], issue: number|null }}
  */
-export function loopGuard({ pr, files, issue, reverted = null }) {
+/** The paths main changed since `base` (GitHub's compare), or null when GitHub could not say. */
+function changedSince(getJson, repo, base) {
+  try {
+    const cmp = getJson(`repos/${repo}/compare/${base}...main`);
+    return Array.isArray(cmp?.files) ? cmp.files.map((f) => f.filename) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {object} p
+ * @param {object} p.pr
+ * @param {object[]} p.files
+ * @param {object|null} p.issue
+ * @param {object|null} [p.reverted]
+ * @param {string[]|null} [p.mainChanged]  the paths main changed since the commit the evidence was
+ *                                         measured against; null when unknown
+ */
+export function loopGuard({ pr, files, issue, reverted = null, mainChanged = null }) {
   if (!isLoopBranch(pr?.headRefName) || pr?.isCrossRepository) return { loop: false, ok: true, problems: [], issue: null };
   if (isRevertBranch(pr.headRefName)) {
     const { ok, problems } = revertGuard({ pr, files, reverted });
@@ -131,6 +151,15 @@ export function loopGuard({ pr, files, issue, reverted = null }) {
       const unmeasured = changes.map((c) => c.path).filter((p) => !measured.has(p));
       if (unmeasured.length) problems.push(`its evidence did not measure ${unmeasured.join(', ')}`);
       if (target) problems.push(...targetProblems(evidence, target));
+      const base = measuredBase(pr.body);
+      if (!base) problems.push(`its body names no commit it was measured against (<!-- ${MEASURED_BASE_MARKER}: <sha> -->)`);
+      else if (!Array.isArray(mainChanged)) problems.push(`what main changed since ${base.slice(0, 12)}, the commit it was measured against, could not be read`);
+      else {
+        const moved = mainChanged.filter((p) => isBehaviourPath(p));
+        if (moved.length) {
+          problems.push(`it was measured against ${base.slice(0, 12)}, and what the agent reads changed on main since (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ', ...' : ''}): it must be measured again`);
+        }
+      }
     }
   }
   return { loop: true, ok: problems.length === 0, problems, issue: number };
@@ -146,7 +175,7 @@ function defaultExecGh(args) {
  * @param {Function} execGh  (args) => stdout
  * @param {number} number
  * @param {string} repo      owner/name
- * @returns {Promise<{ pr: object, files: object[], issue: object|null, reverted: object|null }>}
+ * @returns {Promise<{ pr: object, files: object[], issue: object|null, reverted: object|null, mainChanged: string[]|null }>}
  */
 export async function readLoopPullRequest(execGh, number, repo) {
   const pr = JSON.parse(execGh(['pr', 'view', String(number), '--repo', repo, '--json', 'number,headRefName,isCrossRepository,body,headRefOid']));
@@ -171,7 +200,9 @@ export async function readLoopPullRequest(execGh, number, repo) {
       issue = null;
     }
   }
-  return { pr, files, issue, reverted: null };
+  const base = measuredBase(pr.body);
+  const mainChanged = base ? changedSince((p) => JSON.parse(execGh(['api', '-H', 'Accept: application/vnd.github+json', p])), repo, base) : null;
+  return { pr, files, issue, reverted: null, mainChanged };
 }
 
 function parseArgs(argv) {

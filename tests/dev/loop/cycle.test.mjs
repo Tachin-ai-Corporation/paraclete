@@ -18,6 +18,7 @@ import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import { clearStaleCheckouts, isolatedCheckout, main, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes } from '../../../dev/loop/cycle.mjs';
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
+import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
 
 const NOW = new Date('2027-01-21T12:00:00Z');
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -414,6 +415,46 @@ test("with baselines on, a cycle measures main's head once a day, keeps the summ
   assert.equal(JSON.parse(fs.readFileSync(path.join(r2.work, '.local', 'loop', 'baseline.json'), 'utf8')).latest, null);
   const dry = await cycle(t, repo(t), { settings, dryRun: true, baseline: async () => { throw new Error('a dry run measured'); } }).run();
   assert.equal(dry.action, 'ready', 'a dry run measures nothing and goes on');
+});
+
+test('an issue planned from a failing task is closed, not attempted, once a current baseline shows the task passing', async (t) => {
+  const targeted = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- The prompt says so.\n\n<!-- loop-target: t-train -->' };
+  const keep = (r, failed) => {
+    const head = git(r.work, 'rev-parse', 'origin/main');
+    fs.mkdirSync(path.join(r.work, '.local', 'loop'), { recursive: true });
+    fs.writeFileSync(path.join(r.work, '.local', 'loop', 'baseline.json'), JSON.stringify({
+      latest: { suiteVersion: MODEL_SUITE_VERSION, commit: head, at: NOW.toISOString(), trials: 2, measured: true,
+        tasks: [{ id: 't-train', role: 'generic', split: 'train', runs: 2, measuredRuns: 2, score: failed ? 0.5 : 1, checks: [{ name: 'c', runs: 2, failed }] }] },
+      attempt: { at: NOW.toISOString(), commit: head, ok: true, reason: null },
+    }));
+  };
+  const r = repo(t);
+  keep(r, 0);
+  const gh = fakeGh({ issues: [targeted] });
+  let proposed = false;
+  const res = await cycle(t, r, { gh, proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
+  assert.equal(res.action, 'no-work');
+  assert.equal(proposed, false, 'it is not attempted');
+  const close = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'close');
+  assert.deepEqual(close.slice(0, 5), ['issue', 'close', '7', '--reason', 'completed']);
+  assert.match(close[close.indexOf('--comment') + 1], /shows `t-train` passing its checks, so a change merged since resolved it/);
+
+  const r2 = repo(t);
+  keep(r2, 2);
+  const gh2 = fakeGh({ issues: [targeted] });
+  const still = await cycle(t, r2, { gh: gh2, proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nCheck the output.\n' }),
+    measure: async () => ({ measured: true, evidence: evidence([0.9, 0.9, 0.9]) }) }).run();
+  assert.equal(still.action, 'opened', 'a task still failing is attempted');
+  assert.equal(gh2.calls.some((a) => a[0] === 'issue' && a[1] === 'close'), false);
+});
+
+test('a measured change names the commit of main it was measured against, for the Loop guard', async (t) => {
+  const r = repo(t);
+  const c = cycle(t, r, { proposer: writes({ 'agent/work/thing.mjs': 'export const thing = 3;\n', 'tests/agent/thing-three.test.mjs': '// three\n' }),
+    measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }) });
+  assert.equal((await c.run()).action, 'opened');
+  const create = c.gh.calls.find((a) => a[0] === 'pr' && a[1] === 'create');
+  assert.match(create[create.indexOf('--body') + 1], new RegExp(`<!-- loop-measured-base: ${git(r.work, 'rev-parse', 'origin/main')} -->`));
 });
 
 test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {

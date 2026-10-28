@@ -41,7 +41,7 @@ function loopPr(number, o = {}) {
   };
 }
 
-function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainLog = 'v2027.01.20.1.1: before', commits = {} } = {}) {
+function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainLog = 'v2027.01.20.1.1: before', commits = {}, sinceBase = {} } = {}) {
   const calls = [];
   const bySha = (sha) => prs.find((p) => p.view.headRefOid === sha);
   const byNumber = (n) => prs.find((p) => String(p.number) === String(n));
@@ -62,7 +62,11 @@ function fakeGitHub({ prs = [], others = [], mainRuns = PASS, merged = [], mainL
         const runs = sha === MAIN_HEAD ? mainRuns : bySha(sha).runs;
         return ok({ total_count: runs.length, check_runs: runs });
       }
-      if (where.includes('/compare/')) return ok({ behind_by: bySha(where.split('...')[1]).behindBy, merge_base_commit: { sha: MAIN_HEAD } });
+      if (where.includes('/compare/')) {
+        const [from, to] = where.split('/compare/')[1].split('...');
+        if (to === 'main') return ok({ files: (sinceBase[from] || []).map((filename) => ({ filename })) });
+        return ok({ behind_by: bySha(to).behindBy, merge_base_commit: { sha: MAIN_HEAD } });
+      }
       if (where.includes('/files')) return ok(byNumber(where.split('/pulls/')[1].split('/')[0]).files);
       if (where in commits) return ok(commits[where]);
       if (where.includes('/commits/') || where.includes('/contents/')) return { code: 1, stdout: '', stderr: 'HTTP 404' };
@@ -98,6 +102,15 @@ test('a passing loop pull request is squash-merged at its head with its version,
     "the issue it resolved is closed: GitHub applies no closing keyword to a workflow token's merge");
   assert.equal(gh.calls.some((c) => c.includes('pr view 4 ')), false, 'another branch is never read');
   assert.match(formatLoopMergeReport(r), /^#5 merged as v2027\.01\.21\.5\.1: Gates get rows\nLoop merges today: 1\.\nDispatched ci\.yml on main\.\n$/);
+});
+
+test("for a measured change the merger reads what main changed since its measured base, for the guard", async (t) => {
+  const base = 'f'.repeat(40);
+  const measured = loopPr(7, { view: { ...loopPr(7).view, body: `${loopPr(7).view.body}\n<!-- loop-measured-base: ${base} -->` } });
+  const gh = fakeGitHub({ prs: [measured], sinceBase: { [base]: ['docs/guide.md'] } });
+  const r = await run(t, gh, { dryRun: true });
+  assert.equal(r.ok, true, r.error);
+  assert.ok(gh.calls.includes(`gh api -H Accept: application/vnd.github+json repos/your-org/paraclete/compare/${base}...main`));
 });
 
 test('one that cannot pass is closed with its reasons, which the next attempt reads; a dry run only says so', async (t) => {
