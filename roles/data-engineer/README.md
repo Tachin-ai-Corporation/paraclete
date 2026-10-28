@@ -9,7 +9,7 @@ changes schemas without breaking what reads them.
 | Purpose | Queries and analysis, loads and transforms, exports, schema changes, data quality |
 | Channel | Dashboard chat |
 | Skills | The base skills, plus `bigquery` (below) |
-| Organ prompts | Appends for the cortex (decides each step), the motor (executes) and the cerebellum (verifies): every query dry run and capped, and over 1 TB only with a go-ahead; discover before changing; writes through staging; quality gates at every crossing; schema changes carry their way back; counts reconciled, keys unique, figures traced to a query |
+| Organ prompts | Appends for the cortex (decides each step), the motor (executes) and the cerebellum (verifies): every query dry run and capped, and over 1 TB only with a go-ahead; discover before changing; writes through staging; quality gates at every crossing; schema changes carry their way back; counts reconciled, keys unique, figures traced to a query or deterministic script; local data and JSON summaries read back and re-derived |
 | Responsibilities | None: what to watch (a dataset's freshness, a cost budget) depends on the organization's data; the agent sets one up when asked |
 | Processes | `p-data-load` and `p-schema-change`, on top of generic's |
 | GCP roles | The generic base set, plus the two below |
