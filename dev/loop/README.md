@@ -148,9 +148,17 @@ request that comes back wrong half the time is a weakness to fix) becomes a
 belongs (what the agent reads or runs, never `dev/harness2/`), and two "Done when" points the reviewer
 judges: the change is to the agent, and it gives the agent what it lacked in general terms, naming
 nothing of the task. A hidden `<!-- loop-target: <task> -->` marker names the task. The change is
-measured like any behaviour change, and the cycle refuses it (`unimproved`) unless that task's
-capability on the change is above main's; the Loop guard checks the same in the pull request's evidence.
-The same failure (the task, the suite's version and the failing checks) is planned once.
+measured like any behaviour change, with the target task run `measure.targetTrials` (6) times on each
+side, and the cycle refuses it (`unimproved`) unless that task's gain on the change is beyond run-to-run
+noise: more than twice the standard error of the difference of the two means, as promotion evidence
+demands of a gain. The Loop guard checks the same in the pull request's evidence. The same failure (the
+task, the suite's version and the failing checks) is planned once, and only from a baseline that still
+describes main: one of main's head, or of a commit since which nothing the agent reads changed. Otherwise
+the failure may be fixed already, and the planner plans from the open items until the next baseline.
+
+The benchmark's own setup is the referee's, never the agent's: a rollout's brain is built with no
+mission tree (`deps.missionDir: null`, in `dev/harness2/live-runner.mjs`), since nothing creates one
+there, so its task messages name none and the motor works where its task is seeded and checked.
 
 ## The planner
 

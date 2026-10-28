@@ -248,7 +248,9 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
 
 /**
  * The measurement of a behaviour change: the model suite run on main's head and on the change, with
- * real-model runs (dev/harness2 `eval --real-model`), as promotion evidence.
+ * real-model runs (dev/harness2 `eval --real-model`), as promotion evidence. For an issue planned from a
+ * failing task, that task runs `measure.targetTrials` times on each side, so whether it improved beyond
+ * noise can be told (its extra runs also weigh in the suite's mean).
  */
 async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, execGit, log }) {
   const sides = [];
@@ -263,9 +265,18 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
     const { runCli } = await import('../harness2/cli.mjs');
     const args = ['eval', '--real-model', '--trials', String(settings.measure.trials), '--max-rollouts', String(settings.measure.maxRollouts)];
     const stderr = { write: (line) => log(String(line).trimEnd()) };
-    const baseline = await runCli(args, { repoRoot: baseSide.root, stderr });
+    const target = issueTarget(issue.body);
+    const extra = target ? Math.max(0, (settings.measure.targetTrials || 0) - settings.measure.trials) : 0;
+    const runSide = async (root) => {
+      const res = await runCli(args, { repoRoot: root, stderr });
+      if (!res.ok || !extra) return res;
+      const more = await runCli(['eval', '--real-model', '--task', target, '--trials', String(extra), '--max-rollouts', String(extra)], { repoRoot: root, stderr });
+      if (!more.ok) return { ok: false, reason: `the target task's extra runs: ${more.reason || 'no result'}` };
+      return { ...res, trajectories: [...res.trajectories, ...more.trajectories.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }))] };
+    };
+    const baseline = await runSide(baseSide.root);
     if (!baseline.ok) return { measured: false, reason: `main's head could not be measured: ${baseline.reason || 'no result'}` };
-    const candidate = await runCli(args, { repoRoot: candidateSide.root, stderr });
+    const candidate = await runSide(candidateSide.root);
     if (!candidate.ok) return { measured: false, reason: `the change could not be measured: ${candidate.reason || 'no result'}` };
     const evidence = buildPromotionEvidence({
       candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
@@ -462,6 +473,7 @@ export async function runCycle({
   planner,
   release = (o) => releaseIfDue(o),
   baseline = defaultBaseline,
+  clock = Date.now,
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -479,7 +491,9 @@ export async function runCycle({
             command: 'loop',
             flags: { 'real-model': Boolean(result.measurement?.measured), unit: result.issue ? `#${result.issue}` : null },
             commit: base,
-            now,
+            // When the cycle ended, never before it started: a measured cycle runs for hours, and the
+            // retry wait and the day's count are reckoned from its record.
+            now: new Date(Math.max(clock(), now.getTime())),
             result: {
               ok: !FAILED.has(result.action) && !['capped', 'baseline-failed'].includes(result.action),
               paused: result.action === 'paused',
@@ -629,7 +643,7 @@ export async function runCycle({
   if (!issue && !issueNumber && (settings.planner.command || settings.baseline.enabled)) {
     let res;
     try {
-      res = await planIssue({ repoRoot, repo, settings, execGh, planner, dryRun, log });
+      res = await planIssue({ repoRoot, repo, settings, execGh, execGit, planner, dryRun, log });
     } catch (err) {
       res = { issue: null, reason: `the planner broke: ${err.message}` };
     }

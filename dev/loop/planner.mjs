@@ -31,9 +31,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MODEL_SUITE } from '../harness2/model-suite.mjs';
-import { TARGET_MARKER, failingTasks, readBaseline, taskPlanKey } from './baseline.mjs';
+import { TARGET_MARKER, baselineCurrent, failingTasks, readBaseline, taskPlanKey } from './baseline.mjs';
 import { runAgentCommand } from './command.mjs';
-import { LOOP_DEFAULTS, loadLoopSettings } from './config.mjs';
+import { LOOP_DEFAULTS, isBehaviourPath, loadLoopSettings } from './config.mjs';
 
 /** The open items, as a repo path. */
 export const OPEN_ITEMS = 'docs/plan/OPEN_ITEMS.md';
@@ -283,13 +283,13 @@ function defaultExec(file) {
  * Plans one issue when fewer than `planner.maxOpen` loop issues are open: reads the open items, leaves
  * out those already planned, asks the planner, checks its answer, and opens the issue (not in a dry run).
  *
- * @param {object} o  { repoRoot, repo, settings, execGh, planner, readFile, baseline, dryRun, log }
+ * @param {object} o  { repoRoot, repo, settings, execGh, execGit, planner, readFile, baseline, dryRun, log }
  *                    (baseline: () => the latest baseline summary, for tests)
  * @returns {Promise<{ issue: object|null, reason: string|null, plan?: object }>}
  */
 export async function planIssue({
-  repoRoot = process.cwd(), repo, settings = loadLoopSettings({ repoRoot }), execGh = defaultExec('gh'), planner,
-  readFile = (p) => fs.readFileSync(p, 'utf8'), baseline = () => readBaseline({ repoRoot }).latest, dryRun = false, log = () => {},
+  repoRoot = process.cwd(), repo, settings = loadLoopSettings({ repoRoot }), execGh = defaultExec('gh'), execGit = defaultExec('git'),
+  planner, readFile = (p) => fs.readFileSync(p, 'utf8'), baseline = () => readBaseline({ repoRoot }).latest, dryRun = false, log = () => {},
 } = {}) {
   const repoArgs = repo ? ['--repo', repo] : [];
   const list = (label, state) => JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', label, '--state', state,
@@ -303,9 +303,24 @@ export async function planIssue({
     return Number.isInteger(number) ? { number, title, body, url, createdAt: new Date().toISOString() } : { error: url };
   };
 
-  // The agent's measured weak spots first: a training task main's head fails, written by code.
+  // The agent's measured weak spots first: a training task main's head fails, written by code, from a
+  // baseline that still describes main.
   const summary = baseline();
-  const measured = failingTasks(summary).map((task) => ({ task, key: taskPlanKey(task) })).filter((m) => !planned.has(m.key));
+  let measured = failingTasks(summary).map((task) => ({ task, key: taskPlanKey(task) })).filter((m) => !planned.has(m.key));
+  if (measured.length) {
+    let fresh;
+    try {
+      const head = execGit(['rev-parse', 'origin/main'], repoRoot);
+      const changed = head === summary.commit ? [] : execGit(['diff', '--name-only', summary.commit, head], repoRoot).split('\n').filter(Boolean);
+      fresh = baselineCurrent({ summary, head, changed, isBehaviourPath });
+    } catch (err) {
+      fresh = { current: false, reason: `the baseline could not be compared with main's head: ${err.message.split('\n')[0]}` };
+    }
+    if (!fresh.current) {
+      log(`[INFO] loop: not planning from the baseline: ${fresh.reason}; the next baseline measures main again`);
+      measured = [];
+    }
+  }
   if (measured.length) {
     const { task, key } = measured[0];
     const plan = { key, target: task.id, title: taskIssueTitle(task), body: taskIssueBody(task, summary, key) };

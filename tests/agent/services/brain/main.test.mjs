@@ -490,3 +490,32 @@ test('the unit follows the services rules', () => {
   assert.match(unit, /After=.*paraclete-gateway\.service/);
 });
 
+
+test('a task message names the mission tree, unless the brain is built with none (deps.missionDir null)', async () => {
+  const taskMessage = async (deps) => {
+    const messages = [];
+    const h = await startBrain({
+      deps,
+      respond: organScript({
+        decisions: [{ action: 'checkpoint_plan' }],
+        task: (turn) => {
+          messages.push(turn.user);
+          return `Done.${toolLog(['[TOOL] readFile({"path":"output.json"}) → {"ok":true}'])}`;
+        },
+      }),
+    });
+    try {
+      await h.brain.init();
+      await writeIntake(h.db, { text: 'Summarize the local dataset into output.json' });
+      await h.brain.tickIntake();
+      await drainRunner(h.brain);
+      return messages[0] || '';
+    } finally {
+      await h.stop();
+    }
+  };
+  assert.match(await taskMessage({}), /## Mission Tree\nThis mission's id is `w-/, 'an instance writes the work into its mission tree');
+  const none = await taskMessage({ missionDir: null });
+  assert.doesNotMatch(none, /## Mission Tree/, 'a brain without one, as a harness rollout, names none');
+  assert.match(none, /## Task/);
+});

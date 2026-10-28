@@ -92,6 +92,8 @@ function createUsageMeter(log) {
  * @param {object}   [deps.vertexText]   the utility model client
  * @param {string}   [deps.gatewayToken] instead of reading instance.gateway_token_file
  * @param {object|null} [deps.artifacts] the artifact manager; null for none
+ * @param {Function|null} [deps.missionDir] (missionId) => the mission tree's path; null for none, so no
+ *                                          task message names one
  * @param {Function} [deps.readText]     (path) => text, for installed files (skills, roles, prompts)
  * @param {object}   [deps.memoryIo]     { readText, appendText } for the memory files
  * @param {Function} [deps.clock]
@@ -109,7 +111,7 @@ export function buildBrain(runtime, deps = {}) {
   const db = stampPlatformVersion(runtime.db, { version: platformVersion, since: clock() });
   const token = deps.gatewayToken || readGatewayToken(instance.gateway_token_file, readText);
   const effort = { level: settings.effortDefault, checkedAt: -Infinity };
-  const missionDir = missionDirIn(paths.data.missions);
+  const missionDir = deps.missionDir !== undefined ? deps.missionDir : missionDirIn(paths.data.missions);
   const usage = createUsageMeter(log);
   const author = agentIdentity(instance);
   const roleDirs = { genericDir: paths.genericRole, role: instance.role, roleDir: paths.role };
@@ -142,43 +144,13 @@ export function buildBrain(runtime, deps = {}) {
     }),
   });
 
-  const artifacts = deps.artifacts !== undefined ? deps.artifacts : createArtifactManager({
-    gitStore: createGitStore({
-      config: {
-        bucket: instance.bucket,
-        gcpProject: instance.project,
-        prefix: contracts.git.prefix,
-        defaultBranch: contracts.git.default_branch,
-        maxPushRetries: contracts.git.max_push_retries,
-      },
-      store: createRemoteStore({
-        getAccessToken: runtime.getAccessToken, fetch: runtime.fetch, firestoreHost: runtime.firestoreHost, storageHost: runtime.storageHost,
-      }),
-      author,
-      logger: (level, ...args) => log(level, args.join(' ')),
-    }),
-    db,
-    getProjects: () => projects.getAll(),
-    fileStore: createFileStore({
-      bucket: instance.bucket,
-      prefix: contracts.files.prefix,
-      maxBytes: contracts.files.max_mb * 1024 * 1024,
-      getAccessToken: runtime.getAccessToken,
-      fetch: runtime.fetch,
-      logger: log,
-      storageHost: runtime.storageHost,
-    }),
-    logger: log,
-    config: { missionsRoot: paths.data.missions, workspaceDir: paths.data.workspace, author },
-  });
-
   const gateway = createGatewayClient({
     url: runtime.gatewayUrl,
     token,
     fetch: runtime.fetch,
     timeoutMs: settings.gatewayTimeoutMs,
     temperatureFor: (organ) => organTemperature(organ, effort.level),
-    missionDir: artifacts ? missionDir : null,
+    missionDir,
     toolRecords: { db, policy: settings.toolRecord, digest: toolResultDigester(vertexText), newId: store.newId },
     onUsage: (...args) => usage.record(...args),
     log,
@@ -212,6 +184,36 @@ export function buildBrain(runtime, deps = {}) {
     fetch: runtime.fetch,
     now: clock,
     config: { identityPath: join(paths.prompts, 'identity.md') },
+  });
+
+  const artifacts = deps.artifacts !== undefined ? deps.artifacts : createArtifactManager({
+    gitStore: createGitStore({
+      config: {
+        bucket: instance.bucket,
+        gcpProject: instance.project,
+        prefix: contracts.git.prefix,
+        defaultBranch: contracts.git.default_branch,
+        maxPushRetries: contracts.git.max_push_retries,
+      },
+      store: createRemoteStore({
+        getAccessToken: runtime.getAccessToken, fetch: runtime.fetch, firestoreHost: runtime.firestoreHost, storageHost: runtime.storageHost,
+      }),
+      author,
+      logger: (level, ...args) => log(level, args.join(' ')),
+    }),
+    db,
+    getProjects: () => projects.getAll(),
+    fileStore: createFileStore({
+      bucket: instance.bucket,
+      prefix: contracts.files.prefix,
+      maxBytes: contracts.files.max_mb * 1024 * 1024,
+      getAccessToken: runtime.getAccessToken,
+      fetch: runtime.fetch,
+      logger: log,
+      storageHost: runtime.storageHost,
+    }),
+    logger: log,
+    config: { missionsRoot: paths.data.missions, workspaceDir: paths.data.workspace, author },
   });
 
   // An approved gate is handed to the runner: the mission goes back to active with its paused plan,

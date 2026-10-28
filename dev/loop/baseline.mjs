@@ -15,13 +15,15 @@
 //   baselineDue({ kept, head, now, everyHours })
 //   failingTasks(summary)                      the training tasks with a check failing in half their runs or more
 //   taskPlanKey / TARGET_MARKER / issueTarget  how a planned issue names its task
-//   targetProblems(evidence, target)           why a measurement does not show the target improved
+//   targetProblems(evidence, target)           why a measurement does not show the target improved beyond noise
+//   baselineCurrent({ summary, head, changed }) whether a baseline still describes main's head
 //
 // Pure except readBaseline and writeBaseline. Called by cycle.mjs, planner.mjs and guard.mjs.
 
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_EVIDENCE_RULES } from '../harness2/evidence.mjs';
 import { MODEL_SUITE, MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 
 /** The kept baseline, relative to the checkout. */
@@ -137,6 +139,25 @@ export function taskPlanKey(task) {
   return `model-${task.id}-v${MODEL_SUITE_VERSION}-${digest}`;
 }
 
+/**
+ * Whether a baseline still describes main: it measured main's head, or nothing the agent reads changed
+ * since (`changed`: the paths that differ between the two commits). A failure it saw may already be
+ * fixed on main otherwise, so nothing is planned from it until the next baseline. Pure.
+ *
+ * @param {object} o  { summary, head, changed, isBehaviourPath }
+ * @returns {{ current: boolean, reason: string|null }}
+ */
+export function baselineCurrent({ summary, head, changed = [], isBehaviourPath }) {
+  if (!summary?.commit || !head) return { current: false, reason: "the baseline's commit or main's head is unknown" };
+  if (summary.commit === head) return { current: true, reason: null };
+  const behaviour = changed.filter((p) => isBehaviourPath(p));
+  if (!behaviour.length) return { current: true, reason: null };
+  return {
+    current: false,
+    reason: `what the agent reads changed since the baseline of ${summary.commit.slice(0, 12)} (${behaviour.slice(0, 3).join(', ')}${behaviour.length > 3 ? ', ...' : ''})`,
+  };
+}
+
 /** The task a planned issue targets, from its TARGET_MARKER, or null. */
 export function issueTarget(body) {
   return new RegExp(`<!-- ${TARGET_MARKER}: ([a-z0-9-]+) -->`).exec(String(body || ''))?.[1] || null;
@@ -144,15 +165,22 @@ export function issueTarget(body) {
 
 /**
  * Why a measurement does not show the target task improved: it did not run the task on both sides, or
- * the change's mean capability on it is not above main's. Pure.
+ * the change's gain on it is not above zero and beyond run-to-run noise: more than `noiseZ` standard
+ * errors of the difference of the two means, as promotion evidence demands of a gain. Pure.
  *
  * @param {object|null} evidence  buildPromotionEvidence's result
  * @param {string} target         the task id
+ * @param {object} [rules]        { noiseZ }, DEFAULT_EVIDENCE_RULES's by default
  * @returns {string[]}
  */
-export function targetProblems(evidence, target) {
+export function targetProblems(evidence, target, { noiseZ = DEFAULT_EVIDENCE_RULES.noiseZ } = {}) {
   const t = (evidence?.perTask || []).find((x) => x.taskId === target);
   if (!t?.baseline?.n || !t?.candidate?.n) return [`its measurement did not run the target task ${target} on both sides`];
-  if (!(t.candidate.mean > t.baseline.mean)) return [`the target task ${target} did not improve: capability ${t.baseline.mean} -> ${t.candidate.mean}`];
+  const gain = t.candidate.mean - t.baseline.mean;
+  const se = Math.sqrt((t.baseline.sd ?? 0) ** 2 / t.baseline.n + (t.candidate.sd ?? 0) ** 2 / t.candidate.n);
+  if (!(gain > 0)) return [`the target task ${target} did not improve: capability ${t.baseline.mean} -> ${t.candidate.mean}`];
+  if (!(gain > noiseZ * se)) {
+    return [`the target task ${target}'s gain ${round(gain)} (${t.baseline.n} and ${t.candidate.n} runs) is within run-to-run noise (${noiseZ} x ${round(se)} = ${round(noiseZ * se)})`];
+  }
   return [];
 }

@@ -108,6 +108,7 @@ function cycle(t, r, o = {}) {
       planner: o.planner,
       release: o.release,
       baseline: o.baseline,
+      ...(o.clock ? { clock: o.clock } : {}),
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -374,6 +375,16 @@ test("an issue planned from a failing task is refused unless the measurement sho
   assert.equal(better.action, 'opened', better.reason);
   const docs = await cycle(t, repo(t), { gh: fakeGh({ issues: [targeted] }) }).run();
   assert.deepEqual([docs.action, docs.reason], ['unimproved', 'it changes nothing the agent reads, so it cannot improve the target task t-train']);
+});
+
+test("a cycle's record carries when it ended, so a long cycle's retry wait starts at its end", async (t) => {
+  const r = repo(t);
+  const ended = NOW.getTime() + 7 * 3_600_000;
+  await cycle(t, r, { proposer: writes({}, { ok: false }), clock: () => ended }).run();
+  assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).at, new Date(ended).toISOString());
+  const r2 = repo(t);
+  await cycle(t, r2, { proposer: writes({}, { ok: false }), clock: () => NOW.getTime() - 60_000 }).run();
+  assert.equal(readCycleRecords({ repoRoot: r2.work }).at(-1).at, NOW.toISOString(), 'never stamped before it started');
 });
 
 test("with baselines on, a cycle measures main's head once a day, keeps the summary, and stops there", async (t) => {

@@ -166,10 +166,13 @@ const SUMMARY = {
   ],
 };
 
+/** A git whose origin/main is `head`, with `changed` the paths that differ from the baseline's commit. */
+const gitAt = (head, changed = []) => (args) => (args[0] === 'rev-parse' ? head : args[0] === 'diff' ? changed.join('\n') : '');
+
 test("a training task main's head fails is planned first, by code, with its failing checks and its target", async () => {
   const gh = fakeGh();
   let asked = 0;
-  const res = await plan(gh, { baseline: () => SUMMARY, planner: async () => { asked += 1; return { output: answer({}), reason: null }; } });
+  const res = await plan(gh, { baseline: () => SUMMARY, execGit: gitAt(SUMMARY.commit), planner: async () => { asked += 1; return { output: answer({}), reason: null }; } });
   assert.equal(asked, 0, 'no planner model is asked');
   assert.equal(res.issue.number, 77);
   assert.equal(res.issue.title, "The software-engineer agent passes the se-fix-failing-test task's checks");
@@ -189,10 +192,21 @@ test("a training task main's head fails is planned first, by code, with its fail
   const create = gh.calls.find((a) => a[1] === 'create');
   assert.equal(create[create.indexOf('--label') + 1], 'loop');
 
-  const planned = await plan(fakeGh({ all: [{ body: `<!-- loop-plan: ${taskPlanKey(task)} -->` }] }), { baseline: () => SUMMARY });
+  const planned = await plan(fakeGh({ all: [{ body: `<!-- loop-plan: ${taskPlanKey(task)} -->` }] }), { baseline: () => SUMMARY, execGit: gitAt(SUMMARY.commit) });
   assert.equal(planned.issue.title, 'The dashboard imports the agent constants it copies', 'a failure planned already: on to the open items');
-  const dry = await plan(fakeGh(), { baseline: () => SUMMARY, dryRun: true });
+  const dry = await plan(fakeGh(), { baseline: () => SUMMARY, execGit: gitAt(SUMMARY.commit), dryRun: true });
   assert.deepEqual([dry.issue, dry.plan.target], [null, 'se-fix-failing-test']);
+});
+
+test('nothing is planned from a baseline of an older head when what the agent reads changed since', async () => {
+  const logs = [];
+  const stale = await plan(fakeGh(), { baseline: () => SUMMARY, execGit: gitAt('d'.repeat(40), ['agent/services/brain/main.mjs', 'docs/guide.md']), log: (l) => logs.push(l) });
+  assert.equal(stale.issue.title, 'The dashboard imports the agent constants it copies', 'on to the open items');
+  assert.match(logs.join('\n'), /not planning from the baseline: what the agent reads changed since the baseline of cccccccccccc \(agent\/services\/brain\/main\.mjs\)/);
+  const docsOnly = await plan(fakeGh(), { baseline: () => SUMMARY, execGit: gitAt('d'.repeat(40), ['docs/guide.md', 'dev/loop/README.md']) });
+  assert.equal(docsOnly.plan.target, 'se-fix-failing-test', 'main moved, but nothing the agent reads: the baseline still holds');
+  const broken = await plan(fakeGh(), { baseline: () => SUMMARY, execGit: () => { throw new Error('fatal: bad object'); } });
+  assert.equal(broken.plan.target, undefined, 'a baseline that cannot be compared is not planned from');
 });
 
 test('nothing is planned past the open limit, with every item planned, on a skip, a refused answer, or in a dry run', async () => {
