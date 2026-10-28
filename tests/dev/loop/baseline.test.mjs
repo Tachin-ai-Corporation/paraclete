@@ -9,8 +9,9 @@ import path from 'node:path';
 import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
 import { runTier1Evaluation } from '../../../dev/harness2/substrate.mjs';
 import {
-  BASELINE_PATH, baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, taskPlanKey, writeBaseline,
+  BASELINE_PATH, baselineCurrent, baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, taskPlanKey, writeBaseline,
 } from '../../../dev/loop/baseline.mjs';
+import { isBehaviourPath } from '../../../dev/loop/config.mjs';
 
 const TRAIN = { id: 'se-fix-failing-test', role: 'software-engineer', split: 'train', expectedClauses: ['fix it'] };
 const HOLDOUT = { id: 'se-implement-from-spec', role: 'software-engineer', split: 'holdout', expectedClauses: ['build it'] };
@@ -93,9 +94,26 @@ test('the kept file holds the latest summary and the last attempt; a failed atte
 test("an issue's target, and whether a measurement shows the target task improved", () => {
   assert.equal(issueTarget('Fails.\n\n<!-- loop-plan: model-x-v1-abcd1234 -->\n<!-- loop-target: se-fix-failing-test -->'), 'se-fix-failing-test');
   assert.equal(issueTarget('**Done when:**\n- a\n'), null);
-  const evidence = (baseline, candidate) => ({ perTask: [{ taskId: 'se-fix-failing-test', baseline: { n: 3, mean: baseline }, candidate: { n: 3, mean: candidate } }] });
-  assert.deepEqual(targetProblems(evidence(0.5, 0.75), 'se-fix-failing-test'), []);
-  assert.match(targetProblems(evidence(0.5, 0.5), 'se-fix-failing-test')[0], /did not improve: capability 0\.5 -> 0\.5/);
-  assert.match(targetProblems(evidence(0.5, 0.75), 'other-task')[0], /did not run the target task other-task on both sides/);
+  const stats = (runs) => {
+    const mean = runs.reduce((a, b) => a + b, 0) / runs.length;
+    return { n: runs.length, mean, sd: Math.sqrt(runs.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, runs.length - 1)) };
+  };
+  const evidence = (baseline, candidate) => ({ perTask: [{ taskId: 'se-fix-failing-test', baseline: stats(baseline), candidate: stats(candidate) }] });
+  assert.deepEqual(targetProblems(evidence([0.5, 0.5, 0.5], [0.75, 0.75, 0.75]), 'se-fix-failing-test'), [], 'a steady gain');
+  assert.match(targetProblems(evidence([0.5, 0.5, 0.5], [0.5, 0.5, 0.5]), 'se-fix-failing-test')[0], /did not improve: capability 0\.5 -> 0\.5/);
+  assert.match(targetProblems(evidence([1, 1, 0], [1, 1, 1]), 'se-fix-failing-test')[0], /gain 0\.3333 \(3 and 3 runs\) is within run-to-run noise \(2 x 0\.3333 = 0\.6667\)/,
+    "#71's gain, 0.67 -> 1 in three runs a side, is within noise");
+  assert.deepEqual(targetProblems(evidence([1, 0, 0, 1, 0, 1], [1, 1, 1, 1, 1, 1]), 'se-fix-failing-test'), [], '0.5 -> 1 in six runs a side is beyond it');
+  assert.match(targetProblems(evidence([0.5], [0.75]), 'other-task')[0], /did not run the target task other-task on both sides/);
   assert.match(targetProblems(null, 'se-fix-failing-test')[0], /did not run the target task/);
+});
+
+test("a baseline describes main while main is its commit, or nothing the agent reads changed since", () => {
+  const summary = { commit: 'a'.repeat(40) };
+  const current = (head, changed) => baselineCurrent({ summary, head, changed, isBehaviourPath });
+  assert.deepEqual(current('a'.repeat(40), []), { current: true, reason: null });
+  assert.deepEqual(current('b'.repeat(40), ['docs/guide.md', 'tests/dev/loop/cycle.test.mjs']), { current: true, reason: null });
+  assert.match(current('b'.repeat(40), ['prompts/cortex.md', 'skills/drive/SKILL.md', 'roles/generic/README.md', 'agent/work/x.mjs']).reason,
+    /^what the agent reads changed since the baseline of aaaaaaaaaaaa \(prompts\/cortex\.md, skills\/drive\/SKILL\.md, roles\/generic\/README\.md, \.\.\.\)$/);
+  assert.equal(baselineCurrent({ summary: null, head: 'b', isBehaviourPath }).current, false);
 });

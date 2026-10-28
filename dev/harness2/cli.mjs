@@ -115,6 +115,7 @@ Subcommands:
 Real-model runs (eval, judge, evolve, promote, curriculum):
   --real-model                     Every organ answers through the real model, from each side's own files,
                                    on the model suite's tasks; the only runs a promotion accepts
+  --task <id>[,<id>...]            eval: only these model-suite tasks
   --max-rollouts <n>               Stop the run before it passes n model rollouts (default 120)
   --max-tokens <n>                 Stop the run before it passes n tokens (default 30000000)
   --recalibrate                    Calibrate again even when today's calibration for this commit is kept
@@ -483,13 +484,14 @@ async function runCliCommand(argv, deps) {
       Array.isArray(deps.tasks) && deps.tasks.length > 0
         ? deps.tasks
         : realModel
-          ? selectModelTasks({ role: flags.role })
+          ? selectModelTasks({ role: flags.role, ids: typeof flags.task === 'string' ? flags.task.split(',') : undefined })
           : selectBenchmarkTasks({
             stage,
             role: flags.role,
             includeHarvested: Boolean(flags['include-harvested']),
             suitePath: flags['suite-path'],
           });
+    if (realModel && typeof flags.task === 'string' && !tasks.length) return { ok: false, reason: `no model-suite task is named ${flags.task}` };
     const useFrontierJudge = subcommand === 'judge' || Boolean(flags['judge-committee']) || Boolean(deps.judgeOptions);
     const judgeCommittee =
       typeof flags['judge-committee'] === 'string'

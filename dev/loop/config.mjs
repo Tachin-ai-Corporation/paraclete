@@ -30,8 +30,9 @@ export const LOOP_DEFAULTS = Object.freeze({
   /** The suite every change must pass, and how long it may take. */
   testCommand: Object.freeze(['npm', 'test']),
   testTimeoutMinutes: 40,
-  /** A behaviour change is measured on both sides with this many runs of every task, within this cap. */
-  measure: Object.freeze({ trials: 3, maxRollouts: 120 }),
+  /** A behaviour change is measured on both sides with this many runs of every task, within this cap;
+   * an issue planned from a failing task has its target task run `targetTrials` times a side. */
+  measure: Object.freeze({ trials: 3, targetTrials: 6, maxRollouts: 120 }),
   /** The planner (planner.mjs) opens an issue only while fewer loop issues than this are open; an
    * answer refused by its checks is asked for again this many times, with the problems named. */
   planner: Object.freeze({ maxOpen: 2, retries: 1, wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000 }),

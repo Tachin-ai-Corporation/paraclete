@@ -581,10 +581,14 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
           logger: () => {},
         });
 
+    // A rollout has no artifact manager, so no mission tree: its task messages must not name one, or a
+    // motor that follows them writes its work there, and the task is seeded into, and checked in, the
+    // motor's working directory.
     const brain = buildBrain(runtime, {
       ...(vertexText ? { vertexText } : {}),
       gatewayToken: gateway.token,
       artifacts: null,
+      missionDir: null,
       clock,
     });
 

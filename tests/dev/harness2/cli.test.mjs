@@ -59,6 +59,17 @@ test('a real-model eval measures every run, scores selection on the training tas
   assert.match(lines.join(''), /about 2 model rollouts/);
 });
 
+test('a real-model eval with --task runs the named tasks only, and refuses a name the suite has not', async () => {
+  const record = { cleanups: 0, contexts: 0 };
+  const res = await runCli(['eval', '--real-model', '--task', 'data-revenue-summary', '--trials', '2'], {
+    repoRoot: REPO, createModelRunContext: fakeContext({ maxRollouts: 10 }, record), stderr: quiet,
+  });
+  assert.equal(res.ok, true);
+  assert.deepEqual(res.trajectories.map((t) => [t.taskId, t.trial]), [['data-revenue-summary', 1], ['data-revenue-summary', 2]]);
+  const none = await runCli(['eval', '--real-model', '--task', 'no-such-task'], { repoRoot: REPO, createModelRunContext: fakeContext({}, record), stderr: quiet });
+  assert.deepEqual([none.ok, none.reason], [false, 'no model-suite task is named no-such-task']);
+});
+
 test('a real-model run whose estimate is over its cap is refused before it spends anything, and cleans up', async (t) => {
   const record = { cleanups: 0, contexts: 0 };
   const res = await runCli(['eval', '--real-model', '--role', 'data-engineer', '--max-rollouts', '1'], {
