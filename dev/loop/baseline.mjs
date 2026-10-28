@@ -15,6 +15,7 @@
 //   baselineDue({ kept, head, now, everyHours })
 //   failingTasks(summary)                      the training tasks with a check failing in half their runs or more
 //   taskPlanKey / TARGET_MARKER / issueTarget  how a planned issue names its task
+//   MEASURED_BASE_MARKER / measuredBase        how a measured pull request names the main it was measured on
 //   targetProblems(evidence, target)           why a measurement does not show the target improved beyond noise
 //   baselineCurrent({ summary, head, changed }) whether a baseline still describes main's head
 //
@@ -31,6 +32,13 @@ export const BASELINE_PATH = '.local/loop/baseline.json';
 
 /** The hidden marker an issue planned from a baseline carries: `<!-- loop-target: <task id> -->`. */
 export const TARGET_MARKER = 'loop-target';
+
+/**
+ * The hidden marker a measured loop pull request carries, naming the commit of main it was measured
+ * against: `<!-- loop-measured-base: <sha> -->`. The Loop guard refuses the change once what the agent
+ * reads changed on main since.
+ */
+export const MEASURED_BASE_MARKER = 'loop-measured-base';
 
 const round = (n) => Number(n.toFixed(4));
 
@@ -156,6 +164,11 @@ export function baselineCurrent({ summary, head, changed = [], isBehaviourPath }
     current: false,
     reason: `what the agent reads changed since the baseline of ${summary.commit.slice(0, 12)} (${behaviour.slice(0, 3).join(', ')}${behaviour.length > 3 ? ', ...' : ''})`,
   };
+}
+
+/** The commit a pull request's evidence was measured against, from its MEASURED_BASE_MARKER, or null. */
+export function measuredBase(body) {
+  return new RegExp(`<!-- ${MEASURED_BASE_MARKER}: ([0-9a-f]{40}) -->`).exec(String(body || ''))?.[1] || null;
 }
 
 /** The task a planned issue targets, from its TARGET_MARKER, or null. */

@@ -49,8 +49,10 @@ import { MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 import { pauseState } from '../harness2/pause.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
-import { STUCK_LABEL, planIssue } from './planner.mjs';
-import { baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline } from './baseline.mjs';
+import { STUCK_LABEL, isCurrentBaseline, planIssue } from './planner.mjs';
+import {
+  MEASURED_BASE_MARKER, baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline,
+} from './baseline.mjs';
 import { checkMain, loopPauseReason } from './sentinel.mjs';
 import { releaseIfDue } from './releaser.mjs';
 import { devContext } from '../dev-env.mjs';
@@ -424,7 +426,7 @@ function pastCycles(records, now, retryAfterHours) {
   };
 }
 
-function pullRequestBody({ issue, summary, changes, tests, review, behaviour, measurement, version }) {
+function pullRequestBody({ issue, summary, changes, tests, review, behaviour, measurement, version, base }) {
   return [
     `Resolves #${issue.number}.`,
     '',
@@ -443,7 +445,7 @@ function pullRequestBody({ issue, summary, changes, tests, review, behaviour, me
     formatReviewMarkdown(review.review, review.items, review.files),
     '',
     `- **Behaviour**: ${behaviour ? 'changed, so measured on both sides with real-model runs; no task, the held-out tasks nor the suite got worse' : 'not changed (nothing the running agent reads)'}`,
-    ...(measurement?.evidence ? ['', formatEvidenceMarkdown(measurement.evidence)] : []),
+    ...(measurement?.evidence ? ['', formatEvidenceMarkdown(measurement.evidence), '', `<!-- ${MEASURED_BASE_MARKER}: ${base} -->`] : []),
     '',
     '## Merging',
     `Squash and merge, keeping the title, so \`${version}\` becomes main's head.`,
@@ -634,7 +636,32 @@ export async function runCycle({
       log(`[WARN] could not give up #${s.number}: ${err.message}`);
     }
   }
-  const takeable = (i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number) && !stuck.includes(i);
+  // An issue planned from a failing task is resolved once a baseline that still describes main shows
+  // that task passing there (a change merged meanwhile fixed it): it is closed, not attempted again.
+  const resolved = [];
+  const targeted = issues.filter((i) => issueTarget(i.body));
+  if (targeted.length) {
+    const summary = readBaseline({ repoRoot }).latest;
+    if (isCurrentBaseline({ repoRoot, summary, execGit }).current) {
+      const failing = new Set(failingTasks(summary).map((t) => t.id));
+      const measuredIds = new Set((summary.tasks || []).filter((t) => t.measuredRuns > 0).map((t) => t.id));
+      for (const i of targeted) {
+        const target = issueTarget(i.body);
+        if (failing.has(target) || !measuredIds.has(target)) continue;
+        resolved.push(i.number);
+        log(`[INFO] loop: #${i.number}'s target ${target} passes on main in the baseline of ${summary.commit.slice(0, 12)}: closing it`);
+        if (dryRun) continue;
+        try {
+          execGh(['issue', 'close', String(i.number), ...repoArgs, '--reason', 'completed', '--comment',
+            `The self-improvement loop closed this: the baseline of main at \`${summary.commit.slice(0, 12)}\` (${String(summary.at || '').slice(0, 10)}) shows \`${target}\` passing its checks, so a change merged since resolved it.`], repoRoot);
+        } catch (err) {
+          log(`[WARN] could not close #${i.number}: ${err.message}`);
+        }
+      }
+    }
+  }
+  const takeable = (i) => (issueNumber ? i.number === issueNumber : true) && !busy(i.number) && waiting(i.number) && !stuck.includes(i)
+    && !resolved.includes(i.number);
   let issue = issues.find(takeable);
   let planned = false;
   let planReason = null;
@@ -780,7 +807,7 @@ export async function runCycle({
 
     // 7. Push, and open the pull request a person merges.
     execGit(['push', '--quiet', '--force-with-lease', '-u', 'origin', branch], worktree);
-    const body = pullRequestBody({ issue, summary: proposal.summary, changes, tests, review, behaviour, measurement, version });
+    const body = pullRequestBody({ issue, summary: proposal.summary, changes, tests, review, behaviour, measurement, version, base });
     const url = execGh(['pr', 'create', ...repoArgs, '--base', 'main', '--head', branch, '--title', subject, '--body', body, '--label', settings.label], worktree);
     return finish({ action: 'opened', pullRequest: String(url).trim().split('\n').pop(), ...fields });
   } finally {

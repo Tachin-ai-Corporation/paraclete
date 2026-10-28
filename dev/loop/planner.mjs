@@ -275,6 +275,24 @@ export function taskIssueBody(task, summary, key) {
   ].join('\n');
 }
 
+/**
+ * Whether the baseline summary still describes main's head (baseline.mjs baselineCurrent), read
+ * through git in the checkout: origin/main, and the paths that changed since the baseline's commit.
+ *
+ * @param {object} o  { repoRoot, summary, execGit }
+ * @returns {{ current: boolean, reason: string|null }}
+ */
+export function isCurrentBaseline({ repoRoot, summary, execGit }) {
+  if (!summary?.commit) return { current: false, reason: 'there is no baseline' };
+  try {
+    const head = execGit(['rev-parse', 'origin/main'], repoRoot);
+    const changed = head === summary.commit ? [] : execGit(['diff', '--name-only', summary.commit, head], repoRoot).split('\n').filter(Boolean);
+    return baselineCurrent({ summary, head, changed, isBehaviourPath });
+  } catch (err) {
+    return { current: false, reason: `the baseline could not be compared with main's head: ${String(err.message).split('\n')[0]}` };
+  }
+}
+
 function defaultExec(file) {
   return (args, cwd) => execFileSync(file, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }).trim();
 }
@@ -308,14 +326,7 @@ export async function planIssue({
   const summary = baseline();
   let measured = failingTasks(summary).map((task) => ({ task, key: taskPlanKey(task) })).filter((m) => !planned.has(m.key));
   if (measured.length) {
-    let fresh;
-    try {
-      const head = execGit(['rev-parse', 'origin/main'], repoRoot);
-      const changed = head === summary.commit ? [] : execGit(['diff', '--name-only', summary.commit, head], repoRoot).split('\n').filter(Boolean);
-      fresh = baselineCurrent({ summary, head, changed, isBehaviourPath });
-    } catch (err) {
-      fresh = { current: false, reason: `the baseline could not be compared with main's head: ${err.message.split('\n')[0]}` };
-    }
+    const fresh = isCurrentBaseline({ repoRoot, summary, execGit });
     if (!fresh.current) {
       log(`[INFO] loop: not planning from the baseline: ${fresh.reason}; the next baseline measures main again`);
       measured = [];

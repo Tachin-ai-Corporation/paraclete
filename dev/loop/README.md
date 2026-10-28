@@ -19,7 +19,7 @@ never changes an instance; it reaches instances only through a release (see "Rel
 | `baseline.mjs` | How the agent does on the model suite at main's head: a real-model run's summary per task, when the next is due, which training tasks fail a check, the target an issue planned from one names, and whether a measurement shows that target improved |
 | `sentinel.mjs` | What undoes a loop merge that broke main: at a cycle's start, when CI failed on main's head and that head is a loop merge, opens its revert pull request, reopens its issue, and pauses the loop's cycles at the day's second revert; and the check a revert pull request must pass |
 | `releaser.mjs` | Cuts a release of main at a cycle's start once the loop's merges since the last release ran healthy on the lab, so instances install them; off unless your local settings turn it on |
-| `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change |
+| `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change, measured against a main that still stands |
 | `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
 | `test-report.mjs` | Reads which tests failed from the suite's output, with each one's error (for a test file that could not load, the error it printed), for the refusal comment and the cycle record |
@@ -156,6 +156,8 @@ demands of a gain. The Loop guard checks the same in the pull request's evidence
 task, the suite's version and the failing checks) is planned once, and only from a baseline that still
 describes main: one of main's head, or of a commit since which nothing the agent reads changed. Otherwise
 the failure may be fixed already, and the planner plans from the open items until the next baseline.
+An open issue planned from a failing task is closed, not attempted, once such a baseline shows its task
+passing on main: a change merged meanwhile resolved it.
 
 The benchmark's own setup is the referee's, never the agent's: a rollout's brain is built with no
 mission tree (`deps.missionDir: null`, in `dev/harness2/live-runner.mjs`), since nothing creates one
@@ -190,7 +192,10 @@ A loop pull request (a `loop/` branch of this repository) passes only when:
   `judgeReview` judged afresh (the verdict written into the block counts for nothing);
 - its files are exactly the reviewed ones, with the reviewed contents (each file's blob), so a push
   after the review voids it;
-- a change to what the agent reads carries measured evidence that no task got worse, naming every file.
+- a change to what the agent reads carries measured evidence that no task got worse, naming every file,
+  and names the commit of main it was measured against (`<!-- loop-measured-base: <sha> -->`): once what
+  the agent reads changed on main since (GitHub's compare of that commit with main), the measurement is
+  of a main that is gone, so the change is refused and its next attempt is measured again.
 
 `node dev/loop/merger.mjs [--dry-run] [--json]` runs each hour in `.github/workflows/harness-merge.yml`,
 after the harness's own merger, in the same job (so its run on `main` is not counted as CI, and the two

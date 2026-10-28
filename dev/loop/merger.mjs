@@ -42,6 +42,7 @@ import { promotionVersion } from '../harness2/merge.mjs';
 import { PAUSE_FILE, pauseState } from '../harness2/pause.mjs';
 import { MAIN, REMOTE, checkRuns, ciVerdict } from '../release.mjs';
 import { LOOP_DEFAULTS } from './config.mjs';
+import { measuredBase } from './baseline.mjs';
 import { isLoopBranch, loopGuard, resolvedIssue } from './guard.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted } from './sentinel.mjs';
 
@@ -148,7 +149,12 @@ async function readForGuard(exec, repo, number) {
   const issue = n
     ? await ghJson(exec, ['issue', 'view', String(n), '--repo', repo, '--json', 'number,title,body,state,labels'], `issue #${n}`).catch(() => null)
     : null;
-  return { pr, files, issue, reverted: null };
+  // What main changed since the commit a measured change was measured against, for the guard.
+  const base = measuredBase(pr.body);
+  const cmp = base
+    ? await ghJson(exec, ['api', ...API_JSON, `repos/${repo}/compare/${base}...${MAIN}`], `what ${MAIN} changed since ${base.slice(0, 12)}`).catch(() => null)
+    : null;
+  return { pr, files, issue, reverted: null, mainChanged: Array.isArray(cmp?.files) ? cmp.files.map((f) => f.filename) : null };
 }
 
 /**
@@ -218,11 +224,11 @@ export async function mergeLoopPullRequests(o = {}) {
       continue;
     }
     try {
-      const { pr, files, issue, reverted } = await readForGuard(exec, repo, number);
+      const { pr, files, issue, reverted, mainChanged } = await readForGuard(exec, repo, number);
       const sha = String(pr.headRefOid || '');
       const runs = await checkRuns({ exec }, repo, sha);
       const compare = await ghJson(exec, ['api', ...API_JSON, `repos/${repo}/compare/${result.mainHead}...${sha}`], `how #${number} compares with ${MAIN}`);
-      const guard = loopGuard({ pr, files, issue, reverted });
+      const guard = loopGuard({ pr, files, issue, reverted, mainChanged });
       const { refusals, waits } = loopMergeBlockers({ pr, runs, behindBy: compare?.behind_by, guard });
       if (refusals.length) {
         if (!dryRun) {
