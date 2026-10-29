@@ -31,11 +31,21 @@ function tmp(t, prefix) {
 
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=h2@example.com', '-c', 'user.name=h2', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 
-/** A small git repository with a base motor prompt and an installed package directory. */
+/** A small git repository with a base motor prompt, an install manifest, files no instance installs, and an installed package directory. */
 function repo(t) {
   const root = tmp(t, 'h2-side-repo-');
   fs.mkdirSync(path.join(root, 'prompts'), { recursive: true });
   fs.writeFileSync(path.join(root, 'prompts', 'motor.md'), '# Motor\n\nBaseline motor prompt.\n');
+  for (const [rel, text] of Object.entries({
+    'install/manifest.txt': '# What an instance installs.\nagent/\nprompts/\nroles/generic/\nroles/{role}/\ninstall/manifest.txt\n',
+    'roles/generic/role.json': '{}\n',
+    'roles/data-engineer/role.json': '{}\n',
+    'dev/harness2/model-suite.mjs': '// the checks and their answers\n',
+    'tests/dev/harness2/model-suite.test.mjs': '// the reference solutions\n',
+  })) {
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), text);
+  }
   fs.writeFileSync(path.join(root, '.gitignore'), 'node_modules/\n');
   git(root, 'init', '--quiet');
   git(root, 'add', '.');
@@ -86,6 +96,10 @@ test('a side is HEAD with its patches, shared by equal patches, refused off the 
   assert.match(fs.readFileSync(path.join(cand.root, 'prompts', 'motor.md'), 'utf8'), /Candidate/);
   assert.match(fs.readFileSync(path.join(root, 'prompts', 'motor.md'), 'utf8'), /Baseline/, 'the repo itself is untouched');
   assert.ok(fs.existsSync(path.join(cand.root, 'agent', 'node_modules', 'some-sdk', 'index.js')), 'the packages are linked in');
+  assert.deepEqual(fs.readdirSync(base.root).sort(), ['agent', 'install', 'prompts', 'roles'], 'what an instance installs, and nothing else');
+  assert.deepEqual(fs.readdirSync(path.join(base.root, 'roles')).sort(), ['data-engineer', 'generic'], 'every role, for every rollout the side serves');
+  for (const rel of ['dev', 'tests', '.git']) assert.equal(fs.existsSync(path.join(cand.root, rel)), false, `no ${rel} within the agent's reach`);
+  assert.doesNotMatch(git(root, 'worktree', 'list'), /paraclete-h2-(side|src)/, 'the checkout it was copied from is gone already');
   assert.throws(() => sides.forPatches({ 'agent/gateway/tools.mjs': 'export {};' }), /only on the mutable surface/);
 
   // Launchers name a POSIX path, so a Windows temp checkout gets none and says why; a Linux one gets them.
@@ -99,6 +113,13 @@ test('a side is HEAD with its patches, shared by equal patches, refused off the 
   assert.equal(fs.existsSync(cand.root), false);
   assert.ok(fs.existsSync(path.join(root, 'agent', 'node_modules', 'some-sdk', 'index.js')), 'removing a checkout never reaches through its link');
   assert.doesNotMatch(git(root, 'worktree', 'list'), /paraclete-h2-side/);
+  const bare = tmp(t, 'h2-side-bare-');
+  fs.writeFileSync(path.join(bare, 'README.md'), 'No manifest here.\n');
+  git(bare, 'init', '--quiet');
+  git(bare, 'add', '.');
+  git(bare, 'commit', '--quiet', '-m', 'bare');
+  assert.throws(() => createSideRoots({ repoRoot: bare, tmpRoot: tmp(t, 'h2-sides-') }).forPatches({}), /install[\\/]manifest\.txt does not exist/,
+    'a commit without an install manifest builds no side');
 });
 
 test("the product gateway, started from a side's checkout, sends that side's own motor prompt to the model", async (t) => {

@@ -313,7 +313,7 @@ async function defaultBaseline({ repoRoot, head, settings, execGit, log }) {
 }
 
 /** The temporary checkouts a cycle and a measured run make, by the prefix of their directory's name. */
-const CHECKOUT_PREFIXES = Object.freeze(['paraclete-loop-', 'paraclete-h2-side-']);
+const CHECKOUT_PREFIXES = Object.freeze(['paraclete-loop-', 'paraclete-h2-side-', 'paraclete-h2-src-']);
 
 /**
  * Removes the repo's registered worktrees a killed cycle left behind (temporary checkouts named with
