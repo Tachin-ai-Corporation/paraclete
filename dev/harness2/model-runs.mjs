@@ -7,10 +7,12 @@
 //
 // Here:
 // - modelAccess: the Google Cloud project and the access token the model calls use;
-// - createSideRoots: one checkout per side, a detached git worktree of HEAD with the side's file
-//   patches written in, so the brain and the gateway read that side's files and its skill commands
-//   still import the repo's code; `prepareRole` gives a checkout the command launchers of the role a
-//   rollout runs (install/vm/launchers.mjs, as an install does);
+// - createSideRoots: one install root per side, as /opt/paraclete is on an instance: the files the
+//   install manifest lists, copied from a worktree of HEAD that is removed at once, with the side's file
+//   patches written in, so the brain and the gateway read that side's files, and nothing an instance
+//   lacks (tests, the harness and its benchmark, history) is within its agent's reach; `prepareRole`
+//   gives a root the command launchers of the role a rollout runs (install/vm/launchers.mjs, as an
+//   install does);
 // - startModelGateway: the gateway (agent/services/gateway/main.mjs buildGateway) for one rollout,
 //   on loopback, against the side's checkout and the rollout's data directory;
 // - usageFromLog: the brain's per-turn token telemetry line, as a usage record;
@@ -83,6 +85,26 @@ export function modelAccess({ env = process.env, projectFromInstance = instanceP
  * @param {string} [o.commit]      the commit every side is cut from; default HEAD, resolved once
  * @returns {{ forPatches: (filePatches?: object) => { root: string, key: string }, prepareRole: Function, cleanupAll: () => void, commit: () => string, roots: () => string[] }}
  */
+/**
+ * The repo paths an instance installs, from a checkout's install/manifest.txt: each line a path, a
+ * trailing / a directory. `roles/<role>/` lines become all of roles/, since one side serves every role
+ * its rollouts run. Throws when the checkout has no manifest.
+ *
+ * @param {string} root  a checkout
+ * @returns {string[]}
+ */
+export function installedPaths(root) {
+  const file = path.join(root, 'install', 'manifest.txt');
+  if (!fs.existsSync(file)) throw new Error(`${file} does not exist: a side is built from the install manifest`);
+  const paths = new Set();
+  for (const raw of fs.readFileSync(file, 'utf8').split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    paths.add(line.startsWith('roles/') ? 'roles/' : line);
+  }
+  return [...paths];
+}
+
 export function createSideRoots({ repoRoot, execGit = defaultExecGit, tmpRoot = os.tmpdir(), commit } = {}) {
   if (!repoRoot) throw new Error('createSideRoots: repoRoot is required');
   const made = new Map();
@@ -104,8 +126,27 @@ export function createSideRoots({ repoRoot, execGit = defaultExecGit, tmpRoot = 
     const key = createHash('sha256').update(JSON.stringify(entries)).digest('hex').slice(0, 12);
     if (made.has(key)) return made.get(key);
 
+    // The commit is checked out beside the root, and only what an instance installs is copied in; the
+    // checkout goes at once, so neither it nor its history is left within the agent's reach.
     const root = fs.mkdtempSync(path.join(tmpRoot, `paraclete-h2-side-${key}-`));
-    execGit(['worktree', 'add', '--detach', '--quiet', root, base()], repoRoot);
+    const source = fs.mkdtempSync(path.join(tmpRoot, `paraclete-h2-src-${key}-`));
+    try {
+      execGit(['worktree', 'add', '--detach', '--quiet', source, base()], repoRoot);
+      for (const rel of installedPaths(source)) {
+        const from = path.join(source, rel);
+        if (!fs.existsSync(from)) continue;
+        const to = path.join(root, rel);
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        fs.cpSync(from, to, { recursive: true });
+      }
+    } finally {
+      try {
+        execGit(['worktree', 'remove', '--force', source], repoRoot);
+      } catch {
+        // removed below
+      }
+      fs.rmSync(source, { recursive: true, force: true });
+    }
     const links = [];
     for (const rel of LINKED_PACKAGES) {
       const target = path.join(repoRoot, rel);
@@ -160,11 +201,6 @@ export function createSideRoots({ repoRoot, execGit = defaultExecGit, tmpRoot = 
             // already gone
           }
         }
-      }
-      try {
-        execGit(['worktree', 'remove', '--force', side.root], repoRoot);
-      } catch {
-        // removed below
       }
       fs.rmSync(side.root, { recursive: true, force: true });
     }
