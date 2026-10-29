@@ -102,10 +102,30 @@ export function parseNameStatus(text) {
 }
 
 /**
+ * The tasks a measurement shows worse on the change by more than the evidence rules' task tolerance,
+ * before any test of noise: each is run more times on both sides before the change is judged
+ * (defaultMeasure). Pure.
+ *
+ * @param {object|null} evidence  buildPromotionEvidence's result
+ * @param {object} [rules]
+ * @returns {string[]} task ids
+ */
+export function worseTasks(evidence, rules = DEFAULT_EVIDENCE_RULES) {
+  const r = { ...DEFAULT_EVIDENCE_RULES, ...rules };
+  return (evidence?.perTask || [])
+    .filter((t) => t.baseline?.n && t.candidate?.n && t.candidate.mean < t.baseline.mean - r.taskTolerance)
+    .map((t) => t.taskId);
+}
+
+/** The standard error of the difference of two means, from each side's { n, sd }. */
+const standardError = (b, c) => Math.sqrt((b.sd ?? 0) ** 2 / b.n + (c.sd ?? 0) ** 2 / c.n);
+
+/**
  * Why the measured evidence shows the change made the agent worse, if it does: the runs were not
  * real-model runs, too few, or a task, the held-out tasks or the whole suite lost capability beyond
- * the evidence rules' tolerances. A change need not improve the suite (a fix may not show there);
- * it must not make it worse. Pure.
+ * the evidence rules' tolerances and beyond run-to-run noise (`noiseZ` standard errors of the
+ * difference), so one unlucky run does not refuse a change. A change need not improve the suite (a fix
+ * may not show there); it must not make it worse. Pure.
  *
  * @param {object|null} evidence  buildPromotionEvidence's result
  * @param {object} [rules]
@@ -119,13 +139,20 @@ export function regressionProblems(evidence, rules = DEFAULT_EVIDENCE_RULES) {
   const trials = Math.min(evidence.trials?.baseline ?? 0, evidence.trials?.candidate ?? 0);
   if (trials < r.minTrials) problems.push(`a task ran only ${trials} time(s) on one side; ${r.minTrials} are needed`);
   for (const t of evidence.perTask || []) {
-    if (t.baseline?.n && t.candidate?.n && t.candidate.mean < t.baseline.mean - r.taskTolerance) {
-      problems.push(`task ${t.taskId} got worse: capability ${t.baseline.mean} -> ${t.candidate.mean}`);
+    if (!t.baseline?.n || !t.candidate?.n) continue;
+    const drop = t.baseline.mean - t.candidate.mean;
+    const se = standardError(t.baseline, t.candidate);
+    if (drop > r.taskTolerance && drop > r.noiseZ * se) {
+      problems.push(`task ${t.taskId} got worse: capability ${t.baseline.mean} -> ${t.candidate.mean} (${t.baseline.n} and ${t.candidate.n} runs), beyond its noise (${r.noiseZ} x ${Number(se.toFixed(4))})`);
     }
   }
   const h = evidence.holdout;
-  if (h?.baseline?.n && h?.candidate?.n && h.candidate.mean < h.baseline.mean - r.holdoutTolerance) {
-    problems.push(`the held-out tasks got worse: capability ${h.baseline.mean} -> ${h.candidate.mean}`);
+  if (h?.baseline?.n && h?.candidate?.n) {
+    const drop = h.baseline.mean - h.candidate.mean;
+    const se = standardError(h.baseline, h.candidate);
+    if (drop > r.holdoutTolerance && drop > r.noiseZ * se) {
+      problems.push(`the held-out tasks got worse: capability ${h.baseline.mean} -> ${h.candidate.mean}, beyond their noise (${r.noiseZ} x ${Number(se.toFixed(4))})`);
+    }
   }
   const delta = evidence.capability?.delta ?? 0;
   const noise = evidence.capability?.noise ?? 0;
@@ -249,10 +276,58 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
 }
 
 /**
+ * Both sides of a measurement, through `evalOn(side, args)` (side 'baseline' or 'candidate'; args those
+ * of dev/harness2 `eval --real-model`): every task `measure.trials` times, a target task's extra runs,
+ * then more runs of each task that looks worse, and the evidence. defaultMeasure runs it on two clones.
+ *
+ * @param {object} o  { evalOn, issue, changedPaths, settings, log }
+ * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
+ */
+export async function measureSides({ evalOn, issue, changedPaths, settings, log = () => {} }) {
+  const args = ['eval', '--real-model', '--trials', String(settings.measure.trials), '--max-rollouts', String(settings.measure.maxRollouts)];
+  const target = issueTarget(issue.body);
+  const extra = target ? Math.max(0, (settings.measure.targetTrials || 0) - settings.measure.trials) : 0;
+  const runSide = async (side) => {
+    const res = await evalOn(side, args);
+    if (!res.ok || !extra) return res;
+    const more = await evalOn(side, ['eval', '--real-model', '--task', target, '--trials', String(extra), '--max-rollouts', String(extra)]);
+    if (!more.ok) return { ok: false, reason: `the target task's extra runs: ${more.reason || 'no result'}` };
+    return { ...res, trajectories: [...res.trajectories, ...more.trajectories.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }))] };
+  };
+  const baseline = await runSide('baseline');
+  if (!baseline.ok) return { measured: false, reason: `main's head could not be measured: ${baseline.reason || 'no result'}` };
+  const candidate = await runSide('candidate');
+  if (!candidate.ok) return { measured: false, reason: `the change could not be measured: ${candidate.reason || 'no result'}` };
+  const judged = (b, c) => buildPromotionEvidence({
+    candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
+    baselineTrajectories: b,
+    candidateTrajectories: c,
+    suite: { name: 'model', version: MODEL_SUITE_VERSION },
+  });
+  let evidence = judged(baseline.trajectories, candidate.trajectories);
+  // A task that looks worse runs more times on both sides before the change is judged on it: one
+  // unlucky run in three is no regression.
+  const confirm = Math.max(0, (settings.measure.confirmTrials || 0) - settings.measure.trials);
+  const recheck = confirm ? worseTasks(evidence).filter((id) => id !== target || !extra) : [];
+  if (recheck.length) {
+    log(`[INFO] loop: ${recheck.join(', ')} looked worse; running each ${confirm} more time(s) on both sides`);
+    const more = (side) => evalOn(side, ['eval', '--real-model', '--task', recheck.join(','), '--trials', String(confirm), '--max-rollouts', String(confirm * recheck.length)]);
+    const moreBase = await more('baseline');
+    if (!moreBase.ok) return { measured: false, reason: `main's head could not be measured again on ${recheck.join(', ')}: ${moreBase.reason || 'no result'}` };
+    const moreCand = await more('candidate');
+    if (!moreCand.ok) return { measured: false, reason: `the change could not be measured again on ${recheck.join(', ')}: ${moreCand.reason || 'no result'}` };
+    const later = (runs) => runs.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }));
+    evidence = judged([...baseline.trajectories, ...later(moreBase.trajectories)], [...candidate.trajectories, ...later(moreCand.trajectories)]);
+  }
+  return { measured: Boolean(evidence.measured), evidence, reason: evidence.measured ? null : 'some runs were not real-model runs' };
+}
+
+/**
  * The measurement of a behaviour change: the model suite run on main's head and on the change, with
  * real-model runs (dev/harness2 `eval --real-model`), as promotion evidence. For an issue planned from a
  * failing task, that task runs `measure.targetTrials` times on each side, so whether it improved beyond
- * noise can be told (its extra runs also weigh in the suite's mean).
+ * noise can be told; a task that looks worse runs `measure.confirmTrials` times on each side before the
+ * change is judged on it (extra runs also weigh in the suite's mean).
  */
 async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, execGit, log }) {
   const sides = [];
@@ -265,28 +340,11 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
     const candidateSide = isolatedCheckout({ repoRoot, commit: execGit(['rev-parse', 'HEAD'], candidateRoot), execGit, prefix: 'paraclete-loop-measure-' });
     sides.push(candidateSide);
     const { runCli } = await import('../harness2/cli.mjs');
-    const args = ['eval', '--real-model', '--trials', String(settings.measure.trials), '--max-rollouts', String(settings.measure.maxRollouts)];
     const stderr = { write: (line) => log(String(line).trimEnd()) };
-    const target = issueTarget(issue.body);
-    const extra = target ? Math.max(0, (settings.measure.targetTrials || 0) - settings.measure.trials) : 0;
-    const runSide = async (root) => {
-      const res = await runCli(args, { repoRoot: root, stderr });
-      if (!res.ok || !extra) return res;
-      const more = await runCli(['eval', '--real-model', '--task', target, '--trials', String(extra), '--max-rollouts', String(extra)], { repoRoot: root, stderr });
-      if (!more.ok) return { ok: false, reason: `the target task's extra runs: ${more.reason || 'no result'}` };
-      return { ...res, trajectories: [...res.trajectories, ...more.trajectories.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }))] };
-    };
-    const baseline = await runSide(baseSide.root);
-    if (!baseline.ok) return { measured: false, reason: `main's head could not be measured: ${baseline.reason || 'no result'}` };
-    const candidate = await runSide(candidateSide.root);
-    if (!candidate.ok) return { measured: false, reason: `the change could not be measured: ${candidate.reason || 'no result'}` };
-    const evidence = buildPromotionEvidence({
-      candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
-      baselineTrajectories: baseline.trajectories,
-      candidateTrajectories: candidate.trajectories,
-      suite: { name: 'model', version: MODEL_SUITE_VERSION },
+    return await measureSides({
+      evalOn: (side, args) => runCli(args, { repoRoot: side === 'baseline' ? baseSide.root : candidateSide.root, stderr }),
+      issue, changedPaths, settings, log,
     });
-    return { measured: Boolean(evidence.measured), evidence, reason: evidence.measured ? null : 'some runs were not real-model runs' };
   } catch (err) {
     return { measured: false, reason: err.message };
   } finally {
