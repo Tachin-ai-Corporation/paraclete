@@ -15,7 +15,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
-import { clearStaleCheckouts, isolatedCheckout, main, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes } from '../../../dev/loop/cycle.mjs';
+import {
+  clearStaleCheckouts, isolatedCheckout, main, measureSides, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes, worseTasks,
+} from '../../../dev/loop/cycle.mjs';
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
 import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
@@ -455,6 +457,58 @@ test('a measured change names the commit of main it was measured against, for th
   assert.equal((await c.run()).action, 'opened');
   const create = c.gh.calls.find((a) => a[0] === 'pr' && a[1] === 'create');
   assert.match(create[create.indexOf('--body') + 1], new RegExp(`<!-- loop-measured-base: ${git(r.work, 'rev-parse', 'origin/main')} -->`));
+});
+
+/** Runs of tasks, as an eval returns them: { [taskId]: [capability, ...] }, numbered from `from`. */
+const taskRuns = (byTask, { split = 'train', from = 1 } = {}) => Object.entries(byTask)
+  .flatMap(([taskId, caps]) => caps.map((capability, i) => ({ taskId, split, trial: from + i, capability, measured: true })));
+const judge = (base, cand, o = {}) => buildPromotionEvidence({
+  candidate: { id: 'loop-7', lens: 'LOOP', touchedPaths: ['skills/x/x.mjs'], proposal: { source: 'coding-agent' } },
+  baselineTrajectories: [...taskRuns(base), ...taskRuns(o.heldBase || {}, { split: 'holdout' })],
+  candidateTrajectories: [...taskRuns(cand), ...taskRuns(o.heldCand || {}, { split: 'holdout' })],
+});
+
+test('a regression counts only beyond run-to-run noise, for a task and for the held-out tasks', () => {
+  assert.deepEqual(regressionProblems(judge({ a: [1, 1, 1] }, { a: [1, 1, 0] })), [], 'one unlucky run in three is no regression');
+  assert.match(regressionProblems(judge({ a: [1, 1, 1, 1, 1, 1] }, { a: [1, 0, 0, 1, 0, 0] })).join(' | '),
+    /task a got worse: capability 1 -> 0\.3333 \(6 and 6 runs\), beyond its noise \(2 x 0\.2108\)/);
+  assert.match(regressionProblems(judge({ a: [0.8, 0.8, 0.8] }, { a: [0.5, 0.5, 0.5] })).join(' | '), /task a got worse/, 'a steady drop is one');
+  const held = { h1: [1, 1, 1], h2: [1, 1, 1], h3: [1, 1, 1], h4: [1, 1, 1], h5: [1, 1, 1], h6: [1, 1, 1], h7: [1, 1, 1] };
+  const oneBad = { ...held, h3: [1, 0, 1] };
+  assert.deepEqual(regressionProblems(judge({ a: [1, 1, 1] }, { a: [1, 1, 1] }, { heldBase: held, heldCand: oneBad })).filter((p) => /held-out/.test(p)), [],
+    'one bad held-out run in 21 is no regression of the held-out tasks');
+  const halved = Object.fromEntries(Object.keys(held).map((k) => [k, [0.5, 0.5, 0.5]]));
+  assert.match(regressionProblems(judge({ a: [1, 1, 1] }, { a: [1, 1, 1] }, { heldBase: held, heldCand: halved })).join(' | '), /the held-out tasks got worse: capability 1 -> 0\.5, beyond their noise/);
+  assert.deepEqual(worseTasks(judge({ a: [1, 1, 1], b: [1, 1, 1] }, { a: [1, 1, 0], b: [1, 1, 1] })), ['a'], 'what looks worse, before any noise test');
+});
+
+test("a measurement runs a target task's extra runs, and runs a task that looks worse again before it judges", async () => {
+  const calls = [];
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const answers = {
+    baseline: { main: { a: [1, 1, 1], b: [1, 1, 1] }, a: { a: [1, 1, 1] }, b: { b: [1, 1, 1] } },
+    candidate: { main: { a: [1, 1, 1], b: [1, 1, 0] }, a: { a: [1, 1, 1] }, b: { b: [1, 1, 1] } },
+  };
+  const evalOn = (cand) => async (side, args) => {
+    calls.push([side, ...args]);
+    const task = args.includes('--task') ? args[args.indexOf('--task') + 1] : 'main';
+    return { ok: true, trajectories: taskRuns((side === 'candidate' && cand ? cand : answers[side])[task]) };
+  };
+  const targeted = { number: 9, title: 'a passes', body: '<!-- loop-target: a -->' };
+  const res = await measureSides({ evalOn: evalOn(null), issue: targeted, changedPaths: ['skills/x/x.mjs'], settings });
+  assert.equal(res.measured, true);
+  assert.deepEqual(calls.map((c) => [c[0], c.includes('--task') ? c[c.indexOf('--task') + 1] : 'all', c[c.indexOf('--trials') + 1]]), [
+    ['baseline', 'all', '3'], ['baseline', 'a', '3'], ['candidate', 'all', '3'], ['candidate', 'a', '3'], ['baseline', 'b', '3'], ['candidate', 'b', '3'],
+  ], "the target's extra runs on each side, then b, which looked worse, again on each side");
+  const b = res.evidence.perTask.find((t) => t.taskId === 'b');
+  assert.deepEqual([b.baseline.n, b.candidate.n, b.candidate.mean], [6, 6, 0.8333]);
+  assert.deepEqual(regressionProblems(res.evidence), [], 'one bad run in six is within noise');
+
+  calls.length = 0;
+  const still = { ...answers.candidate, main: { a: [1, 1, 1], b: [0, 0, 1] }, b: { b: [0, 0, 0] } };
+  const worse = await measureSides({ evalOn: evalOn(still), issue: { number: 8, title: 't', body: '' }, changedPaths: ['skills/x/x.mjs'], settings });
+  assert.equal(calls.filter((c) => c.includes('--task')).length, 2, 'no target: only the re-runs of b');
+  assert.match(regressionProblems(worse.evidence).join(' | '), /task b got worse: capability 1 -> 0\.1667 \(6 and 6 runs\)/);
 });
 
 test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {

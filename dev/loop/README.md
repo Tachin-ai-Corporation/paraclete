@@ -149,7 +149,10 @@ request that comes back wrong half the time is a weakness to fix) becomes a
 belongs (what the agent reads or runs, never `dev/harness2/`), and two "Done when" points the reviewer
 judges: the change is to the agent, and it gives the agent what it lacked in general terms, naming
 nothing of the task. A hidden `<!-- loop-target: <task> -->` marker names the task. The change is
-measured like any behaviour change, with the target task run `measure.targetTrials` (6) times on each
+measured like any behaviour change (a task that looks worse is run `measure.confirmTrials` (6) times on
+each side, and it counts as worse only when its drop, or the held-out tasks', is beyond twice the
+standard error of the difference, so one unlucky run does not refuse a change), with the target task
+run `measure.targetTrials` (6) times on each
 side, and the cycle refuses it (`unimproved`) unless that task's gain on the change is beyond run-to-run
 noise: more than twice the standard error of the difference of the two means, as promotion evidence
 demands of a gain. The Loop guard checks the same in the pull request's evidence. The same failure (the
