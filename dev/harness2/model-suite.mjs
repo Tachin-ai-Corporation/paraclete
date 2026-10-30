@@ -20,7 +20,17 @@ import os from 'node:os';
 import path from 'node:path';
 
 /** The suite's version, recorded in promotion evidence: a change to the tasks makes runs incomparable. */
-export const MODEL_SUITE_VERSION = 2;
+export const MODEL_SUITE_VERSION = 3;
+
+/**
+ * Tasks every real-model run of the lab scored perfect (version 1's ten, through the lab's first
+ * baselines of 2026-10-27 to 2026-10-30): they measure nothing any more. They stay defined, so records
+ * that name them still read, and a run that names one by id still runs it; no other run selects them.
+ */
+export const RETIRED_TASKS = Object.freeze([
+  'se-fix-failing-test', 'se-implement-from-spec', 'qa-reproduce-then-fix', 'devops-fix-service-config', 'devops-incident-summary',
+  'data-revenue-summary', 'data-dedupe-customers', 'gen-action-items', 'gen-extract-contacts', 'sec-remove-hardcoded-key',
+]);
 
 /** The splits: `train` reaches the proposer, `holdout` only the evidence. */
 export const SPLITS = Object.freeze(['train', 'holdout']);
@@ -608,6 +618,505 @@ The vendor cancelled, so the vendor call is off.
 /** Whether an amount (a number, or a string of one) is `want` to the cent. */
 const near = (got, want) => got !== null && got !== undefined && got !== '' && Math.abs(Number(got) - want) < 0.005;
 
+// ---- Version 3: harder tasks, each built around a mistake a capable agent still makes ----
+
+const CSV_README = `# csv
+
+\`parseCsv(text)\` returns the records of a CSV document as arrays of strings, as RFC 4180 has them:
+
+- Fields are separated by commas, records by CRLF or LF. A final line break ends the last record; it
+  does not start an empty one.
+- A field may be enclosed in double quotes. Inside one, a comma or a line break is part of the field,
+  and two double quotes stand for one. A line break inside a quoted field is kept as it is (a CRLF
+  stays a CRLF).
+- Spaces are part of a field: nothing is trimmed.
+- An empty line is a record of one empty field.
+- A document that starts with a byte order mark (U+FEFF) is read without it.
+- A double quote inside a field that does not start with one is an ordinary character.
+- A quoted field that is never closed throws an Error whose message names the line the field started
+  on: \`unterminated quoted field at line 3\`.
+
+An empty document has no records: \`parseCsv('')\` is \`[]\`.
+`;
+
+const CSV_SRC = `/** The records of a CSV document: see README.md. */
+export function parseCsv(text) {
+  return text.split('\\n').filter((line) => line !== '').map((line) => line.split(',').map((field) => field.replace(/^"|"$/g, '')));
+}
+`;
+
+const CSV_TEST = `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseCsv } from '../src/csv.mjs';
+
+test('simple records', () => {
+  assert.deepEqual(parseCsv('a,b\\nc,d\\n'), [['a', 'b'], ['c', 'd']]);
+});
+`;
+
+/** The CSV task's hidden cases: what each checks, the document, and its records. */
+const CSV_CASES = Object.freeze([
+  ['records end at LF or CRLF, and a final line break starts no record', 'a,b\r\nc,d\n', [['a', 'b'], ['c', 'd']]],
+  ['a quoted field keeps its comma', 'a,"b,c",d', [['a', 'b,c', 'd']]],
+  ['two double quotes in a quoted field are one', '"he said ""hi""",x', [['he said "hi"', 'x']]],
+  ['a quoted field keeps its line breaks as they are', '"line1\r\nline2",z\r\nq,r\r\n', [['line1\r\nline2', 'z'], ['q', 'r']]],
+  ['spaces are kept', ' a , b ', [[' a ', ' b ']]],
+  ['an empty line is a record of one empty field', 'a\n\nb', [['a'], [''], ['b']]],
+  ['a byte order mark is not read', '﻿id,name\n1,x', [['id', 'name'], ['1', 'x']]],
+  ['a double quote inside an unquoted field is a character', 'ab"c,d', [['ab"c', 'd']]],
+  ['an empty document has no records', '', []],
+  ['a trailing comma ends a record with an empty field', 'a,\n,b', [['a', ''], ['', 'b']]],
+  ['an empty quoted field is empty', '"",x', [['', 'x']]],
+]);
+
+const QUEUE_README = `# queue
+
+\`runAll(tasks, limit)\` runs \`tasks\`, an array of functions that each return a promise, with at most
+\`limit\` of them running at once. It resolves to their results in the order of \`tasks\`, not the order
+they finish in. When one rejects, \`runAll\` rejects with that error, and no task after it starts.
+\`runAll([], limit)\` resolves to \`[]\`.
+`;
+
+const QUEUE_SRC = `/** Runs async tasks with a concurrency limit: see README.md. */
+export async function runAll(tasks, limit) {
+  const results = [];
+  let next = 0;
+  let running = 0;
+  return new Promise((resolve, reject) => {
+    let failed = false;
+    const launch = () => {
+      if (failed) return;
+      if (next >= tasks.length && running === 0) {
+        resolve(results);
+        return;
+      }
+      while (running <= limit && next < tasks.length) {
+        const task = tasks[next];
+        next += 1;
+        running += 1;
+        task().then((value) => {
+          results.push(value);
+          running -= 1;
+          launch();
+        }, (err) => {
+          failed = true;
+          reject(err);
+        });
+      }
+    };
+    launch();
+  });
+}
+`;
+
+const QUEUE_TEST = `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runAll } from '../src/queue.mjs';
+
+test('runs every task', async () => {
+  assert.deepEqual(await runAll([() => Promise.resolve(1), () => Promise.resolve(2)], 2), [1, 2]);
+});
+`;
+
+/** The queue's hidden checks, one boolean each. */
+const QUEUE_PROBE = [
+  "import { runAll } from './src/queue.mjs';",
+  'const sleep = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));',
+  'const out = {};',
+  'const run = async (name, fn) => { try { out[name] = Boolean(await fn()); } catch { out[name] = false; } };',
+  "await run('order', async () => JSON.stringify(await runAll([() => sleep(30, 'a'), () => sleep(5, 'b'), () => sleep(15, 'c')], 3)) === '[\"a\",\"b\",\"c\"]');",
+  "await run('limit', async () => { let now = 0; let max = 0; const t = () => async () => { now += 1; max = Math.max(max, now); await sleep(10); now -= 1; return 1; }; await runAll(Array.from({ length: 6 }, t), 2); return max === 2; });",
+  "await run('reject', async () => { const started = []; const tasks = [0, 1, 2, 3].map((i) => async () => { started.push(i); await sleep(5); if (i === 1) throw new Error('boom'); return i; }); try { await runAll(tasks, 1); return false; } catch (e) { await sleep(30); return e.message === 'boom' && JSON.stringify(started) === '[0,1]'; } });",
+  "await run('empty', async () => JSON.stringify(await runAll([], 2)) === '[]');",
+  'process.stdout.write(JSON.stringify(out));',
+].join('\n');
+
+const PLAN_CURRENT = Object.freeze({
+  net: { type: 'network', config: { cidr: '10.0.0.0/16' } },
+  'subnet-a': { type: 'subnet', config: { cidr: '10.0.1.0/24' }, depends_on: ['net'] },
+  'subnet-b': { type: 'subnet', config: { cidr: '10.0.2.0/24' }, depends_on: ['net'] },
+  db: { type: 'database', config: { size: 'small', version: 15 }, depends_on: ['subnet-a'], protect: true },
+  'legacy-db': { type: 'database', config: { size: 'small', version: 11 }, depends_on: ['subnet-b'], protect: true },
+  cache: { type: 'cache', config: { nodes: 1 }, depends_on: ['subnet-a'] },
+  api: { type: 'service', config: { image: 'api:1', replicas: 2, env: { LOG: 'info', REGION: 'eu' } }, depends_on: ['db', 'cache'] },
+  'old-worker': { type: 'service', config: { image: 'worker:1' }, depends_on: ['subnet-b'] },
+  'old-queue': { type: 'queue', config: { retention_hours: 24 } },
+  'old-queue-consumer': { type: 'service', config: { image: 'consumer:3' }, depends_on: ['old-queue'] },
+  logs: { type: 'bucket', config: { retention_days: 30 } },
+});
+
+const PLAN_DESIRED = Object.freeze({
+  net: { type: 'network', config: { cidr: '10.0.0.0/16' } },
+  'subnet-a': { type: 'subnet', config: { cidr: '10.0.1.0/24' }, depends_on: ['net'] },
+  'subnet-c': { type: 'subnet', config: { cidr: '10.0.3.0/24' }, depends_on: ['net'] },
+  db: { type: 'database', config: { version: 15, size: 'large' }, depends_on: ['subnet-a'] },
+  cache: { type: 'cache', config: { nodes: 1 }, depends_on: ['subnet-a'] },
+  api: { type: 'service', config: { env: { REGION: 'eu', LOG: 'info' }, replicas: 2, image: 'api:2' }, depends_on: ['db', 'cache'] },
+  worker: { type: 'service', config: { image: 'worker:2' }, depends_on: ['subnet-c', 'cache'] },
+  logs: { type: 'bucket', config: { retention_days: 90 } },
+  metrics: { type: 'bucket', config: { retention_days: 7 } },
+  frontend: { type: 'service', config: { image: 'web:5' }, depends_on: ['api'] },
+  reports: { type: 'service', config: { image: 'reports:1' }, depends_on: ['legacy-db'] },
+  'reports-ui': { type: 'service', config: { image: 'reports-ui:1' }, depends_on: ['reports'] },
+});
+
+/** The one plan the rules allow (worked out by hand, and checked against a separate computation). */
+const PLAN_EXPECTED = Object.freeze({
+  actions: ['update db', 'update api', 'create frontend', 'update logs', 'create metrics', 'create subnet-c', 'create worker',
+    'delete old-queue-consumer', 'delete old-queue', 'delete old-worker'],
+  blocked: ['legacy-db', 'subnet-b'],
+});
+
+const PLAN_README = `# plan
+
+Write \`plan.json\`: the changes that turn \`infra/current.json\` into \`infra/desired.json\`, as
+
+    { "actions": [{ "op": "create", "id": "..." }, ...], "blocked": ["..."] }
+
+- A resource in desired and not in current is created; one in current and not in desired is deleted;
+  one in both whose \`type\` or \`config\` differs (deeply; the order of keys does not count) is updated.
+  One that does not differ has no action.
+- \`depends_on\` names the resources a resource needs. The creates and updates come first, each after
+  the create or update of every resource it needs (in desired); then the deletes, each after the
+  delete of every resource that needs it (in current).
+- A resource marked \`"protect": true\` in current is never deleted: its id goes in \`blocked\`. What it
+  needs in current (directly or through others) is not deleted either, so that it keeps working: those
+  that desired leaves out go in \`blocked\` too. Nothing in desired that needs a protected resource
+  that desired leaves out (directly or through others) is created or updated.
+- Where these rules allow more than one order, the action whose id sorts first (plain string order)
+  comes first, so there is one plan. \`blocked\` is sorted the same way.
+`;
+
+const REPORT_MD = `# Incident report: card payments failing, Tuesday 17 March 2026
+
+Prepared by Ines Moreau for the payments team. All times are Pacific Time (PT).
+
+## Summary
+
+At 11:40 PT a configuration change to the payment provider client shortened its connection timeout
+from 8 seconds to 800 milliseconds. Requests to the provider that took longer than that were cancelled
+and reported as declined. Marco Ruiz, the incident commander, rolled the change back at 12:58 PT, and
+the provider's queue had drained by 13:12 PT, when the incident was closed.
+
+## Customer impact
+
+- 2,314 card payments failed and were shown to customers as declined.
+- Checkout was unavailable for 17 minutes, from 12:05 to 12:22 PT, while the payments service restarted
+  in a loop.
+- The API's error rate peaked at 4.2%.
+- 312 customers received a duplicate order confirmation email after the rollback, when queued
+  confirmations were sent again.
+
+## Timeline
+
+- 11:38 PT: Tomasz Kowalczyk merged the timeout change; it reached production two minutes later.
+- 11:40 PT: The error rate on the payments service began to rise. The incident starts here.
+- 11:52 PT: An alert paged Dana Whitfield, the on-call engineer. She was paged 3 times in all.
+- 12:05 PT: The payments service began restarting in a loop; checkout went down.
+- 12:22 PT: Checkout came back after the restarts stopped.
+- 12:58 PT: Marco Ruiz rolled back the timeout change on all 41 payment hosts.
+- 13:12 PT: The provider's queue had drained and the error rate was back to normal. The incident ends.
+
+## Root cause
+
+The new timeout was meant for the test environment. The configuration system applied it to production
+because both environments read the same flag, payments-v2, and nothing checked the value against the
+provider's documented latency.
+
+## Action items
+
+| Priority | Action |
+|---|---|
+| P2 | Add a dashboard panel for payment-provider latency. |
+| P3 | Rename the payments-v2 flag after what it does. |
+| P0 | Roll back automatically when the payment error rate passes 2% for five minutes. |
+| P3 | Write a runbook entry for turning the flag off by hand. |
+| P1 | Load-test the provider timeout path before each release. |
+| P3 | Review how payment alerts are routed overnight. |
+`;
+
+/** What the brief must hold, and what it must not. */
+const BRIEF = Object.freeze({
+  employees: ['Ines', 'Moreau', 'Marco', 'Ruiz', 'Tomasz', 'Kowalczyk', 'Dana', 'Whitfield'],
+  topActions: [
+    'Roll back automatically when the payment error rate passes 2% for five minutes.',
+    'Load-test the provider timeout path before each release.',
+    'Add a dashboard panel for payment-provider latency.',
+  ],
+});
+
+const EVENTS_README = `# events
+
+\`latestPerId(events)\` keeps one event for each \`id\`: the one with the greatest \`ts\`; between equal
+\`ts\`, the one with the greater \`version\`; between equal both, the one that comes later in
+\`events\`. The events it keeps come in the order their ids first appear in \`events\`, which it does not
+change.
+`;
+
+const EVENTS_SRC = `/** One event per id: see README.md. */
+export function latestPerId(events) {
+  const out = [];
+  const seen = [];
+  for (let i = 0; i < events.length; i += 1) {
+    const id = events[i].id;
+    if (seen.includes(id)) continue;
+    seen.push(id);
+    let best = i;
+    for (let j = i + 1; j < events.length; j += 1) {
+      if (events[j].id !== id) continue;
+      const a = events[j];
+      const b = events[best];
+      if (a.ts > b.ts || (a.ts === b.ts && a.version >= b.version)) best = j;
+    }
+    out.push(events[best]);
+  }
+  return out;
+}
+`;
+
+const EVENTS_TEST = `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { latestPerId } from '../src/events.mjs';
+
+test('one event per id, the latest', () => {
+  const events = [
+    { id: 'a', ts: 1, version: 1 }, { id: 'b', ts: 5, version: 1 }, { id: 'a', ts: 3, version: 1 },
+  ];
+  assert.deepEqual(latestPerId(events), [{ id: 'a', ts: 3, version: 1 }, { id: 'b', ts: 5, version: 1 }]);
+});
+`;
+
+/** The events task's hidden correctness checks, against a reference, on random and tied inputs. */
+const EVENTS_PROBE = [
+  "import { latestPerId } from './src/events.mjs';",
+  'const rng = (s) => () => { s = (s + 0x6D2B79F5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };',
+  'const reference = (events) => { const best = new Map(); const order = []; for (const e of events) { const b = best.get(e.id); if (!b) { order.push(e.id); best.set(e.id, e); } else if (e.ts > b.ts || (e.ts === b.ts && e.version >= b.version)) best.set(e.id, e); } return order.map((id) => best.get(id)); };',
+  'const out = { random: true, ties: true, order: true, unchanged: true };',
+  'for (let k = 0; k < 30; k += 1) { const r = rng(1000 + k); const ev = Array.from({ length: 300 }, (_, i) => ({ id: `e${Math.floor(r() * 40)}`, ts: Math.floor(r() * 6), version: Math.floor(r() * 3), n: i })); const copy = JSON.stringify(ev); let got; try { got = latestPerId(ev); } catch { got = null; } if (JSON.stringify(got) !== JSON.stringify(reference(ev))) out.random = false; if (JSON.stringify(ev) !== copy) out.unchanged = false; }',
+  "{ const ev = [{ id: 'x', ts: 2, version: 1, n: 0 }, { id: 'x', ts: 2, version: 1, n: 1 }, { id: 'x', ts: 2, version: 0, n: 2 }, { id: 'x', ts: 1, version: 9, n: 3 }]; let got; try { got = latestPerId(ev); } catch { got = null; } out.ties = JSON.stringify(got) === JSON.stringify([ev[1]]); }",
+  "{ const ev = [{ id: 'b', ts: 1, version: 0 }, { id: 'a', ts: 9, version: 0 }, { id: 'b', ts: 4, version: 0 }, { id: 'c', ts: 0, version: 0 }]; let got; try { got = latestPerId(ev); } catch { got = null; } out.order = JSON.stringify(got?.map((e) => e.id)) === JSON.stringify(['b', 'a', 'c']); }",
+  'process.stdout.write(JSON.stringify(out));',
+].join('\n');
+
+/** Times latestPerId on 120,000 events of 15,000 ids; prints the milliseconds it took. */
+const EVENTS_PERF = [
+  "import { latestPerId } from './src/events.mjs';",
+  'let s = 77; const r = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; };',
+  'const ev = Array.from({ length: 120000 }, () => ({ id: `e${Math.floor(r() * 15000)}`, ts: Math.floor(r() * 1e6), version: Math.floor(r() * 5) }));',
+  'const t0 = performance.now(); latestPerId(ev); process.stdout.write(String(Math.round(performance.now() - t0)));',
+].join('\n');
+
+const PAYMENTS_CSV = [
+  'id,created_at,amount,kind,refund_of',
+  'p1,2026-01-15T17:00:00Z,$120.00,charge,',
+  'p2,2026-02-01T04:59:00Z,$80.00,charge,',
+  'p3,2026-02-01T05:00:00Z,$45.50,charge,',
+  'p4,2026-02-14T12:00:00Z,"$1,250.00",charge,',
+  'p5,2026-03-01T04:30:00Z,$60.00,charge,',
+  'p6,2026-03-02T15:00:00Z,$200.00,refund,p4',
+  'p7,2026-03-08T06:59:00Z,$33.33,charge,',
+  'p8,2026-03-31T23:30:00Z,$70.00,charge,',
+  'p9,2026-04-01T03:30:00Z,$15.00,charge,',
+  'p10,2026-04-01T04:30:00Z,$99.99,charge,',
+  'p11,2026-04-10T10:00:00Z,$45.50,refund,p3',
+  'p12,2026-01-31T12:00:00Z,$10.00,refund,p1',
+  '',
+].join('\n');
+
+/** New York months (America/New_York, daylight saving included): worked out by hand and with Intl. */
+const PAYMENTS_MONTHS = Object.freeze({ '2026-01': 190.00, '2026-02': 1355.50, '2026-03': -81.67, '2026-04': 54.49 });
+
+const TOKEN_README = `# token
+
+\`verifyToken(token, keys, now)\` checks a signed token and returns its payload, or throws.
+
+A token is three base64url parts joined by dots: a JSON header, a JSON payload, and the signature.
+
+- The header's \`alg\` must be \`HS256\`; any other value, \`none\` included, throws.
+- The header's \`kid\` names the key in \`keys\` (an object of key ids to secrets) that signed the
+  token; a \`kid\` that names no key throws.
+- The signature is the HMAC-SHA256 of \`<header part>.<payload part>\` with that key, base64url. It is
+  compared in constant time (\`crypto.timingSafeEqual\`); a signature that differs throws.
+- \`now\` is in seconds, by default the current time. Clocks differ, so 30 seconds of leeway apply: a
+  token whose payload has \`exp\` is expired from \`exp + 30\` on, and one whose payload has \`nbf\` is
+  valid from \`nbf - 30\` on. Outside that, it throws.
+- A token that is not three parts, or whose header or payload is not base64url JSON, throws.
+`;
+
+const TOKEN_SRC = `import { createHmac } from 'node:crypto';
+
+const json = (part) => JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+
+/** The payload of a signed token, or a thrown Error: see README.md. */
+export function verifyToken(token, keys, now = Math.floor(Date.now() / 1000)) {
+  const [h, p, s] = String(token).split('.');
+  const header = json(h);
+  const payload = json(p);
+  if (header.alg !== 'none') {
+    const key = keys[header.kid] ?? Object.values(keys)[0];
+    const expected = createHmac('sha256', key).update(h + '.' + p).digest('base64url');
+    if (s !== expected) throw new Error('bad signature');
+  }
+  if (payload.exp !== undefined && now > payload.exp) throw new Error('expired');
+  return payload;
+}
+`;
+
+/** The token task's hidden checks: tokens it must accept and tokens it must refuse. */
+const TOKEN_PROBE = [
+  "import { createHmac } from 'node:crypto';",
+  "import { verifyToken } from './src/token.mjs';",
+  "const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');",
+  "const sign = (header, payload, key) => { const h = enc(header); const p = enc(payload); return h + '.' + p + '.' + createHmac('sha256', key).update(h + '.' + p).digest('base64url'); };",
+  "const keys = { k1: 'secret-one', k2: 'secret-two' };",
+  'const now = 1800000000;',
+  'const accepts = (t, at = now) => { try { verifyToken(t, keys, at); return true; } catch { return false; } };',
+  "const hs = (payload, kid = 'k1', key = 'secret-one', alg = 'HS256') => sign({ alg, kid }, payload, key);",
+  'const out = {};',
+  "out.valid = (() => { try { return verifyToken(hs({ sub: 'u1', exp: now + 100 }), keys, now).sub === 'u1'; } catch { return false; } })();",
+  "out.none = !accepts(enc({ alg: 'none', kid: 'k1' }) + '.' + enc({ sub: 'u1' }) + '.');",
+  "out.otherAlg = !accepts(hs({ sub: 'u1' }, 'k1', 'secret-one', 'HS512'));",
+  "out.unknownKid = !accepts(hs({ sub: 'u1' }, 'k9'));",
+  "out.wrongKey = !accepts(hs({ sub: 'u1' }, 'k2', 'secret-one'));",
+  'out.expired = !accepts(hs({ exp: now - 30 }));',
+  'out.expLeeway = accepts(hs({ exp: now - 10 }));',
+  'out.early = !accepts(hs({ nbf: now + 31 }));',
+  'out.nbfLeeway = accepts(hs({ nbf: now + 10 }));',
+  "out.malformed = !accepts('abc') && !accepts(hs({ sub: 'u1' }) + '.x');",
+  'process.stdout.write(JSON.stringify(out));',
+].join('\n');
+
+/** A deterministic random number generator (mulberry32), so a generated workspace is the same every time. */
+function seededRandom(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * The afternoon's access log for the forensics task: about 3,600 lines from 13:40 to 15:20 UTC.
+ * Regular traffic, health checks every 10 seconds from two monitors (large answers), three heavy
+ * clients inside 14:00-15:00, one heavy client just outside it, a burst of 5xx from api-2, a rare and
+ * very slow export path, 5xx exactly at the hour's edges, and an edge server whose lines carry
+ * +0100 local times. Deterministic.
+ */
+function accessLog() {
+  const rand = seededRandom(20261030);
+  const pick = (list) => list[Math.floor(rand() * list.length)];
+  const between = (lo, hi) => lo + rand() * (hi - lo);
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = (sec, offsetHours = 0) => {
+    const d = new Date((sec + offsetHours * 3600) * 1000);
+    return `${pad(d.getUTCDate())}/Oct/2026:${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())} ${offsetHours ? '+0100' : '+0000'}`;
+  };
+  const line = ({ ip, sec, path, status, bytes, secs, upstream, offset = 0 }) =>
+    `${ip} - - [${stamp(sec, offset)}] "GET ${path} HTTP/1.1" ${status} ${Math.round(bytes)} ${secs.toFixed(3)} upstream=${upstream}`;
+  const start = Date.UTC(2026, 9, 30, 13, 40, 0) / 1000;
+  const end = Date.UTC(2026, 9, 30, 15, 20, 0) / 1000;
+  const hour = [Date.UTC(2026, 9, 30, 14, 0, 0) / 1000, Date.UTC(2026, 9, 30, 15, 0, 0) / 1000];
+  const clients = Array.from({ length: 40 }, (_, i) => `172.16.${Math.floor(i / 10)}.${10 + i}`);
+  const paths = [
+    { path: '/api/orders', ups: ['api-1', 'api-2', 'api-3'], secs: [0.02, 0.2] },
+    { path: '/api/users', ups: ['api-1', 'api-2', 'api-3'], secs: [0.01, 0.1] },
+    { path: '/api/cart', ups: ['api-1', 'api-2', 'api-3'], secs: [0.05, 0.3] },
+    { path: '/api/search', ups: ['search-1'], secs: [0.3, 0.7] },
+  ];
+  const entries = [];
+  for (let sec = start; sec < end; sec += 1 + Math.floor(rand() * 3)) {
+    const p = pick(paths);
+    const upstream = pick(p.ups);
+    const burst = upstream === 'api-2' && sec >= hour[0] + 600 && sec < hour[0] + 2400;
+    const status = rand() < (burst ? 0.15 : 0.01) ? pick([500, 502, 503]) : 200;
+    entries.push({ ip: pick(clients), sec, path: p.path, status, bytes: between(200, 5000), secs: between(...p.secs), upstream });
+  }
+  for (let sec = start; sec < end; sec += 10) {
+    for (const ip of ['10.0.0.1', '10.0.0.2']) entries.push({ ip, sec, path: '/healthz', status: 200, bytes: 60000, secs: 0.001, upstream: 'api-1' });
+  }
+  const heavy = (ip, from, to, count, bytes, offset = 0) => {
+    for (let k = 0; k < count; k += 1) {
+      entries.push({ ip, sec: Math.floor(between(from, to)), path: '/api/orders', status: 200, bytes, secs: between(0.05, 0.2), upstream: 'api-1', offset });
+    }
+  };
+  heavy('203.0.113.7', hour[0] + 60, hour[1] - 60, 40, 10000);
+  heavy('198.51.100.23', hour[0] + 60, hour[1] - 60, 30, 10000);
+  heavy('192.0.2.44', hour[0] + 60, hour[1] - 60, 12, 10000);
+  heavy('192.0.2.44', hour[0] + 60, hour[1] - 60, 24, 10000, 1);
+  heavy('203.0.113.99', start, hour[0] - 30, 50, 10000);
+  for (let k = 0; k < 8; k += 1) {
+    entries.push({ ip: '172.16.0.9', sec: Math.floor(between(hour[0] + 300, hour[1] - 300)), path: '/api/export', status: 200, bytes: 90000, secs: between(4, 6), upstream: 'api-3' });
+  }
+  for (const sec of [hour[0] - 1, hour[0], hour[1] - 1, hour[1]]) {
+    entries.push({ ip: '172.16.1.20', sec, path: '/api/users', status: 503, bytes: 120, secs: 0.002, upstream: 'api-1' });
+  }
+  for (let k = 0; k < 150; k += 1) {
+    const p = pick(paths);
+    entries.push({ ip: pick(clients), sec: Math.floor(between(start, end)), path: p.path, status: rand() < 0.2 ? 502 : 200, bytes: between(200, 5000), secs: between(...p.secs), upstream: pick(p.ups), offset: 1 });
+  }
+  // Each server writes its own lines in order of time; the two logs were concatenated, then sorted
+  // by the text of the time, as a careless merge does.
+  return `${entries.map((e) => ({ e, text: line(e) })).sort((a, b) => { const x = a.text.slice(a.text.indexOf('[')); const y = b.text.slice(b.text.indexOf('[')); return x < y ? -1 : x > y ? 1 : 0; }).map((x) => x.text).join('\n')}\n`;
+}
+
+/** The forensics task's answers, from the log itself: what a correct reading of it finds. */
+function logAnswers(text) {
+  const months = { Oct: 9 };
+  const re = /^(\S+) - - \[(\d+)\/(\w+)\/(\d+):(\d+):(\d+):(\d+) ([+-])(\d\d)(\d\d)\] "GET (\S+) [^"]*" (\d+) (\d+) ([\d.]+) upstream=(\S+)$/;
+  const from = Date.UTC(2026, 9, 30, 14, 0, 0);
+  const to = Date.UTC(2026, 9, 30, 14, 59, 59);
+  const errors = {};
+  const bytes = new Map();
+  const times = new Map();
+  for (const raw of text.split('\n')) {
+    const m = re.exec(raw);
+    if (!m) continue;
+    const [, ip, day, mon, year, hh, mm, ss, sign, oh, om, path, status, size, secs, upstream] = m;
+    const offset = (sign === '-' ? -1 : 1) * (Number(oh) * 60 + Number(om)) * 60000;
+    const at = Date.UTC(Number(year), months[mon], Number(day), Number(hh), Number(mm), Number(ss)) - offset;
+    if (at < from || at > to) continue;
+    errors[upstream] = (errors[upstream] || 0) + (Number(status) >= 500 ? 1 : 0);
+    if (path !== '/healthz') bytes.set(ip, (bytes.get(ip) || 0) + Number(size));
+    const t = times.get(path) || { n: 0, total: 0 };
+    times.set(path, { n: t.n + 1, total: t.total + Number(secs) });
+  }
+  const top = [...bytes].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, 3).map(([ip]) => ip);
+  const slowest = [...times].filter(([, t]) => t.n >= 20).sort((a, b) => b[1].total / b[1].n - a[1].total / a[1].n)[0][0];
+  return { errors_by_upstream: errors, top_clients: top, slowest_path: slowest };
+}
+
+const ACCESS_LOG = accessLog();
+const LOG_ANSWERS = Object.freeze(logAnswers(ACCESS_LOG));
+
+/** Whether every create or update in `actions` comes after those of what it needs, and every delete after the deletes of what needs it. */
+function planOrderHolds(actions) {
+  const at = new Map(actions.map((a, i) => [a, i]));
+  const changed = actions.filter((a) => !a.startsWith('delete '));
+  const lastChange = Math.max(-1, ...changed.map((a) => at.get(a)));
+  for (const a of actions) {
+    const [op, id] = a.split(' ');
+    if (op === 'delete') {
+      if (at.get(a) < lastChange) return false;
+      for (const [other, r] of Object.entries(PLAN_CURRENT)) {
+        if ((r.depends_on || []).includes(id) && at.has(`delete ${other}`) && at.get(`delete ${other}`) > at.get(a)) return false;
+      }
+    } else {
+      for (const need of PLAN_DESIRED[id]?.depends_on || []) {
+        const before = ['create', 'update'].map((o) => at.get(`${o} ${need}`)).find((x) => x !== undefined);
+        if (before !== undefined && before > at.get(a)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+/** A brief's words that hold a letter or a digit, so bullet marks and dashes are not counted. */
+const wordsOf = (text) => String(text).split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w));
+/** Text compared as words only: lower case, punctuation and a leading priority dropped. */
+const plainWords = (text) => String(text).toLowerCase().replace(/^\s*[-*]\s*/, '').replace(/^\[?p[0-3]\]?[:\s-]*/, '').replace(/[^a-z0-9%]+/g, ' ').trim();
+
 export const MODEL_SUITE = Object.freeze([
   defineTask({
     id: 'se-fix-failing-test',
@@ -972,6 +1481,222 @@ export const MODEL_SUITE = Object.freeze([
       ];
     },
   }),
+  defineTask({
+    id: 'se-csv-rfc4180',
+    role: 'software-engineer',
+    split: 'train',
+    prompt: "src/csv.mjs's `parseCsv` breaks on real exports. Make it follow README.md exactly, and add tests under test/ for what you fix; `node --test` must pass.",
+    files: { 'package.json': PACKAGE_JSON, 'README.md': CSV_README, 'src/csv.mjs': CSV_SRC, 'test/csv.test.mjs': CSV_TEST },
+    checks: (dir) => {
+      const code = [
+        "import { parseCsv } from './src/csv.mjs';",
+        `const inputs = ${JSON.stringify([...CSV_CASES.map((c) => c[1]), 'x\ny,"open\nmore'])};`,
+        'process.stdout.write(JSON.stringify(inputs.map((t) => { try { return { ok: true, value: parseCsv(t) }; } catch (e) { return { ok: false, error: String(e && e.message) }; } })));',
+      ].join('\n');
+      const probe = withScratch(dir, (copy) => nodeEval(copy, code));
+      let got = [];
+      try {
+        got = JSON.parse(probe.stdout || '[]');
+      } catch {
+        got = [];
+      }
+      const detail = probe.ok ? '' : probe.output;
+      const tests = listFiles(path.join(dir, 'test')).filter((f) => /\.test\.m?js$/.test(f));
+      return [
+        ...CSV_CASES.map(([name, , want], i) => check(name, got[i]?.ok && JSON.stringify(got[i].value) === JSON.stringify(want), detail || `got ${JSON.stringify(got[i])}`)),
+        check('an unterminated quoted field throws, naming the line it started on', got[CSV_CASES.length] && !got[CSV_CASES.length].ok
+          && /unterminated quoted field at line 2\b/.test(got[CSV_CASES.length].error), detail || `got ${JSON.stringify(got[CSV_CASES.length])}`),
+        check('node --test passes', tests.length > 0 && nodeTest(dir).ok),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'qa-race-in-queue',
+    role: 'qa-engineer',
+    split: 'train',
+    prompt: 'Users report that `runAll` in src/queue.mjs sometimes returns results in the wrong order, and runs more tasks at once than it is asked to. First add tests under test/ that fail on the current code because of these bugs, then fix src/queue.mjs so that every test passes with `node --test`. Keep test/queue.test.mjs as it is.',
+    files: { 'package.json': PACKAGE_JSON, 'README.md': QUEUE_README, 'src/queue.mjs': QUEUE_SRC, 'test/queue.test.mjs': QUEUE_TEST },
+    checks: (dir, { original }) => {
+      const probe = withScratch(dir, (copy) => nodeEval(copy, QUEUE_PROBE));
+      let got = {};
+      try {
+        got = JSON.parse(probe.stdout || '{}');
+      } catch {
+        got = {};
+      }
+      const detail = probe.ok ? '' : probe.output;
+      const tests = listFiles(path.join(dir, 'test')).filter((f) => /\.test\.m?js$/.test(f));
+      const passes = tests.length > 0 && nodeTest(dir).ok;
+      // The new tests must fail on the code as it was: put it back in a copy and run them.
+      const catches = passes && withScratch(dir, (copy) => {
+        fs.writeFileSync(path.join(copy, 'src/queue.mjs'), original('src/queue.mjs'), 'utf8');
+        return !nodeTest(copy).ok;
+      });
+      return [
+        check('node --test passes', passes),
+        check('test/queue.test.mjs is unchanged', sameText(read(dir, 'test/queue.test.mjs'), original('test/queue.test.mjs'))),
+        check('the tests fail on the original code', catches),
+        check('results come in the order of the tasks', got.order, detail),
+        check('no more than limit tasks run at once', got.limit, detail),
+        check('a rejection rejects runAll, and no later task starts', got.reject, detail),
+        check('no tasks resolve to []', got.empty, detail),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'devops-plan-order',
+    role: 'devops-engineer',
+    split: 'train',
+    prompt: 'Write plan.json, the plan that turns infra/current.json into infra/desired.json, exactly as README.md defines it.',
+    files: {
+      'README.md': PLAN_README,
+      'infra/current.json': `${JSON.stringify(PLAN_CURRENT, null, 2)}\n`,
+      'infra/desired.json': `${JSON.stringify(PLAN_DESIRED, null, 2)}\n`,
+    },
+    checks: (dir) => {
+      const { ok, value } = json(dir, 'plan.json');
+      const actions = Array.isArray(value?.actions) ? value.actions.map((a) => `${a?.op} ${a?.id}`) : [];
+      const ofOp = (list, op) => list.filter((x) => x.startsWith(`${op} `)).sort().join(', ');
+      const want = PLAN_EXPECTED.actions;
+      const got = (x) => `got ${x || 'none'}`;
+      return [
+        check('plan.json is JSON with actions and blocked', ok && Array.isArray(value?.actions) && Array.isArray(value?.blocked)),
+        check('the creates are frontend, metrics, subnet-c and worker', ofOp(actions, 'create') === ofOp(want, 'create'), got(ofOp(actions, 'create'))),
+        check('the updates are api, db and logs', ofOp(actions, 'update') === ofOp(want, 'update'), got(ofOp(actions, 'update'))),
+        check('the deletes are old-queue, old-queue-consumer and old-worker', ofOp(actions, 'delete') === ofOp(want, 'delete'), got(ofOp(actions, 'delete'))),
+        check('legacy-db and subnet-b are blocked', JSON.stringify(value?.blocked) === JSON.stringify(PLAN_EXPECTED.blocked), got(JSON.stringify(value?.blocked))),
+        check('nothing that needs legacy-db is created', actions.length > 0 && !actions.some((a) => /^(create|update) reports(-ui)?$/.test(a))),
+        check('each action comes after what it must follow', actions.length > 0 && planOrderHolds(actions)),
+        check('the order is the one plan the rules allow', JSON.stringify(actions) === JSON.stringify(want), got(actions.join(', '))),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'gen-constrained-brief',
+    role: 'generic',
+    split: 'train',
+    prompt: 'Write brief.md, a summary of report.md for our customers. It must be 120 to 160 words long; give the times the incident began and ended in UTC (as HH:MM UTC); state every customer impact, with its number; and end with exactly three bullet points: the three highest-priority action items, the highest first, each worded as in the report. It must not name any of our employees.',
+    files: { 'report.md': REPORT_MD },
+    checks: (dir) => {
+      const text = read(dir, 'brief.md') || '';
+      const words = wordsOf(text).length;
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+      const bullets = lines.filter((l) => /^[-*]\s+/.test(l));
+      const lastThree = lines.slice(-3);
+      const named = BRIEF.employees.filter((n) => new RegExp(`\\b${n}\\b`, 'i').test(text));
+      return [
+        check('brief.md is 120 to 160 words long', text && words >= 120 && words <= 160, `${words} words`),
+        check('it began at 18:40 UTC', /\b18:40\s*UTC\b/.test(text)),
+        check('it ended at 20:12 UTC', /\b20:12\s*UTC\b/.test(text)),
+        check('2,314 failed payments', /\b2,?314\b/.test(text)),
+        check('checkout down for 17 minutes', /\b17\s*(minutes|min)\b/i.test(text)),
+        check('an error rate of 4.2%', /\b4\.2\s?%/.test(text)),
+        check('312 duplicate confirmation emails', /\b312\b/.test(text)),
+        check('no employee is named', text && named.length === 0, named.join(', ')),
+        check('it ends with exactly three bullet points', bullets.length === 3 && lastThree.every((l) => /^[-*]\s+/.test(l))),
+        check('the bullets are the three highest-priority action items, highest first', bullets.length === 3
+          && bullets.every((b, i) => plainWords(b) === plainWords(BRIEF.topActions[i])), bullets.join(' | ')),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'se-perf-latest-per-id',
+    role: 'software-engineer',
+    split: 'holdout',
+    prompt: '`latestPerId` in src/events.mjs is correct, but far too slow for the batches of over 100,000 events it now gets. Make it fast (well under a second for 120,000 events) without changing anything it returns, as README.md describes it. Keep test/events.test.mjs as it is, passing with `node --test`.',
+    files: { 'package.json': PACKAGE_JSON, 'README.md': EVENTS_README, 'src/events.mjs': EVENTS_SRC, 'test/events.test.mjs': EVENTS_TEST },
+    checks: (dir, { original }) => {
+      const probe = withScratch(dir, (copy) => nodeEval(copy, EVENTS_PROBE));
+      let got = {};
+      try {
+        got = JSON.parse(probe.stdout || '{}');
+      } catch {
+        got = {};
+      }
+      const detail = probe.ok ? '' : probe.output;
+      const timed = withScratch(dir, (copy) => spawnSync(process.execPath, ['--input-type=module', '-e', EVENTS_PERF], {
+        cwd: copy, encoding: 'utf8', timeout: 6000, env: checkEnv(),
+      }));
+      const ms = timed.status === 0 ? Number(String(timed.stdout).trim()) : null;
+      return [
+        check('the same events as before, on random batches', got.random, detail),
+        check('ties go to the greater version, then the later event', got.ties, detail),
+        check('the kept events come in the order their ids first appear', got.order, detail),
+        check('the events given are not changed', got.unchanged, detail),
+        check('120,000 events take under a second', ms !== null && ms < 1000, ms === null ? 'it did not finish within 6 seconds' : `${ms} ms`),
+        check('test/events.test.mjs is unchanged', sameText(read(dir, 'test/events.test.mjs'), original('test/events.test.mjs'))),
+        check('node --test passes', nodeTest(dir).ok),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'data-tz-months',
+    role: 'data-engineer',
+    split: 'holdout',
+    prompt: 'Write monthly.json: the net revenue of each calendar month in New York time (America/New_York), from data/payments.csv. Charges add and refunds subtract, each in the month, New York time, in which it happened. Amounts in dollars, rounded to the cent, keyed by YYYY-MM: {"2026-01": 12.34, ...}. Include only months that have payments.',
+    files: { 'data/payments.csv': PAYMENTS_CSV },
+    checks: (dir) => {
+      const { ok, value } = json(dir, 'monthly.json');
+      const months = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+      const extra = Object.keys(months).filter((m) => !(m in PAYMENTS_MONTHS));
+      return [
+        check('monthly.json is a JSON object', ok && value && typeof value === 'object' && !Array.isArray(value)),
+        ...Object.entries(PAYMENTS_MONTHS).map(([m, want]) => check(`${m} is ${want.toFixed(2)}`, near(months[m], want), `got ${JSON.stringify(months[m])}`)),
+        check('no other month', ok && extra.length === 0, extra.join(', ')),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'sec-token-verify',
+    role: 'security-engineer',
+    split: 'holdout',
+    prompt: 'Review `verifyToken` in src/token.mjs against README.md and fix every way it accepts a token it should refuse, or refuses one it should accept. Add tests under test/ for each fix; they must pass with `node --test`.',
+    files: { 'package.json': PACKAGE_JSON, 'README.md': TOKEN_README, 'src/token.mjs': TOKEN_SRC },
+    checks: (dir) => {
+      const probe = withScratch(dir, (copy) => nodeEval(copy, TOKEN_PROBE));
+      let got = {};
+      try {
+        got = JSON.parse(probe.stdout || '{}');
+      } catch {
+        got = {};
+      }
+      const detail = probe.ok ? '' : probe.output;
+      const tests = listFiles(path.join(dir, 'test')).filter((f) => /\.test\.m?js$/.test(f));
+      return [
+        check('a valid token gives its payload', got.valid, detail),
+        check('alg none is refused', got.none, detail),
+        check('an alg other than HS256 is refused', got.otherAlg, detail),
+        check('a kid that names no key is refused', got.unknownKid, detail),
+        check('a signature made with another key is refused', got.wrongKey, detail),
+        check('a token is expired from exp + 30', got.expired, detail),
+        check('a token within 30 seconds after exp is accepted', got.expLeeway, detail),
+        check('a token is refused before nbf - 30', got.early, detail),
+        check('a token within 30 seconds before nbf is accepted', got.nbfLeeway, detail),
+        check('a malformed token is refused', got.malformed, detail),
+        check('the signature is compared with crypto.timingSafeEqual', /\btimingSafeEqual\b/.test(read(dir, 'src/token.mjs') || '')),
+        check('tests under test/ pass', tests.length > 0 && nodeTest(dir).ok),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'devops-log-forensics',
+    role: 'devops-engineer',
+    split: 'holdout',
+    prompt: 'logs/access.log is this afternoon\'s access log from our two servers. For the hour from 14:00:00 to 14:59:59 UTC, write answers.json: {"errors_by_upstream": each upstream that served a request in that hour, with its count of 5xx responses (0 when none), "top_clients": the three client IPs that received the most bytes in that hour, most first, not counting /healthz requests, "slowest_path": the path with the highest average response time in that hour, among paths with at least 20 requests}.',
+    files: { 'logs/access.log': ACCESS_LOG },
+    checks: (dir) => {
+      const { ok, value } = json(dir, 'answers.json');
+      const errors = value?.errors_by_upstream || {};
+      const want = LOG_ANSWERS;
+      return [
+        check('answers.json is JSON', ok && value && typeof value === 'object'),
+        ...Object.entries(want.errors_by_upstream).map(([up, n]) => check(`${up} had ${n} 5xx responses`, Number(errors[up]) === n, `got ${JSON.stringify(errors[up])}`)),
+        check('no other upstream', ok && Object.keys(errors).every((up) => up in want.errors_by_upstream)),
+        check(`the top clients are ${want.top_clients.join(', ')}`, JSON.stringify(value?.top_clients) === JSON.stringify(want.top_clients), `got ${JSON.stringify(value?.top_clients)}`),
+        check(`the slowest path is ${want.slowest_path}`, value?.slowest_path === want.slowest_path, `got ${JSON.stringify(value?.slowest_path)}`),
+      ];
+    },
+  }),
 ]);
 
 /**
@@ -987,6 +1712,7 @@ export const MODEL_SUITE = Object.freeze([
 export function selectModelTasks({ role, split, ids } = {}) {
   let tasks = [...MODEL_SUITE];
   if (Array.isArray(ids) && ids.length) tasks = tasks.filter((t) => ids.includes(t.id));
+  else tasks = tasks.filter((t) => !RETIRED_TASKS.includes(t.id));
   if (role) {
     const own = tasks.filter((t) => t.role === role);
     tasks = own.length ? own : tasks.filter((t) => t.role === 'generic').map((t) => ({ ...t, role }));
