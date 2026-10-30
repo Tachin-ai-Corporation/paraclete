@@ -214,8 +214,6 @@ const GCLOUD = {
       return out(JSON.stringify(Object.keys(labels).length ? { labels } : {}));
     },
   },
-  'projects get-ancestors': { write: false, run: () => out(state.ancestors.join('\n')) },
-  'billing projects describe': { write: false, run: () => out(state.billingEnabled ? 'True' : 'False') },
   'projects get-iam-policy': { write: false, run: () => out(policyText(state.projectPolicy)) },
   'projects add-iam-policy-binding': {
     write: true,
@@ -299,7 +297,14 @@ const GCLOUD = {
       out('');
     },
   },
-  'services list': { write: false, run: () => out(state.services.join('\n')) },
+  'services list': {
+    write: false,
+    // --filter=config.name=<api> narrows the listing to that API, as gcloud does.
+    run: (_, f) => {
+      const only = /^config\.name=(.+)$/.exec(String(f.filter || ''));
+      return out((only ? state.services.filter((s) => s === only[1]) : state.services).join('\n'));
+    },
+  },
   'services enable': {
     write: true,
     run: (names) => { state.services.push(...names.filter((n) => !state.services.includes(n))); save(); out(''); },
@@ -896,13 +901,54 @@ function firestoreUser(url, email, query) {
   return out(JSON.stringify({ name, fields: body.fields }));
 }
 
-function curl() {
-  const url = args.find((a) => /^https?:\/\//.test(a)) || '';
+/**
+ * A REST answer the way curl gives it to install/lib/preflight.mjs, which reads the HTTP status from
+ * the response headers (-i) and passes its token on standard input (-H @-).
+ */
+function reply(json, status = 200) {
+  const head = args.includes('-i') ? `HTTP/2 ${status}\r\ncontent-type: application/json\r\n\r\n` : '';
+  process.stdout.write(`${head}${JSON.stringify(json)}\n`);
+  process.exit(0);
+}
+
+/** The preflight's calls: refused unless the token on standard input is the fake one. */
+function preflightCall(url) {
+  const headers = options('-H').includes('@-') ? readNativeFile(0, 'utf8').split('\n') : [];
+  if (!headers.includes('Authorization: Bearer fake-token')) {
+    return reply({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Request had invalid authentication credentials.' } }, 401);
+  }
   if (url.endsWith(':testIamPermissions')) {
     log('testIamPermissions', false);
     const body = JSON.parse(args[args.indexOf('--data') + 1]);
-    return out(JSON.stringify({ permissions: body.permissions.filter((p) => !state.deniedPermissions.includes(p)) }));
+    return reply({ permissions: body.permissions.filter((p) => !state.deniedPermissions.includes(p)) });
   }
+  if (url.endsWith('/billingInfo')) {
+    log('billing info', false);
+    return reply({ projectId: state.project, billingEnabled: Boolean(state.billingEnabled) });
+  }
+  if (url.endsWith(':getAncestry')) {
+    log('ancestry', false);
+    return reply({ ancestor: state.ancestors.map((type, i) => ({ resourceId: { type, id: type === 'project' ? state.project : String(1000 + i) } })) });
+  }
+  const policy = /\/policies\/([^/:]+):getEffectivePolicy$/.exec(url);
+  if (policy) {
+    log('org policy', false);
+    if (state.orgPolicyApi === 'off') {
+      return reply({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'Organization Policy API has not been used in project 1 before or it is disabled.',
+        details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'SERVICE_DISABLED', metadata: { service: 'orgpolicy.googleapis.com' } }] } }, 403);
+    }
+    return reply({ name: `projects/${state.projectNumber}/policies/${policy[1]}`, spec: (state.orgPolicies || {})[policy[1]] || {} });
+  }
+  if (url.startsWith('https://serviceusage.googleapis.com/')) {
+    log('services enabled', false);
+    return reply({ services: state.services.map((name) => ({ name: `projects/${state.projectNumber}/services/${name}`, config: { name }, state: 'ENABLED' })) });
+  }
+  return null;
+}
+
+function curl() {
+  const url = args.find((a) => /^https?:\/\//.test(a)) || '';
+  if (options('-H').includes('@-')) preflightCall(url);
   if (url.startsWith('https://raw.githubusercontent.com/')) {
     log('raw', false);
     const path = url.slice('https://raw.githubusercontent.com/'.length);
