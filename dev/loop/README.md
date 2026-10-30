@@ -30,7 +30,10 @@ never changes an instance; it reaches instances only through a release (see "Rel
 `node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
 
 1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), or while the
-   loop is (the repository variable `PARACLETE_LOOP_PAUSED`). When CI failed on main's head, it changes
+   loop is (the repository variable `PARACLETE_LOOP_PAUSED`, set to anything but `0`; read through
+   GitHub's REST API, so any gh works, and counted as set when it cannot be read). Set it to hold the
+   next cycle, for example while a person merges changes to what the agent loads between two
+   measurements; a cycle already running finishes. When CI failed on main's head, it changes
    nothing on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a
    healthy main it releases main when that is due (see "Releases"). Then it stops once today's attempts
    (`maxCyclesPerDay`, 4, counted from the cycle log) are spent: the cap holds back new attempts, which

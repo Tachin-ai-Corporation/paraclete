@@ -64,9 +64,9 @@ function fakeGh({ issues = [], prs = [], closed = [], comments = [], mainRuns = 
       if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ comments });
       if (args[0] === 'issue' && args[1] === 'create') return 'https://github.com/your-org/paraclete/issues/8';
       if (args[0] === 'api' && String(args[1]).includes('/check-runs')) return JSON.stringify({ check_runs: mainRuns });
-      if (args[0] === 'variable' && args[1] === 'get') {
+      if (args[0] === 'api' && String(args[1]).endsWith('/actions/variables/PARACLETE_LOOP_PAUSED')) {
         if (loopPaused) return loopPaused;
-        throw new Error('variable PARACLETE_LOOP_PAUSED was not found');
+        throw Object.assign(new Error('Command failed: gh api\ngh: Not Found (HTTP 404)\n'), { stderr: 'gh: Not Found (HTTP 404)' });
       }
       if (args[0] === 'pr' && args[1] === 'list' && args.includes('closed')) return JSON.stringify(closed);
       if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify(prs);
