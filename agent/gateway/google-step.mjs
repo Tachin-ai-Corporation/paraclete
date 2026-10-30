@@ -205,8 +205,30 @@ export function readGoogleStep(response) {
 // lifecycle: handles keyed by a hash of model, system text and tools, kept per client, recreated when
 // they expire. Nothing is persisted, and any error falls back to sending the prefix inline. Gemini
 // caches only prefixes above about 2,048 tokens and enforces the TTL exactly.
+//
+// A cache can also be gone before its handle expires: anyone in the project with aiplatform.user may
+// delete it. A step that names a gone cache forgets the handle and is sent again with the prefix
+// inline, as is the rest of that turn; the next turn creates a new cache.
 const GEMINI_CACHE_FLOOR_TOKENS = 2048;
 const explicitCaches = new WeakMap();
+
+/**
+ * Whether a generateContent error says the cache the request named is gone. Vertex's answers, seen
+ * live: a deleted cache gives 400 "Invalid resource state for cache content <id>.", and an unknown one
+ * 404 "Not found: cached content metadata for <id>.". The SDK's ApiError carries the HTTP status and
+ * the response body as its message.
+ */
+export function isGeminiCacheGone(err) {
+  const status = err?.status ?? err?.code;
+  return (status === 400 || status === 404) && /cached? content/i.test(String(err?.message || ''));
+}
+
+function forgetGeminiCache(ai, name) {
+  const byHash = explicitCaches.get(ai);
+  for (const [hash, handle] of byHash || []) {
+    if (handle.name === name) byHash.delete(hash);
+  }
+}
 
 async function geminiCachedContent(ai, { modelId, systemText, googleTools, ttlSeconds, now, logger }) {
   let byHash = explicitCaches.get(ai);
@@ -279,19 +301,32 @@ export function createGoogleStepper({
           cachedContentName = null;
         }
       }
-      const params = {
-        model: modelId,
-        contents: toGoogleContents(history, { modelId, toolImages }),
-        config: {
-          ...(cachedContentName ? { cachedContent: cachedContentName } : inlinePrefix()),
-          ...(toolConfig ? { toolConfig } : {}),
-          temperature,
-          maxOutputTokens: maxTokens,
-          topP,
-        },
+      const contents = toGoogleContents(history, { modelId, toolImages });
+      const send = () => {
+        const params = {
+          model: modelId,
+          contents,
+          config: {
+            ...(cachedContentName ? { cachedContent: cachedContentName } : inlinePrefix()),
+            ...(toolConfig ? { toolConfig } : {}),
+            temperature,
+            maxOutputTokens: maxTokens,
+            topP,
+          },
+        };
+        return callWithRetry(() => client.models.generateContent(params), `Gemini ${modelId} step ${step}`);
       };
       logger('INFO', `calling Gemini ${modelId} (step ${step})`);
-      const response = await callWithRetry(() => client.models.generateContent(params), `Gemini ${modelId} step ${step}`);
+      let response;
+      try {
+        response = await send();
+      } catch (e) {
+        if (!cachedContentName || !isGeminiCacheGone(e)) throw e;
+        logger('WARN', `gemini explicit cache ${cachedContentName} is gone; sending the prefix inline`);
+        forgetGeminiCache(client, cachedContentName);
+        cachedContentName = null;
+        response = await send();
+      }
       return readGoogleStep(response);
     },
 

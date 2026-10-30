@@ -3,7 +3,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  toGoogleSchema, toGoogleContents, readGoogleStep, createGoogleStepper, SKIP_THOUGHT_SIGNATURE,
+  toGoogleSchema, toGoogleContents, readGoogleStep, createGoogleStepper, isGeminiCacheGone,
+  SKIP_THOUGHT_SIGNATURE,
 } from '../../../agent/gateway/google-step.mjs';
 import { fakeGoogle, geminiText, quiet } from './fakes.mjs';
 
@@ -185,6 +186,55 @@ describe('explicit context caching', () => {
     const client = fakeGoogle([geminiText('a')]);
     await stepper(client, big, false).call([{ role: 'user', content: 'q' }], 0);
     assert.equal(client.cacheCreates.length, 0);
+  });
+
+  // The SDK's ApiError: the HTTP status, and the response body as the message.
+  const apiError = (status, message) => Object.assign(
+    new Error(JSON.stringify({ error: { code: status, message, status: status === 404 ? 'NOT_FOUND' : 'INVALID_ARGUMENT' } })),
+    { name: 'ApiError', status },
+  );
+  const deleted = () => apiError(400, 'Invalid resource state for cache content 4417.');
+  const unknown = () => apiError(404, 'Not found: cached content metadata for 4417.');
+
+  it('recognises the errors Vertex gives for a deleted or unknown cache, and nothing else', () => {
+    assert.equal(isGeminiCacheGone(deleted()), true);
+    assert.equal(isGeminiCacheGone(unknown()), true);
+    assert.equal(isGeminiCacheGone(apiError(400, 'Request contains an invalid argument.')), false);
+    assert.equal(isGeminiCacheGone(apiError(500, 'Internal error with cached content.')), false);
+    assert.equal(isGeminiCacheGone(new Error('fetch failed')), false);
+  });
+
+  it('sends a step again inline when its cache is gone, keeps the rest of the turn inline, and makes a new cache next turn', async () => {
+    for (const gone of [deleted, unknown]) {
+      const client = fakeGoogle([gone(), geminiText('a'), geminiText('b'), geminiText('c')]);
+      const turn = stepper(client, big);
+      assert.equal((await turn.call([{ role: 'user', content: 'q' }], 0)).text, 'a');
+      assert.equal(client.requests[0].config.cachedContent, 'cachedContents/fake-1');
+      assert.equal(client.requests[1].config.cachedContent, undefined);
+      assert.equal(client.requests[1].config.systemInstruction, big);
+      assert.deepEqual(client.requests[1].contents, client.requests[0].contents);
+
+      await turn.call([{ role: 'user', content: 'q' }], 1);
+      assert.equal(client.requests[2].config.systemInstruction, big, 'the rest of the turn stays inline');
+
+      await stepper(client, big).call([{ role: 'user', content: 'q' }], 0);
+      assert.equal(client.cacheCreates.length, 2, 'the next turn creates a new cache');
+      assert.equal(client.requests[3].config.cachedContent, 'cachedContents/fake-1');
+    }
+  });
+
+  it('throws any other error from a cached step, and keeps the handle', async () => {
+    const client = fakeGoogle([apiError(400, 'Request contains an invalid argument.'), geminiText('b')]);
+    await assert.rejects(stepper(client, big).call([{ role: 'user', content: 'q' }], 0), /invalid argument/);
+    assert.equal(client.requests.length, 1, 'not sent again');
+    await stepper(client, big).call([{ role: 'user', content: 'q' }], 0);
+    assert.equal(client.cacheCreates.length, 1, 'the next turn reuses the handle');
+  });
+
+  it('throws a cache error from a step that sent the prefix inline', async () => {
+    const client = fakeGoogle([deleted()]);
+    await assert.rejects(stepper(client, 'short system').call([{ role: 'user', content: 'q' }], 0), /cache content/);
+    assert.equal(client.requests.length, 1);
   });
 });
 
