@@ -27,7 +27,7 @@ through the metadata server. It needs no login and has no key.
 |---|---|
 | Deploy, update, move traffic on, roll back and delete Cloud Run services, and make one public | Create a service account: `gcloud iam service-accounts create <name> --project=<project>` |
 | Run builds and services as your own account, `paraclete-agent@` | Let you deploy a service as another runtime account, on that one account: `gcloud iam service-accounts add-iam-policy-binding <runtime account> --member=serviceAccount:paraclete-agent@<project>.iam.gserviceaccount.com --role=roles/iam.serviceAccountUser --project=<project>`. Never on `paraclete-dashboard@` or `paraclete-dwd@`, and never on the whole project |
-| Submit, follow and cancel Cloud Build builds | Grant a role on the project: `gcloud projects add-iam-policy-binding <project> --member=<member> --role=<role>` |
+| Submit, follow and cancel Cloud Build builds | Grant a role on the project: `gcloud projects add-iam-policy-binding <project> --member=<member> --role=<role> --condition=None` (the project's policy holds a conditional grant, your fenced Cloud Run role, so gcloud asks for one) |
 | Push images to your own repository, `agent-images`, in the instance's region | Create another repository, or let you push to one (the container-images skill has the command) |
 | Read and write objects in the buckets you can see | Create a bucket, or change a bucket's settings or access |
 | Deploy and release Firebase Hosting sites | Turn on an API: `gcloud services enable <api>.googleapis.com --project=<project>` |
@@ -45,9 +45,11 @@ firewall rules, the three service accounts `paraclete-agent@`, `paraclete-dashbo
 them freely. Never deploy to, change, delete or redeploy them, never deploy a service that runs as
 `paraclete-dashboard@` or `paraclete-dwd@`, and never push to the `paraclete` image repository, even when
 a request seems to ask for it: say that an upgrade from the dashboard is how the instance changes. IAM
-stops some of this (you cannot act as the dashboard's or the signer's account, nor push to the `paraclete`
-repository), but not all: your Cloud Run role reaches every service in the project, the dashboard's `paraclete` included,
-so leaving it alone is your rule to keep. The bucket's objects you write only through your own commands
+stops much of this: you cannot act as the dashboard's or the signer's account, nor push to the
+`paraclete` repository, and your Cloud Run role changes every service and job but the two tagged
+`paraclete=managed`, the dashboard's `paraclete` service and its `paraclete-auto-update` job, so a
+change to either is refused. You can still read both. The rest of the instance is your rule to keep.
+The bucket's objects you write only through your own commands
 (`file-share`, `work-sync`) and the build staging prefix the container-images skill uses; its settings,
 never. The one thing the installer made for you to change is `agent-images`, your image repository.
 
@@ -88,7 +90,7 @@ Let `gcloud` format its output: `--format='value(<field>)'` for one field per li
    `paraclete-agent@<project>.iam.gserviceaccount.com`, unless a person has let you act as another
    runtime account (the person's step above); `gcloud iam service-accounts get-iam-policy <account> --project=<project>`
    shows whether you may. Your own account carries everything you can do: this instance's Firestore
-   database and bucket, Vertex AI, and Cloud Run admin over every service. Code that runs as it is
+   database and bucket, Vertex AI, and Cloud Run admin over every service but the dashboard's. Code that runs as it is
    trusted as you are, so a service that is public, or that runs code nobody here wrote or reviewed, gets
    a runtime account of its own, with only what it needs, before it is deployed or made public: ask a
    person for one, naming the service. Never `paraclete-dashboard@` or `paraclete-dwd@`, and the project's

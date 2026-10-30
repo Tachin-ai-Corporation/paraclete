@@ -75,7 +75,7 @@ The installer grants each one on the whole project. So:
 
    | Role | Takes | Instead of | Because |
    |---|---|---|---|
-   | `devops-engineer` | `run.admin` | `run.developer` | Making a service public needs `run.services.setIamPolicy`, which the developer role lacks |
+   | `devops-engineer` | `run.admin`, on every Cloud Run resource but paraclete's own (`resource_roles`, below), with `run.viewer` on the project | `run.developer` | Making a service public needs `run.services.setIamPolicy`, which the developer role lacks |
    | `devops-engineer` | `storage.objectUser` | `storage.objectAdmin` | It reads and writes objects without changing their ACLs |
    | `security-engineer` | `orgpolicy.policyViewer` and `storage.bucketViewer` beside `iam.securityReviewer` | A broader role | The security reviewer role lacks `orgpolicy.policy.get` and `storage.buckets.get` |
    | `web-master` | `run.viewer` | `run.admin` | It only reads the Cloud Run services a site's rewrites send traffic to |
@@ -92,21 +92,28 @@ The installer grants each one on the whole project. So:
 | Never in `gcp_roles` | Why | Where it is enforced |
 |---|---|---|
 | A basic role (`owner`, `editor`, `viewer`), or one that grants roles, administers service accounts or their keys, or turns services on and off | The agent could widen its own access | `tests/content/packages.test.mjs` only; the installer does not check this list |
-| Acting as a service account, or writing to Artifact Registry (`PROJECT_WIDE_REFUSED`) | Project-wide, act-as reaches `paraclete-dashboard@`, whose signature the VM's control service obeys, and write reaches the dashboard's image repository | `install/lib/role-access.mjs`: the installer refuses the role in step 1, takes back such a grant it finds in step 3, and the test runs the same check |
+| Acting as a service account, writing to Artifact Registry, or changing or running Cloud Run services and jobs (`PROJECT_WIDE_REFUSED`) | Project-wide, act-as reaches `paraclete-dashboard@`, whose signature the VM's control service obeys, write reaches the dashboard's image repository, and Cloud Run change reaches the dashboard's service and its update job, which runs as the dashboard's account | `install/lib/role-access.mjs`: the installer refuses the role in step 1, takes back such a grant it finds in step 3, and the test runs the same check |
 
-A project-wide grant reaches the instance's own resources too. The DevOps Engineer's `run.admin` lets
-IAM delete or replace the dashboard's own Cloud Run service; only its prompts and skills forbid
-touching anything named `paraclete` or starting with `paraclete-`. When a grant reaches the instance,
-say so in the README and keep the instance off limits in the prompts and skills, as that role does.
-Nothing in IAM enforces it ([open items](../plan/OPEN_ITEMS.md), phase 8).
+A project-wide grant reaches the instance's own resources too. For Cloud Run, IAM keeps them out: a
+role asks for `run.admin` on `project-except-paraclete` (below), and the installer tags the
+dashboard's service and its update job so that grant cannot change them. For any other grant that
+reaches the instance (`storage.objectUser` reaches its bucket), say so in the README and keep the
+instance off limits in the prompts and skills, as the DevOps Engineer does for anything named
+`paraclete` or starting with `paraclete-`.
 
 ### `resource_roles`: grants on one resource
 
-When the work needs to act as an account or push images, ask for it on a resource that is the agent's
-own, never the project. `install/lib/role-access.mjs` accepts two kinds and a short list of roles for
-each (`RESOURCE_KINDS`): `agent-account`, the agent's own service account, so builds and deploys run
-as itself and as no other account; and `agent-repository`, the `agent-images` Docker repository the
-installer creates the first time a role asks for it. Anything else is refused at install and in the
+When the work needs to act as an account, push images or change Cloud Run, ask for it on resources
+that are the agent's own or aren't paraclete's, never the whole project. `install/lib/role-access.mjs`
+accepts three kinds and a short list of roles for each (`RESOURCE_KINDS`):
+- `agent-account`: the agent's own service account, so builds and deploys run as itself and as no
+  other account;
+- `agent-repository`: the `agent-images` Docker repository the installer creates the first time a
+  role asks for it;
+- `project-except-paraclete`: the project, with the condition "not tagged `paraclete=managed`". The
+  installer binds that tag to the dashboard's service and its update job (`install/lib/tags.sh`), so
+  every other Cloud Run service and job is in reach. The agent holds no tag permissions, so it cannot
+  move the tag. Anything else is refused at install and in the
 tests.
 
 ### `apis`

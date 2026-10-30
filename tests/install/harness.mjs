@@ -93,6 +93,9 @@ export function freshProject() {
     instances: {},
     bootstrapReports: 'ready',
     agentInstance: null,
+    // Tag keys by namespaced name; tag values by namespaced name, each with the resources bound to it.
+    tagKeys: [],
+    tagValues: {},
   };
 }
 

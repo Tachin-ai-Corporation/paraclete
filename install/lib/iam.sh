@@ -1,13 +1,15 @@
 # install/lib/iam.sh: reads and changes IAM policies on the project, on a service account, on the
 # bucket, on an image repository (the dashboard's, or the agent's own), and on the dashboard's Cloud Run
-# service and IAP resource. A policy is read once into "<role>,<member>" lines; a grant is made only
-# when that line is missing, so re-running grants nothing twice, and grants are additive: nothing here
-# removes a binding it did not name. The two revoke_ functions take back one named grant, for a move
-# to another role that no longer declares it. Defines functions only. Sourced by install/install.sh and
-# install/uninstall.sh. Needs run.sh.
+# service and IAP resource. A policy is read once into "<role>,<member>,<condition title>" lines, the
+# title empty for a grant without a condition; a grant is made only when its line is missing, so
+# re-running grants nothing twice, and grants are additive: nothing here removes a binding it did not
+# name. The revoke_ functions take back one named grant, for a move to another role that no longer
+# declares it. One kind of project grant holds a condition, the fence (fence_condition). Defines
+# functions only. Sourced by install/install.sh and install/uninstall.sh. Needs names.sh and run.sh.
 
-# The gcloud arguments that print a policy as "<role>,<member>" lines.
-POLICY_FORMAT=(--flatten='bindings[].members' --format='csv[no-heading](bindings.role,bindings.members)')
+# The gcloud arguments that print a policy as "<role>,<member>,<condition title>" lines. gcloud reads
+# policies at version 3, so a conditional grant keeps its own role name, and its title tells it apart.
+POLICY_FORMAT=(--flatten='bindings[].members' --format='csv[no-heading](bindings.role,bindings.members,bindings.condition.title)')
 
 # read_project_policy <project>: the project's bindings. Empty when unreadable.
 read_project_policy() {
@@ -44,14 +46,29 @@ read_iap_policy() {
     "${POLICY_FORMAT[@]}" 2>/dev/null || true
 }
 
-# has_binding <policy> <role> <member>: succeeds when the policy grants role to member.
+# has_binding <policy> <role> <member>: succeeds when the policy grants role to member, with no condition.
 has_binding() {
-  grep -Fxq -- "$2,$3" <<<"$1"
+  grep -Fxq -- "$2,$3," <<<"$1"
 }
 
-# roles_of <policy> <member>: every role the policy grants member, one per line.
+# has_fenced_binding <policy> <role> <member>: succeeds when the policy grants role to member with the
+# fence's condition (fence_condition), matched by its title.
+has_fenced_binding() {
+  grep -Fxq -- "$2,$3,$FENCE_CONDITION_TITLE" <<<"$1"
+}
+
+# roles_of <policy> <member>: every role the policy grants member, with or without a condition, each once.
 roles_of() {
-  awk -F, -v member="$2" '$2 == member { print $1 }' <<<"$1"
+  awk -F, -v member="$2" '$2 == member && !seen[$1]++ { print $1 }' <<<"$1"
+}
+
+# fence_condition <project>: the condition of a project grant `on: project-except-paraclete`
+# (install/lib/role-access.mjs): every resource but those tagged paraclete=managed (install/lib/tags.sh),
+# the dashboard's service and its update job. In gcloud's dict syntax, with ; as the separator, since
+# the expression holds a comma.
+fence_condition() {
+  printf '^;^title=%s;description=%s;expression=!resource.matchTag("%s", "%s")\n' "$FENCE_CONDITION_TITLE" \
+    "Every resource but the paraclete dashboard and its update job" "$1/$MANAGED_TAG_KEY" "$MANAGED_TAG_VALUE"
 }
 
 # ensure_project_role <project> <policy> <member> <role>
@@ -61,6 +78,25 @@ ensure_project_role() {
     return 0
   fi
   run_retry gcloud projects add-iam-policy-binding "$1" --member="$3" --role="$4" --condition=None --quiet
+}
+
+# ensure_fenced_project_role <project> <policy> <member> <role>: a grant on the project with the fence's
+# condition, so it reaches every resource but paraclete's own.
+ensure_fenced_project_role() {
+  if has_fenced_binding "$2" "$4" "$3"; then
+    note "$3 has $4 on everything but paraclete's own"
+    return 0
+  fi
+  run_retry gcloud projects add-iam-policy-binding "$1" --member="$3" --role="$4" \
+    --condition="$(fence_condition "$1")" --quiet
+}
+
+# revoke_fenced_project_role <project> <policy> <member> <role>: takes back that grant, when the policy
+# holds it. A grant of the same role without the condition, or with another, stays.
+revoke_fenced_project_role() {
+  has_fenced_binding "$2" "$4" "$3" || return 0
+  run_retry gcloud projects remove-iam-policy-binding "$1" --member="$3" --role="$4" \
+    --condition="$(fence_condition "$1")" --quiet
 }
 
 # ensure_account_role <account email> <project> <policy> <member> <role>: a grant on one service

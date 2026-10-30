@@ -31,11 +31,11 @@ function repoWith(t, records) {
 const GENERIC = { gcp_roles: ['roles/aiplatform.user'], apis: ['bigquery'], resource_roles: [] };
 
 test('a role that asks for nothing beyond project roles has no problems', () => {
-  assert.deepEqual(accessProblems({ gcp_roles: ['roles/run.admin'] }), []);
+  assert.deepEqual(accessProblems({ gcp_roles: ['roles/run.viewer'] }), []);
   assert.deepEqual(accessProblems({ gcp_roles: [], apis: [], resource_roles: [] }), []);
 });
 
-test('act-as and image-repository write are refused on the whole project, pointing at the single resource', () => {
+test('act-as, image-repository write and Cloud Run change are refused on the whole project, pointing at where to ask', () => {
   for (const name of PROJECT_WIDE_REFUSED) {
     const [problem, ...more] = accessProblems({ gcp_roles: [name] });
     assert.equal(more.length, 0, name);
@@ -43,6 +43,8 @@ test('act-as and image-repository write are refused on the whole project, pointi
   }
   assert.match(accessProblems({ gcp_roles: ['roles/iam.serviceAccountUser'] })[0], /ask for it in resource_roles, on agent-account$/);
   assert.match(accessProblems({ gcp_roles: ['roles/artifactregistry.writer'] })[0], /ask for it in resource_roles, on agent-repository$/);
+  assert.match(accessProblems({ gcp_roles: ['roles/run.admin'] })[0], /ask for it in resource_roles, on project-except-paraclete$/);
+  assert.doesNotMatch(accessProblems({ gcp_roles: ['roles/run.jobsExecutorWithOverrides'] })[0], /resource_roles/, 'not allowed anywhere');
   assert.doesNotMatch(accessProblems({ gcp_roles: ['roles/artifactregistry.admin'] })[0], /resource_roles/, 'not allowed anywhere');
 });
 
@@ -62,10 +64,12 @@ test('resource_roles name the agent\'s own account or repository, with the roles
       { role: 'roles/iam.serviceAccountTokenCreator', on: 'agent-account' },
       { role: 'roles/artifactregistry.writer', on: 'agent-repository' },
       { role: 'roles/artifactregistry.reader', on: 'agent-repository' },
+      { role: 'roles/run.admin', on: 'project-except-paraclete' },
     ],
   }), []);
   const one = (entry) => accessProblems({ resource_roles: [entry] });
-  assert.match(one({ role: 'roles/iam.serviceAccountUser', on: 'project' })[0], /on must be one of agent-account, agent-repository/);
+  assert.match(one({ role: 'roles/iam.serviceAccountUser', on: 'project' })[0], /on must be one of agent-account, agent-repository, project-except-paraclete/);
+  assert.match(one({ role: 'roles/iam.serviceAccountUser', on: 'project-except-paraclete' })[0], /on project-except-paraclete the role is one of/);
   assert.match(one({ role: 'roles/iam.serviceAccountUser', on: 'paraclete-dashboard' })[0], /on must be one of/);
   assert.match(one({ role: 'roles/artifactregistry.writer', on: 'agent-account' })[0], /on agent-account the role is one of/);
   assert.match(one({ role: 'roles/iam.serviceAccountUser', on: 'agent-repository' })[0], /on agent-repository the role is one of/);
@@ -76,16 +80,17 @@ test('resource_roles name the agent\'s own account or repository, with the roles
   const twice = { role: 'roles/iam.serviceAccountUser', on: 'agent-account' };
   assert.deepEqual(accessProblems({ resource_roles: [twice, twice] }), [`resource_roles: ${JSON.stringify(twice)} is listed twice`]);
   assert.deepEqual(accessProblems({ resource_roles: {} }), ['resource_roles: must be a list of { role, on }']);
-  assert.deepEqual(Object.keys(RESOURCE_KINDS), ['agent-account', 'agent-repository']);
+  assert.deepEqual(Object.keys(RESOURCE_KINDS), ['agent-account', 'agent-repository', 'project-except-paraclete']);
 });
 
 test('generic and the role together: generic first, each entry once', (t) => {
   const root = repoWith(t, {
     generic: GENERIC,
     builder: {
-      gcp_roles: ['roles/run.admin'],
+      gcp_roles: ['roles/run.viewer'],
       apis: ['firebase', 'bigquery'],
       resource_roles: [
+        { role: 'roles/run.admin', on: 'project-except-paraclete' },
         { role: 'roles/iam.serviceAccountUser', on: 'agent-account' },
         { role: 'roles/artifactregistry.writer', on: 'agent-repository' },
       ],
@@ -94,6 +99,7 @@ test('generic and the role together: generic first, each entry once', (t) => {
   assert.deepEqual(roleAccess(root, 'builder'), {
     apis: ['bigquery', 'firebase'],
     resourceRoles: [
+      { on: 'project-except-paraclete', role: 'roles/run.admin' },
       { on: 'agent-account', role: 'roles/iam.serviceAccountUser' },
       { on: 'agent-repository', role: 'roles/artifactregistry.writer' },
     ],

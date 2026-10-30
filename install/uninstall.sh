@@ -2,8 +2,9 @@
 # install/uninstall.sh: removes what install/install.sh created from a Google Cloud project: the VM, the
 # firewall rules (and the network, when the installer made it), the dashboard's Cloud Run service and
 # its image repository (it holds only the dashboard's images; the grants on the two go with them), the
-# Firestore indexes and TTL policies, the service accounts and their grants (the grants on an account
-# go with it: the agent's on its own account among them).
+# tag paraclete=managed that marks the service and the update job, the Firestore indexes and TTL
+# policies, the service accounts and their grants (the grants on an account go with it: the agent's on
+# its own account among them).
 # Keeps the Firestore database, the bucket and the agent's own image repository (`agent-images`, which
 # holds the agent's builds), with all their data, unless --purge, which also takes typing the project
 # id; what stays loses the accounts' grants on it first. Enabled APIs stay on. Run by the project's
@@ -22,6 +23,8 @@ source "$INSTALL_DIR/lib/json.sh"
 source "$INSTALL_DIR/lib/names.sh"
 # shellcheck source=lib/iam.sh
 source "$INSTALL_DIR/lib/iam.sh"
+# shellcheck source=lib/tags.sh
+source "$INSTALL_DIR/lib/tags.sh"
 # shellcheck source=lib/indexes.sh
 source "$INSTALL_DIR/lib/indexes.sh"
 
@@ -135,6 +138,10 @@ discover() {
   if gcloud artifacts repositories describe "$IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
     IMAGES_EXIST=1
   fi
+  TAG_EXISTS=0
+  if gcloud resource-manager tags keys describe "$(managed_tag_key "$PROJECT")" --format='value(name)' >/dev/null 2>&1; then
+    TAG_EXISTS=1
+  fi
   AGENT_IMAGES_EXIST=0
   if gcloud artifacts repositories describe "$AGENT_IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --format='value(name)' >/dev/null 2>&1; then
     AGENT_IMAGES_EXIST=1
@@ -194,6 +201,7 @@ confirm_plan() {
   ((UPDATE_JOB_EXISTS)) && doomed+=("Cloud Run job $UPDATE_JOB in $REGION (the automatic update)")
   ((SERVICE_EXISTS)) && doomed+=("Cloud Run service $SERVICE_NAME in $REGION (the dashboard)")
   ((IMAGES_EXIST)) && doomed+=("Artifact Registry repository $IMAGE_REPOSITORY in $REGION (the dashboard's images)")
+  ((TAG_EXISTS)) && doomed+=("tag $MANAGED_TAG_KEY=$MANAGED_TAG_VALUE on the project (it marks the dashboard and its update job)")
   ((PURGE && AGENT_IMAGES_EXIST)) && doomed+=("Artifact Registry repository $AGENT_IMAGE_REPOSITORY in $REGION and ALL the agent's images (irreversible)")
   if ((PURGE && DATABASE_EXISTS)); then
     doomed+=("the Firestore $FIRESTORE_DATABASE database and ALL its data: chats, missions, memory (irreversible)")
@@ -281,19 +289,22 @@ step_network() {
 }
 
 step_dashboard() {
-  step 4 dashboard "the dashboard's Cloud Run service, its automatic-update job and schedule, and its images"
+  step 4 dashboard "the dashboard's Cloud Run service, its automatic-update job and schedule, its images, and their tag"
   # The schedule first, so it cannot start the job while the job and the service go.
   if ((SCHEDULE_EXISTS)); then
     run gcloud scheduler jobs delete "$UPDATE_JOB" --location="$REGION" --project="$PROJECT" --quiet
   else
     note "no Cloud Scheduler job $UPDATE_JOB in $REGION"
   fi
+  # Each loses its tag first: a tag value still bound to a resource cannot be deleted.
   if ((UPDATE_JOB_EXISTS)); then
+    remove_managed_tag_binding "$PROJECT" "$REGION" "$(run_resource "$PROJECT" "$REGION" jobs "$UPDATE_JOB")"
     run gcloud run jobs delete "$UPDATE_JOB" --region="$REGION" --project="$PROJECT" --quiet
   else
     note "no Cloud Run job $UPDATE_JOB in $REGION"
   fi
   if ((SERVICE_EXISTS)); then
+    remove_managed_tag_binding "$PROJECT" "$REGION" "$(run_resource "$PROJECT" "$REGION" services "$SERVICE_NAME")"
     run gcloud run services delete "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" --quiet
   else
     note "no Cloud Run service $SERVICE_NAME in $REGION"
@@ -302,6 +313,11 @@ step_dashboard() {
     run gcloud artifacts repositories delete "$IMAGE_REPOSITORY" --location="$REGION" --project="$PROJECT" --quiet
   else
     note "no image repository $IMAGE_REPOSITORY in $REGION"
+  fi
+  if ((TAG_EXISTS)); then
+    remove_managed_tag "$PROJECT"
+  else
+    note "no tag $MANAGED_TAG_KEY on the project"
   fi
 }
 

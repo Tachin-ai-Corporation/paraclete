@@ -4,13 +4,14 @@
 # them) and checks the agent's model answers, creates the service accounts with their grants (a role's
 # grants on single resources among them), Firestore, the bucket, the dashboard (built by Cloud Build,
 # on Cloud Run behind IAP, with the installer as its first admin; the bucket's CORS setting lets its
-# pages upload into the bucket), the network and the agent's VM, then waits until the agent reports
-# ready. Every create is "create if missing" and every grant is additive, so re-running repairs, and
-# re-running with another --ref moves the dashboard and the VM to that commit. Two things are taken
+# pages upload into the bucket; its service and update job carry the tag paraclete=managed, which a
+# role's Cloud Run grant is fenced by), the network and the agent's VM, then waits until the agent
+# reports ready. Every create is "create if missing" and every grant is additive, so re-running repairs,
+# and re-running with another --ref moves the dashboard and the VM to that commit. Two things are taken
 # back: on a move to another role, the grants only the previous role declared; and on every run, a
-# project-wide role that would let the agent act as any service account or push to any image
-# repository. It never logs in to the VM: what happens on the VM is install/bootstrap.sh's job, and
-# the contract between the two is install/README.md.
+# project-wide role that would let the agent act as any service account, push to any image repository,
+# or change or run any Cloud Run service or job. It never logs in to the VM: what happens on the VM is
+# install/bootstrap.sh's job, and the contract between the two is install/README.md.
 # --dry-run prints every command that would change something and changes nothing.
 set -euo pipefail
 
@@ -26,6 +27,8 @@ source "$INSTALL_DIR/lib/names.sh"
 source "$INSTALL_DIR/lib/ref.sh"
 # shellcheck source=lib/iam.sh
 source "$INSTALL_DIR/lib/iam.sh"
+# shellcheck source=lib/tags.sh
+source "$INSTALL_DIR/lib/tags.sh"
 # shellcheck source=lib/indexes.sh
 source "$INSTALL_DIR/lib/indexes.sh"
 
@@ -104,6 +107,9 @@ REQUIRED_PERMISSIONS=(
   artifactregistry.repositories.create
   cloudbuild.builds.create
   run.services.create
+  resourcemanager.tagKeys.create
+  resourcemanager.tagValues.create
+  resourcemanager.tagValueBindings.create
 )
 
 # The dashboard's users, one Firestore document per email (dashboard/lib/server/users.mjs). Step 6
@@ -573,11 +579,15 @@ step_accounts() {
   fi
 
   local policy role self_policy dwd_policy
+  # The tag the dashboard's service and update job carry (step 6), which a fenced grant names.
+  ensure_managed_tag "$PROJECT"
   policy="$(read_project_policy "$PROJECT")"
   while IFS= read -r role; do
     [[ -n "$role" ]] || continue
     ensure_project_role "$PROJECT" "$policy" "serviceAccount:$AGENT_EMAIL" "$role"
   done <<<"$AGENT_ROLES"
+  # Before a project-wide grant is taken back, so a role moving to its fenced grant never holds neither.
+  ensure_resource_roles "$policy"
   revoke_project_wide_refused "$policy"
   revoke_previous_role_grants "$policy"
   for role in "${DASHBOARD_PROJECT_ROLES[@]}"; do
@@ -595,8 +605,7 @@ step_accounts() {
     # console's domain-wide delegation; reading it needs this viewer role, on that one account only.
     ensure_account_role "$DWD_EMAIL" "$PROJECT" "$dwd_policy" "serviceAccount:$DASHBOARD_EMAIL" roles/iam.serviceAccountViewer
   fi
-  ensure_resource_roles
-  revoke_previous_resource_roles
+  revoke_previous_resource_roles "$policy"
 }
 
 # ensure_account <account id> <email> <display name> <description>
@@ -634,19 +643,21 @@ revoke_previous_role_grants() {
   done < <(json_get "$file" gcp_roles)
 }
 
-# revoke_project_wide_refused <project policy>: the agent's account never holds, on the whole project, a
-# role that reaches every service account or every image repository (install/lib/role-access.mjs,
-# PROJECT_WIDE_REFUSED): acting as any account includes the dashboard's, whose signature the VM's
-# control service obeys, and pushing to any repository includes the dashboard's images. No role in
-# this clone asks for one (step 1 refuses it), so one the account holds was left by an older role
+# revoke_project_wide_refused <project policy>: the agent's account never holds, on the whole project and
+# without a condition, a role that reaches every service account, every image repository or every Cloud
+# Run service and job (install/lib/role-access.mjs, PROJECT_WIDE_REFUSED): acting as any account
+# includes the dashboard's, whose signature the VM's control service obeys, pushing to any repository
+# includes the dashboard's images, and changing any Cloud Run service includes the dashboard's. No role
+# in this clone asks for one (step 1 refuses it), so one the account holds was left by an older role
 # definition or granted by hand: it is taken back on every run, saying so. A role that needs one has it
-# on the agent's own account or repository (ensure_resource_roles).
+# on the agent's own account or repository, or on the project minus paraclete's own
+# (ensure_resource_roles); that fenced grant stays.
 revoke_project_wide_refused() {
   local role
   while IFS= read -r role; do
     [[ -n "$role" ]] || continue
     has_binding "$1" "$role" "serviceAccount:$AGENT_EMAIL" || continue
-    note "the agent's account holds $role on the whole project, which reaches the dashboard's own account or images: taking it back"
+    note "the agent's account holds $role on the whole project, which reaches the dashboard's own account, images or service: taking it back"
     run_retry gcloud projects remove-iam-policy-binding "$PROJECT" --member="serviceAccount:$AGENT_EMAIL" \
       --role="$role" --condition=None --quiet
   done <<<"$REFUSED_PROJECT_ROLES"
@@ -662,10 +673,13 @@ agent_roles() {
   } | awk 'NF && !seen[$0]++'
 }
 
-# ensure_resource_roles: the grants generic and the role ask for on single resources (`resource_roles`,
-# read in step 1), never on the project. `agent-account`: on the agent's own service account, granted
-# to that account, so it may act as itself and as no other. `agent-repository`: on the agent's own
-# Docker repository in the instance's region, created here the first time a role asks for it.
+# ensure_resource_roles <project policy>: the grants generic and the role ask for on single resources
+# (`resource_roles`, read in step 1), never on the whole project. `agent-account`: on the agent's own
+# service account, granted to that account, so it may act as itself and as no other.
+# `agent-repository`: on the agent's own Docker repository in the instance's region, created here the
+# first time a role asks for it. `project-except-paraclete`: on the project, with the condition "not
+# tagged paraclete=managed" (install/lib/iam.sh, fence_condition), so it reaches every Cloud Run service
+# and job but the dashboard's service and its update job.
 ensure_resource_roles() {
   local lines=() line kind role account_policy repository_policy have_account=0 have_repository=0
   mapfile -t lines <<<"$RESOURCE_ROLES"
@@ -688,6 +702,8 @@ ensure_resource_roles() {
         fi
         ensure_repository_role "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT" "$repository_policy" \
           "serviceAccount:$AGENT_EMAIL" "$role" ;;
+      project-except-paraclete)
+        ensure_fenced_project_role "$PROJECT" "$1" "serviceAccount:$AGENT_EMAIL" "$role" ;;
       *) die "install/lib/role-access.mjs named an unknown resource '$kind'" ;;
     esac
   done
@@ -704,11 +720,12 @@ ensure_agent_repository() {
     --description="$AGENT_IMAGE_REPOSITORY_DESCRIPTION" --project="$PROJECT" --quiet
 }
 
-# revoke_previous_resource_roles: on a move to another role, the single-resource grants the previous
-# role declared that neither generic nor the new role declares, taken back: from the agent's own
-# account, and from its image repository, which stays with its images (they are the agent's builds;
-# uninstall.sh --purge deletes them). When this clone cannot read the previous role, nothing is taken
-# back: revoke_previous_role_grants has said so already, or the warning here does.
+# revoke_previous_resource_roles <project policy>: on a move to another role, the single-resource grants
+# the previous role declared that neither generic nor the new role declares, taken back: from the agent's
+# own account, from the project (a fenced grant), and from its image repository, which stays with its
+# images (they are the agent's builds; uninstall.sh --purge deletes them). When this clone cannot read
+# the previous role, nothing is taken back: revoke_previous_role_grants has said so already, or the
+# warning here does.
 revoke_previous_resource_roles() {
   [[ -n "$PREVIOUS_ROLE" ]] || return 0
   [[ "$PREVIOUS_ROLE" =~ ^[a-z][a-z0-9-]*$ && -f "$REPO_ROOT/roles/$PREVIOUS_ROLE/role.json" ]] || return 0
@@ -740,6 +757,8 @@ revoke_previous_resource_roles() {
         fi
         revoke_repository_role "$AGENT_IMAGE_REPOSITORY" "$REGION" "$PROJECT" "$repository_policy" \
           "serviceAccount:$AGENT_EMAIL" "$role" ;;
+      project-except-paraclete)
+        revoke_fenced_project_role "$PROJECT" "$1" "serviceAccount:$AGENT_EMAIL" "$role" ;;
     esac
   done
 }
@@ -855,6 +874,8 @@ step_dashboard() {
     ensure_update_job
     ensure_update_schedule
     ensure_auto_update_off
+    ensure_managed_tag_binding "$PROJECT" "$REGION" "$(run_resource "$PROJECT" "$REGION" services "$SERVICE_NAME")"
+    ensure_managed_tag_binding "$PROJECT" "$REGION" "$(run_resource "$PROJECT" "$REGION" jobs "$UPDATE_JOB")"
   fi
   DASHBOARD_URL="$(gcloud run services describe "$SERVICE_NAME" --region="$REGION" --project="$PROJECT" \
     --format='value(status.url)' 2>/dev/null || true)"

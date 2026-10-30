@@ -32,6 +32,13 @@ NETWORK_DESCRIPTION='Created by the paraclete installer'
 SERVICE_NAME=paraclete
 IMAGE_REPOSITORY=paraclete
 
+# The tag that marks the dashboard's service and its update job as paraclete's own: a tag key on the
+# project, with one value (install/lib/tags.sh). A role's Cloud Run grant `on: project-except-paraclete`
+# (install/lib/role-access.mjs) holds a condition with this title: "not tagged paraclete=managed".
+MANAGED_TAG_KEY=paraclete
+MANAGED_TAG_VALUE=managed
+FENCE_CONDITION_TITLE=paraclete-unmanaged
+
 # The agent's own Docker repository, in the instance's region, made only for a role whose role.json
 # asks for a grant `on: agent-repository` (install/lib/role-access.mjs). The agent's builds push there;
 # it never holds the dashboard's images.

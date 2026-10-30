@@ -11,7 +11,7 @@ away again.
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, the tag that fences paraclete's own Cloud Run resources (`tags.sh`), indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the data migrations (`migrate.mjs`), the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -44,8 +44,9 @@ The steps, each printed as `[n/9]`:
 
 1. **check**: gcloud logged in; the caller can do what an owner does (`testIamPermissions`); billing on;
    the project inside an organization; the role exists, and what `generic`'s and its `role.json` ask for
-   is well formed (`lib/role-access.mjs`: short API names, single-resource grants of the two kinds below,
-   and no `gcp_roles` entry that acts as any service account or writes to any image repository); the
+   is well formed (`lib/role-access.mjs`: short API names, `resource_roles` of the three kinds below,
+   and no `gcp_roles` entry that acts as any service account, writes to any image repository, or
+   changes or runs Cloud Run services and jobs); the
    ref resolves and has `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
    secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it), cloudscheduler (automatic updates); plus chat, gmail, calendar-json, docs, sheets, slides, people and
@@ -57,7 +58,10 @@ The steps, each printed as `[n/9]`:
    tried again for about a minute (6 tries, 12 seconds apart: a just-enabled API takes a moment), then
    stops the install, saying whether it is quota, the model not being available to the project
    (Model Garden, or an organization policy), or the API still turning on. A dry run skips it.
-3. **accounts**: `paraclete-agent@` with the `gcp_roles` of `generic` and of the role;
+3. **accounts**: first the tag key `paraclete` on the project, with its one value `managed`
+   (`gcloud resource-manager tags keys create` and `values create`, each when missing), which step 6
+   binds to the dashboard's service and its update job. Then `paraclete-agent@` with the `gcp_roles`
+   of `generic` and of the role;
    `paraclete-dashboard@` with what the dashboard needs; on a Workspace role `paraclete-dwd@`, which
    `paraclete-agent@` alone may sign as (`roles/iam.serviceAccountTokenCreator` on that account) and
    whose client ID `paraclete-dashboard@` may read for its Workspace setup
@@ -67,14 +71,18 @@ The steps, each printed as `[n/9]`:
      add-iam-policy-binding`), so the agent may act as itself and as no other account;
    - `on: agent-repository`: on `agent-images`, an Artifact Registry Docker repository in the region,
      created here the first time a role asks for it (`gcloud artifacts repositories create agent-images
-     --repository-format=docker`), where the agent's builds push.
+     --repository-format=docker`), where the agent's builds push;
+   - `on: project-except-paraclete`: on the project, with the condition titled `paraclete-unmanaged`,
+     `!resource.matchTag("<project>/paraclete", "managed")` (`gcloud projects add-iam-policy-binding
+     --condition=...`), so it reaches every Cloud Run service and job but the two tagged in step 6.
 
-   Each is made only when missing. Never on the project: a role whose `gcp_roles` names act-as or image
-   push is refused in step 1, and when the agent's account holds one of those on the project (left by
-   an older role definition, or granted by hand), it is taken back here, saying so
-   (`remove-iam-policy-binding --condition=None`). Project-wide, act-as would reach
-   `paraclete-dashboard@`, whose signature the VM's control service obeys, and image push the
-   dashboard's `paraclete` repository.
+   Each is made only when missing, before anything is taken back, so a role moving to a fenced grant
+   never holds neither. Never on the whole project without a condition: a role whose `gcp_roles` names
+   act-as, image push or Cloud Run change is refused in step 1, and when the agent's account holds one
+   of those on the project (left by an older role definition, or granted by hand), it is taken back
+   here, saying so (`remove-iam-policy-binding --condition=None`). Project-wide, act-as would reach
+   `paraclete-dashboard@`, whose signature the VM's control service obeys, image push the dashboard's
+   `paraclete` repository, and Cloud Run change the dashboard's service and its update job.
 4. **firestore**: the `(default)` database in Native mode, in the region, with delete protection; the
    indexes and TTL policies in `firestore.indexes.json`.
 5. **bucket**: `gs://<project>-paraclete` with uniform access, public access prevention, and a lifecycle
@@ -124,7 +132,10 @@ The steps, each printed as `[n/9]`:
      `paraclete-dashboard@` (Cloud Run Admin lets it run the job). Created, or updated when it differs; a
      schedule paused by hand stays paused, because the admin setting is what turns automatic updates
      off. With `--no-auto-update`, `config/settings` gets `auto_update: false` (field-masked, through the
-     REST API as you).
+     REST API as you);
+   - the tag: the service `paraclete` and the job `paraclete-auto-update` each carry `paraclete=managed`
+     (`gcloud resource-manager tags bindings create`, when missing), so a fenced Cloud Run grant (step 3)
+     cannot change them. The tag stays on them through the dashboard's own upgrades.
 7. **network**: the `default` network, or a `paraclete` network when there is none; the firewall rule
    `paraclete-allow-iap-ssh` (tcp:22 from IAP's range to the tag `paraclete`, priority 1000) and
    `paraclete-deny-ingress` (deny everything else inbound to that tag, priority 65000, which outranks a
@@ -191,7 +202,8 @@ install/uninstall.sh --purge           # also the Firestore database, the bucket
 It removes the VM, the firewall rules (and the network, when the installer made it), the automatic-update
 schedule and job (the schedule first, so it cannot start the job), the dashboard's Cloud Run service and its
 image repository (which holds only the dashboard's images; the grants on the
-two go with them), the Firestore indexes and TTL policies, and the service accounts with every project
+two go with them), the tag `paraclete=managed` (taken off the job and the service before each goes, then
+the value and the key deleted), the Firestore indexes and TTL policies, and the service accounts with every project
 grant they hold (the dashboard's `roles/logging.logWriter` among them); a grant on an account itself,
 such as the agent's act-as on its own account, goes with the account. The dashboard's users records
 are Firestore data: they stay unless `--purge`.
