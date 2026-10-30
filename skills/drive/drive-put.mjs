@@ -9,21 +9,17 @@
 // skills/drive/SKILL.md.
 
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { basename, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, extname, isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs as parseOptions } from 'node:util';
 import { createCliRuntime } from '../../agent/cli/cli-runtime.mjs';
+import { checkMissionId, missionTree } from '../../agent/files/mission-paths.mjs';
 import {
   createDriveClient, parseDriveLink, conversionFor, describeType, CONVERT_TARGETS,
 } from '../../agent/providers/drive.mjs';
-import { contentTypeFor, sanitizeFileName } from '../../agent/storage/file-store.mjs';
+import { contentTypeFor, isCredentialPath, sanitizeFileName } from '../../agent/storage/file-store.mjs';
 
 export const USAGE = 'Usage: drive-put --mission <mission id> <path> [--folder <drive folder link or id>] [--name <name>] [--convert] [--json]';
-
-const MISSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-
-/** Names that hold credentials. They never leave the VM, whatever the path. */
-const CREDENTIAL_NAME = /(\.pem|\.key|-key\.json)$|^\.env(\..*)?$|^\.gateway-token$|credentials[^/]*\.json$/i;
 
 /**
  * The local file to send to Drive, checked: a relative path starts from the mission tree
@@ -38,7 +34,7 @@ const CREDENTIAL_NAME = /(\.pem|\.key|-key\.json)$|^\.env(\..*)?$|^\.gateway-tok
  * @returns {{path: string, name: string, size: number, mimeType: string, bytes: Buffer}}
  */
 export function localFile(path, { mission, paths, maxBytes }) {
-  const base = join(paths.data.missions, mission);
+  const base = missionTree(paths.data.missions, mission);
   const full = isAbsolute(path) ? path : resolve(base, path);
   if (!existsSync(full)) throw new Error(`${full} does not exist${isAbsolute(path) ? '' : ` (a relative path starts from the mission tree ${base})`}`);
   const stat = statSync(full);
@@ -47,7 +43,7 @@ export function localFile(path, { mission, paths, maxBytes }) {
   const root = realpathSync(paths.data.root);
   const inside = relative(root, real);
   if (!inside || inside.startsWith('..') || isAbsolute(inside)) throw new Error(`${full} is outside the agent's data directory ${paths.data.root}; only files from the agent's own work can go to Drive`);
-  if (CREDENTIAL_NAME.test(basename(real)) || /[\\/]keys[\\/]/.test(real)) throw new Error(`${full} holds credentials, which never leave the VM`);
+  if (isCredentialPath(real)) throw new Error(`${full} holds credentials, which never leave the VM`);
   if (stat.size > maxBytes) throw new Error(`${full} is ${(stat.size / 1048576).toFixed(1)} MB, more than the ${(maxBytes / 1048576).toFixed(0)} MB a file sent to Drive may be`);
   const name = basename(full);
   return { path: full, name, size: stat.size, mimeType: contentTypeFor(name), bytes: readFileSync(full) };
@@ -74,7 +70,7 @@ export function parseArgs(argv) {
   const { values, positionals } = parsed;
   if (values.help) return { help: true };
   if (values.mission === undefined) return { error: '--mission <mission id> is required' };
-  if (!MISSION_ID.test(values.mission)) return { error: `'${values.mission}' is not a mission id` };
+  try { checkMissionId(values.mission); } catch (err) { return { error: err.message }; }
   if (positionals.length !== 1) return { error: positionals.length ? `one file at a time, got ${positionals.length}` : 'the path of the file to upload is required' };
   let folder = null;
   if (values.folder !== undefined) {
