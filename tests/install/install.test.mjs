@@ -14,6 +14,9 @@
 // holds the condition that leaves those two out. In token mode (an access token file and the account
 // it belongs to) a run installs and uninstalls with no gcloud login at all; --events writes every step
 // and command as JSON lines, ending with done or error; and the project carries paraclete=<role>.
+// --preflight reports every check of step 1 (install/lib/preflight.mjs: permissions, billing, the
+// organization, organization policies, the APIs, and the model when Vertex AI is on) and changes
+// nothing; an install stops in step 1 on the same blockers.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -214,7 +217,7 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
 
   test('still runs the read-only checks', () => {
     const made = run.calls.map((call) => call.command);
-    for (const check of ['auth list', 'testIamPermissions', 'billing projects describe', 'projects get-ancestors', 'ls-remote', 'raw']) {
+    for (const check of ['auth list', 'testIamPermissions', 'billing info', 'ancestry', 'org policy', 'services enabled', 'ls-remote', 'raw']) {
       assert.ok(made.includes(check), `missing check: ${check}`);
     }
   });
@@ -1054,6 +1057,92 @@ describe('choosing what to install', { skip: needsBash, concurrency: true }, () 
     run = await createSandbox(noOrigin).run('install.sh', ['--yes']);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /Pass --repo/);
+  });
+});
+
+describe('--preflight: every check reported, nothing changed', { skip: needsBash, concurrency: true }, () => {
+  const eventsOf = (box) => readFileSync(join(box.repo, '..', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const eventsPath = (box) => join(box.repo, '..', 'events.jsonl').replace(/\\/g, '/');
+
+  test('a project that can take an install: only step 1, no write, every check an event, exit 0', async () => {
+    const box = createSandbox();
+    const run = await box.run('install.sh', ['--preflight', '--events', eventsPath(box)]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(steps(run.stdout).map(([n, name]) => [n, name]), [[1, 'check']]);
+    assert.match(run.stdout, /\[1\/1\] check/);
+    assert.deepEqual(writes(run.calls), []);
+    assert.deepEqual(box.state(), freshProject());
+    assert.match(run.stdout, /Vertex AI is off: step 2 checks gemini-4-argon once it turns it on/);
+    assert.match(run.stdout, /Preflight: nothing found that would stop an install in your-gcp-project\./);
+    const events = eventsOf(box);
+    assert.deepEqual(events.filter((e) => e.type === 'check').map((e) => [e.id, e.state]),
+      [['permissions', 'ok'], ['billing', 'ok'], ['organization', 'ok'], ['policy', 'ok'], ['apis', 'note']]);
+    assert.equal(events.at(-1).type, 'done');
+    assert.equal(events.at(-1).blockers, '0');
+  });
+
+  test('reports every blocker, not only the first, exits 1 and changes nothing', async () => {
+    const state = freshProject();
+    state.billingEnabled = false;
+    state.deniedPermissions = ['compute.instances.create'];
+    state.orgPolicies = { 'iam.disableServiceAccountCreation': { rules: [{ enforce: true }] } };
+    const box = createSandbox(state);
+    const run = await box.run('install.sh', ['--preflight', '--events', eventsPath(box)]);
+    assert.equal(run.status, 1);
+    for (const blocker of [/blocker: owner@example\.com needs roles\/owner on your-gcp-project\. Missing: compute\.instances\.create/,
+      /blocker: billing is not enabled on your-gcp-project: link a billing account/,
+      /blocker: iam\.disableServiceAccountCreation: creating service accounts is turned off, and step 3 creates/]) {
+      assert.match(run.stdout, blocker);
+    }
+    assert.match(run.stdout, /Preflight: 3 thing\(s\) would stop an install in your-gcp-project\./);
+    assert.deepEqual(writes(run.calls), []);
+    assert.equal(eventsOf(box).at(-1).blockers, '3');
+  });
+
+  test('with Vertex AI on, it asks the model once; a model the project cannot reach is a blocker', async () => {
+    const state = freshProject();
+    state.services = ['aiplatform.googleapis.com'];
+    state.modelAnswers = ['not-found'];
+    const blocked = await createSandbox(state).run('install.sh', ['--preflight']);
+    assert.equal(blocked.status, 1);
+    assert.match(blocked.stdout, /blocker: .*gemini-4-argon/);
+    assert.equal(blocked.calls.filter((call) => call.command === 'vertex generateContent').length, 1, "one try, not step 2's retries");
+    state.modelAnswers = ['ok'];
+    const fine = await createSandbox(state).run('install.sh', ['--preflight']);
+    assert.equal(fine.status, 0, fine.stderr);
+    assert.match(fine.stdout, /gemini-4-argon answers in your-gcp-project/);
+  });
+
+  test('a project that holds paraclete says so; token mode works the same', async () => {
+    const state = freshProject();
+    state.account = '';
+    const box = createSandbox(state);
+    writeFileSync(join(box.repo, '..', 'token'), 'fake-token\n');
+    const token = join(box.repo, '..', 'token').replace(/\\/g, '/');
+    const run = await box.run('install.sh', ['--preflight', '--project', PROJECT, '--access-token-file', token, '--account', OWNER]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /acting as owner@example\.com, with an access token/);
+    assert.match(run.stdout, /owner@example\.com can do everything the install needs/);
+  });
+});
+
+describe('step 1 stops on an organization policy, and only warns about one it cannot read', { skip: needsBash, concurrency: true }, () => {
+  test('a policy that breaks the install stops it in step 1, naming the policy and what it breaks', async () => {
+    const state = freshProject();
+    state.orgPolicies = { 'compute.vmExternalIpAccess': { rules: [{ denyAll: true }] } };
+    const run = await createSandbox(state).run('install.sh', ['--yes']);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /compute\.vmExternalIpAccess: the VM paraclete may not have an external IP address, and the agent's VM reaches GitHub/);
+    assert.deepEqual(writes(run.calls), []);
+    assert.deepEqual(steps(run.stdout).map(([n]) => n), [1]);
+  });
+
+  test('policies that cannot be read (their API off where the call is billed) are a warning, and the install goes on', async () => {
+    const state = freshProject();
+    state.orgPolicyApi = 'off';
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stderr, /warning: could not read the organization policies \(SERVICE_DISABLED.*turn on orgpolicy\.googleapis\.com/);
   });
 });
 

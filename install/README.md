@@ -11,7 +11,7 @@ away again.
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, the tag that fences paraclete's own Cloud Run resources (`tags.sh`), whose credentials a run acts with (`auth.sh`), the project's `paraclete` label (`project-label.sh`), indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, the tag that fences paraclete's own Cloud Run resources (`tags.sh`), whose credentials a run acts with (`auth.sh`), the project's `paraclete` label (`project-label.sh`), indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `preflight.mjs`: step 1's checks of the project (permissions, billing, the organization, the organization policies that break an install, the APIs it turns on), which `install.sh` runs in step 1 and with `--preflight`. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the data migrations (`migrate.mjs`), the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -41,16 +41,31 @@ install/install.sh --project your-gcp-project --role generic --name Paraclete --
 | `--access-token-file <path>` | gcloud's login | Token mode (below) |
 | `--account <email>` | | Token mode: the account the token belongs to |
 | `--events <path>` | | Also writes the run's progress there, one JSON object per line (below) |
+| `--preflight` | | Only checks: runs step 1, reports every result (below), changes nothing, and exits 1 when something would stop an install |
 | `--no-auto-update` | Automatic updates on | Stores `auto_update: false` in Firestore `config/settings` (step 6), so new releases install only from the System tab. Without it nothing is stored, and a re-run never undoes an admin's choice |
 
 The steps, each printed as `[n/9]`:
 
-1. **check**: gcloud logged in; the caller can do what an owner does (`testIamPermissions`); billing on;
-   the project inside an organization; the role exists, and what `generic`'s and its `role.json` ask for
-   is well formed (`lib/role-access.mjs`: short API names, `resource_roles` of the three kinds below,
-   and no `gcp_roles` entry that acts as any service account, writes to any image repository, or
-   changes or runs Cloud Run services and jobs); the
-   ref resolves and has `install/bootstrap.sh`.
+1. **check**: gcloud logged in (or token mode's account); the project exists; the role exists, and what
+   `generic`'s and its `role.json` ask for is well formed (`lib/role-access.mjs`: short API names,
+   `resource_roles` of the three kinds below, and no `gcp_roles` entry that acts as any service
+   account, writes to any image repository, or changes or runs Cloud Run services and jobs); the name,
+   region and zone. Then the project's own checks, all read-only (`lib/preflight.mjs`):
+   - the caller can do what an owner does (`testIamPermissions`);
+   - billing is on;
+   - the project is inside an organization;
+   - no organization policy breaks the install. The policies checked are:
+     `iam.disableServiceAccountCreation`, `compute.vmExternalIpAccess` (the VM has an external
+     address), `compute.trustedImageProjects` (it boots `debian-cloud`'s image), `run.allowedIngress`
+     (the dashboard's ingress is `all`), `gcp.restrictServiceUsage`, `cloudbuild.allowedWorkerPools`
+     and `gcp.resourceLocations`. A policy with conditions is a note to check by hand;
+   - which of the APIs step 2 turns on are off, as a note.
+
+   A blocker among them stops the run here, naming every one. A check whose call can't be made is a
+   warning, and the run goes on. These calls name no project to bill: the target project usually has
+   the Cloud Billing and Organization Policy APIs off, so they're billed to the token's own project
+   (gcloud's in Cloud Shell, the caller's in token mode). Last, the ref resolves and has
+   `install/bootstrap.sh`.
 2. **apis**: compute, run, firestore, iam, iamcredentials, aiplatform, artifactregistry, cloudbuild,
    secretmanager, storage, iap, drive, cloudresourcemanager (gcloud's `iap web` commands need it), cloudscheduler (automatic updates); plus chat, gmail, calendar-json, docs, sheets, slides, people and
    admin for a Workspace role; plus the `apis` of `generic`'s and the role's `role.json` (short names,
@@ -198,9 +213,10 @@ written there as one JSON object per line, in order. That works in either mode, 
 | `note` | `text` | a detail under a step |
 | `command` | `text`: the command exactly as printed after `+` | every command that changes something (and, in a dry run, would) |
 | `warning` | `text` | a warning that does not stop the run |
+| `check` | `id`, `state`, `text`, `fix` | one of step 1's checks of the project ("Only checking", below) |
 | `text` | `text` | the plan and the closing summary |
 | `error` | `text` | the reason the run stopped; it is the last event |
-| `done` | `install.sh`: `dashboard` (its URL), `commit`, `release`. Otherwise none | the end of a run that finished; it is the last event |
+| `done` | `install.sh`: `dashboard` (its URL), `commit`, `release`. With `--preflight`: `blockers`. Otherwise none | the end of a run that finished; it is the last event |
 
 Every event also has `t`, its UTC time in seconds (`2026-10-30T19:27:35Z`). A run that ends with
 neither `done` nor `error` was killed.
@@ -210,6 +226,19 @@ relabels it. `uninstall.sh` removes the label in its last step. Every other labe
 A caller finds every instance the admin can see with a project search on `labels.paraclete:*`, CLI
 installs included. gcloud sets project labels only in its alpha track, so the scripts write them through
 Resource Manager's REST API (`lib/project-label.sh`).
+
+**Only checking (`--preflight`).** `install.sh --preflight` runs step 1 and reports every check instead
+of stopping at the first blocker. When Vertex AI is already on, it also asks the agent's model once, as
+step 2 would. It says when the project already holds paraclete, prints how many things would stop an
+install, and changes nothing. It exits 0 when nothing would stop an install, and 1 when something would.
+
+With `--events`, each check is also an event, `{"type": "check", "id", "state", "text", "fix"}`:
+- `state` is `ok`, `note`, `unknown` (the call couldn't be made) or `blocker`;
+- `id` is `permissions`, `billing`, `organization`, `policy`, `policy:<constraint>`, `apis` or
+  `model`.
+
+The last event is `done`, with `blockers` (a count). It works in token mode, so a web app can show a
+project's readiness before anyone presses Deploy.
 
 ### Moving an instance to another role (a developer path)
 
