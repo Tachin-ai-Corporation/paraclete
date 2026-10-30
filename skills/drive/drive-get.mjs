@@ -13,26 +13,13 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs as parseOptions } from 'node:util';
 import { createCliRuntime } from '../../agent/cli/cli-runtime.mjs';
+import { checkMissionId, missionInbox } from '../../agent/files/mission-paths.mjs';
 import { createDriveClient, parseDriveLink, DriveError } from '../../agent/providers/drive.mjs';
 import { sanitizeFileName } from '../../agent/storage/file-store.mjs';
 
+export { missionInbox };
+
 export const USAGE = 'Usage: drive-get <drive link or id> (--mission <mission id> | --out <path>) [--json]';
-
-/** A mission id is one plain path segment, as the mission trees name their directories. */
-const MISSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
-
-/**
- * A mission's inbox: <missions root>/<id>/missions/<id>/inbox. Inside the mission tree, under the
- * `missions/` directory its git excludes keep out of every commit.
- *
- * @param {string} missionsRoot dataPaths(instance).missions
- * @param {string} missionId
- * @returns {string}
- */
-export function missionInbox(missionsRoot, missionId) {
-  if (!MISSION_ID.test(String(missionId ?? ''))) throw new Error(`'${missionId}' is not a mission id`);
-  return join(missionsRoot, missionId, 'missions', missionId, 'inbox');
-}
 
 /**
  * Checks the shared destination options: exactly one of --mission and --out.
@@ -43,7 +30,9 @@ export function missionInbox(missionsRoot, missionId) {
 export function destinationProblem({ mission, out }) {
   if (mission === undefined && out === undefined) return 'say where the file goes: --mission <mission id> (its inbox) or --out <path>';
   if (mission !== undefined && out !== undefined) return 'use --mission or --out, not both';
-  if (mission !== undefined && !MISSION_ID.test(mission)) return `'${mission}' is not a mission id`;
+  if (mission !== undefined) {
+    try { checkMissionId(mission); } catch (err) { return err.message; }
+  }
   if (out !== undefined && !out.trim()) return '--out needs a path';
   return null;
 }

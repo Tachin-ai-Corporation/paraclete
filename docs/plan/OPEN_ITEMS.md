@@ -126,9 +126,6 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
   CORS) would refuse it at the bucket.
 - **Files from before phase 7.** Missions finished before the `files` records existed have objects in
   the bucket but no records, so their Files section is empty.
-- **One mission-inbox path.** `agent/files/mission-paths.mjs` and `skills/drive/drive-get.mjs` each
-  build `missions/<id>/missions/<id>/inbox/`; drive-get and drive-export should use the files package's.
-  `drive-put` keeps its own copy of the credential-path check that `agent/storage/file-store.mjs` has.
 - **Reply attachments** are capped at 20 by a constant (`MAX_ATTACHMENTS` in the brain's completion).
 - **Images, live.** `gemini-4-argon` accepts images inside a function response and reads them (it
   compared a rendered .docx with its source PDF and fixed a duplicated title). Still to check: that
