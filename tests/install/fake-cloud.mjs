@@ -72,15 +72,56 @@ function parse(list) {
   return { words, flags };
 }
 
-const policyText = (bindings) => (bindings || []).map(([role, member]) => `${role},${member}`).join('\n');
+// A binding is [role, member] or [role, member, condition title]. A policy prints as gcloud prints it
+// with install/lib/iam.sh's POLICY_FORMAT: "<role>,<member>,<condition title>", the title empty when
+// there is no condition.
+const policyText = (bindings) => (bindings || []).map(([role, member, title = '']) => `${role},${member},${title}`).join('\n');
 
-function addBinding(bindings, role, member) {
-  if (!bindings.some(([r, m]) => r === role && m === member)) bindings.push([role, member]);
+function addBinding(bindings, role, member, title = '') {
+  if (!bindings.some(([r, m, c = '']) => r === role && m === member && c === title)) {
+    bindings.push(title ? [role, member, title] : [role, member]);
+  }
 }
 
 function removeBinding(bindings, role, member) {
   return bindings.filter(([r, m]) => !(r === role && m === member));
 }
+
+/**
+ * The condition title a project policy command names: '' for --condition=None, the title of gcloud's
+ * dict syntax (key=value items, `^X^` first when X separates them), or null for --all.
+ */
+function conditionTitle(flags) {
+  if (flags.all === true) return null;
+  const value = flags.condition;
+  if (value === undefined) fail('ERROR: (gcloud) Adding a binding without specifying a condition to a policy containing conditions is prohibited');
+  if (value === 'None') return '';
+  const custom = /^\^(.)\^/.exec(value);
+  const items = custom ? value.slice(3).split(custom[1]) : value.split(',');
+  const fields = Object.fromEntries(items.map((item) => [item.slice(0, item.indexOf('=')), item.slice(item.indexOf('=') + 1)]));
+  if (!fields.title || !fields.expression) fail(`a condition needs a title and an expression: ${value}`);
+  return fields.title;
+}
+
+/** Removes the project bindings a remove-iam-policy-binding names, failing as gcloud does when there are none. */
+function removeProjectBinding(f) {
+  const title = conditionTitle(f);
+  const matches = ([r, m, c = '']) => r === f.role && m === f.member && (title === null || c === title);
+  if (!state.projectPolicy.some(matches)) fail('ERROR: (gcloud) Policy binding with the specified principal, role, and condition not found!');
+  state.projectPolicy = state.projectPolicy.filter((binding) => !matches(binding));
+}
+
+/** The Cloud Run service or job a tag binding's parent names (//run.googleapis.com/projects/P/locations/R/<kind>/<name>). */
+function taggable(parent, location) {
+  const match = /^\/\/run\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/(services|jobs)\/([^/]+)$/.exec(parent || '');
+  if (!match || match[1] !== state.project || match[2] !== location) fail(`cannot tag ${parent} in ${location}`);
+  const exists = match[3] === 'services' ? state.runServices[match[4]] : state.runJobs[match[4]];
+  if (!exists) fail(`NOT_FOUND: ${parent}`);
+  return parent;
+}
+
+/** A tag value's id, as bindings name it, from its namespaced name. */
+const tagValueId = (namespaced) => `tagValues/${Object.keys(state.tagValues).indexOf(namespaced) + 1001}`;
 
 function readMetadata(flags) {
   const metadata = {};
@@ -170,11 +211,85 @@ const GCLOUD = {
   'projects get-iam-policy': { write: false, run: () => out(policyText(state.projectPolicy)) },
   'projects add-iam-policy-binding': {
     write: true,
-    run: (_, f) => { addBinding(state.projectPolicy, f.role, f.member); save(); out(''); },
+    run: (_, f) => { addBinding(state.projectPolicy, f.role, f.member, conditionTitle(f) || ''); save(); out(''); },
   },
   'projects remove-iam-policy-binding': {
     write: true,
-    run: (_, f) => { state.projectPolicy = removeBinding(state.projectPolicy, f.role, f.member); save(); out(''); },
+    run: (_, f) => { removeProjectBinding(f); save(); out(''); },
+  },
+  'resource-manager tags keys describe': {
+    write: false,
+    run: ([name]) => (state.tagKeys.includes(name) ? out(`tagKeys/${state.tagKeys.indexOf(name) + 1}`) : fail('NOT_FOUND')),
+  },
+  'resource-manager tags keys create': {
+    write: true,
+    run: ([short], f) => {
+      const name = `${f.parent.replace(/^projects\//, '')}/${short}`;
+      if (state.tagKeys.includes(name)) fail('ALREADY_EXISTS');
+      state.tagKeys.push(name);
+      save();
+      out('');
+    },
+  },
+  'resource-manager tags keys delete': {
+    write: true,
+    run: ([name]) => {
+      if (!state.tagKeys.includes(name)) fail('NOT_FOUND');
+      if (Object.keys(state.tagValues).some((value) => value.startsWith(`${name}/`))) fail('FAILED_PRECONDITION: the key has values');
+      state.tagKeys = state.tagKeys.filter((key) => key !== name);
+      save();
+      out('');
+    },
+  },
+  'resource-manager tags values describe': {
+    write: false,
+    run: ([name]) => (name in state.tagValues ? out(tagValueId(name)) : fail('NOT_FOUND')),
+  },
+  'resource-manager tags values create': {
+    write: true,
+    run: ([short], f) => {
+      if (!state.tagKeys.includes(f.parent)) fail(`NOT_FOUND: tag key ${f.parent}`);
+      const name = `${f.parent}/${short}`;
+      if (name in state.tagValues) fail('ALREADY_EXISTS');
+      state.tagValues[name] = [];
+      save();
+      out('');
+    },
+  },
+  'resource-manager tags values delete': {
+    write: true,
+    run: ([name]) => {
+      if (!(name in state.tagValues)) fail('NOT_FOUND');
+      if (state.tagValues[name].length) fail('FAILED_PRECONDITION: the value is bound to resources');
+      delete state.tagValues[name];
+      save();
+      out('');
+    },
+  },
+  'resource-manager tags bindings list': {
+    write: false,
+    run: (_, f) => out(Object.entries(state.tagValues)
+      .filter(([, parents]) => parents.includes(taggable(f.parent, f.location))).map(([name]) => tagValueId(name)).join('\n')),
+  },
+  'resource-manager tags bindings create': {
+    write: true,
+    run: (_, f) => {
+      const parents = state.tagValues[f['tag-value']] || fail(`NOT_FOUND: tag value ${f['tag-value']}`);
+      if (parents.includes(taggable(f.parent, f.location))) fail('ALREADY_EXISTS');
+      parents.push(f.parent);
+      save();
+      out('');
+    },
+  },
+  'resource-manager tags bindings delete': {
+    write: true,
+    run: (_, f) => {
+      const parents = state.tagValues[f['tag-value']] || fail(`NOT_FOUND: tag value ${f['tag-value']}`);
+      if (!parents.includes(taggable(f.parent, f.location))) fail('NOT_FOUND: no such binding');
+      state.tagValues[f['tag-value']] = parents.filter((parent) => parent !== f.parent);
+      save();
+      out('');
+    },
   },
   'services list': { write: false, run: () => out(state.services.join('\n')) },
   'services enable': {

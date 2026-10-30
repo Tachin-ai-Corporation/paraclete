@@ -5,7 +5,9 @@
 // deletes those too, but only after the project id is typed; a dry run deletes nothing; and it never
 // touches what the installer didn't create. The agent's own image repository (a DevOps Engineer
 // instance's `agent-images`) is kept with its images, without the agent's grant on it, unless --purge;
-// the agent's act-as on its own account goes with the account.
+// the agent's act-as on its own account goes with the account. The tag paraclete=managed comes off the
+// update job and the service before each is deleted, then its value and key go; on a DevOps Engineer
+// instance the agent's fenced run.admin goes with its other project grants.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSandbox, find, flag, freshProject, needsBash, steps, PROJECT } from './harness.mjs';
@@ -58,6 +60,7 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
       'Cloud Run job paraclete-auto-update in us-central1 (the automatic update)',
       'Cloud Run service paraclete in us-central1 (the dashboard)',
       "Artifact Registry repository paraclete in us-central1 (the dashboard's images)",
+      'tag paraclete=managed on the project (it marks the dashboard and its update job)',
       'Firestore index messages|collection|thread_id:ascending,timestamp:descending',
       'Firestore index messages|collection|sender:ascending,timestamp:descending',
       'Firestore index work|collection|status:ascending,created_at:descending',
@@ -127,6 +130,24 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.ok(commands.indexOf(job) < position(commands, 'gcloud', 'run', 'services', 'delete'));
   });
 
+  test('the plan takes the tag off the job and the service before each goes, then deletes its value and key', async () => {
+    const { commands } = await createSandbox(installed).run('uninstall.sh', ['--dry-run']);
+    const value = `${PROJECT}/paraclete/managed`;
+    const resource = (kind, name) => `//run.googleapis.com/projects/${PROJECT}/locations/us-central1/${kind}/${name}`;
+    assert.deepEqual(find(commands, 'gcloud', 'resource-manager'), [
+      ['gcloud', 'resource-manager', 'tags', 'bindings', 'delete', `--tag-value=${value}`,
+        `--parent=${resource('jobs', 'paraclete-auto-update')}`, '--location=us-central1', '--quiet'],
+      ['gcloud', 'resource-manager', 'tags', 'bindings', 'delete', `--tag-value=${value}`,
+        `--parent=${resource('services', 'paraclete')}`, '--location=us-central1', '--quiet'],
+      ['gcloud', 'resource-manager', 'tags', 'values', 'delete', value, '--quiet'],
+      ['gcloud', 'resource-manager', 'tags', 'keys', 'delete', `${PROJECT}/paraclete`, '--quiet'],
+    ]);
+    const [jobTag, serviceTag, valueGone] = find(commands, 'gcloud', 'resource-manager');
+    assert.ok(commands.indexOf(jobTag) < position(commands, 'gcloud', 'run', 'jobs', 'delete'));
+    assert.ok(commands.indexOf(serviceTag) < position(commands, 'gcloud', 'run', 'services', 'delete'));
+    assert.ok(commands.indexOf(valueGone) > position(commands, 'gcloud', 'run', 'services', 'delete'));
+  });
+
   test('without --yes, a no deletes nothing', async () => {
     const run = await createSandbox(installed).run('uninstall.sh', [], { input: 'n\n' });
     assert.equal(run.status, 1);
@@ -156,6 +177,7 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(after.buckets[BUCKET].policy, []);
     assert.deepEqual(after.services, installed.services, 'the APIs stay on');
     assert.deepEqual(after.networks, installed.networks);
+    assert.deepEqual([after.tagKeys, after.tagValues], [[], {}]);
 
     const again = await box.run('uninstall.sh', ['--yes']);
     assert.equal(again.status, 0, again.stderr);

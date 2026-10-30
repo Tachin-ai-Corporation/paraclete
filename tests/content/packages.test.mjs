@@ -274,31 +274,38 @@ test('no role grants the agent a basic role, or one that hands out access', () =
   assert.deepEqual(found, []);
 });
 
-test('no role acts as any service account or pushes to any image repository project-wide', () => {
+test('no role acts as any service account, pushes to any image repository or changes any Cloud Run resource project-wide', () => {
   // Project-wide, act-as reaches the dashboard's account, whose signature the VM's control service
-  // obeys, and Artifact Registry write reaches the dashboard's images. Both are granted only on the
-  // agent's own account or repository.
+  // obeys, Artifact Registry write reaches the dashboard's images, and Cloud Run change reaches the
+  // dashboard's service and its update job. Act-as and write are granted only on the agent's own account
+  // or repository, Cloud Run change only on the project minus paraclete's own.
   for (const name of ['roles/iam.serviceAccountUser', 'roles/iam.serviceAccountTokenCreator', 'roles/artifactregistry.writer',
-    'roles/artifactregistry.admin', 'roles/artifactregistry.repoAdmin']) {
+    'roles/artifactregistry.admin', 'roles/artifactregistry.repoAdmin', 'roles/run.admin', 'roles/run.developer',
+    'roles/run.jobsExecutorWithOverrides']) {
     assert.ok(PROJECT_WIDE_REFUSED.includes(name), `${name} is refused project-wide`);
   }
   const found = roles.flatMap((role) => readJson('roles', role, 'role.json').gcp_roles
     .filter((g) => PROJECT_WIDE_REFUSED.includes(g)).map((g) => `${role}: ${g}`));
   assert.deepEqual(found, []);
-  // What a role may ask for on a single resource: acting as itself, and its own images.
-  assert.deepEqual(Object.keys(RESOURCE_KINDS), ['agent-account', 'agent-repository']);
+  // What a role may ask for on a single resource: acting as itself, its own images, and Cloud Run but
+  // paraclete's own.
+  assert.deepEqual(Object.keys(RESOURCE_KINDS), ['agent-account', 'agent-repository', 'project-except-paraclete']);
   assert.ok(RESOURCE_KINDS['agent-account'].includes('roles/iam.serviceAccountUser'));
   assert.ok(RESOURCE_KINDS['agent-repository'].includes('roles/artifactregistry.writer'));
+  assert.ok(RESOURCE_KINDS['project-except-paraclete'].includes('roles/run.admin'));
+  assert.ok(!RESOURCE_KINDS['project-except-paraclete'].includes('roles/run.jobsExecutorWithOverrides'), 'overrides run any command');
   assert.ok(!Object.values(RESOURCE_KINDS).flat().includes('roles/artifactregistry.admin'), 'admin would let it share its repository');
 });
 
-test('the DevOps Engineer acts as itself and pushes to its own repository, and nothing wider', () => {
+test('the DevOps Engineer changes Cloud Run but paraclete\'s own, acts as itself and pushes to its own repository, and nothing wider', () => {
   const devops = readJson('roles', 'devops-engineer', 'role.json');
   assert.deepEqual(devops.resource_roles, [
+    { role: 'roles/run.admin', on: 'project-except-paraclete' },
     { role: 'roles/iam.serviceAccountUser', on: 'agent-account' },
     { role: 'roles/artifactregistry.writer', on: 'agent-repository' },
   ]);
   assert.ok(!devops.gcp_roles.some((g) => /^roles\/(iam|artifactregistry)\./.test(g)), 'no act-as or registry role on the project');
+  assert.deepEqual(devops.gcp_roles.filter((g) => g.startsWith('roles/run.')), ['roles/run.viewer'], 'Cloud Run on the project is read-only');
 });
 
 test('the generic role installs its upkeep as locked responsibilities', () => {

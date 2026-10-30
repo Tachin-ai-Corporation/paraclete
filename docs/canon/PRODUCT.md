@@ -276,7 +276,6 @@ listed here.
 | One way out (P-27) | Write a message document to Firestore, or mint a Chat token, since the VM's account may sign as `paraclete-dwd@` | P-27 |
 | Drive as a source, not a workspace (P-28) | Edit a shared file through the Drive API, which the VM's `drive` scope allows | P-28 |
 | The research organ only researches | Run commands and write files: temporal-research has the motor's toolset (`agent/gateway/organs.mjs`) | [BRAIN.md](BRAIN.md), B-2 |
-| The DevOps role leaves the dashboard alone | Change the dashboard's Cloud Run service, since its Cloud Run grant is project-wide | [plan/OPEN_ITEMS.md](../plan/OPEN_ITEMS.md), phase 8 |
 
 ### P-17. The agent cannot change its own foundation
 
@@ -322,17 +321,20 @@ protocol.
 The VM runs as `paraclete-agent@`, never as the default compute account. The agent's account gets the
 `generic` role's few project roles, object access on the instance's bucket only, access to each secret
 an admin grants it, and what its role declares. No role may grant, project-wide, a role that acts as
-another service account or writes to an image repository; a role that needs either gets it on one
-resource of its own: the agent's own account, or its own image repository, `agent-images`.
+another service account, writes to an image repository, or changes or runs Cloud Run services and
+jobs. A role that needs one gets it on one resource of its own (the agent's own account, or its own
+image repository, `agent-images`), or for Cloud Run, on the project minus paraclete's own.
 
-- **Why.** Project-wide act-as would reach `paraclete-dashboard@`, whose signature control obeys, and
-  project-wide image push would reach the dashboard's own images. Either would let the agent command
-  itself as an admin.
+- **Why.** Project-wide act-as would reach `paraclete-dashboard@`, whose signature control obeys;
+  project-wide image push would reach the dashboard's own images; and project-wide Cloud Run change
+  would reach the dashboard's service and its update job, which runs as the dashboard's account. Any
+  of them would let the agent command itself as an admin.
 - **Kept by.** `install/lib/role-access.mjs` (what a role may ask for, and the roles never granted
   project-wide), run by `install/install.sh`, which refuses such a role and takes back such a grant it
   finds. `tests/content/packages.test.mjs` runs the same checks on every role. Each role's grants are
-  in its `role.json`, such as `roles/generic/role.json`. The known gap is the DevOps role's
-  project-wide Cloud Run grant (P-16).
+  in its `role.json`, such as `roles/generic/role.json`. A role that changes Cloud Run gets it on
+  every service and job but the dashboard's and its update job, which the installer tags
+  `paraclete=managed` (`install/lib/tags.sh`).
 
 ### P-20. The VM takes no inbound traffic but SSH through IAP, and the gateway answers only its own machine
 

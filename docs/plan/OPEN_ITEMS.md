@@ -151,15 +151,6 @@ refusing an outside email at `setIamPolicy`; creating, rotating and deleting a s
 - **Dashboard users in group spaces.** A dashboard user is recognised in a group space only after they
   have written to the agent in a direct message once. The `chat.memberships.readonly` scope would let
   the ears match them without that step.
-- **Cloud Run admin is still project-wide for the devops role.** Act-as and image pushes are on its
-  own account and `agent-images` only, so it cannot run anything as the dashboard's account or sign
-  commands; but IAM still lets it delete, reconfigure, re-route or replace the dashboard's `paraclete`
-  service with a revision of its own image running as `paraclete-agent@`. Only the skills forbid it.
-  Make IAM enforce it, after checking on a dev project: (a) a conditional grant excluding
-  `.../services/paraclete` (confirm the resource types and name forms Cloud Run evaluates, and that
-  list, deploy and traffic still work), or (b) an IAM deny policy on a tag the installer binds to the
-  dashboard's service. Either way, install.sh and uninstall.sh must learn conditional bindings (they
-  read policies without conditions and remove with `--condition=None`).
 - **A default runtime account for deployed services.** A service the agent deploys runs as
   `paraclete-agent@` by default and carries all its access; only the gcloud skill keeps public ones off
   it. A third resource kind (`runtime-account`: an empty account with act-as for the agent) would let

@@ -9,12 +9,17 @@
 // Why single-resource grants exist: some roles must never be granted on the whole project. Acting as a
 // service account (`iam.serviceAccountUser`) project-wide reaches every account, the dashboard's
 // included, whose signature the VM's control service trusts; writing to Artifact Registry project-wide
-// reaches the dashboard's own image repository. A role that needs them gets them on one resource that
-// is its agent's own:
+// reaches the dashboard's own image repository; changing or running Cloud Run resources project-wide
+// reaches the dashboard's service and its update job. A role that needs them gets them on resources
+// that are its agent's own, or that aren't paraclete's:
 //
-//   agent-account     the agent's service account, paraclete-agent@: the agent may act as itself only
-//   agent-repository  the Artifact Registry Docker repository `agent-images` in the instance's region,
-//                     which the installer creates when a role asks for it
+//   agent-account             the agent's service account, paraclete-agent@: the agent may act as
+//                             itself only
+//   agent-repository          the Artifact Registry Docker repository `agent-images` in the instance's
+//                             region, which the installer creates when a role asks for it
+//   project-except-paraclete  the project, with the condition "not tagged paraclete=managed": the
+//                             installer tags the dashboard's service and its update job
+//                             (install/lib/tags.sh), so every other Cloud Run service and job is in reach
 //
 //   node install/lib/role-access.mjs check <repo> <role>           nothing, or the problems (exit 2)
 //   node install/lib/role-access.mjs apis <repo> <role>            short API names, one per line
@@ -42,13 +47,19 @@ export const RESOURCE_KINDS = Object.freeze({
   'agent-account': Object.freeze(['roles/iam.serviceAccountUser', 'roles/iam.serviceAccountTokenCreator']),
   // Its own images. Not roles/artifactregistry.admin: that also changes who may read the repository.
   'agent-repository': Object.freeze(['roles/artifactregistry.reader', 'roles/artifactregistry.writer', 'roles/artifactregistry.repoAdmin']),
+  // Every Cloud Run service and job but the dashboard's service and its update job. Reading them all is
+  // roles/run.viewer, which a role may hold on the whole project.
+  'project-except-paraclete': Object.freeze(['roles/run.admin', 'roles/run.developer']),
 });
 
 /**
  * Roles never granted on the whole project, by any role. The first four let the agent act as, or mint
- * credentials for, every service account in the project, the dashboard's included; the rest let it
- * write to every Artifact Registry repository, the dashboard's included. A role that needs act-as or
- * image push asks for it in `resource_roles`, on its own account or repository (RESOURCE_KINDS).
+ * credentials for, every service account in the project, the dashboard's included; the next five let
+ * it write to every Artifact Registry repository, the dashboard's included; the last five let it
+ * change, replace or run every Cloud Run service and job, the dashboard's service and its update job
+ * included (the job runs as the dashboard's account, and with overrides it runs any command). A role
+ * that needs one asks for it in `resource_roles`, on its own account or repository, or on the project
+ * except paraclete's own (RESOURCE_KINDS).
  */
 export const PROJECT_WIDE_REFUSED = Object.freeze([
   'roles/iam.serviceAccountUser',
@@ -60,6 +71,11 @@ export const PROJECT_WIDE_REFUSED = Object.freeze([
   'roles/artifactregistry.admin',
   'roles/artifactregistry.createOnPushWriter',
   'roles/artifactregistry.createOnPushRepoAdmin',
+  'roles/run.admin',
+  'roles/run.developer',
+  'roles/run.sourceDeveloper',
+  'roles/run.jobsExecutor',
+  'roles/run.jobsExecutorWithOverrides',
 ]);
 
 /** A short API name: the part before .googleapis.com, e.g. bigquery, calendar-json. */

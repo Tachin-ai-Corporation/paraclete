@@ -42,33 +42,41 @@ Granted on the project to `paraclete-agent@` by the installer, on top of the gen
 
 | Role | Why |
 |---|---|
-| `roles/run.admin` | Deploy, update, roll back and delete Cloud Run services, and make one public when asked: the invoker binding for `allUsers` needs `run.services.setIamPolicy`, which `run.developer` lacks |
+| `roles/run.viewer` | Read every Cloud Run service, revision and job, the dashboard's included |
 | `roles/cloudbuild.builds.editor` | Submit, read and cancel builds |
 | `roles/logging.viewer` | Build logs (Cloud Logging only) and service logs |
 | `roles/storage.objectUser` | Read and write objects in the project's buckets, without changing object ACLs (unlike `storage.objectAdmin`) or bucket settings |
 | `roles/storage.bucketViewer` | See buckets and their settings; `gcloud builds submit` checks the staging bucket |
 | `roles/firebasehosting.admin` | Hosting sites, preview channels, deploys, releases and rollbacks |
 
-Granted on single resources, never the project (`role.json` `resource_roles`):
+Granted on single resources, or on the project minus paraclete's own (`role.json` `resource_roles`):
 
 | Role | On | Why |
 |---|---|---|
+| `roles/run.admin` | Every Cloud Run service and job but the dashboard's `paraclete` service and its update job (`project-except-paraclete`) | Deploy, update, roll back and delete Cloud Run services and jobs, and make a service public when asked: the invoker binding for `allUsers` needs `run.services.setIamPolicy`, which `run.developer` lacks |
 | `roles/iam.serviceAccountUser` | `paraclete-agent@` itself (`agent-account`) | Act as its own account and no other: its builds run as it, and so do the services it deploys, unless an admin lets it use another runtime account (below) |
 | `roles/artifactregistry.writer` | `agent-images` (`agent-repository`), a Docker repository the installer creates for this role in the instance's region | The only repository its builds push to: `<region>-docker.pkg.dev/<project>/agent-images/<name>` |
 
-Act-as and Artifact Registry write are never granted on the project, to any role: project-wide, act-as
-would reach the dashboard's `paraclete-dashboard@`, whose signature the VM's control service obeys, so
-the agent could deploy a service or a build running as that account and command its own VM; and write
-would reach the dashboard's `paraclete` image repository. The installer refuses a role that asks for
-either project-wide, and takes back one it finds there.
+Act-as, Artifact Registry write and Cloud Run change are never granted on the whole project, to any
+role. Project-wide, act-as would reach the dashboard's `paraclete-dashboard@`, whose signature the VM's
+control service obeys, so the agent could deploy a service or a build running as that account and
+command its own VM. Write would reach the dashboard's `paraclete` image repository. Cloud Run change
+would reach the dashboard's service, and its update job, which runs as the dashboard's account. The
+installer refuses a role that asks for any of them project-wide, and takes back one it finds there.
 
-**What `run.admin` still reaches.** It is granted on the whole project, so IAM lets the agent delete or
-reconfigure every Cloud Run service in it, the dashboard's `paraclete` included: delete it, move its
-traffic to an older revision, change its settings or who may reach it, or replace it with a revision of
-the agent's own image running as `paraclete-agent@`. What IAM does stop is anything running as
-`paraclete-dashboard@` (that takes act-as on that account), so the agent still cannot sign the commands
-its VM obeys. Leaving the dashboard alone is the agent's rule, not IAM's: the role's prompts and the
-`gcloud` skill forbid touching anything named `paraclete` or starting with `paraclete-`.
+**What `run.admin` reaches.** It is granted on the project with the condition "not tagged
+`paraclete=managed`". The installer binds that tag to the dashboard's `paraclete` service and its
+update job (`install/lib/tags.sh`). So the agent can deploy, change and delete every other Cloud Run
+service and job, and those it creates carry no tag. But IAM refuses it any change to those two: it can't
+delete them, move their traffic, change their settings or who may reach them, or run the job. It holds
+no tag permissions, so it cannot take the tag off. `run.viewer` still lets it read both. The rest of
+the instance (its VM, network, accounts and bucket) is the agent's rule to leave alone, not IAM's: the
+role's prompts and the `gcloud` skill forbid touching anything named `paraclete` or starting with
+`paraclete-`.
+
+An instance installed before this fence keeps the project-wide `run.admin` until an owner re-runs
+`install/install.sh` on it: that run grants the fenced `run.admin`, takes back the project-wide one, and
+tags the two resources.
 
 **Not granted,** so a person does these when the work needs them, and the skills say exactly what to ask
 for: creating service accounts, granting roles on the project, creating other Artifact Registry

@@ -5,17 +5,18 @@
   "version": 1,
   "workspace": false,
   "skills": ["gcloud", "container-images", "cloud-storage", "firebase"],
-  "_gcp_roles_comment": "Added to the generic base set, on the project, for what the four skills do. run.admin: deploy, update, roll back and delete Cloud Run services, and make one public (the invoker binding needs run.services.setIamPolicy, which run.developer lacks); project-wide, so it reaches every Cloud Run service, the dashboard's included (README: what this grant reaches). cloudbuild.builds.editor: submit, read and cancel builds. logging.viewer: build logs (builds log to Cloud Logging only) and service logs. storage.objectUser and storage.bucketViewer: read and write objects and see buckets, never bucket settings or IAM (objectUser, unlike objectAdmin, cannot change object ACLs). firebasehosting.admin: Hosting sites, preview channels, deploys and releases. Never here: act-as and Artifact Registry write, which project-wide would reach the dashboard's account and images (resource_roles has them, on the agent's own account and repository). Not granted: creating service accounts, project IAM, creating buckets; a person does those, and the skills say exactly what to ask for.",
+  "_gcp_roles_comment": "Added to the generic base set, on the project, for what the four skills do. run.viewer: read every Cloud Run service, revision and job, the dashboard's included (changing them is run.admin, in resource_roles). cloudbuild.builds.editor: submit, read and cancel builds. logging.viewer: build logs (builds log to Cloud Logging only) and service logs. storage.objectUser and storage.bucketViewer: read and write objects and see buckets, never bucket settings or IAM (objectUser, unlike objectAdmin, cannot change object ACLs). firebasehosting.admin: Hosting sites, preview channels, deploys and releases. Never here: act-as, Artifact Registry write and changing Cloud Run, which project-wide would reach the dashboard's account, its images, and its service and update job (resource_roles has them, on the agent's own account and repository, and on the project minus paraclete's own). Not granted: creating service accounts, project IAM, creating buckets; a person does those, and the skills say exactly what to ask for.",
   "gcp_roles": [
-    "roles/run.admin",
+    "roles/run.viewer",
     "roles/cloudbuild.builds.editor",
     "roles/logging.viewer",
     "roles/storage.objectUser",
     "roles/storage.bucketViewer",
     "roles/firebasehosting.admin"
   ],
-  "_resource_roles_comment": "Granted by the installer on single resources, never the project. iam.serviceAccountUser on the agent's own account (paraclete-agent@): its builds run as itself, and the services it deploys run as itself, unless an admin lets it act as another runtime account on that account alone. artifactregistry.writer on agent-images, the Docker repository the installer creates for this role in the instance's region: the only repository its builds push to.",
+  "_resource_roles_comment": "Granted by the installer on single resources, or on the project minus paraclete's own. run.admin on project-except-paraclete: deploy, update, roll back and delete Cloud Run services and jobs, and make a service public (the invoker binding needs run.services.setIamPolicy, which run.developer lacks), on every one but the dashboard's service and its update job, which the installer tags paraclete=managed (README: what this grant reaches). iam.serviceAccountUser on the agent's own account (paraclete-agent@): its builds run as itself, and the services it deploys run as itself, unless an admin lets it act as another runtime account on that account alone. artifactregistry.writer on agent-images, the Docker repository the installer creates for this role in the instance's region: the only repository its builds push to.",
   "resource_roles": [
+    { "role": "roles/run.admin", "on": "project-except-paraclete" },
     { "role": "roles/iam.serviceAccountUser", "on": "agent-account" },
     { "role": "roles/artifactregistry.writer", "on": "agent-repository" }
   ],
