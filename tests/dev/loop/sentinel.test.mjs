@@ -3,7 +3,8 @@
 // reverted commit's files set back exactly, nothing else, never the referee); the reverted commit read
 // through GitHub; checkMain against a real repository with a local origin and a fake gh (healthy,
 // pending, broken by a person, broken by a loop merge: the revert pushed and opened, the issue reopened,
-// the loop paused at the day's second revert, nothing done twice or in a dry run); the loop's pause.
+// the loop paused at the day's second revert, nothing done twice or in a dry run); the loop's pause,
+// read and set through the REST API (any gh has it), and counted as on when it cannot be read.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -14,6 +15,7 @@ import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import { loopSquashBody, revertSquashBody } from '../../../dev/loop/merger.mjs';
 import {
   checkMain, failedChecks, isRevertBranch, loopMergeOf, loopPauseReason, parseRevertBlock, readReverted, revertBody, revertGuard,
+  setLoopPause,
 } from '../../../dev/loop/sentinel.mjs';
 import { HARNESS_MERGE_JOB } from '../../../dev/release.mjs';
 
@@ -174,7 +176,7 @@ test('a loop merge that broke main is reverted on its own branch, opened as a lo
   const reopen = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'reopen');
   assert.equal(reopen[2], '52');
   assert.match(reopen[reopen.indexOf('--comment') + 1], /broke CI on main \(Tests\), so https:\/\/github\.com\/your-org\/paraclete\/pull\/60 reverts it/);
-  assert.equal(gh.calls.some((a) => a[0] === 'variable'), false, 'one revert does not pause the loop');
+  assert.equal(gh.calls.some((a) => a.some((x) => String(x).includes('/actions/variables'))), false, 'one revert does not pause the loop');
   assert.doesNotMatch(git(r.work, 'worktree', 'list'), /paraclete-loop-revert-/, 'its checkout is removed');
 });
 
@@ -187,9 +189,9 @@ test('a revert already open is not opened again; the day\'s second revert pauses
   const r2 = repo(t);
   const second = fakeGh({ runs: FAILED, prs: [{ number: 58, headRefName: 'loop/revert-ffffffffffff', createdAt: '2026-10-26T09:00:00Z', title: 't', url: 'u58' }] });
   assert.equal(check(r2, second).paused, true);
-  const set = second.calls.find((a) => a[0] === 'variable');
-  assert.deepEqual(set.slice(0, 3), ['variable', 'set', 'PARACLETE_LOOP_PAUSED']);
-  assert.match(set[set.indexOf('--body') + 1], /^2 loop merges reverted within a day/);
+  const set = second.calls.find((a) => a[0] === 'api' && a.includes('PATCH'));
+  assert.deepEqual(set.slice(0, 6), ['api', '-X', 'PATCH', 'repos/your-org/paraclete/actions/variables/PARACLETE_LOOP_PAUSED', '-f', 'name=PARACLETE_LOOP_PAUSED']);
+  assert.match(set[7], /^value=2 loop merges reverted within a day/);
 
   const r3 = repo(t);
   const dry = fakeGh({ runs: FAILED });
@@ -210,13 +212,40 @@ test('a loop merge that cannot be reverted leaves main broken, so nothing is bui
   assert.doesNotMatch(git(r.work, 'worktree', 'list'), /paraclete-loop-revert-/, 'its checkout is removed');
 });
 
-test("the loop's pause: its repository variable, unless unset or 0", () => {
+// What execFileSync throws when gh fails: its message ends with gh's stderr.
+const ghFailed = (stderr) => Object.assign(new Error(`Command failed: gh api\n${stderr}\n`), { stderr });
+
+test("the loop's pause: its repository variable, read through the REST API, unless unset or 0; unreadable counts as on", () => {
   const gh = (value) => (args) => {
+    assert.deepEqual(args, ['api', 'repos/your-org/paraclete/actions/variables/PARACLETE_LOOP_PAUSED', '--jq', '.value']);
     if (value instanceof Error) throw value;
-    assert.deepEqual(args, ['variable', 'get', 'PARACLETE_LOOP_PAUSED', '--repo', 'your-org/paraclete']);
     return value;
   };
-  assert.equal(loopPauseReason({ repo: 'your-org/paraclete', execGh: gh('2 loop merges reverted within a day\n') }), 'PARACLETE_LOOP_PAUSED: 2 loop merges reverted within a day');
-  assert.equal(loopPauseReason({ repo: 'your-org/paraclete', execGh: gh('0') }), null);
-  assert.equal(loopPauseReason({ repo: 'your-org/paraclete', execGh: gh(new Error('variable PARACLETE_LOOP_PAUSED was not found')) }), null);
+  const reason = (value, repo = 'your-org/paraclete') => loopPauseReason({ repo, execGh: gh(value) });
+  assert.equal(reason('2 loop merges reverted within a day\n'), 'PARACLETE_LOOP_PAUSED: 2 loop merges reverted within a day');
+  assert.equal(reason('0'), null);
+  assert.equal(reason(''), null);
+  assert.equal(reason(ghFailed('gh: Not Found (HTTP 404)')), null, 'a variable that is not set');
+  assert.equal(reason(ghFailed('gh: Resource not accessible by personal access token (HTTP 403)')),
+    'PARACLETE_LOOP_PAUSED could not be read, so the loop counts as paused: gh: Resource not accessible by personal access token (HTTP 403)');
+  assert.match(reason(ghFailed('error connecting to api.github.com')), /could not be read, so the loop counts as paused: error connecting/);
+  // With no --repo, gh fills in the checkout's own repository.
+  assert.deepEqual(loopPauseReason({ execGh: (args) => { assert.equal(args[1], 'repos/{owner}/{repo}/actions/variables/PARACLETE_LOOP_PAUSED'); return ''; } }), null);
+});
+
+test("setting the loop's pause updates the variable when it is set and creates it when it is not", () => {
+  const calls = [];
+  const gh = (patch) => (args) => {
+    calls.push(args.slice(0, 4));
+    if (args[2] === 'PATCH' && patch) throw patch;
+    return '{}';
+  };
+  setLoopPause({ repo: 'your-org/paraclete', execGh: gh(null), value: 'why' });
+  assert.deepEqual(calls, [['api', '-X', 'PATCH', 'repos/your-org/paraclete/actions/variables/PARACLETE_LOOP_PAUSED']]);
+  calls.length = 0;
+  setLoopPause({ repo: 'your-org/paraclete', execGh: gh(ghFailed('gh: Not Found (HTTP 404)')), value: 'why' });
+  assert.deepEqual(calls, [['api', '-X', 'PATCH', 'repos/your-org/paraclete/actions/variables/PARACLETE_LOOP_PAUSED'], ['api', '-X', 'POST', 'repos/your-org/paraclete/actions/variables']]);
+  calls.length = 0;
+  assert.throws(() => setLoopPause({ repo: 'your-org/paraclete', execGh: gh(ghFailed('gh: Forbidden (HTTP 403)')), value: 'why' }), /HTTP 403/);
+  assert.equal(calls.length, 1, 'any other failure is not retried as a create');
 });
