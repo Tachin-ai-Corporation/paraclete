@@ -11,7 +11,7 @@ away again.
 | `upgrade.sh` | The VM, as root | Moves the instance to another release: fetches that release's own `bootstrap.sh` and runs it |
 | `manifest.txt` | Read by `bootstrap.sh` | Which repo paths are installed onto the VM |
 | `firestore.indexes.json` | Read by `install.sh` and `uninstall.sh` | Firestore composite indexes and TTL policies |
-| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, the tag that fences paraclete's own Cloud Run resources (`tags.sh`), indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
+| `lib/` | Sourced by `install.sh` and `uninstall.sh` | Their shared shell functions: output and the dry-run `run`, JSON reads, resource names, refs, IAM, the tag that fences paraclete's own Cloud Run resources (`tags.sh`), whose credentials a run acts with (`auth.sh`), the project's `paraclete` label (`project-label.sh`), indexes. And `dashboard.mjs`: the dashboard's build and deploy commands and the bucket's CORS setting for its uploads, which `install.sh` runs as a small Node program and `dev/deploy.mjs` and `dev/status.mjs` import, so there is one definition of them. And `role-access.mjs`: what a role's `role.json` may ask for beyond project roles (its `apis` and `resource_roles`) and the roles never granted project-wide, which `install.sh` runs and `tests/content/packages.test.mjs` imports. And `indexes.mjs`: the indexes and TTL policies `firestore.indexes.json` lists and which of them a database has, which `lib/indexes.sh` runs and `dev/harness2/live-runner.mjs` imports to give the lab's projects the same indexes |
 | `vm/` | Run by `bootstrap.sh`, from the release it installs | Its Node helpers: staging what the manifest lists, the command launchers, `release.json`, the instance record, the validation gate, the data migrations (`migrate.mjs`), the readiness document |
 
 **Installed:** `bootstrap.sh`, `upgrade.sh`, `manifest.txt` and `vm/` are installed on the VM; the rest
@@ -38,6 +38,9 @@ install/install.sh --project your-gcp-project --role generic --name Paraclete --
 | `--repo <owner>/<name>` | This clone's `origin` | A fork must be public |
 | `--yes` | | Asks nothing: takes the defaults and skips the confirmation |
 | `--dry-run` | | The read-only checks still run |
+| `--access-token-file <path>` | gcloud's login | Token mode (below) |
+| `--account <email>` | | Token mode: the account the token belongs to |
+| `--events <path>` | | Also writes the run's progress there, one JSON object per line (below) |
 | `--no-auto-update` | Automatic updates on | Stores `auto_update: false` in Firestore `config/settings` (step 6), so new releases install only from the System tab. Without it nothing is stored, and a re-run never undoes an admin's choice |
 
 The steps, each printed as `[n/9]`:
@@ -83,6 +86,8 @@ The steps, each printed as `[n/9]`:
    here, saying so (`remove-iam-policy-binding --condition=None`). Project-wide, act-as would reach
    `paraclete-dashboard@`, whose signature the VM's control service obeys, image push the dashboard's
    `paraclete` repository, and Cloud Run change the dashboard's service and its update job.
+
+   Last, the project's label `paraclete=<role>`, written only when it differs ("The project label", below).
 4. **firestore**: the `(default)` database in Native mode, in the region, with delete protection; the
    indexes and TTL policies in `firestore.indexes.json`.
 5. **bucket**: `gs://<project>-paraclete` with uniform access, public access prevention, and a lifecycle
@@ -154,6 +159,58 @@ existing instance: the dashboard is built and deployed at that commit at once, a
 its next boot, or at once through `upgrade.sh`; the installer prints both commands. Re-running with the
 same commit builds and deploys nothing.
 
+### Token mode, for a caller that holds an admin's token
+
+A caller such as a web app runs `install.sh` and `uninstall.sh` with an admin's short-lived OAuth
+access token (scope `cloud-platform`), with no gcloud login and no prompt:
+
+```
+install/install.sh --yes --project <id> --access-token-file <path> --account <email> --events <path>
+```
+
+- **The token.**
+  - It's the file's first line, and nothing else is in the file.
+  - gcloud reads it through its `access_token_file` property, with a configuration directory of the
+    run's own that starts empty. So no login on the machine is ever used, and the run deletes that
+    directory when it ends.
+  - The scripts' own REST calls read the same file (`lib/auth.sh`).
+  - It's never printed, and never on a command line: a command that needs it reads it from a mode-600
+    header file in the run's temporary directory.
+  - The caller keeps the file somewhere private, such as an in-memory filesystem, and deletes it after
+    the run.
+- **What's required.**
+  - `--account` names the token's account. It's the account step 1 reports, and in `install.sh` the
+    dashboard's first admin, granted sign-in through IAP.
+  - `--project` is required, since there's no gcloud configuration to read it from.
+  - Leaving either out, or the token file missing or empty, stops the run before any call.
+- **The token's hour.** An access token lasts about an hour and has no refresh. A run that outlives it
+  fails at its next call. Every step is safe to run twice, so the same command with a new token finishes
+  the run.
+- **Not in token mode:** `uninstall.sh --purge`. It asks for the project id to be typed, and token mode
+  takes no input.
+
+**Progress events (`--events <path>`).** The file starts empty, and every line the run prints is also
+written there as one JSON object per line, in order. That works in either mode, and in a dry run.
+
+| `type` | Fields | Written by |
+|---|---|---|
+| `step` | `step`, `total` (numbers), `name`, `text` | the `[n/total] name: text` line that opens a step |
+| `note` | `text` | a detail under a step |
+| `command` | `text`: the command exactly as printed after `+` | every command that changes something (and, in a dry run, would) |
+| `warning` | `text` | a warning that does not stop the run |
+| `text` | `text` | the plan and the closing summary |
+| `error` | `text` | the reason the run stopped; it is the last event |
+| `done` | `install.sh`: `dashboard` (its URL), `commit`, `release`. Otherwise none | the end of a run that finished; it is the last event |
+
+Every event also has `t`, its UTC time in seconds (`2026-10-30T19:27:35Z`). A run that ends with
+neither `done` nor `error` was killed.
+
+**The project label.** Step 3 labels the project `paraclete=<role>`, and a move to another role
+relabels it. `uninstall.sh` removes the label in its last step. Every other label on the project stays.
+A caller finds every instance the admin can see with a project search on `labels.paraclete:*`, CLI
+installs included. gcloud sets project labels only in its alpha track, so the scripts write them through
+Resource Manager's REST API (`lib/project-label.sh`).
+
 ### Moving an instance to another role (a developer path)
 
 Changing an instance's role is not a product feature (build plan section 14): an instance has the role
@@ -217,8 +274,9 @@ by hand.
 
 `uninstall.sh` takes `--project`, `--region` (default: the VM's region, else `us-central1`; the dashboard
 and `agent-images` are looked for there), `--purge`, `--yes` (which never skips typing the project id for
-`--purge`) and `--dry-run`. Its steps: check, vm, network, dashboard, images, firestore, bucket,
-accounts. Enabled APIs stay on.
+`--purge`), `--dry-run`, and token mode's `--access-token-file`, `--account` and `--events`. Its
+steps: check, vm, network, dashboard, images, firestore, bucket, accounts (the last also removes the
+project's `paraclete` label). Enabled APIs stay on.
 
 ## The contract between the pieces
 
