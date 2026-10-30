@@ -70,6 +70,7 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
       'Firestore TTL policy on tool_results.expire_at',
       `service account ${AGENT} and its grants`,
       `service account ${DASHBOARD} and its grants`,
+      "the project's label paraclete=generic",
     ]);
     assert.deepEqual(listed(run.stdout, 'It keeps:'), [
       `bucket gs://${BUCKET} and its files`,
@@ -178,6 +179,7 @@ describe('uninstall.sh', { skip: needsBash, concurrency: true }, () => {
     assert.deepEqual(after.services, installed.services, 'the APIs stay on');
     assert.deepEqual(after.networks, installed.networks);
     assert.deepEqual([after.tagKeys, after.tagValues], [[], {}]);
+    assert.deepEqual(after.projectLabels, {}, 'the label goes, so nothing lists the project any more');
 
     const again = await box.run('uninstall.sh', ['--yes']);
     assert.equal(again.status, 0, again.stderr);

@@ -12,13 +12,17 @@
 # project-wide role that would let the agent act as any service account, push to any image repository,
 # or change or run any Cloud Run service or job. It never logs in to the VM: what happens on the VM is
 # install/bootstrap.sh's job, and the contract between the two is install/README.md.
-# --dry-run prints every command that would change something and changes nothing.
+# --dry-run prints every command that would change something and changes nothing. With
+# --access-token-file it acts with an OAuth access token instead of gcloud's login, and --events writes
+# its progress as JSON lines, for a caller such as a web app (install/lib/auth.sh, install/lib/run.sh).
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$INSTALL_DIR/.." && pwd)"
 # shellcheck source=lib/run.sh
 source "$INSTALL_DIR/lib/run.sh"
+# shellcheck source=lib/auth.sh
+source "$INSTALL_DIR/lib/auth.sh"
 # shellcheck source=lib/json.sh
 source "$INSTALL_DIR/lib/json.sh"
 # shellcheck source=lib/names.sh
@@ -29,6 +33,8 @@ source "$INSTALL_DIR/lib/ref.sh"
 source "$INSTALL_DIR/lib/iam.sh"
 # shellcheck source=lib/tags.sh
 source "$INSTALL_DIR/lib/tags.sh"
+# shellcheck source=lib/project-label.sh
+source "$INSTALL_DIR/lib/project-label.sh"
 # shellcheck source=lib/indexes.sh
 source "$INSTALL_DIR/lib/indexes.sh"
 
@@ -110,6 +116,7 @@ REQUIRED_PERMISSIONS=(
   resourcemanager.tagKeys.create
   resourcemanager.tagValues.create
   resourcemanager.tagValueBindings.create
+  resourcemanager.projects.update
 )
 
 # The dashboard's users, one Firestore document per email (dashboard/lib/server/users.mjs). Step 6
@@ -143,6 +150,11 @@ Prepares this Google Cloud project for one paraclete and creates its VM. Safe to
                      dashboard's System tab)
   --yes              Don't ask: take the defaults and skip the confirmation
   --dry-run          Print every command that would change something; change nothing
+  --access-token-file <path>
+                     Act with the OAuth access token in this file instead of gcloud's login (token mode;
+                     needs --account and --project)
+  --account <email>  The account the access token belongs to: the dashboard's first admin
+  --events <path>    Also write the run's progress to this file, one JSON object per line
   -h, --help         This help
 EOF
 }
@@ -165,9 +177,11 @@ parse_flags() {
       --dry-run) DRY_RUN=1; shift ;;
       --no-auto-update) AUTO_UPDATE_OFF=1; shift ;;
       -h | --help) usage; exit 0 ;;
-      --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=*)
+      --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=* \
+        | --access-token-file=* | --account=* | --events=*)
         set_flag "${1%%=*}" "${1#*=}"; shift ;;
-      --project | --role | --name | --region | --zone | --ref | --repo)
+      --project | --role | --name | --region | --zone | --ref | --repo \
+        | --access-token-file | --account | --events)
         flag="$1"
         (($# >= 2)) || die "$flag needs a value"
         value="$2"
@@ -186,6 +200,8 @@ set_flag() {
     --zone) ZONE="$2" ;;
     --ref) REF="$2" ;;
     --repo) REPO="$2" ;;
+    --events) start_events "$2" ;;
+    *) auth_flag "$1" "$2" ;;
   esac
 }
 
@@ -272,9 +288,13 @@ step_check() {
 }
 
 check_login() {
-  ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1 || true)"
+  ACCOUNT="$(active_account)"
   [[ -n "$ACCOUNT" ]] || die "gcloud is not logged in. Run: gcloud auth login"
-  note "logged in as $ACCOUNT"
+  if [[ -n "$TOKEN_FILE" ]]; then
+    note "acting as $ACCOUNT, with an access token"
+  else
+    note "logged in as $ACCOUNT"
+  fi
 }
 
 check_project() {
@@ -292,7 +312,7 @@ check_project() {
 # a group or the organization, which a look at the project's policy would miss.
 check_permissions() {
   local token body response missing
-  token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+  token="$(access_token)" || die "no access token for $ACCOUNT"
   body="{\"permissions\":[$(printf '"%s",' "${REQUIRED_PERMISSIONS[@]}" | sed 's/,$//')]}"
   response="$(curl -sS -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
     --data "$body" "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT:testIamPermissions")" \
@@ -527,7 +547,7 @@ vertex_endpoint() {
 # UNREACHABLE when the request never got an answer).
 model_answer() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+  token="$(access_token)" || {
     printf 'NO_TOKEN: gcloud could not give an access token\n'
     return 0
   }
@@ -589,6 +609,7 @@ step_accounts() {
   # Before a project-wide grant is taken back, so a role moving to its fenced grant never holds neither.
   ensure_resource_roles "$policy"
   revoke_project_wide_refused "$policy"
+  ensure_project_label "$PROJECT" "$PROJECT_NUMBER" "$ROLE" "$WORK_DIR"
   revoke_previous_role_grants "$policy"
   for role in "${DASHBOARD_PROJECT_ROLES[@]}"; do
     ensure_project_role "$PROJECT" "$policy" "serviceAccount:$DASHBOARD_EMAIL" "$role"
@@ -1025,7 +1046,7 @@ ensure_first_admin() {
   # The token reaches curl through a file (mode 600, in the run's own temporary directory), so the
   # command `run` prints, and a dry run shows, never holds it.
   if [[ "$DRY_RUN" != 1 ]]; then
-    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    token="$(access_token)" || die "no access token for $ACCOUNT"
     (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
@@ -1089,7 +1110,7 @@ console.log(JSON.stringify({ fields: {
 ' "$INSTALLER_EMAIL" >"$body_file"
   show_file auto-update-off.json "$body_file"
   if [[ "$DRY_RUN" != 1 ]]; then
-    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    token="$(access_token)" || die "no access token for $ACCOUNT"
     (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
@@ -1120,7 +1141,7 @@ ensure_upload_cors() {
 # firestore_doc_state <document url>: "exists", "missing", or "unknown: <why>", read as you.
 firestore_doc_state() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+  token="$(access_token)" || {
     printf 'unknown: gcloud could not give an access token\n'
     return 0
   }
@@ -1331,7 +1352,7 @@ step_wait() {
 # (0x1f): unlike a tab, read keeps an empty field between two of them.
 instance_status() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || return 0
+  token="$(access_token)" || return 0
   response="$(curl -sS -g -H "Authorization: Bearer $token" -H "x-goog-user-project: $PROJECT" \
     "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/$FIRESTORE_DATABASE/documents/agent/instance" 2>/dev/null)" || return 0
   node -e '
@@ -1392,6 +1413,7 @@ finish() {
   say ""
   if [[ "$DRY_RUN" == 1 ]]; then
     say "Dry run complete: nothing was changed."
+    event done
     return 0
   fi
   say "Done. $AGENT_NAME runs on the VM $VM_NAME in $VM_ZONE."
@@ -1400,10 +1422,13 @@ finish() {
   fi
   say "Watch its logs:"
   say "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f"
+  event done dashboard "$DASHBOARD_URL" commit "$COMMIT" release "$RELEASE"
 }
 
 main() {
   parse_flags "$@"
+  use_token_file "$PROJECT"
+  trap 'rm -rf "${WORK_DIR:-}" "${GCLOUD_CONFIG_DIR:-}"' EXIT
   read_existing_instance
   ask_questions
   apply_defaults
@@ -1411,7 +1436,6 @@ main() {
   derive_names
   summarize_and_confirm
   WORK_DIR="$(mktemp -d)"
-  trap 'rm -rf "$WORK_DIR"' EXIT
   step_apis
   step_accounts
   step_firestore

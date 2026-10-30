@@ -205,7 +205,15 @@ const GCLOUD = {
   'config get-value': { write: false, run: () => out(state.configProject || '') },
   'auth list': { write: false, run: () => out(state.account || '') },
   'auth print-access-token': { write: false, run: () => (state.account ? out('fake-token') : fail('not logged in')) },
-  'projects describe': { write: false, run: ([p]) => (p === state.project ? out(state.projectNumber) : fail('not found')) },
+  'projects describe': {
+    write: false,
+    run: ([p], f) => {
+      if (p !== state.project) fail('not found');
+      if (!String(f.format || '').startsWith('json(labels')) return out(state.projectNumber);
+      const labels = state.projectLabels || {};
+      return out(JSON.stringify(Object.keys(labels).length ? { labels } : {}));
+    },
+  },
   'projects get-ancestors': { write: false, run: () => out(state.ancestors.join('\n')) },
   'billing projects describe': { write: false, run: () => out(state.billingEnabled ? 'True' : 'False') },
   'projects get-iam-policy': { write: false, run: () => out(policyText(state.projectPolicy)) },
@@ -792,8 +800,26 @@ const GCLOUD = {
   'compute instances delete': { write: true, run: ([name]) => { delete state.instances[name]; save(); out(''); } },
 };
 
+/**
+ * Token mode (install/lib/auth.sh): gcloud acts with CLOUDSDK_AUTH_ACCESS_TOKEN_FILE and an empty
+ * configuration of the run's own, so a command that reaches for a login, or a run that left the
+ * configuration out, fails as a test would want it to.
+ */
+function checkTokenMode(words) {
+  const command = ["auth list", "auth print-access-token", "config get-value"].find((c) => words.join(" ").startsWith(c));
+  const tokenFile = process.env.CLOUDSDK_AUTH_ACCESS_TOKEN_FILE;
+  if (!tokenFile) return;
+  if (command) {
+    log(command, false);
+    fail(`token mode: ${command} reads a gcloud login, and there is none`);
+  }
+  if (readFileSync(tokenFile, 'utf8').trim() !== 'fake-token') fail('token mode: the access token file does not hold the token');
+  if (!process.env.CLOUDSDK_CONFIG) fail('token mode: gcloud runs with the machine\'s own configuration');
+}
+
 function gcloud() {
   const { words, flags } = parse(args);
+  checkTokenMode(words);
   for (let n = Math.min(4, words.length); n > 0; n -= 1) {
     const command = words.slice(0, n).join(' ');
     if (GCLOUD[command]) {
@@ -894,6 +920,18 @@ function curl() {
     save();
     if (answer === 'unreachable') return fail('Could not resolve host: aiplatform.googleapis.com', 6);
     return out(JSON.stringify(MODEL_ANSWERS[answer]));
+  }
+  const labels = /^https:\/\/cloudresourcemanager\.googleapis\.com\/v3\/projects\/([^/?]+)\?updateMask=labels$/.exec(url);
+  if (labels && option('-X') === 'PATCH') {
+    log('project labels', true);
+    const headers = options('-H').flatMap((h) => (h.startsWith('@') ? readFileSync(h.slice(1), 'utf8').split('\n') : [h]));
+    if (!headers.includes('Authorization: Bearer fake-token') || !headers.includes(`x-goog-user-project: ${state.project}`)) {
+      return httpError({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Request had invalid authentication credentials.' } });
+    }
+    if (labels[1] !== state.projectNumber) return httpError({ error: { code: 404, status: 'NOT_FOUND', message: `projects/${labels[1]}` } });
+    state.projectLabels = JSON.parse(readFileSync(option('--data-binary').slice(1), 'utf8')).labels;
+    save();
+    return out(JSON.stringify({ name: 'operations/fake', done: true }));
   }
   const userDoc = /^https:\/\/firestore\.googleapis\.com\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/users\/([^/?]+)(\?.*)?$/.exec(url);
   if (userDoc) return firestoreUser(url, decodeURIComponent(userDoc[1]), userDoc[2]);
