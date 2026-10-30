@@ -50,13 +50,13 @@ test('a real-model eval measures every run, scores selection on the training tas
   });
   assert.equal(res.ok, true);
   assert.deepEqual(res.trajectories.map((t) => [t.taskId, t.split, t.measured, t.scripted]),
-    [['data-revenue-summary', 'train', true, false], ['data-dedupe-customers', 'holdout', true, false], ['data-join-clean-orders', 'train', true, false]]);
-  assert.equal(res.summary.count, 2, 'selection sees the training tasks only');
+    [['data-join-clean-orders', 'train', true, false], ['data-tz-months', 'holdout', true, false]]);
+  assert.equal(res.summary.count, 1, 'selection sees the training task only');
   assert.equal(res.holdoutSummary.count, 1);
-  assert.equal(res.spend.rollouts, 3);
+  assert.equal(res.spend.rollouts, 2);
   assert.deepEqual([record.contexts, record.cleanups], [1, 1]);
   assert.match(lines.join(''), /real-model run: every organ answers through the model; at most 10 rollouts/);
-  assert.match(lines.join(''), /about 3 model rollouts/);
+  assert.match(lines.join(''), /about 2 model rollouts/);
 });
 
 test('a real-model eval with --task runs the named tasks only, and refuses a name the suite has not', async () => {
@@ -77,7 +77,7 @@ test('a real-model run whose estimate is over its cap is refused before it spend
   });
   assert.equal(res.ok, false);
   assert.equal(res.spendCapWouldBeReached, true);
-  assert.match(res.reason, /needs about 3 model rollouts, over its cap of 1: name a --role/);
+  assert.match(res.reason, /needs about 2 model rollouts, over its cap of 1: name a --role/);
   assert.equal(res.spend.rollouts, 0);
   assert.equal(record.cleanups, 1);
 });

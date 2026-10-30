@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MODEL_SUITE, SPLITS, isModelTask, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
+import { MODEL_SUITE, RETIRED_TASKS, SPLITS, isModelTask, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
 
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -159,7 +159,217 @@ const SOLUTIONS = {
   'gen-meeting-schedule': (dir) => write(dir, 'schedule.json', JSON.stringify([
     { title: 'Roadmap review', start_utc: '2026-01-16T14:00:00Z', attendees: ['Lena', 'Omar', 'Priya', 'Wen'] },
     { title: 'Design sync', start_utc: '2026-01-20T02:00:00Z', attendees: ['Lena', 'Wen'] },
-  ])),
+  ])),  'se-csv-rfc4180': (dir) => {
+    write(dir, 'src/csv.mjs', String.raw`export function parseCsv(text) {
+  const s = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+  if (s === '') return [];
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  let fresh = true;
+  let line = 1;
+  let startLine = 1;
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s[i];
+    if (quoted) {
+      if (c === '"') {
+        if (s[i + 1] === '"') {
+          field += '"';
+          i += 1;
+        } else quoted = false;
+      } else {
+        if (c === '\n') line += 1;
+        field += c;
+      }
+    } else if (c === '"' && fresh) {
+      quoted = true;
+      fresh = false;
+      startLine = line;
+    } else if (c === ',') {
+      row.push(field);
+      field = '';
+      fresh = true;
+    } else if (c === '\r' && s[i + 1] === '\n') {
+      // the LF ends the record
+    } else if (c === '\n') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+      fresh = true;
+      line += 1;
+    } else {
+      field += c;
+      fresh = false;
+    }
+  }
+  if (quoted) throw new Error('unterminated quoted field at line ' + startLine);
+  if (!s.endsWith('\n')) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+`);
+    write(dir, 'test/csv-rfc.test.mjs', String.raw`import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { parseCsv } from '../src/csv.mjs';
+
+test('quoted fields', () => {
+  assert.deepEqual(parseCsv('a,"b,c"\r\n'), [['a', 'b,c']]);
+});
+`);
+  },
+  'qa-race-in-queue': (dir) => {
+    write(dir, 'src/queue.mjs', String.raw`export async function runAll(tasks, limit) {
+  const results = new Array(tasks.length);
+  let next = 0;
+  let running = 0;
+  let done = 0;
+  let failed = false;
+  return new Promise((resolve, reject) => {
+    if (tasks.length === 0) {
+      resolve([]);
+      return;
+    }
+    const launch = () => {
+      while (!failed && running < limit && next < tasks.length) {
+        const index = next;
+        next += 1;
+        running += 1;
+        tasks[index]().then((value) => {
+          results[index] = value;
+          running -= 1;
+          done += 1;
+          if (done === tasks.length) resolve(results);
+          else launch();
+        }, (err) => {
+          failed = true;
+          reject(err);
+        });
+      }
+    };
+    launch();
+  });
+}
+`);
+    write(dir, 'test/order.test.mjs', String.raw`import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { runAll } from '../src/queue.mjs';
+
+const sleep = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));
+
+test('results come in the order of the tasks', async () => {
+  assert.deepEqual(await runAll([() => sleep(20, 'a'), () => sleep(1, 'b')], 2), ['a', 'b']);
+});
+
+test('at most limit tasks run at once', async () => {
+  let now = 0;
+  let max = 0;
+  const t = async () => { now += 1; max = Math.max(max, now); await sleep(5); now -= 1; };
+  await runAll([t, t, t, t], 2);
+  assert.equal(max, 2);
+});
+`);
+  },
+  'devops-plan-order': (dir) => write(dir, 'plan.json', JSON.stringify({
+    actions: [['update', 'db'], ['update', 'api'], ['create', 'frontend'], ['update', 'logs'], ['create', 'metrics'], ['create', 'subnet-c'],
+      ['create', 'worker'], ['delete', 'old-queue-consumer'], ['delete', 'old-queue'], ['delete', 'old-worker']].map(([op, id]) => ({ op, id })),
+    blocked: ['legacy-db', 'subnet-b'],
+  }, null, 2)),
+  'gen-constrained-brief': (dir) => write(dir, 'brief.md', [
+    '# Card payments failed on 17 March',
+    '',
+    'On Tuesday 17 March 2026, card payments failed for part of the day. The incident began at 18:40 UTC and',
+    'ended at 20:12 UTC. A configuration change shortened how long our payment service waits for the payment',
+    'provider, so slower payments were cancelled and shown as declined. We rolled the change back, and the',
+    "provider's queue then drained.",
+    '',
+    'What customers saw: 2,314 card payments failed and were shown as declined. Checkout was unavailable for',
+    '17 minutes while the payments service restarted. The error rate of our API peaked at 4.2%. 312 customers',
+    'received a duplicate order confirmation email after the rollback.',
+    '',
+    'What we are doing next:',
+    '',
+    '- Roll back automatically when the payment error rate passes 2% for five minutes.',
+    '- Load-test the provider timeout path before each release.',
+    '- Add a dashboard panel for payment-provider latency.',
+    '',
+  ].join('\n')),
+  'se-perf-latest-per-id': (dir) => write(dir, 'src/events.mjs', String.raw`export function latestPerId(events) {
+  const best = new Map();
+  for (const e of events) {
+    const b = best.get(e.id);
+    if (!b || e.ts > b.ts || (e.ts === b.ts && e.version >= b.version)) best.set(e.id, e);
+  }
+  return [...best.values()];
+}
+`),
+  'data-tz-months': (dir) => write(dir, 'monthly.json', JSON.stringify({ '2026-01': 190, '2026-02': 1355.5, '2026-03': -81.67, '2026-04': 54.49 })),
+  'sec-token-verify': (dir) => {
+    write(dir, 'src/token.mjs', String.raw`import { createHmac, timingSafeEqual } from 'node:crypto';
+
+const LEEWAY = 30;
+
+const json = (part) => {
+  const value = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+  if (!value || typeof value !== 'object') throw new Error('not a JSON object');
+  return value;
+};
+
+export function verifyToken(token, keys, now = Math.floor(Date.now() / 1000)) {
+  const parts = String(token).split('.');
+  if (parts.length !== 3) throw new Error('a token has three parts');
+  const [h, p, s] = parts;
+  const header = json(h);
+  const payload = json(p);
+  if (header.alg !== 'HS256') throw new Error('alg must be HS256');
+  if (!Object.prototype.hasOwnProperty.call(keys, header.kid)) throw new Error('no such key');
+  const expected = createHmac('sha256', keys[header.kid]).update(h + '.' + p).digest();
+  const given = Buffer.from(s, 'base64url');
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new Error('bad signature');
+  if (payload.exp !== undefined && now >= payload.exp + LEEWAY) throw new Error('expired');
+  if (payload.nbf !== undefined && now < payload.nbf - LEEWAY) throw new Error('not yet valid');
+  return payload;
+}
+`);
+    write(dir, 'test/token.test.mjs', String.raw`import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { verifyToken } from '../src/token.mjs';
+
+const enc = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+
+test('alg none is refused', () => {
+  assert.throws(() => verifyToken(enc({ alg: 'none', kid: 'k1' }) + '.' + enc({}) + '.', { k1: 's' }));
+});
+`);
+  },
+  // A reading of the log of its own (not the task's): every line, its offset, the hour, health checks left out.
+  'devops-log-forensics': (dir) => {
+    const text = fs.readFileSync(path.join(dir, 'logs', 'access.log'), 'utf8');
+    const from = Date.parse('2026-10-30T14:00:00Z');
+    const to = Date.parse('2026-10-30T14:59:59Z');
+    const errors = {};
+    const bytes = {};
+    const times = {};
+    for (const l of text.trim().split('\n')) {
+      const m = /^(\S+) - - \[(\d+)\/Oct\/2026:(\d\d):(\d\d):(\d\d) \+0(\d)00\] "GET (\S+) [^"]*" (\d+) (\d+) (\S+) upstream=(\S+)$/.exec(l);
+      const at = Date.parse(`2026-10-${m[2]}T${m[3]}:${m[4]}:${m[5]}+0${m[6]}:00`);
+      if (at < from || at > to) continue;
+      const [ip, urlPath, status, size, secs, up] = [m[1], m[7], Number(m[8]), Number(m[9]), Number(m[10]), m[11]];
+      errors[up] = (errors[up] || 0) + (status >= 500 ? 1 : 0);
+      if (urlPath !== '/healthz') bytes[ip] = (bytes[ip] || 0) + size;
+      times[urlPath] = times[urlPath] || [];
+      times[urlPath].push(secs);
+    }
+    const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    write(dir, 'answers.json', JSON.stringify({
+      errors_by_upstream: errors,
+      top_clients: Object.entries(bytes).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([ip]) => ip),
+      slowest_path: Object.entries(times).filter(([, xs]) => xs.length >= 20).sort((a, b) => mean(b[1]) - mean(a[1]))[0][0],
+    }));
+  },
 };
 
 function workspace(t, task) {
@@ -245,6 +455,57 @@ test('every seeded flaw of the money task is one the reference tests catch, and 
   assert.equal(results.filter((c) => c.name.startsWith('the tests catch ')).length, 5);
 });
 
+test("version 3's traps: each plausible wrong answer fails the checks that name it", (t) => {
+  const failed = (id, edit) => {
+    const task = MODEL_SUITE.find((x) => x.id === id);
+    const dir = workspace(t, task);
+    SOLUTIONS[id](dir);
+    edit(dir);
+    return task.verify(dir).checks.filter((c) => !c.ok).map((c) => c.name);
+  };
+  // The plan in plain alphabetical order, ignoring what each action must follow.
+  assert.deepEqual(failed('devops-plan-order', (dir) => write(dir, 'plan.json', JSON.stringify({
+    actions: ['api', 'db', 'frontend', 'logs', 'metrics', 'subnet-c', 'worker'].map((id) => ({ op: ['api', 'db', 'logs'].includes(id) ? 'update' : 'create', id }))
+      .concat(['old-queue', 'old-queue-consumer', 'old-worker'].map((id) => ({ op: 'delete', id }))),
+    blocked: ['legacy-db', 'subnet-b'],
+  }))), ['each action comes after what it must follow', 'the order is the one plan the rules allow']);
+  // subnet-b deleted although the protected legacy-db still needs it.
+  assert.deepEqual(failed('devops-plan-order', (dir) => {
+    const plan = JSON.parse(fs.readFileSync(path.join(dir, 'plan.json'), 'utf8'));
+    plan.actions.push({ op: 'delete', id: 'subnet-b' });
+    plan.blocked = ['legacy-db'];
+    write(dir, 'plan.json', JSON.stringify(plan));
+  }), ['the deletes are old-queue, old-queue-consumer and old-worker', 'legacy-db and subnet-b are blocked', 'the order is the one plan the rules allow']);
+  // Months in UTC rather than New York time.
+  assert.deepEqual(failed('data-tz-months', (dir) => write(dir, 'monthly.json', JSON.stringify({ '2026-01': 110, '2026-02': 1375.5, '2026-03': -36.67, '2026-04': 69.49 }))),
+    ['2026-01 is 190.00', '2026-02 is 1355.50', '2026-03 is -81.67', '2026-04 is 54.49']);
+  // New York as UTC-5 all year: the April charge just after midnight in daylight time lands in March.
+  assert.deepEqual(failed('data-tz-months', (dir) => write(dir, 'monthly.json', JSON.stringify({ '2026-01': 190, '2026-02': 1355.5, '2026-03': 18.32, '2026-04': -45.5 }))),
+    ['2026-03 is -81.67', '2026-04 is 54.49']);
+  // Pacific Standard Time in March (it is daylight time from 8 March), and a name.
+  assert.deepEqual(failed('gen-constrained-brief', (dir) => {
+    const text = fs.readFileSync(path.join(dir, 'brief.md'), 'utf8').replace('18:40 UTC', '19:40 UTC').replace('20:12 UTC', '21:12 UTC').replace('We rolled', 'Marco Ruiz rolled');
+    write(dir, 'brief.md', text);
+  }), ['it began at 18:40 UTC', 'it ended at 20:12 UTC', 'no employee is named']);
+  // The action items in the order the report lists them, not by priority.
+  assert.deepEqual(failed('gen-constrained-brief', (dir) => {
+    const text = fs.readFileSync(path.join(dir, 'brief.md'), 'utf8')
+      .replace('- Roll back automatically', '- TMP').replace('- Add a dashboard panel', '- Roll back automatically').replace('- TMP', '- Add a dashboard panel');
+    write(dir, 'brief.md', text);
+  }), ['the bullets are the three highest-priority action items, highest first']);
+  // The +0100 lines read as UTC.
+  assert.ok(failed('devops-log-forensics', (dir) => {
+    const log = fs.readFileSync(path.join(dir, 'logs', 'access.log'), 'utf8').replace(/\+0100\]/g, '+0000]');
+    write(dir, 'logs/access.log', log);
+    SOLUTIONS['devops-log-forensics'](dir);
+  }).some((name) => /top clients|5xx/.test(name)), 'reading the edge server as UTC gets the hour wrong');
+  // A verifier that refuses within the leeway, as the original does after exp.
+  assert.deepEqual(failed('sec-token-verify', (dir) => {
+    const src = fs.readFileSync(path.join(dir, 'src', 'token.mjs'), 'utf8').replace('now >= payload.exp + LEEWAY', 'now > payload.exp');
+    write(dir, 'src/token.mjs', src);
+  }), ['a token within 30 seconds after exp is accepted']);
+});
+
 test('a fix that edits the tests instead of the code fails the unchanged-test check', (t) => {
   const task = MODEL_SUITE.find((x) => x.id === 'se-fix-failing-test');
   const dir = workspace(t, task);
@@ -255,10 +516,14 @@ test('a fix that edits the tests instead of the code fails the unchanged-test ch
 });
 
 test('selection by role and split; a role without tasks runs the generic ones as that role', () => {
-  assert.deepEqual(selectModelTasks({ role: 'data-engineer' }).map((t) => t.id), ['data-revenue-summary', 'data-dedupe-customers', 'data-join-clean-orders']);
-  assert.deepEqual(selectModelTasks({ role: 'data-engineer', split: 'holdout' }).map((t) => t.id), ['data-dedupe-customers']);
+  assert.deepEqual(selectModelTasks({ role: 'data-engineer' }).map((t) => t.id), ['data-join-clean-orders', 'data-tz-months']);
+  assert.deepEqual(selectModelTasks({ role: 'data-engineer', split: 'holdout' }).map((t) => t.id), ['data-tz-months']);
   const legal = selectModelTasks({ role: 'legal-advisor' });
-  assert.deepEqual(legal.map((t) => [t.id, t.role]), [['gen-action-items', 'legal-advisor'], ['gen-extract-contacts', 'legal-advisor'], ['gen-meeting-schedule', 'legal-advisor']]);
+  assert.deepEqual(legal.map((t) => [t.id, t.role]), [['gen-meeting-schedule', 'legal-advisor'], ['gen-constrained-brief', 'legal-advisor']]);
   assert.equal(typeof legal[0].verify, 'function');
-  assert.equal(selectModelTasks().length, MODEL_SUITE.length);
+  assert.equal(selectModelTasks().length, MODEL_SUITE.length - RETIRED_TASKS.length, 'a retired task is never selected');
+  assert.ok(RETIRED_TASKS.every((id) => MODEL_SUITE.some((t) => t.id === id)), 'and stays defined');
+  assert.deepEqual(selectModelTasks({ ids: ['data-revenue-summary'] }).map((t) => t.id), ['data-revenue-summary'], 'unless a run names it');
+  const live = selectModelTasks();
+  assert.deepEqual([live.filter((t) => t.split === 'train').length, live.filter((t) => t.split === 'holdout').length], [7, 7]);
 });
