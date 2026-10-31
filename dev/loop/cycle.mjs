@@ -8,8 +8,11 @@
 //      PARACLETE_LOOP_PAUSED), or once today's cycles are spent; when CI failed on main because of a loop
 //      merge, open its revert and reopen its issue (sentinel.mjs), and change nothing else on a broken main;
 //      on a healthy main, release it once the loop's merges since the last release ran healthy on the lab
-//      (releaser.mjs, when turned on); then, when a baseline is due (baseline.mjs, when turned on),
-//      measure main's head on the model suite, keep the summary, and stop there;
+//      (releaser.mjs, when turned on); bring the loop's open pull requests up to date with main and wait
+//      for the merger to merge or close them, and stop when one is still open after `merge.waitMinutes`
+//      (one loop change in flight: what is measured now must be measured on the main it lands on); then,
+//      when a baseline is due (baseline.mjs, when turned on), measure main's head on the model suite,
+//      keep the summary, and stop there;
 //   2. pick the issue, and read what its maintainers and earlier attempts said on it and on the loop's
 //      closed pull requests for it; give up an issue refused `maxAttempts` times (`loop` becomes
 //      `loop-stuck`); when none waits, have the planner (planner.mjs) open one, from a training task the
@@ -401,6 +404,54 @@ export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
 }
 
 /**
+ * The loop's open pull requests (from `branchPrefix` branches, reverts among them), settled before a
+ * cycle measures anything. Each is brought up to date with main (main merged into it, as the user this
+ * runs as, so its CI and the Loop guard run again: the merger waits for that rather than close it; one
+ * current already, or in conflict, which the merger closes, is left as it is). Then the cycle waits for
+ * the merger to merge or close them, looking every `merge.pollMinutes` for at most `merge.waitMinutes`.
+ * A change measured while one is open would be measured against a main its merge moves, and the guard
+ * refuses such a change once it does (its loop-measured-base). A state that cannot be read counts as
+ * open. A dry run updates nothing and waits for nothing.
+ *
+ * @param {object} o  { repoRoot, repo, settings, execGh, dryRun, sleep, log }
+ * @returns {Promise<{ open: number[] }>} the loop's pull requests still open when the wait ran out
+ */
+export async function settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun = false, sleep, log = () => {} }) {
+  const repoArgs = repo ? ['--repo', repo] : [];
+  const listed = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
+  let open = listed.filter((p) => String(p.headRefName || '').startsWith(settings.branchPrefix)).map((p) => p.number);
+  if (!open.length) return { open };
+  if (dryRun) {
+    log(`[INFO] loop: a dry run: ${open.map((n) => `#${n}`).join(', ')} would be brought up to date and waited for`);
+    return { open: [] };
+  }
+  for (const n of open) {
+    try {
+      execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${n}/update-branch`], repoRoot);
+      log(`[INFO] loop: brought #${n} up to date with main`);
+    } catch {
+      // current already, or in conflict
+    }
+  }
+  const stillOpen = (n) => {
+    try {
+      const { state } = JSON.parse(execGh(['pr', 'view', String(n), ...repoArgs, '--json', 'state'], repoRoot) || '{}');
+      return !state || state === 'OPEN';
+    } catch {
+      return true;
+    }
+  };
+  const polls = Math.max(1, Math.ceil(settings.merge.waitMinutes / settings.merge.pollMinutes));
+  for (let i = 0; ; i += 1) {
+    open = open.filter(stillOpen);
+    if (!open.length || i >= polls) break;
+    if (i === 0) log(`[INFO] loop: waiting up to ${settings.merge.waitMinutes} minutes for ${open.map((n) => `#${n}`).join(', ')} to be merged or closed`);
+    await sleep(settings.merge.pollMinutes * 60_000);
+  }
+  return { open };
+}
+
+/**
  * A checkout of `commit` that shares nothing git writes with the repo: a clone that borrows the repo's
  * objects (`--shared`), detached at the commit, with the repo's packages linked in. Whatever runs in it,
  * or in worktrees made from it, cannot reach the repo's refs, index or worktrees.
@@ -534,6 +585,7 @@ export async function runCycle({
   release = (o) => releaseIfDue(o),
   baseline = defaultBaseline,
   clock = Date.now,
+  sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   runTests = defaultRunTests,
   measure = defaultMeasure,
   log = (line) => process.stderr.write(`${line}\n`),
@@ -616,6 +668,16 @@ export async function runCycle({
     log(`[WARN] the release step broke: ${err.message}`);
   }
 
+  // One loop change in flight: nothing is measured while an earlier one waits to be merged.
+  const { open } = await settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun, sleep, log });
+  if (open.length) {
+    const named = open.map((n) => `#${n}`).join(', ');
+    return finish({
+      action: 'waiting',
+      reason: `${named} still ${open.length === 1 ? 'waits' : 'wait'} to be merged or closed after ${settings.merge.waitMinutes} minutes: a change measured now would be measured against a main ${open.length === 1 ? 'its' : 'their'} merge moves`,
+    });
+  }
+
   // The agent's own measured weak spots: main's head on the model suite, at most once a day and only
   // after main moved, so the planner can turn a task it fails into an issue. A cycle that measures
   // stops there: a baseline takes hours, and an attempt measured after it could outrun the unit.
@@ -662,19 +724,6 @@ export async function runCycle({
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
   const busy = (n) => openPrs.some((p) => String(p.headRefName || '').startsWith(`${settings.branchPrefix}${n}-`));
-  // Loop pull requests main moved past are brought up to date (main merged into them, as the user this
-  // runs as, so their CI and the Loop guard run again): the merger waits for that rather than close
-  // them. One already current, or in conflict (which the merger closes), is left as it is.
-  if (!dryRun) {
-    for (const p of openPrs.filter((x) => String(x.headRefName || '').startsWith(settings.branchPrefix))) {
-      try {
-        execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${p.number}/update-branch`], repoRoot);
-        log(`[INFO] loop: brought #${p.number} up to date with main`);
-      } catch {
-        // current already, or in conflict
-      }
-    }
-  }
   const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
   // An issue refused maxAttempts times is given up: what the loop cannot do stops holding it.
   const stuck = issues.filter((i) => (past.attempts.get(i.number) || 0) >= settings.maxAttempts);

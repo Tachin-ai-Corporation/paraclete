@@ -35,7 +35,12 @@ never changes an instance; it reaches instances only through a release (see "Rel
    next cycle, for example while a person merges changes to what the agent loads between two
    measurements; a cycle already running finishes. When CI failed on main's head, it changes
    nothing on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a
-   healthy main it releases main when that is due (see "Releases"). Then it stops once today's attempts
+   healthy main it releases main when that is due (see "Releases"). Then it settles the loop's open
+   pull requests (reverts among them): it brings each up to date with `main` and waits for the merger
+   to merge or close it, looking every `merge.pollMinutes` (5) for at most `merge.waitMinutes` (150),
+   and stops (`waiting`) when one is still open then. One loop change is in flight at a time: a change
+   measured while an earlier one waits would be measured against a `main` that merge moves, and the
+   guard would refuse it (see "Merging"). Then it stops once today's attempts
    (`maxCyclesPerDay`, 4, counted from the cycle log) are spent: the cap holds back new attempts, which
    spend model time, never a revert or a release, which keep limits of their own.
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
@@ -210,7 +215,8 @@ pull request whose CI passed (the Loop guard among it), that passes the guard ag
 merge cleanly and whose head contains `main`'s head. It squash-merges with the pull request's title
 (moved to the next free version when stale), pinned to the head it checked, then dispatches CI on
 `main`. One `main` has moved past waits: each cycle starts by merging `main` into the loop's open pull
-requests (as the user it runs as, so CI and the Loop guard run again on what would land). One that
+requests (as the user it runs as, so CI and the Loop guard run again on what would land), and it waits for them
+before it measures anything (see "One cycle", step 1). One that
 cannot pass (CI failed, a conflict with `main`, the guard) is closed with the reasons: closing it frees
 the issue for the next cycle, whose proposer reads that comment. Nothing merges while `dev/harness2/PAUSED` exists or CI on `main` failed.
 
