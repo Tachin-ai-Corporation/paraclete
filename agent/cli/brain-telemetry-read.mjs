@@ -39,26 +39,128 @@ function parseArgs(argv) {
   return opts;
 }
 
+const START_RE = /^#(\d+) organ=(\S+) model=(\S+) msgs=(\d+)/;
+const COMPLETE_RE = /^#(\d+) completed \((\d+) chars, .*?steps=(\S+) provider=([^\s)]+)(?: fallback_from=([^\s)]+))?\)/;
+const MISS_RE = /^#(\d+) TELEMETRY session_miss id=\S+ reason=(\S+)/;
+const RID_RE = /^#(\d+) (.*)$/s;
+
+function parseTurnFromEntry({ at, level, message, fields: obj = {} }) {
+  const isStructuredTurn = obj.event === 'organ_turn'
+    || (typeof obj.organ === 'string' && obj.event !== 'dispatch'
+      && (obj.status !== undefined || obj.duration_ms !== undefined
+        || obj.output_chars !== undefined || obj.error !== undefined));
+  if (isStructuredTurn) {
+    const failed = obj.status === 'error' || obj.success === false
+      || (obj.status !== 'ok' && (level === 'ERROR' || Boolean(obj.error)));
+    const ridMatch = /^#(\d+)\b/.exec(message);
+    const rid = obj.rid != null ? String(obj.rid) : (ridMatch ? ridMatch[1] : null);
+    const durationMs = Number.isFinite(obj.duration_ms) ? obj.duration_ms : null;
+    const outputChars = Number.isFinite(obj.output_chars) ? obj.output_chars : 0;
+    const steps = Number.isFinite(obj.steps) ? obj.steps : null;
+    const model = obj.model ? String(obj.model) : null;
+    const provider = obj.provider
+      ? String(obj.provider)
+      : (model && model.includes('/') ? model.split('/')[0] : undefined);
+    return {
+      kind: 'turn',
+      rid,
+      source: 'gateway',
+      startedAt: obj.started_at ? String(obj.started_at) : at,
+      organ: String(obj.organ || '?'),
+      model,
+      durationMs,
+      outputChars,
+      steps,
+      ...(provider ? { provider } : {}),
+      ...(obj.fallback_from ? { fallbackFrom: String(obj.fallback_from) } : {}),
+      status: failed ? 'error' : 'ok',
+      success: !failed,
+      error: failed ? String(obj.error ?? message) : null,
+    };
+  }
+  let m = START_RE.exec(message);
+  if (m) {
+    return {
+      kind: 'start',
+      rid: m[1],
+      source: 'gateway',
+      startedAt: at,
+      organ: m[2],
+      model: m[3],
+      messages: Number(m[4]),
+      durationMs: null,
+      outputChars: 0,
+      success: null,
+      error: null,
+    };
+  }
+  m = COMPLETE_RE.exec(message);
+  if (m) {
+    return {
+      kind: 'complete',
+      rid: m[1],
+      at,
+      status: 'ok',
+      success: true,
+      outputChars: Number(m[2]),
+      steps: Number(m[3]) || null,
+      provider: m[4],
+      ...(m[5] ? { fallbackFrom: m[5] } : {}),
+    };
+  }
+  m = MISS_RE.exec(message);
+  if (m) {
+    return {
+      kind: 'miss',
+      rid: m[1],
+      at,
+      status: 'ok',
+      success: true,
+      note: `session miss (${m[2]}); the brain reopens`,
+    };
+  }
+  m = RID_RE.exec(message);
+  if (m && level === 'ERROR') {
+    return {
+      kind: 'error',
+      rid: m[1],
+      at,
+      status: 'error',
+      success: false,
+      error: m[2],
+    };
+  }
+  return null;
+}
+
 /**
- * Journal entries from `journalctl -o json` output: one object per line, its message unwrapped from
- * the service's own JSON log line when it is one.
+ * Parses one `journalctl -o json` line (or one service JSON log object), unwrapping the service's
+ * JSON log payload when present and reading structured organ-turn fields (falling back to regex
+ * matching on the message text for older plain-message log entries).
  *
- * @param {string} text
- * @returns {Array<{at: string|null, level: string, message: string, fields: object}>}
+ * @param {string|object} line
+ * @returns {object|null}
  */
-export function parseJournal(text) {
-  const entries = [];
-  for (const line of String(text || '').split('\n')) {
-    if (!line.trim()) continue;
-    let rec;
-    try { rec = JSON.parse(line); } catch { continue; }
-    let message = rec.MESSAGE;
+export function parseJournalLine(line) {
+  let rec = line;
+  if (typeof line === 'string') {
+    if (!line.trim()) return null;
+    try { rec = JSON.parse(line); } catch { return null; }
+  }
+  if (!rec || typeof rec !== 'object') return null;
+
+  let at = null;
+  let level = 'INFO';
+  let message;
+  let fields = {};
+
+  if ('MESSAGE' in rec) {
+    message = rec.MESSAGE;
     if (Array.isArray(message)) message = Buffer.from(message).toString('utf8');
-    if (typeof message !== 'string') continue;
+    if (typeof message !== 'string') return null;
     const micros = Number(rec.__REALTIME_TIMESTAMP);
-    let at = Number.isFinite(micros) ? new Date(Math.floor(micros / 1000)).toISOString() : null;
-    let level = Number(rec.PRIORITY) <= 3 ? 'ERROR' : Number(rec.PRIORITY) === 4 ? 'WARN' : 'INFO';
-    let fields = {};
+    at = Number.isFinite(micros) ? new Date(Math.floor(micros / 1000)).toISOString() : null;
+    level = Number(rec.PRIORITY) <= 3 ? 'ERROR' : Number(rec.PRIORITY) === 4 ? 'WARN' : 'INFO';
     if (message.startsWith('{')) {
       try {
         const inner = JSON.parse(message);
@@ -72,15 +174,51 @@ export function parseJournal(text) {
       const plain = /^\[[\w-]+\] (\w+): (.*)$/s.exec(message);
       if (plain) { level = plain[1]; message = plain[2]; }
     }
-    entries.push({ at, level, message, fields });
+  } else if (typeof rec.message === 'string' || typeof rec.event === 'string' || typeof rec.organ === 'string') {
+    fields = rec;
+    message = String(rec.message ?? '');
+    if (rec.level) level = String(rec.level);
+    else if (rec.status === 'error') level = 'ERROR';
+    if (rec.time) at = String(rec.time);
+  } else {
+    return null;
+  }
+
+  const turn = parseTurnFromEntry({ at, level, message, fields });
+  return {
+    at,
+    level,
+    message,
+    fields,
+    turn,
+    ...(turn ? {
+      organ: turn.organ,
+      model: turn.model,
+      status: turn.status,
+      success: turn.success,
+      durationMs: turn.durationMs,
+      outputChars: turn.outputChars,
+      steps: turn.steps,
+      error: turn.error,
+    } : {}),
+  };
+}
+
+/**
+ * Journal entries from `journalctl -o json` output: one object per line, its message unwrapped from
+ * the service's own JSON log line when it is one.
+ *
+ * @param {string} text
+ * @returns {Array<{at: string|null, level: string, message: string, fields: object}>}
+ */
+export function parseJournal(text) {
+  const entries = [];
+  for (const line of String(text || '').split('\n')) {
+    const entry = parseJournalLine(line);
+    if (entry) entries.push(entry);
   }
   return entries;
 }
-
-const START_RE = /^#(\d+) organ=(\S+) model=(\S+) msgs=(\d+)/;
-const COMPLETE_RE = /^#(\d+) completed \((\d+) chars, .*?steps=(\S+) provider=([^\s)]+)(?: fallback_from=([^\s)]+))?\)/;
-const MISS_RE = /^#(\d+) TELEMETRY session_miss id=\S+ reason=(\S+)/;
-const RID_RE = /^#(\d+) (.*)$/s;
 
 const elapsed = (from, to) => {
   const ms = Date.parse(to) - Date.parse(from);
@@ -88,9 +226,10 @@ const elapsed = (from, to) => {
 };
 
 /**
- * The gateway's organ turns, paired from its start and end lines by request number. A request
- * number restarts with the gateway, so a start that is never closed before the same number starts
- * again is reported as unfinished. A turn still open at the end of the journal is running.
+ * The gateway's organ turns, paired from its start and end lines by request number, or read directly
+ * from structured organ_turn log fields. A request number restarts with the gateway, so a start that
+ * is never closed before the same number starts again is reported as unfinished. A turn still open
+ * at the end of the journal is running.
  *
  * @param {Array} entries - from parseJournal()
  * @returns {object[]}
@@ -105,35 +244,72 @@ export function gatewayTurns(entries) {
     turns.push({ ...turn, ...patch });
   };
   for (const e of entries) {
-    let m = START_RE.exec(e.message);
-    if (m) {
-      close(m[1], { success: false, error: 'no end was logged (the gateway restarted?)' });
-      open.set(m[1], {
-        source: 'gateway', startedAt: e.at, organ: m[2], model: m[3], messages: Number(m[4]),
+    const t = e.turn !== undefined ? e.turn : parseTurnFromEntry(e);
+    if (!t) continue;
+    if (t.kind === 'start') {
+      close(t.rid, { success: false, error: 'no end was logged (the gateway restarted?)' });
+      open.set(t.rid, {
+        source: 'gateway', startedAt: t.startedAt, organ: t.organ, model: t.model, messages: t.messages,
         durationMs: null, outputChars: 0, success: null, error: null,
       });
       continue;
     }
-    m = COMPLETE_RE.exec(e.message);
-    if (m) {
-      const turn = open.get(m[1]);
-      close(m[1], {
-        success: true, outputChars: Number(m[2]), steps: Number(m[3]) || null, provider: m[4],
-        ...(m[5] ? { fallbackFrom: m[5] } : {}),
+    if (t.kind === 'turn') {
+      let rid = t.rid && open.has(t.rid) ? t.rid : null;
+      if (!rid) {
+        for (const [k, openTurn] of open.entries()) {
+          if (openTurn.organ === t.organ) { rid = k; break; }
+        }
+      }
+      if (rid) {
+        const startTurn = open.get(rid);
+        open.delete(rid);
+        turns.push({
+          ...startTurn,
+          organ: t.organ || startTurn.organ,
+          model: t.model || startTurn.model,
+          durationMs: t.durationMs ?? elapsed(startTurn.startedAt, e.at),
+          outputChars: t.outputChars,
+          ...(t.steps !== null ? { steps: t.steps } : {}),
+          ...(t.provider ? { provider: t.provider } : {}),
+          ...(t.fallbackFrom ? { fallbackFrom: t.fallbackFrom } : {}),
+          success: t.success,
+          error: t.error,
+        });
+      } else {
+        turns.push({
+          source: 'gateway',
+          startedAt: t.startedAt,
+          organ: t.organ,
+          model: t.model,
+          durationMs: t.durationMs,
+          outputChars: t.outputChars,
+          ...(t.steps !== null ? { steps: t.steps } : {}),
+          ...(t.provider ? { provider: t.provider } : {}),
+          ...(t.fallbackFrom ? { fallbackFrom: t.fallbackFrom } : {}),
+          success: t.success,
+          error: t.error,
+        });
+      }
+      continue;
+    }
+    if (t.kind === 'complete') {
+      const turn = open.get(t.rid);
+      close(t.rid, {
+        success: true, outputChars: t.outputChars, steps: t.steps, provider: t.provider,
+        ...(t.fallbackFrom ? { fallbackFrom: t.fallbackFrom } : {}),
         durationMs: turn ? elapsed(turn.startedAt, e.at) : null,
       });
       continue;
     }
-    m = MISS_RE.exec(e.message);
-    if (m) {
-      const turn = open.get(m[1]);
-      close(m[1], { success: true, note: `session miss (${m[2]}); the brain reopens`, durationMs: turn ? elapsed(turn.startedAt, e.at) : null });
+    if (t.kind === 'miss') {
+      const turn = open.get(t.rid);
+      close(t.rid, { success: true, note: t.note, durationMs: turn ? elapsed(turn.startedAt, e.at) : null });
       continue;
     }
-    m = RID_RE.exec(e.message);
-    if (m && e.level === 'ERROR' && open.has(m[1])) {
-      const turn = open.get(m[1]);
-      close(m[1], { success: false, error: m[2], durationMs: elapsed(turn.startedAt, e.at) });
+    if (t.kind === 'error' && open.has(t.rid)) {
+      const turn = open.get(t.rid);
+      close(t.rid, { success: false, error: t.error, durationMs: elapsed(turn.startedAt, e.at) });
     }
   }
   for (const turn of open.values()) turns.push({ ...turn, note: 'still running' });

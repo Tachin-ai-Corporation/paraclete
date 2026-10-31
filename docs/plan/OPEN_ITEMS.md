@@ -28,8 +28,6 @@ that resolves it. Delete an item in the commit that resolves it.
   at a time) could be cancelled. Unlikely; revisit if missions queue for hours.
 - **Retiring a playbook.** Retiring an agent-written override brings the installed playbook back, and an
   installed playbook cannot be retired. Decide whether that is the intent.
-- **Structured gateway log lines.** `brain-telemetry-read` parses the gateway's log text; give those
-  lines structured fields so a wording change can't break it.
 
 ## Phase 5's live check (first run: 2026-10-17)
 
