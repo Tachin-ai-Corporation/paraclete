@@ -3,7 +3,8 @@
 // checked change and pushes its branch; it refuses, with a comment on the issue, a change that touches
 // the referee or an existing test, fails the suite, or changes the agent's behaviour unmeasured or for
 // the worse; it does nothing while paused, past the day's cap, for an issue already in a loop pull
-// request or tried lately (unless retried by name); a dry run pushes nothing; every cycle is recorded
+// request or tried lately (unless retried by name); while a loop pull request is open it waits for the
+// merger to merge or close it before it measures anything; a dry run pushes nothing; every cycle is recorded
 // and its checkout removed. A refusal names what the attempt changed and the tests that failed, and the
 // next attempt is briefed with the maintainers' comments on the issue, never a stranger's. A change that
 // passes the suite is committed and reviewed against the issue's points; it is refused unless the
@@ -54,12 +55,17 @@ function repo(t) {
 }
 
 /** A fake gh: the issues, open and closed pull requests to list, the comments on an issue, and every call it got. */
-function fakeGh({ issues = [], prs = [], closed = [], comments = [], mainRuns = [], loopPaused = null } = {}) {
+function fakeGh({ issues = [], prs = [], closed = [], comments = [], mainRuns = [], loopPaused = null, states = {} } = {}) {
   const calls = [];
   return {
     calls,
     exec(args) {
       calls.push(args);
+      // `states`: a pull request's successive states, as `gh pr view <n> --json state` reads them; the last repeats.
+      if (args[0] === 'pr' && args[1] === 'view' && args.includes('state')) {
+        const seq = states[args[2]] || ['OPEN'];
+        return JSON.stringify({ state: seq.length > 1 ? seq.shift() : seq[0] });
+      }
       if (args[0] === 'issue' && args[1] === 'list') return JSON.stringify(issues);
       if (args[0] === 'issue' && args[1] === 'view') return JSON.stringify({ comments });
       if (args[0] === 'issue' && args[1] === 'create') return 'https://github.com/your-org/paraclete/issues/8';
@@ -112,6 +118,7 @@ function cycle(t, r, o = {}) {
       release: o.release,
       baseline: o.baseline,
       ...(o.clock ? { clock: o.clock } : {}),
+      sleep: o.sleep || (async () => {}),
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
     }),
@@ -521,6 +528,34 @@ test("the loop's open pull requests are brought up to date with main at the star
   const dry = cycle(t, repo(t), { gh: fakeGh({ issues: [ISSUE], prs }), dryRun: true });
   await dry.run();
   assert.equal(dry.gh.calls.some((a) => a.includes('PUT')), false);
+  assert.equal(dry.gh.calls.some((a) => a[0] === 'pr' && a[1] === 'view'), false, 'nor waits for them');
+});
+
+test('one loop change in flight: a cycle waits for the merger to merge or close an open loop pull request before it measures anything', async (t) => {
+  const earlier = { number: 5, headRefName: 'loop/8-earlier-change', title: 't' };
+  const slept = [];
+  const merged = cycle(t, repo(t), {
+    gh: fakeGh({ issues: [ISSUE], prs: [earlier], states: { 5: ['OPEN', 'OPEN', 'MERGED'] } }),
+    sleep: async (ms) => { slept.push(ms); },
+  });
+  const res = await merged.run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.deepEqual(slept, [300_000, 300_000], 'looked every 5 minutes until the merger merged it, then went on');
+
+  const r = repo(t);
+  const held = [];
+  const prs = [earlier, { number: 6, headRefName: 'loop/revert-0123456789ab', title: 'r' }, { number: 9, headRefName: 'claude/other', title: 'o' }];
+  const waiting = await cycle(t, r, {
+    gh: fakeGh({ issues: [ISSUE], prs, states: { 6: ['OPEN', 'CLOSED'] } }),
+    sleep: async (ms) => { held.push(ms); },
+    settings: { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } },
+    baseline: async () => { throw new Error('measured main while a loop change was in flight'); },
+    proposer: async () => { throw new Error('proposed while a loop change was in flight'); },
+  }).run();
+  assert.equal(waiting.action, 'waiting');
+  assert.equal(waiting.reason, '#5 still waits to be merged or closed after 150 minutes: a change measured now would be measured against a main its merge moves');
+  assert.equal(held.length, LOOP_DEFAULTS.merge.waitMinutes / LOOP_DEFAULTS.merge.pollMinutes, 'for merge.waitMinutes at most');
+  assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).loop.action, 'waiting');
 });
 
 test('nothing to do: paused, the day spent, no issue, an issue already in a pull request, or tried lately', async (t) => {
@@ -541,8 +576,8 @@ test('nothing to do: paused, the day spent, no issue, an issue already in a pull
 
   const r2 = repo(t);
   assert.equal((await cycle(t, r2, { gh: fakeGh({ issues: [] }) }).run()).action, 'no-work');
-  const inPr = await cycle(t, r2, { gh: fakeGh({ issues: [ISSUE], prs: [{ number: 5, headRefName: 'loop/7-earlier-try', title: 't' }] }) }).run();
-  assert.equal(inPr.action, 'no-work');
+  const inPr = await cycle(t, r2, { gh: fakeGh({ issues: [ISSUE], prs: [{ number: 5, headRefName: 'loop/7-earlier-try', title: 't' }] }), dryRun: true }).run();
+  assert.equal(inPr.action, 'no-work', 'a dry run waits for no pull request, and passes over the issue that has one');
 
   const r3 = repo(t);
   fs.mkdirSync(path.dirname(path.join(r3.work, CYCLE_LOG)), { recursive: true });

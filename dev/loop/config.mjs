@@ -47,8 +47,10 @@ export const LOOP_DEFAULTS = Object.freeze({
    * this far apart. With `smoke`, the release goes through dev/release-check.mjs on the lab's canary
    * (a smoke mission there), within `checkMinutes`. */
   release: Object.freeze({ enabled: false, soakHours: 2, minHoursBetween: 20, smoke: false, checkMinutes: 90 }),
-  /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). */
-  merge: Object.freeze({ maxPerDay: 3 }),
+  /** The loop's merger (merger.mjs) merges at most this many loop pull requests a day (UTC). A cycle
+   * that finds a loop pull request open waits for the merger to merge or close it, looking every
+   * `pollMinutes` for at most `waitMinutes` (the merger runs hourly), before it measures anything. */
+  merge: Object.freeze({ maxPerDay: 3, waitMinutes: 150, pollMinutes: 5 }),
   /** Measuring main's head on the model suite (baseline.mjs), so the planner finds the tasks the agent
    * fails: off unless the lab driver's local settings turn it on, as it spends model time; at most once
    * in `everyHours`, with this many runs of every task, within this cap. */
