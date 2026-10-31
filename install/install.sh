@@ -12,13 +12,18 @@
 # project-wide role that would let the agent act as any service account, push to any image repository,
 # or change or run any Cloud Run service or job. It never logs in to the VM: what happens on the VM is
 # install/bootstrap.sh's job, and the contract between the two is install/README.md.
-# --dry-run prints every command that would change something and changes nothing.
+# --dry-run prints every command that would change something and changes nothing. With
+# --access-token-file it acts with an OAuth access token instead of gcloud's login, and --events writes
+# its progress as JSON lines, for a caller such as a web app (install/lib/auth.sh, install/lib/run.sh).
+# --preflight runs step 1's checks, reports every one, and stops there (install/lib/preflight.mjs).
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$INSTALL_DIR/.." && pwd)"
 # shellcheck source=lib/run.sh
 source "$INSTALL_DIR/lib/run.sh"
+# shellcheck source=lib/auth.sh
+source "$INSTALL_DIR/lib/auth.sh"
 # shellcheck source=lib/json.sh
 source "$INSTALL_DIR/lib/json.sh"
 # shellcheck source=lib/names.sh
@@ -29,6 +34,8 @@ source "$INSTALL_DIR/lib/ref.sh"
 source "$INSTALL_DIR/lib/iam.sh"
 # shellcheck source=lib/tags.sh
 source "$INSTALL_DIR/lib/tags.sh"
+# shellcheck source=lib/project-label.sh
+source "$INSTALL_DIR/lib/project-label.sh"
 # shellcheck source=lib/indexes.sh
 source "$INSTALL_DIR/lib/indexes.sh"
 
@@ -110,6 +117,7 @@ REQUIRED_PERMISSIONS=(
   resourcemanager.tagKeys.create
   resourcemanager.tagValues.create
   resourcemanager.tagValueBindings.create
+  resourcemanager.projects.update
 )
 
 # The dashboard's users, one Firestore document per email (dashboard/lib/server/users.mjs). Step 6
@@ -143,6 +151,13 @@ Prepares this Google Cloud project for one paraclete and creates its VM. Safe to
                      dashboard's System tab)
   --yes              Don't ask: take the defaults and skip the confirmation
   --dry-run          Print every command that would change something; change nothing
+  --access-token-file <path>
+                     Act with the OAuth access token in this file instead of gcloud's login (token mode;
+                     needs --account and --project)
+  --account <email>  The account the access token belongs to: the dashboard's first admin
+  --events <path>    Also write the run's progress to this file, one JSON object per line
+  --preflight        Only check: report everything that would stop an install here, change nothing
+                     (exit 1 when something would)
   -h, --help         This help
 EOF
 }
@@ -156,6 +171,8 @@ REF=""
 REPO=""
 YES=0
 AUTO_UPDATE_OFF=0
+PREFLIGHT=0
+PREFLIGHT_BLOCKERS=0
 
 parse_flags() {
   local flag value
@@ -164,10 +181,13 @@ parse_flags() {
       --yes | -y) YES=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --no-auto-update) AUTO_UPDATE_OFF=1; shift ;;
+      --preflight) PREFLIGHT=1; shift ;;
       -h | --help) usage; exit 0 ;;
-      --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=*)
+      --project=* | --role=* | --name=* | --region=* | --zone=* | --ref=* | --repo=* \
+        | --access-token-file=* | --account=* | --events=*)
         set_flag "${1%%=*}" "${1#*=}"; shift ;;
-      --project | --role | --name | --region | --zone | --ref | --repo)
+      --project | --role | --name | --region | --zone | --ref | --repo \
+        | --access-token-file | --account | --events)
         flag="$1"
         (($# >= 2)) || die "$flag needs a value"
         value="$2"
@@ -186,6 +206,8 @@ set_flag() {
     --zone) ZONE="$2" ;;
     --ref) REF="$2" ;;
     --repo) REPO="$2" ;;
+    --events) start_events "$2" ;;
+    *) auth_flag "$1" "$2" ;;
   esac
 }
 
@@ -263,18 +285,20 @@ step_check() {
   require_tools gcloud git curl node
   check_login
   check_project
-  check_permissions
-  check_billing
-  check_organization
   check_role
   check_name_and_place
+  run_preflight_checks
   resolve_release
 }
 
 check_login() {
-  ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1 || true)"
+  ACCOUNT="$(active_account)"
   [[ -n "$ACCOUNT" ]] || die "gcloud is not logged in. Run: gcloud auth login"
-  note "logged in as $ACCOUNT"
+  if [[ -n "$TOKEN_FILE" ]]; then
+    note "acting as $ACCOUNT, with an access token"
+  else
+    note "logged in as $ACCOUNT"
+  fi
 }
 
 check_project() {
@@ -288,45 +312,32 @@ check_project() {
   note "project $PROJECT ($PROJECT_NUMBER)"
 }
 
-# testIamPermissions answers for the caller's effective access, whether it comes from a direct grant,
-# a group or the organization, which a look at the project's policy would miss.
-check_permissions() {
-  local token body response missing
-  token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
-  body="{\"permissions\":[$(printf '"%s",' "${REQUIRED_PERMISSIONS[@]}" | sed 's/,$//')]}"
-  response="$(curl -sS -X POST -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-    --data "$body" "https://cloudresourcemanager.googleapis.com/v1/projects/$PROJECT:testIamPermissions")" \
-    || die "could not check your permissions on $PROJECT"
-  missing="$(node -e '
-const fs = require("node:fs");
-const asked = process.argv.slice(1);
-let answer;
-try { answer = JSON.parse(fs.readFileSync(0, "utf8")); } catch { answer = { error: { message: "an unreadable answer" } }; }
-if (answer.error) { console.log(`(the check returned ${answer.error.message || answer.error.status})`); process.exit(0); }
-const granted = new Set(answer.permissions || []);
-console.log(asked.filter((p) => !granted.has(p)).join(" "));
-' "${REQUIRED_PERMISSIONS[@]}" <<<"$response")"
-  [[ -z "$missing" ]] || die "$ACCOUNT needs roles/owner on $PROJECT. Missing: $missing"
-  note "$ACCOUNT can do everything the install needs"
-}
-
-check_billing() {
-  local enabled
-  enabled="$(gcloud billing projects describe "$PROJECT" --format='value(billingEnabled)' 2>/dev/null || true)"
-  case "$enabled" in
-    True | true) note "billing is enabled" ;;
-    False | false) die "billing is not enabled on $PROJECT. Link a billing account: https://console.cloud.google.com/billing/linkedaccount?project=$PROJECT" ;;
-    *) warn "could not read the billing status of $PROJECT; enabling the APIs will fail if billing is off" ;;
-  esac
-}
-
-check_organization() {
-  local ancestors
-  ancestors="$(gcloud projects get-ancestors "$PROJECT" --format='value(type)' 2>&1)" \
-    || die "could not read where $PROJECT sits in its organization: $ancestors"
-  grep -qx organization <<<"$ancestors" \
-    || die "$PROJECT is not inside a Google Cloud organization. The dashboard's Google sign-in (Identity-Aware Proxy) needs one: move the project into your Workspace's organization, then run this again."
-  note "the project is inside an organization"
+# run_preflight_checks: install/lib/preflight.mjs's checks of the project, as the run's account: its
+# permissions (testIamPermissions answers for the caller's effective access, whether it comes from a
+# direct grant, a group or the organization, which a look at the project's policy would miss), billing,
+# the organization, the organization policies that break the install, and the APIs it turns on. In an
+# install, any blocker stops step 1, naming every one; with --preflight each is reported and counted.
+run_preflight_checks() {
+  local output status=0 state id text fix blockers=()
+  output="$(access_token | node "$INSTALL_DIR/lib/preflight.mjs" --project "$PROJECT" --region "$REGION" --zone "$ZONE" \
+    --apis "$(wanted_apis | sed 's/$/.googleapis.com/' | paste -sd, -)" \
+    --permissions "$(IFS=,; printf '%s' "${REQUIRED_PERMISSIONS[*]}")" --account "$ACCOUNT")" || status=$?
+  ((status != 2)) || die "the project's checks could not run: $output"
+  while IFS=$'\t' read -r state id text fix; do
+    [[ -n "$state" ]] || continue
+    event check id "$id" state "$state" text "$text" fix "$fix"
+    case "$state" in
+      ok | note) note "$text" ;;
+      unknown) warn "$text${fix:+ ($fix)}" ;;
+      blocker)
+        blockers+=("$text${fix:+: $fix}")
+        note "blocker: $text${fix:+: $fix}" ;;
+    esac
+  done <<<"$output"
+  PREFLIGHT_BLOCKERS=${#blockers[@]}
+  if ((PREFLIGHT_BLOCKERS)) && ((!PREFLIGHT)); then
+    die "$(printf '%s\n' "${blockers[@]}")"
+  fi
 }
 
 check_role() {
@@ -452,8 +463,10 @@ step_apis() {
 # Turns on what is off of: every instance's APIs, the Workspace ones for a Workspace role, and the
 # `apis` of generic and the role, each once. Never turns one off: an API a previous role needed stays
 # on after a move.
-enable_apis() {
-  local candidates=("${BASE_APIS[@]}") wanted=() enabled api missing=() i
+# wanted_apis: the short names of every API the install turns on, each once: the base set, the Workspace
+# set for a Workspace role, and the role's own.
+wanted_apis() {
+  local candidates=("${BASE_APIS[@]}") wanted=() api
   if [[ "$ROLE_WORKSPACE" == true ]]; then
     candidates+=("${WORKSPACE_APIS[@]}")
   fi
@@ -463,6 +476,12 @@ enable_apis() {
   for api in "${candidates[@]}"; do
     [[ " ${wanted[*]} " == *" $api "* ]] || wanted+=("$api")
   done
+  printf '%s\n' "${wanted[@]}"
+}
+
+enable_apis() {
+  local wanted=() enabled api missing=() i
+  mapfile -t wanted < <(wanted_apis)
   enabled="$(gcloud services list --enabled --project="$PROJECT" --format='value(config.name)' 2>/dev/null || true)"
   for api in "${wanted[@]}"; do
     if grep -Fxq -- "$api.googleapis.com" <<<"$enabled"; then
@@ -527,7 +546,7 @@ vertex_endpoint() {
 # UNREACHABLE when the request never got an answer).
 model_answer() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+  token="$(access_token)" || {
     printf 'NO_TOKEN: gcloud could not give an access token\n'
     return 0
   }
@@ -589,6 +608,7 @@ step_accounts() {
   # Before a project-wide grant is taken back, so a role moving to its fenced grant never holds neither.
   ensure_resource_roles "$policy"
   revoke_project_wide_refused "$policy"
+  ensure_project_label "$PROJECT" "$PROJECT_NUMBER" "$ROLE" "$WORK_DIR"
   revoke_previous_role_grants "$policy"
   for role in "${DASHBOARD_PROJECT_ROLES[@]}"; do
     ensure_project_role "$PROJECT" "$policy" "serviceAccount:$DASHBOARD_EMAIL" "$role"
@@ -1025,7 +1045,7 @@ ensure_first_admin() {
   # The token reaches curl through a file (mode 600, in the run's own temporary directory), so the
   # command `run` prints, and a dry run shows, never holds it.
   if [[ "$DRY_RUN" != 1 ]]; then
-    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    token="$(access_token)" || die "no access token for $ACCOUNT"
     (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
@@ -1089,7 +1109,7 @@ console.log(JSON.stringify({ fields: {
 ' "$INSTALLER_EMAIL" >"$body_file"
   show_file auto-update-off.json "$body_file"
   if [[ "$DRY_RUN" != 1 ]]; then
-    token="$(gcloud auth print-access-token 2>/dev/null)" || die "gcloud could not give an access token for $ACCOUNT"
+    token="$(access_token)" || die "no access token for $ACCOUNT"
     (umask 077 && printf 'Authorization: Bearer %s\nx-goog-user-project: %s\n' "$token" "$PROJECT" >"$header_file")
   fi
   run curl -sS --fail-with-body -g -X PATCH -H "@$header_file" -H 'Content-Type: application/json' \
@@ -1120,7 +1140,7 @@ ensure_upload_cors() {
 # firestore_doc_state <document url>: "exists", "missing", or "unknown: <why>", read as you.
 firestore_doc_state() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || {
+  token="$(access_token)" || {
     printf 'unknown: gcloud could not give an access token\n'
     return 0
   }
@@ -1331,7 +1351,7 @@ step_wait() {
 # (0x1f): unlike a tab, read keeps an empty field between two of them.
 instance_status() {
   local token response
-  token="$(gcloud auth print-access-token 2>/dev/null)" || return 0
+  token="$(access_token)" || return 0
   response="$(curl -sS -g -H "Authorization: Bearer $token" -H "x-goog-user-project: $PROJECT" \
     "https://firestore.googleapis.com/v1/projects/$PROJECT/databases/$FIRESTORE_DATABASE/documents/agent/instance" 2>/dev/null)" || return 0
   node -e '
@@ -1392,6 +1412,7 @@ finish() {
   say ""
   if [[ "$DRY_RUN" == 1 ]]; then
     say "Dry run complete: nothing was changed."
+    event done
     return 0
   fi
   say "Done. $AGENT_NAME runs on the VM $VM_NAME in $VM_ZONE."
@@ -1400,10 +1421,65 @@ finish() {
   fi
   say "Watch its logs:"
   say "  gcloud compute ssh $VM_NAME --zone=$VM_ZONE --project=$PROJECT --tunnel-through-iap -- sudo journalctl -u 'paraclete-*' -f"
+  event done dashboard "$DASHBOARD_URL" commit "$COMMIT" release "$RELEASE"
+}
+
+# preflight_only: --preflight. Step 1 with every result reported, then the model when Vertex AI is
+# already on, then a summary. Changes nothing; exits 1 when something would stop an install.
+preflight_only() {
+  STEP_TOTAL=1
+  apply_defaults
+  step_check
+  if [[ -n "$EXISTING_ROLE" ]]; then
+    note "the project holds paraclete already (role $EXISTING_ROLE): an install repairs it, keeping its role and name"
+  fi
+  preflight_model
+  say ""
+  if ((PREFLIGHT_BLOCKERS)); then
+    say "Preflight: $PREFLIGHT_BLOCKERS thing(s) would stop an install in $PROJECT."
+    event done blockers "$PREFLIGHT_BLOCKERS"
+    exit 1
+  fi
+  say "Preflight: nothing found that would stop an install in $PROJECT."
+  event done blockers 0
+}
+
+# preflight_model: when Vertex AI is already on, one call to the agent's model, as step 2 makes it;
+# otherwise step 2 checks it once the API is on.
+preflight_model() {
+  local spec model location url answer
+  spec="$(contract vertex.models.cortex)"
+  location="$(contract vertex.location)"
+  model="${spec#*/}"
+  [[ "${spec%%/*}" == vertex-google ]] || return 0
+  if [[ -z "$(gcloud services list --enabled --project="$PROJECT" --filter=config.name=aiplatform.googleapis.com \
+    --format='value(config.name)' 2>/dev/null || true)" ]]; then
+    note "Vertex AI is off: step 2 checks $model once it turns it on"
+    return 0
+  fi
+  url="$(vertex_endpoint "$location")/v1/projects/$PROJECT/locations/$location/publishers/google/models/$model:generateContent"
+  answer="$(model_answer "$url")"
+  if [[ "$answer" == ok ]]; then
+    note "$model answers in $PROJECT (Vertex AI, $location)"
+    event check id model state ok text "$model answers"
+    return 0
+  fi
+  PREFLIGHT_BLOCKERS=$((PREFLIGHT_BLOCKERS + 1))
+  note "blocker: $(model_failure "$model" "$location" "$answer")"
+  event check id model state blocker text "$(model_failure "$model" "$location" "$answer")"
 }
 
 main() {
   parse_flags "$@"
+  use_token_file "$PROJECT"
+  trap 'rm -rf "${WORK_DIR:-}" "${GCLOUD_CONFIG_DIR:-}"' EXIT
+  if ((PREFLIGHT)); then
+    YES=1
+    DRY_RUN=1
+    read_existing_instance
+    preflight_only
+    exit 0
+  fi
   read_existing_instance
   ask_questions
   apply_defaults
@@ -1411,7 +1487,6 @@ main() {
   derive_names
   summarize_and_confirm
   WORK_DIR="$(mktemp -d)"
-  trap 'rm -rf "$WORK_DIR"' EXIT
   step_apis
   step_accounts
   step_firestore

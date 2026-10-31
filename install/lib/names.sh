@@ -39,6 +39,10 @@ MANAGED_TAG_KEY=paraclete
 MANAGED_TAG_VALUE=managed
 FENCE_CONDITION_TITLE=paraclete-unmanaged
 
+# The project label that marks a project as holding paraclete, with the instance's role as its value
+# (install/lib/project-label.sh).
+PROJECT_LABEL_KEY=paraclete
+
 # The agent's own Docker repository, in the instance's region, made only for a role whose role.json
 # asks for a grant `on: agent-repository` (install/lib/role-access.mjs). The agent's builds push there;
 # it never holds the dashboard's images.

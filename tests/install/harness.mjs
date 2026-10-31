@@ -96,6 +96,7 @@ export function freshProject() {
     // Tag keys by namespaced name; tag values by namespaced name, each with the resources bound to it.
     tagKeys: [],
     tagValues: {},
+    projectLabels: {},
   };
 }
 

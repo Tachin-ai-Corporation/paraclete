@@ -205,9 +205,15 @@ const GCLOUD = {
   'config get-value': { write: false, run: () => out(state.configProject || '') },
   'auth list': { write: false, run: () => out(state.account || '') },
   'auth print-access-token': { write: false, run: () => (state.account ? out('fake-token') : fail('not logged in')) },
-  'projects describe': { write: false, run: ([p]) => (p === state.project ? out(state.projectNumber) : fail('not found')) },
-  'projects get-ancestors': { write: false, run: () => out(state.ancestors.join('\n')) },
-  'billing projects describe': { write: false, run: () => out(state.billingEnabled ? 'True' : 'False') },
+  'projects describe': {
+    write: false,
+    run: ([p], f) => {
+      if (p !== state.project) fail('not found');
+      if (!String(f.format || '').startsWith('json(labels')) return out(state.projectNumber);
+      const labels = state.projectLabels || {};
+      return out(JSON.stringify(Object.keys(labels).length ? { labels } : {}));
+    },
+  },
   'projects get-iam-policy': { write: false, run: () => out(policyText(state.projectPolicy)) },
   'projects add-iam-policy-binding': {
     write: true,
@@ -291,7 +297,14 @@ const GCLOUD = {
       out('');
     },
   },
-  'services list': { write: false, run: () => out(state.services.join('\n')) },
+  'services list': {
+    write: false,
+    // --filter=config.name=<api> narrows the listing to that API, as gcloud does.
+    run: (_, f) => {
+      const only = /^config\.name=(.+)$/.exec(String(f.filter || ''));
+      return out((only ? state.services.filter((s) => s === only[1]) : state.services).join('\n'));
+    },
+  },
   'services enable': {
     write: true,
     run: (names) => { state.services.push(...names.filter((n) => !state.services.includes(n))); save(); out(''); },
@@ -792,8 +805,26 @@ const GCLOUD = {
   'compute instances delete': { write: true, run: ([name]) => { delete state.instances[name]; save(); out(''); } },
 };
 
+/**
+ * Token mode (install/lib/auth.sh): gcloud acts with CLOUDSDK_AUTH_ACCESS_TOKEN_FILE and an empty
+ * configuration of the run's own, so a command that reaches for a login, or a run that left the
+ * configuration out, fails as a test would want it to.
+ */
+function checkTokenMode(words) {
+  const command = ["auth list", "auth print-access-token", "config get-value"].find((c) => words.join(" ").startsWith(c));
+  const tokenFile = process.env.CLOUDSDK_AUTH_ACCESS_TOKEN_FILE;
+  if (!tokenFile) return;
+  if (command) {
+    log(command, false);
+    fail(`token mode: ${command} reads a gcloud login, and there is none`);
+  }
+  if (readFileSync(tokenFile, 'utf8').trim() !== 'fake-token') fail('token mode: the access token file does not hold the token');
+  if (!process.env.CLOUDSDK_CONFIG) fail('token mode: gcloud runs with the machine\'s own configuration');
+}
+
 function gcloud() {
   const { words, flags } = parse(args);
+  checkTokenMode(words);
   for (let n = Math.min(4, words.length); n > 0; n -= 1) {
     const command = words.slice(0, n).join(' ');
     if (GCLOUD[command]) {
@@ -870,13 +901,54 @@ function firestoreUser(url, email, query) {
   return out(JSON.stringify({ name, fields: body.fields }));
 }
 
-function curl() {
-  const url = args.find((a) => /^https?:\/\//.test(a)) || '';
+/**
+ * A REST answer the way curl gives it to install/lib/preflight.mjs, which reads the HTTP status from
+ * the response headers (-i) and passes its token on standard input (-H @-).
+ */
+function reply(json, status = 200) {
+  const head = args.includes('-i') ? `HTTP/2 ${status}\r\ncontent-type: application/json\r\n\r\n` : '';
+  process.stdout.write(`${head}${JSON.stringify(json)}\n`);
+  process.exit(0);
+}
+
+/** The preflight's calls: refused unless the token on standard input is the fake one. */
+function preflightCall(url) {
+  const headers = options('-H').includes('@-') ? readNativeFile(0, 'utf8').split('\n') : [];
+  if (!headers.includes('Authorization: Bearer fake-token')) {
+    return reply({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Request had invalid authentication credentials.' } }, 401);
+  }
   if (url.endsWith(':testIamPermissions')) {
     log('testIamPermissions', false);
     const body = JSON.parse(args[args.indexOf('--data') + 1]);
-    return out(JSON.stringify({ permissions: body.permissions.filter((p) => !state.deniedPermissions.includes(p)) }));
+    return reply({ permissions: body.permissions.filter((p) => !state.deniedPermissions.includes(p)) });
   }
+  if (url.endsWith('/billingInfo')) {
+    log('billing info', false);
+    return reply({ projectId: state.project, billingEnabled: Boolean(state.billingEnabled) });
+  }
+  if (url.endsWith(':getAncestry')) {
+    log('ancestry', false);
+    return reply({ ancestor: state.ancestors.map((type, i) => ({ resourceId: { type, id: type === 'project' ? state.project : String(1000 + i) } })) });
+  }
+  const policy = /\/policies\/([^/:]+):getEffectivePolicy$/.exec(url);
+  if (policy) {
+    log('org policy', false);
+    if (state.orgPolicyApi === 'off') {
+      return reply({ error: { code: 403, status: 'PERMISSION_DENIED', message: 'Organization Policy API has not been used in project 1 before or it is disabled.',
+        details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'SERVICE_DISABLED', metadata: { service: 'orgpolicy.googleapis.com' } }] } }, 403);
+    }
+    return reply({ name: `projects/${state.projectNumber}/policies/${policy[1]}`, spec: (state.orgPolicies || {})[policy[1]] || {} });
+  }
+  if (url.startsWith('https://serviceusage.googleapis.com/')) {
+    log('services enabled', false);
+    return reply({ services: state.services.map((name) => ({ name: `projects/${state.projectNumber}/services/${name}`, config: { name }, state: 'ENABLED' })) });
+  }
+  return null;
+}
+
+function curl() {
+  const url = args.find((a) => /^https?:\/\//.test(a)) || '';
+  if (options('-H').includes('@-')) preflightCall(url);
   if (url.startsWith('https://raw.githubusercontent.com/')) {
     log('raw', false);
     const path = url.slice('https://raw.githubusercontent.com/'.length);
@@ -894,6 +966,18 @@ function curl() {
     save();
     if (answer === 'unreachable') return fail('Could not resolve host: aiplatform.googleapis.com', 6);
     return out(JSON.stringify(MODEL_ANSWERS[answer]));
+  }
+  const labels = /^https:\/\/cloudresourcemanager\.googleapis\.com\/v3\/projects\/([^/?]+)\?updateMask=labels$/.exec(url);
+  if (labels && option('-X') === 'PATCH') {
+    log('project labels', true);
+    const headers = options('-H').flatMap((h) => (h.startsWith('@') ? readFileSync(h.slice(1), 'utf8').split('\n') : [h]));
+    if (!headers.includes('Authorization: Bearer fake-token') || !headers.includes(`x-goog-user-project: ${state.project}`)) {
+      return httpError({ error: { code: 401, status: 'UNAUTHENTICATED', message: 'Request had invalid authentication credentials.' } });
+    }
+    if (labels[1] !== state.projectNumber) return httpError({ error: { code: 404, status: 'NOT_FOUND', message: `projects/${labels[1]}` } });
+    state.projectLabels = JSON.parse(readFileSync(option('--data-binary').slice(1), 'utf8')).labels;
+    save();
+    return out(JSON.stringify({ name: 'operations/fake', done: true }));
   }
   const userDoc = /^https:\/\/firestore\.googleapis\.com\/v1\/projects\/[^/]+\/databases\/\(default\)\/documents\/users\/([^/?]+)(\?.*)?$/.exec(url);
   if (userDoc) return firestoreUser(url, decodeURIComponent(userDoc[1]), userDoc[2]);

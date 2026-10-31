@@ -10,13 +10,16 @@
 # id; what stays loses the accounts' grants on it first. Enabled APIs stay on. Run by the project's
 # owner in Cloud Shell. It finds what exists first and names exactly that before deleting anything;
 # re-running finishes an interrupted uninstall. --dry-run prints every command that would change
-# something and changes nothing.
+# something and changes nothing. --access-token-file, --account and --events work as they do for
+# install.sh (token mode, for a caller such as a web app).
 set -euo pipefail
 
 INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$INSTALL_DIR/.." && pwd)"
 # shellcheck source=lib/run.sh
 source "$INSTALL_DIR/lib/run.sh"
+# shellcheck source=lib/auth.sh
+source "$INSTALL_DIR/lib/auth.sh"
 # shellcheck source=lib/json.sh
 source "$INSTALL_DIR/lib/json.sh"
 # shellcheck source=lib/names.sh
@@ -25,6 +28,8 @@ source "$INSTALL_DIR/lib/names.sh"
 source "$INSTALL_DIR/lib/iam.sh"
 # shellcheck source=lib/tags.sh
 source "$INSTALL_DIR/lib/tags.sh"
+# shellcheck source=lib/project-label.sh
+source "$INSTALL_DIR/lib/project-label.sh"
 # shellcheck source=lib/indexes.sh
 source "$INSTALL_DIR/lib/indexes.sh"
 
@@ -46,6 +51,11 @@ agent's image repository, and everything in them, unless --purge.
                      Irreversible: asks you to type the project id, even with --yes
   --yes              Don't ask before deleting (except the --purge confirmation)
   --dry-run          Print every command that would change something; change nothing
+  --access-token-file <path>
+                     Act with the OAuth access token in this file instead of gcloud's login (token mode;
+                     needs --account and --project)
+  --account <email>  The account the access token belongs to
+  --events <path>    Also write the run's progress to this file, one JSON object per line
   -h, --help         This help
 EOF
 }
@@ -62,15 +72,24 @@ parse_flags() {
       --dry-run) DRY_RUN=1; shift ;;
       --purge) PURGE=1; shift ;;
       -h | --help) usage; exit 0 ;;
-      --project=*) PROJECT="${1#*=}"; shift ;;
-      --region=*) REGION="${1#*=}"; shift ;;
-      --project | --region)
+      --project=* | --region=* | --access-token-file=* | --account=* | --events=*)
+        set_flag "${1%%=*}" "${1#*=}"; shift ;;
+      --project | --region | --access-token-file | --account | --events)
         (($# >= 2)) || die "$1 needs a value"
-        if [[ "$1" == --project ]]; then PROJECT="$2"; else REGION="$2"; fi
+        set_flag "$1" "$2"
         shift 2 ;;
       *) usage >&2; die "unknown option: $1" ;;
     esac
   done
+}
+
+set_flag() {
+  case "$1" in
+    --project) PROJECT="$2" ;;
+    --region) REGION="$2" ;;
+    --events) start_events "$2" ;;
+    *) auth_flag "$1" "$2" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------------------------------
@@ -80,15 +99,15 @@ parse_flags() {
 step_check() {
   step 1 check "your login, the project, and what paraclete left in it"
   require_tools gcloud node
-  ACCOUNT="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null | head -n 1 || true)"
+  ACCOUNT="$(active_account)"
   [[ -n "$ACCOUNT" ]] || die "gcloud is not logged in. Run: gcloud auth login"
   if [[ -z "$PROJECT" ]]; then
     PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
   fi
   [[ -n "$PROJECT" ]] || die "no project given and gcloud has none configured. Pass --project <id>."
   [[ "$PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "'$PROJECT' is not a Google Cloud project id"
-  gcloud projects describe "$PROJECT" --format='value(projectNumber)' >/dev/null 2>&1 \
-    || die "project $PROJECT does not exist, or $ACCOUNT cannot see it"
+  PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)' 2>/dev/null || true)"
+  [[ -n "$PROJECT_NUMBER" ]] || die "project $PROJECT does not exist, or $ACCOUNT cannot see it"
   note "project $PROJECT, as $ACCOUNT"
   discover
 }
@@ -164,6 +183,8 @@ discover() {
   if gcloud storage buckets describe "gs://$BUCKET" --format='value(name)' >/dev/null 2>&1; then
     BUCKET_EXISTS=1
   fi
+  LABEL_ROLE="$(node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]] || "")' \
+    "$(project_labels "$PROJECT")" "$PROJECT_LABEL_KEY")"
 }
 
 # The indexes and TTL policies firestore.indexes.json lists that the database has.
@@ -210,6 +231,7 @@ confirm_plan() {
     for line in "${TTL_FIELDS[@]}"; do doomed+=("Firestore TTL policy on ${line/$'\t'/.}"); done
   fi
   for account in "${ACCOUNTS[@]}"; do doomed+=("service account $account and its grants"); done
+  [[ -n "$LABEL_ROLE" ]] && doomed+=("the project's label $PROJECT_LABEL_KEY=$LABEL_ROLE")
   if ((BUCKET_EXISTS)); then
     if ((PURGE)); then
       doomed+=("bucket gs://$BUCKET and ALL its files (irreversible)")
@@ -228,6 +250,7 @@ confirm_plan() {
   if ((${#doomed[@]} == 0)); then
     say ""
     say "Nothing of paraclete's is left to remove from $PROJECT."
+    event done
     exit 0
   fi
   say ""
@@ -400,7 +423,10 @@ step_bucket() {
 # Grants on an account itself (the agent's act-as on its own account, the dashboard's on its own) live
 # in that account's policy and go with the account.
 step_accounts() {
-  step 8 accounts "the service accounts and their project grants"
+  step 8 accounts "the service accounts and their project grants, and the project's paraclete label"
+  if [[ -n "$LABEL_ROLE" ]]; then
+    remove_project_label "$PROJECT" "$PROJECT_NUMBER" "$WORK_DIR"
+  fi
   if ((${#ACCOUNTS[@]} == 0)); then
     note "no paraclete service accounts"
     return 0
@@ -418,6 +444,9 @@ step_accounts() {
 
 main() {
   parse_flags "$@"
+  use_token_file "$PROJECT"
+  WORK_DIR="$(mktemp -d)"
+  trap 'rm -rf "${WORK_DIR:-}" "${GCLOUD_CONFIG_DIR:-}"' EXIT
   step_check
   confirm_plan
   step_vm
@@ -433,6 +462,7 @@ main() {
   else
     say "paraclete is removed from $PROJECT."
   fi
+  event done
 }
 
 main "$@"

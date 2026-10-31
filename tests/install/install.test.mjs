@@ -11,7 +11,12 @@
 // so, and taken back on a move away, the repository and its images staying; act-as, image push and
 // Cloud Run change are never granted project-wide, and one found there is taken back. Every install
 // tags the dashboard's service and update job paraclete=managed, and the DevOps Engineer's run.admin
-// holds the condition that leaves those two out.
+// holds the condition that leaves those two out. In token mode (an access token file and the account
+// it belongs to) a run installs and uninstalls with no gcloud login at all; --events writes every step
+// and command as JSON lines, ending with done or error; and the project carries paraclete=<role>.
+// --preflight reports every check of step 1 (install/lib/preflight.mjs: permissions, billing, the
+// organization, organization policies, the APIs, and the model when Vertex AI is on) and changes
+// nothing; an install stops in step 1 on the same blockers.
 import { describe, test, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -54,8 +59,13 @@ const README_ENV = (() => {
 /** The commands of a run that step 6 prints, in order. */
 const DASHBOARD_COMMANDS = [['gcloud', 'artifacts'], ['gcloud', 'builds'], ['gcloud', 'run'], ['gcloud', 'iap'],
   ['gcloud', 'beta'], ['curl']];
-const dashboardCommands = (commands) => commands.filter((command) =>
-  DASHBOARD_COMMANDS.some((words) => words.every((word, i) => command[i] === word)));
+/** Step 3's write of the project label goes through curl too (install/lib/project-label.sh). */
+const isProjectLabelWrite = (command) => command[0] === 'curl'
+  && String(command.at(-1)).includes('cloudresourcemanager.googleapis.com/v3/projects/');
+const dashboardCommands = (commands) => commands.filter((command) => !isProjectLabelWrite(command)
+  && DASHBOARD_COMMANDS.some((words) => words.every((word, i) => command[i] === word)));
+/** Where the first of step 6's REST calls (the first admin's record) is. */
+const firstDashboardCurl = (commands) => commands.findIndex((command) => command[0] === 'curl' && !isProjectLabelWrite(command));
 
 const BASE_APIS = ['compute', 'run', 'firestore', 'iam', 'iamcredentials', 'aiplatform', 'artifactregistry',
   'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive', 'cloudresourcemanager', 'cloudscheduler'].map((api) => `${api}.googleapis.com`);
@@ -207,7 +217,7 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
 
   test('still runs the read-only checks', () => {
     const made = run.calls.map((call) => call.command);
-    for (const check of ['auth list', 'testIamPermissions', 'billing projects describe', 'projects get-ancestors', 'ls-remote', 'raw']) {
+    for (const check of ['auth list', 'testIamPermissions', 'billing info', 'ancestry', 'org policy', 'services enabled', 'ls-remote', 'raw']) {
       assert.ok(made.includes(check), `missing check: ${check}`);
     }
   });
@@ -386,7 +396,7 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
   });
 
   test('makes the installer the first admin with a create-only Firestore write, its token kept off the command line', () => {
-    const [write, ...more] = find(run.commands, 'curl');
+    const [write, ...more] = find(run.commands, 'curl').filter((c) => !isProjectLabelWrite(c));
     assert.equal(more.length, 0);
     assert.equal(write.at(-1), `https://firestore.googleapis.com/v1/projects/${PROJECT}/databases/(default)/documents/users/${OWNER}?currentDocument.exists=false`);
     assert.equal(write[write.indexOf('-X') + 1], 'PATCH');
@@ -404,8 +414,8 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     const order = [
       ['gcloud', 'artifacts', 'repositories', 'create'], ['gcloud', 'artifacts', 'repositories', 'add-iam-policy-binding'],
       ['gcloud', 'builds', 'submit'], ['gcloud', 'run', 'deploy'], ['gcloud', 'run', 'services', 'add-iam-policy-binding'],
-      ['gcloud', 'iap', 'web', 'add-iam-policy-binding'], ['curl'],
-    ].map((words) => position(run.commands, ...words));
+      ['gcloud', 'iap', 'web', 'add-iam-policy-binding'],
+    ].map((words) => position(run.commands, ...words)).concat(firstDashboardCurl(run.commands));
     assert.deepEqual(order, [...order].sort((a, b) => a - b));
     assert.ok(order.every((i) => i > position(run.commands, 'gcloud', 'storage', 'buckets', 'create')));
     assert.ok(order.every((i) => i < position(run.commands, 'gcloud', 'compute', 'instances', 'create')));
@@ -444,7 +454,7 @@ describe('a dry run on a fresh project', { skip: needsBash, concurrency: true },
     assert.deepEqual(JSON.parse(shownFile(run.stdout, 'cors.json')), uploadCors([SERVICE_ORIGIN]),
       'before the first deploy, the deterministic URL is the one the service will have');
     const at = run.commands.indexOf(cors);
-    assert.ok(at > position(run.commands, 'gcloud', 'run', 'deploy') && at > position(run.commands, 'curl'), 'after the service exists');
+    assert.ok(at > position(run.commands, 'gcloud', 'run', 'deploy') && at > firstDashboardCurl(run.commands), 'after the service exists');
     assert.ok(at < position(run.commands, 'gcloud', 'compute', 'firewall-rules', 'create'), 'within step 6');
     assert.match(run.stdout, new RegExp(`gs://${BUCKET}: letting the dashboard upload from ${SERVICE_ORIGIN.replace(/\./g, '\\.')} \\(its CORS setting: none set\\)`));
   });
@@ -859,6 +869,123 @@ describe('a move to and from the DevOps Engineer role', { skip: needsBash, concu
   });
 });
 
+describe('token mode: an access token instead of a gcloud login', { skip: needsBash, concurrency: false }, () => {
+  /** A sandbox with no gcloud login, and the token file and events file paths, as bash takes them. */
+  function tokenBox() {
+    const state = freshProject();
+    state.account = '';
+    const box = createSandbox(state);
+    const dir = join(box.repo, '..');
+    writeFileSync(join(dir, 'token'), 'fake-token\n');
+    const bashPath = (name) => join(dir, name).replace(/\\/g, '/');
+    return { box, token: bashPath('token'), events: bashPath('events.jsonl'), readEvents: () => readFileSync(join(dir, 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line)) };
+  }
+  const tokenArgs = (token) => ['--yes', '--project', PROJECT, '--access-token-file', token, '--account', OWNER];
+
+  test('installs with no login at all, the account named the first admin, then uninstalls the same way', async () => {
+    const { box, token } = tokenBox();
+    const installed = await box.run('install.sh', tokenArgs(token));
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.match(installed.stdout, new RegExp(`acting as ${OWNER.replace(/\./g, '\\.')}, with an access token`));
+    assert.ok(!installed.calls.some((call) => /^(auth |config get-value)/.test(call.command)), 'no gcloud login was read');
+    const state = box.state();
+    assert.ok(state.instances.paraclete, 'the VM exists');
+    assert.equal(state.users[OWNER]?.role, 'admin');
+    assert.deepEqual(state.projectLabels, { paraclete: 'generic' });
+
+    const removed = await box.run('uninstall.sh', tokenArgs(token));
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.ok(!removed.calls.some((call) => /^(auth |config get-value)/.test(call.command)));
+    assert.deepEqual(box.state().instances, {});
+    assert.deepEqual(box.state().projectLabels, {});
+  });
+
+  test('refuses a token without its account or project, and an account without a token, before any call', async () => {
+    const { box, token } = tokenBox();
+    for (const [args, message] of [
+      [['--yes', '--project', PROJECT, '--access-token-file', token], /--access-token-file needs --account/],
+      [['--yes', '--access-token-file', token, '--account', OWNER], /--access-token-file needs --project/],
+      [['--yes', '--project', PROJECT, '--account', OWNER], /--account is for token mode/],
+      [['--yes', '--project', PROJECT, '--access-token-file', `${token}-missing`, '--account', OWNER], /is missing or empty/],
+    ]) {
+      for (const script of ['install.sh', 'uninstall.sh']) {
+        const run = await box.run(script, args);
+        assert.equal(run.status, 1, `${script} ${args.join(' ')}`);
+        assert.match(run.stderr, message);
+        assert.deepEqual(run.calls, [], 'nothing was called');
+      }
+    }
+  });
+
+  test('--events: every step in order, every command printed, a done event with the dashboard, never the token', async () => {
+    const { box, token, events, readEvents } = tokenBox();
+    const run = await box.run('install.sh', [...tokenArgs(token), '--events', events]);
+    assert.equal(run.status, 0, run.stderr);
+    const list = readEvents();
+    assert.deepEqual(list.filter((e) => e.type === 'step').map((e) => [e.step, e.total, e.name]),
+      steps(run.stdout).map(([n, name]) => [n, 9, name]));
+    assert.deepEqual(list.filter((e) => e.type === 'step').map((e) => e.step), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    assert.equal(list.filter((e) => e.type === 'command').length, run.commands.length);
+    assert.ok(list.every((e) => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(e.t)));
+    const done = list.at(-1);
+    assert.equal(done.type, 'done');
+    assert.match(done.dashboard, /^https:\/\/paraclete-/);
+    assert.equal(done.commit, box.state().instances.paraclete.metadata['paraclete-ref']);
+    assert.ok(!readFileSync(join(box.repo, '..', 'events.jsonl'), 'utf8').includes('fake-token'), 'the token is never an event');
+  });
+
+  test('--events: a run that stops ends with an error event naming why', async () => {
+    const { box, token, events, readEvents } = tokenBox();
+    box.update((s) => { s.deniedPermissions = ['iam.serviceAccounts.create']; });
+    const run = await box.run('install.sh', [...tokenArgs(token), '--events', events]);
+    assert.equal(run.status, 1);
+    const last = readEvents().at(-1);
+    assert.equal(last.type, 'error');
+    assert.match(last.text, /iam\.serviceAccounts\.create/);
+  });
+
+  test('--events in a dry run, and for uninstall: each ends with done', async () => {
+    const { box, token, events, readEvents } = tokenBox();
+    const dry = await box.run('install.sh', [...tokenArgs(token), '--dry-run', '--events', events]);
+    assert.equal(dry.status, 0, dry.stderr);
+    assert.equal(readEvents().at(-1).type, 'done');
+    assert.equal(readEvents().filter((e) => e.type === 'command').length, dry.commands.length);
+    const nothing = await box.run('uninstall.sh', [...tokenArgs(token), '--events', events]);
+    assert.equal(nothing.status, 0, nothing.stderr);
+    assert.deepEqual(readEvents().map((e) => e.type).slice(-2), ['text', 'done'], 'a fresh project: nothing to remove, then done');
+  });
+});
+
+describe('the project label paraclete=<role>', { skip: needsBash, concurrency: false }, () => {
+  test('a dry run plans it in step 3, and keeps every other label', async () => {
+    const state = freshProject();
+    state.projectLabels = { env: 'prod' };
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes']);
+    assert.equal(run.status, 0, run.stderr);
+    const [patch, ...more] = run.commands.filter((c) => c[0] === 'curl' && c.some((a) => a.includes('cloudresourcemanager.googleapis.com/v3/projects/')));
+    assert.equal(more.length, 0);
+    assert.ok(patch.at(-1).endsWith(`/v3/projects/${state.projectNumber}?updateMask=labels`));
+    assert.match(run.stdout, /"labels":\{"env":"prod","paraclete":"generic"\}/);
+    const at = run.commands.indexOf(patch);
+    assert.ok(at > position(run.commands, 'gcloud', 'iam', 'service-accounts', 'create'));
+    assert.ok(at < position(run.commands, 'gcloud', 'firestore', 'databases', 'create'), 'within step 3');
+  });
+
+  test('a real run sets it once, a move to another role changes it, and other labels stay', async () => {
+    const state = freshProject();
+    state.projectLabels = { env: 'prod' };
+    const box = createSandbox(state);
+    assert.equal((await box.run('install.sh', ['--yes'])).status, 0);
+    assert.deepEqual(box.state().projectLabels, { env: 'prod', paraclete: 'generic' });
+    const again = await box.run('install.sh', ['--yes']);
+    assert.ok(!again.calls.some((call) => call.command === 'project labels'), 'a label in place is not written again');
+    assert.match(again.stdout, /the project is labeled paraclete=generic/);
+    assert.equal((await box.run('install.sh', ['--yes', '--role', 'devops-engineer'])).status, 0);
+    assert.deepEqual(box.state().projectLabels, { env: 'prod', paraclete: 'devops-engineer' });
+  });
+});
+
 describe('choosing what to install', { skip: needsBash, concurrency: true }, () => {
   const vmMetadata = (run) => metadataOf(find(run.commands, 'gcloud', 'compute', 'instances', 'create')[0]);
 
@@ -930,6 +1057,92 @@ describe('choosing what to install', { skip: needsBash, concurrency: true }, () 
     run = await createSandbox(noOrigin).run('install.sh', ['--yes']);
     assert.equal(run.status, 1);
     assert.match(run.stderr, /Pass --repo/);
+  });
+});
+
+describe('--preflight: every check reported, nothing changed', { skip: needsBash, concurrency: true }, () => {
+  const eventsOf = (box) => readFileSync(join(box.repo, '..', 'events.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  const eventsPath = (box) => join(box.repo, '..', 'events.jsonl').replace(/\\/g, '/');
+
+  test('a project that can take an install: only step 1, no write, every check an event, exit 0', async () => {
+    const box = createSandbox();
+    const run = await box.run('install.sh', ['--preflight', '--events', eventsPath(box)]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual(steps(run.stdout).map(([n, name]) => [n, name]), [[1, 'check']]);
+    assert.match(run.stdout, /\[1\/1\] check/);
+    assert.deepEqual(writes(run.calls), []);
+    assert.deepEqual(box.state(), freshProject());
+    assert.match(run.stdout, /Vertex AI is off: step 2 checks gemini-4-argon once it turns it on/);
+    assert.match(run.stdout, /Preflight: nothing found that would stop an install in your-gcp-project\./);
+    const events = eventsOf(box);
+    assert.deepEqual(events.filter((e) => e.type === 'check').map((e) => [e.id, e.state]),
+      [['permissions', 'ok'], ['billing', 'ok'], ['organization', 'ok'], ['policy', 'ok'], ['apis', 'note']]);
+    assert.equal(events.at(-1).type, 'done');
+    assert.equal(events.at(-1).blockers, '0');
+  });
+
+  test('reports every blocker, not only the first, exits 1 and changes nothing', async () => {
+    const state = freshProject();
+    state.billingEnabled = false;
+    state.deniedPermissions = ['compute.instances.create'];
+    state.orgPolicies = { 'iam.disableServiceAccountCreation': { rules: [{ enforce: true }] } };
+    const box = createSandbox(state);
+    const run = await box.run('install.sh', ['--preflight', '--events', eventsPath(box)]);
+    assert.equal(run.status, 1);
+    for (const blocker of [/blocker: owner@example\.com needs roles\/owner on your-gcp-project\. Missing: compute\.instances\.create/,
+      /blocker: billing is not enabled on your-gcp-project: link a billing account/,
+      /blocker: iam\.disableServiceAccountCreation: creating service accounts is turned off, and step 3 creates/]) {
+      assert.match(run.stdout, blocker);
+    }
+    assert.match(run.stdout, /Preflight: 3 thing\(s\) would stop an install in your-gcp-project\./);
+    assert.deepEqual(writes(run.calls), []);
+    assert.equal(eventsOf(box).at(-1).blockers, '3');
+  });
+
+  test('with Vertex AI on, it asks the model once; a model the project cannot reach is a blocker', async () => {
+    const state = freshProject();
+    state.services = ['aiplatform.googleapis.com'];
+    state.modelAnswers = ['not-found'];
+    const blocked = await createSandbox(state).run('install.sh', ['--preflight']);
+    assert.equal(blocked.status, 1);
+    assert.match(blocked.stdout, /blocker: .*gemini-4-argon/);
+    assert.equal(blocked.calls.filter((call) => call.command === 'vertex generateContent').length, 1, "one try, not step 2's retries");
+    state.modelAnswers = ['ok'];
+    const fine = await createSandbox(state).run('install.sh', ['--preflight']);
+    assert.equal(fine.status, 0, fine.stderr);
+    assert.match(fine.stdout, /gemini-4-argon answers in your-gcp-project/);
+  });
+
+  test('a project that holds paraclete says so; token mode works the same', async () => {
+    const state = freshProject();
+    state.account = '';
+    const box = createSandbox(state);
+    writeFileSync(join(box.repo, '..', 'token'), 'fake-token\n');
+    const token = join(box.repo, '..', 'token').replace(/\\/g, '/');
+    const run = await box.run('install.sh', ['--preflight', '--project', PROJECT, '--access-token-file', token, '--account', OWNER]);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stdout, /acting as owner@example\.com, with an access token/);
+    assert.match(run.stdout, /owner@example\.com can do everything the install needs/);
+  });
+});
+
+describe('step 1 stops on an organization policy, and only warns about one it cannot read', { skip: needsBash, concurrency: true }, () => {
+  test('a policy that breaks the install stops it in step 1, naming the policy and what it breaks', async () => {
+    const state = freshProject();
+    state.orgPolicies = { 'compute.vmExternalIpAccess': { rules: [{ denyAll: true }] } };
+    const run = await createSandbox(state).run('install.sh', ['--yes']);
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /compute\.vmExternalIpAccess: the VM paraclete may not have an external IP address, and the agent's VM reaches GitHub/);
+    assert.deepEqual(writes(run.calls), []);
+    assert.deepEqual(steps(run.stdout).map(([n]) => n), [1]);
+  });
+
+  test('policies that cannot be read (their API off where the call is billed) are a warning, and the install goes on', async () => {
+    const state = freshProject();
+    state.orgPolicyApi = 'off';
+    const run = await createSandbox(state).run('install.sh', ['--dry-run', '--yes']);
+    assert.equal(run.status, 0, run.stderr);
+    assert.match(run.stderr, /warning: could not read the organization policies \(SERVICE_DISABLED.*turn on orgpolicy\.googleapis\.com/);
   });
 });
 

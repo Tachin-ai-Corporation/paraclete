@@ -202,8 +202,8 @@ export function checkMain({ repoRoot, repo, settings, execGit, execGh, now = new
   }
   if (pause) {
     try {
-      execGh(['variable', 'set', LOOP_PAUSE_VARIABLE, ...repoArgs, '--body',
-        `${lately} loop merges reverted within a day (the latest ${url}): the loop's cycles stop until a person deletes this variable`], repoRoot);
+      setLoopPause({ repoRoot, repo, execGh,
+        value: `${lately} loop merges reverted within a day (the latest ${url}): the loop's cycles stop until a person deletes this variable` });
       log(`[INFO] loop: paused: ${lately} reverts within a day`);
     } catch (err) {
       log(`[WARN] could not pause the loop: ${err.message}`);
@@ -212,12 +212,44 @@ export function checkMain({ repoRoot, repo, settings, execGit, execGh, now = new
   return { state: 'reverting', reason, pullRequest: url, paused: pause };
 }
 
-/** Why the loop's cycles are paused by its repository variable, or null. */
-export function loopPauseReason({ repoRoot, repo, execGh }) {
+// The pause variable is read and set through GitHub's REST API, never `gh variable`: that command is
+// newer than the gh some drivers install (Debian's 2.23 has none), and a pause that cannot be read must
+// not read as "not paused".
+
+/** The REST path of the repository's Actions variables, or of one of them. */
+function variablesPath(repo, name) {
+  return `repos/${repo || '{owner}/{repo}'}/actions/variables${name ? `/${name}` : ''}`;
+}
+
+/** Whether a gh failure is GitHub answering 404: for a variable, that it is not set. */
+function notFound(err) {
+  return /\bHTTP 404\b/.test(`${err?.message || ''}\n${err?.stderr || ''}`);
+}
+
+/** Sets the loop's pause variable to value: updated when it is set, created when it is not. */
+export function setLoopPause({ repoRoot, repo, execGh, value }) {
+  const fields = ['-f', `name=${LOOP_PAUSE_VARIABLE}`, '-f', `value=${value}`];
   try {
-    const value = String(execGh(['variable', 'get', LOOP_PAUSE_VARIABLE, ...(repo ? ['--repo', repo] : [])], repoRoot) || '').trim();
-    return value && value !== '0' ? `${LOOP_PAUSE_VARIABLE}: ${value}` : null;
-  } catch {
-    return null;
+    execGh(['api', '-X', 'PATCH', variablesPath(repo, LOOP_PAUSE_VARIABLE), ...fields], repoRoot);
+  } catch (err) {
+    if (!notFound(err)) throw err;
+    execGh(['api', '-X', 'POST', variablesPath(repo), ...fields], repoRoot);
   }
+}
+
+/**
+ * Why the loop's cycles are paused by its repository variable, or null when it is not set, empty or 0.
+ * A variable that cannot be read (no access, GitHub down) counts as paused, saying so: an off switch
+ * that fails open is no off switch.
+ */
+export function loopPauseReason({ repoRoot, repo, execGh }) {
+  let value;
+  try {
+    value = String(execGh(['api', variablesPath(repo, LOOP_PAUSE_VARIABLE), '--jq', '.value'], repoRoot) || '').trim();
+  } catch (err) {
+    if (notFound(err)) return null;
+    const why = String(err?.message || err).split('\n').map((l) => l.trim()).filter(Boolean).pop();
+    return `${LOOP_PAUSE_VARIABLE} could not be read, so the loop counts as paused: ${why}`;
+  }
+  return value && value !== '0' ? `${LOOP_PAUSE_VARIABLE}: ${value}` : null;
 }

@@ -1,8 +1,9 @@
 # install/lib/run.sh: how install.sh and uninstall.sh talk and act. Progress lines, notes, warnings and
 # fatal errors; `run`, which every side effect goes through, so that it prints the exact command and,
 # in a dry run, stops there; and the two kinds of question, a value with a default and a yes or no.
-# Defines functions only. Sourced by install/install.sh and install/uninstall.sh, never installed on
-# the VM.
+# With --events <path>, each of those lines is also written there as one JSON object per line, for a
+# caller such as a web app that shows the run step by step (install/README.md, "Token mode"). Defines
+# functions only. Sourced by install/install.sh and install/uninstall.sh, never installed on the VM.
 
 # 1 in a dry run: `run` prints commands and runs nothing. The scripts set it from --dry-run.
 DRY_RUN="${DRY_RUN:-0}"
@@ -11,30 +12,76 @@ STEP_TOTAL="${STEP_TOTAL:-0}"
 # `run_retry`: a just-created service account can take a few seconds to be visible to IAM.
 RETRY_ATTEMPTS="${RETRY_ATTEMPTS:-6}"
 RETRY_DELAY_SECONDS="${RETRY_DELAY_SECONDS:-10}"
+# --events <path>: where the progress events go. Empty: nowhere.
+EVENTS_FILE=""
+
+# start_events <path>: progress events from now on go to path, which starts empty.
+start_events() {
+  EVENTS_FILE="$1"
+  : >"$EVENTS_FILE" || die "cannot write the events file $EVENTS_FILE"
+}
+
+# json_string <text>: the text as a JSON string. Control characters other than newline, carriage return
+# and tab are dropped.
+json_string() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/\\r}"
+  s="${s//$'\t'/\\t}"
+  s="${s//[$'\001'-$'\037']/}"
+  printf '"%s"' "$s"
+}
+
+# event <type> [<key> <value>]...: one progress event, {"t": <UTC time>, "type": <type>, <key>: <value>, ...},
+# appended to EVENTS_FILE when there is one. step and total are numbers; every other value is a string.
+event() {
+  [[ -n "$EVENTS_FILE" ]] || return 0
+  local line key value
+  line="{\"t\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"type\":$(json_string "$1")"
+  shift
+  while (($# >= 2)); do
+    key="$1"
+    value="$2"
+    shift 2
+    if [[ "$key" == step || "$key" == total ]]; then
+      line+=",\"$key\":$value"
+    else
+      line+=",\"$key\":$(json_string "$value")"
+    fi
+  done
+  printf '%s}\n' "$line" >>"$EVENTS_FILE"
+}
 
 # say <text>: a plain line of output.
 say() {
   printf '%s\n' "$*"
+  event text text "$*"
 }
 
 # step <number> <name> <what it does>: the progress line that opens a step, e.g. "[3/9] accounts: ...".
 step() {
   printf '\n[%s/%s] %s: %s\n' "$1" "$STEP_TOTAL" "$2" "$3"
+  event step step "$1" total "$STEP_TOTAL" name "$2" text "$3"
 }
 
 # note <text>: a detail under the current step.
 note() {
   printf '      %s\n' "$*"
+  event note text "$*"
 }
 
 # warn <text>: something the user should know that does not stop the script.
 warn() {
   printf 'warning: %s\n' "$*" >&2
+  event warning text "$*"
 }
 
 # die <text>: stops the script, naming the problem.
 die() {
   printf 'error: %s\n' "$*" >&2
+  event error text "$*"
   exit 1
 }
 
@@ -57,6 +104,7 @@ shell_quote() {
 # input there, and the user's answers are read only by ask and confirm.
 run() {
   printf '+ %s\n' "$(shell_quote "$@")"
+  event command text "$(shell_quote "$@")"
   if [[ "$DRY_RUN" == 1 ]]; then
     return 0
   fi
@@ -67,6 +115,7 @@ run() {
 # name an account created moments before.
 run_retry() {
   printf '+ %s\n' "$(shell_quote "$@")"
+  event command text "$(shell_quote "$@")"
   if [[ "$DRY_RUN" == 1 ]]; then
     return 0
   fi
