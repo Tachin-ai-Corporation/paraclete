@@ -42,7 +42,7 @@ const TIERS = new Set(['boot', 'mission', 'volatile']);
  *                                    `session` and `maxBodyBytes` (DEFAULT_SERVER_SETTINGS)
  * @param {object}   [o.sessions]     from createSessionStore(); a default store when omitted
  * @param {string}   [o.skillCatalog] the skill index text from buildSkillCatalog()
- * @param {Function} [o.logger]       (level, msg) logger
+ * @param {Function} [o.logger]       (level, msg, fields?) logger
  * @param {Function} [o.now]          clock in milliseconds
  * @param {Function} [o.sleep]        (ms) => Promise, for retry backoff (injectable for tests)
  * @returns {import('node:http').Server}
@@ -59,6 +59,7 @@ export function createGatewayServer({
   now = Date.now,
   sleep,
 }) {
+  const log = logger;
   if (typeof token !== 'string' || token.trim() === '') {
     throw new Error('createGatewayServer: a gateway token is required; refusing to build an unauthenticated gateway');
   }
@@ -125,7 +126,7 @@ export function createGatewayServer({
       if (!authorized(req)) return unauthorized(res);
       const id = decodeURIComponent(path.substring('/v1/sessions/'.length));
       const existed = sessions.closeSession(id);
-      logger('INFO', `TELEMETRY session_close id=${id} existed=${existed}`);
+      log('INFO', `TELEMETRY session_close id=${id} existed=${existed}`);
       return sendJson(res, 200, { ok: true, existed });
     }
 
@@ -134,10 +135,10 @@ export function createGatewayServer({
       requestCount++;
       const rid = requestCount;
       try {
-        return sendJson(res, 200, await completion(await readJson(req, maxBodyBytes), rid));
+        return sendJson(res, 200, await handleCompletions(await readJson(req, maxBodyBytes), rid));
       } catch (err) {
         const code = Number.isInteger(err.statusCode) ? err.statusCode : 500;
-        logger('ERROR', `#${rid} ${err.message}`);
+        if (!err.logged) log('ERROR', `#${rid} ${err.message}`);
         return sendJson(res, code, { error: { message: err.message, type: 'gateway_error', code } });
       }
     }
@@ -145,7 +146,7 @@ export function createGatewayServer({
     return sendJson(res, 404, { error: { message: 'not found' } });
   }
 
-  async function completion(body, rid) {
+  async function handleCompletions(body, rid) {
     const {
       model: route,
       messages = [],
@@ -160,7 +161,6 @@ export function createGatewayServer({
     const organId = organFromRoute(route);
     const organ = organs.get(organId, { exec: exec === true });
     const toolSet = tools.select(organ.toolset);
-    logger('INFO', `#${rid} organ=${organId} model=${organ.model} msgs=${messages.length}${sessionReq?.id ? ` session=${sessionReq.id}:${sessionReq.op}` : ''}`);
 
     // The organ's own prompt always leads: only the gateway reads organ prompts, and as the most stable
     // block it carries the first cache breakpoint. The caller's system messages follow as separate
@@ -169,11 +169,14 @@ export function createGatewayServer({
     let chatMessages = messages.filter((m) => m?.role !== 'system').map(chatMessage);
     const blocks = [organ.systemPrompt, ...systemBlocks].filter(Boolean);
 
+    const turnStart = now();
+    log('INFO', `#${rid} organ=${organId} model=${organ.model} msgs=${messages.length}${sessionReq?.id ? ` session=${sessionReq.id}:${sessionReq.op}` : ''}`);
+
     // Sessions are commanded by the brain. The gateway stores only messages the brain sent, never
     // model output. An excluded organ never joins a session.
     const sessionOn = Boolean(sessionReq?.id) && session.enabled;
     const excluded = session.excludedOrgans.includes(organId);
-    if (sessionOn && excluded) logger('WARN', `#${rid} session ignored for ${organId}: it never joins a session`);
+    if (sessionOn && excluded) log('WARN', `#${rid} session ignored for ${organId}: it never joins a session`);
     // A session's identity is the caller's stable block; the organ prompt changes only with a release.
     const stableHash = hashSystem(systemBlocks[0] || '');
     let live = null;
@@ -190,7 +193,7 @@ export function createGatewayServer({
         });
         if (lookup.miss) {
           // A specified case of the protocol, answered without a provider call: the brain reopens.
-          logger('INFO', `#${rid} TELEMETRY session_miss id=${sessionReq.id} reason=${lookup.miss}`);
+          log('INFO', `#${rid} TELEMETRY session_miss id=${sessionReq.id} reason=${lookup.miss}`);
           return { session: { id: sessionReq.id, present: false, reason: lookup.miss } };
         }
         live = lookup.session;
@@ -198,41 +201,66 @@ export function createGatewayServer({
         delta = chatMessages;
         sessionCacheBoundary = live.messages.length;
         chatMessages = [...live.messages, ...chatMessages];
-        logger('INFO', `#${rid} TELEMETRY session_hit id=${sessionReq.id} seq=${live.seq} stored=${sessionCacheBoundary} delta=${delta.length}`);
+        log('INFO', `#${rid} TELEMETRY session_hit id=${sessionReq.id} seq=${live.seq} stored=${sessionCacheBoundary} delta=${delta.length}`);
       } else if (sessionReq.op === 'open' || sessionReq.op === 'reset') {
         const store = sessionReq.op === 'open' ? sessions.openSession : sessions.resetSession;
         live = store({ id: sessionReq.id, organ: organId, systemHash: stableHash, messages: chatMessages });
         echo = { id: live.id, present: true, seq: live.seq };
-        logger('INFO', `#${rid} TELEMETRY session_${sessionReq.op} id=${sessionReq.id} msgs=${chatMessages.length}`);
+        log('INFO', `#${rid} TELEMETRY session_${sessionReq.op} id=${sessionReq.id} msgs=${chatMessages.length}`);
       }
     }
 
-    const result = await runTurnWithFallback({
-      clients,
-      model: organ.model,
-      fallbackModel: organ.fallbackModel,
-      systemBlocks: blocks,
-      messages: chatMessages,
-      tools: toolSet,
-      skillCatalog,
-      limits: { maxSteps: organ.maxSteps, maxTokens: positiveInt(maxTokens) ?? organ.maxTokens },
-      sampling: {
-        temperature: Number.isFinite(temperature) ? temperature : organ.temperature,
-        topP: Number.isFinite(topP) ? topP : organ.topP,
-      },
-      forceToolCall: organ.forceToolCall,
-      sessionCacheBoundary,
-      affinityKey: `gateway-${organId}-${process.pid}`,
-      settings,
-      logger,
-      now,
-      ...(sleep ? { sleep } : {}),
-    });
+    let result;
+    try {
+      result = await runTurnWithFallback({
+        clients,
+        model: organ.model,
+        fallbackModel: organ.fallbackModel,
+        systemBlocks: blocks,
+        messages: chatMessages,
+        tools: toolSet,
+        skillCatalog,
+        limits: { maxSteps: organ.maxSteps, maxTokens: positiveInt(maxTokens) ?? organ.maxTokens },
+        sampling: {
+          temperature: Number.isFinite(temperature) ? temperature : organ.temperature,
+          topP: Number.isFinite(topP) ? topP : organ.topP,
+        },
+        forceToolCall: organ.forceToolCall,
+        sessionCacheBoundary,
+        affinityKey: `gateway-${organId}-${process.pid}`,
+        settings,
+        logger: log,
+        now,
+        ...(sleep ? { sleep } : {}),
+      });
+    } catch (e) {
+      const durationMs = Math.max(0, now() - turnStart);
+      log('ERROR', `#${rid} ${e.message}`, {
+        event: 'organ_turn',
+        status: 'error',
+        organ: organId,
+        duration_ms: durationMs,
+        error: e.message,
+      });
+      e.logged = true;
+      throw e;
+    }
 
     const u = result.usage || {};
-    logger('INFO', `#${rid} completed (${result.text.length} chars, in=${u.prompt_tokens ?? '?'} out=${u.completion_tokens ?? '?'} `
-      + `cached=${u.cachedContentTokenCount ?? 0} cache_write=${u.cacheCreationTokenCount ?? 0} steps=${u.steps ?? 1} `
-      + `provider=${u.provider || '?'}${result.fallbackFrom ? ` fallback_from=${result.fallbackFrom.model}` : ''})`);
+    const durationMs = Math.max(0, now() - turnStart);
+    const steps = u.steps ?? 1;
+    log('INFO', `#${rid} completed (${result.text.length} chars, in=${u.prompt_tokens ?? '?'} out=${u.completion_tokens ?? '?'} `
+      + `cached=${u.cachedContentTokenCount ?? 0} cache_write=${u.cacheCreationTokenCount ?? 0} steps=${steps} `
+      + `provider=${u.provider || '?'}${result.fallbackFrom ? ` fallback_from=${result.fallbackFrom.model}` : ''})`, {
+      event: 'organ_turn',
+      status: 'ok',
+      organ: organId,
+      duration_ms: durationMs,
+      output_chars: result.text.length,
+      steps,
+      model: result.model,
+      ...(result.fallbackFrom ? { fallback_from: result.fallbackFrom.model } : {}),
+    });
 
     // Commit the brain's delta only after a successful turn: a failure leaves seq where it was, and
     // the brain reopens.
