@@ -61,8 +61,9 @@ never changes an instance; it reaches instances only through a release (see "Rel
    where they are, up to `repairRounds` (2) times, before the change is refused: the cycle runs the
    tests whether or not the proposer did.
 5. **Checks the change.** It refuses the whole change when:
-   - it touches the referee: `dev/loop/`; the evaluation, benchmark, evidence, merge, pause and health
-     code in `dev/harness2/`; `dev/release*.mjs`; `.github/`; `install/`; `migrations/`;
+   - it touches the referee: `dev/loop/`; `dev/harness2/` (its runner seeds the tasks and marks runs
+     measured, its lab scripts move the lab); `dev/release*.mjs` and the release check's helpers
+     (`dev/smoke.mjs`, `dev/status.mjs`, `dev/deploy.mjs`, `dev/dev-env.mjs`); `.github/`; `install/`; `migrations/`;
      `roles/*/role.json`; `config/contracts.mjs`; `docs/canon/`; `DEVELOPING.md`; the package
      manifests;
    - it changes or removes an existing test (adding tests is welcome);
@@ -89,8 +90,9 @@ never changes an instance; it reaches instances only through a release (see "Rel
    infrastructure (the network, a git command) runs again, and one that keeps failing is left out; more
    than a quarter of a side's runs left out, and that side could not be measured (`ROLLOUT_RETRY` in
    `dev/harness2/substrate.mjs`). Any other failure of a rollout is a failed run of its side. The change
-   is refused when it could not be measured, or when any task, the held-out tasks or the whole suite got
-   worse. It does not have to improve the suite: a fix may not show there.
+   is refused when it could not be measured, when its evidence does not cover every active task on both
+   sides on the current version of the suite (the Loop guard checks this again), or when any task, the
+   held-out tasks or the whole suite got worse. It does not have to improve the suite: a fix may not show there.
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
    and carries the proposer's summary, the tests' result, the review (each point and a
@@ -150,7 +152,10 @@ GitHub. It exits 0 when the change resolves the issue, 1 when it does not or cou
 With `baseline.enabled` in your local settings (on the lab driver), a cycle measures main's head on the
 model suite (`dev/harness2/model-suite.mjs`: requests a person could send, each checked by code
 afterwards) with real-model runs, as a change is measured, `baseline.trials` (2) runs of every task
-within `baseline.maxRollouts` (40). It does so at most once in `baseline.everyHours` (24), only when main
+within `baseline.maxRollouts` (40). A training task that failed a check then runs again until it has
+`baseline.confirmTrials` (6) runs (`runBaselineEval` in `cycle.mjs`): one failure in two runs is half
+of them, and two of the first three tasks the loop targeted were such chance failures, each costing a
+measurement of hours. It does so at most once in `baseline.everyHours` (24), only when main
 moved since the last, and the cycle stops there, since a baseline takes hours. `baseline.mjs` keeps the
 summary in `.local/loop/baseline.json`: per task its capability, and for a training task each check with
 how many runs failed it. A held-out task stays a score, so none of its checks reaches an issue or the

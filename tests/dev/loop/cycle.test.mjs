@@ -17,11 +17,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
-  clearStaleCheckouts, isolatedCheckout, main, measureSides, parseNameStatus, refusalComment, regressionProblems, runCycle, slugFor, trustedNotes, worseTasks,
+  clearStaleCheckouts, coverageProblems, isolatedCheckout, main, measureSides, parseNameStatus, refusalComment, regressionProblems, runBaselineEval, runCycle,
+  slugFor, trustedNotes, worseTasks,
 } from '../../../dev/loop/cycle.mjs';
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
+import { failingTasks, summarizeBaseline } from '../../../dev/loop/baseline.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
-import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
+import { MODEL_SUITE_VERSION, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
 
 const NOW = new Date('2027-01-21T12:00:00Z');
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -100,10 +102,13 @@ const verdict = (met = () => true) => async ({ items }) => {
   const answers = items.map((_, i) => ({ n: i + 1, met: met(i + 1), evidence: `point ${i + 1} seen in docs/guide.md` }));
   return { review: { items: answers, resolves: answers.every((a) => a.met), problems: [] }, reason: null };
 };
-const runs = (caps, split = 'train') => caps.map((capability, i) => ({ taskId: `t-${split}`, split, trial: i + 1, capability, measured: true }));
-const evidence = (cand) => buildPromotionEvidence({
+const runs = (caps, split = 'train', taskId = `t-${split}`) => caps.map((capability, i) => ({ taskId, split, trial: i + 1, capability, measured: true }));
+/** Every active task of the model suite, passing on both sides: what a whole measurement covers. */
+const everyTask = () => selectModelTasks().flatMap((task) => runs([1, 1, 1], task.split, task.id));
+const evidence = (cand, { tasks = everyTask(), suite = { name: 'model', version: MODEL_SUITE_VERSION } } = {}) => buildPromotionEvidence({
   candidate: { id: 'loop-7', lens: 'LOOP', touchedPaths: ['agent/work/thing.mjs'], proposal: { source: 'coding-agent' } },
-  baselineTrajectories: runs([0.8, 0.8, 0.8]), candidateTrajectories: runs(cand),
+  baselineTrajectories: [...runs([0.8, 0.8, 0.8]), ...tasks], candidateTrajectories: [...runs(cand), ...tasks],
+  suite,
 });
 
 function cycle(t, r, o = {}) {
@@ -373,6 +378,58 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   assert.equal(worse.action, 'regressed');
   assert.match(worse.reason, /task t-train got worse: capability 0\.8 -> 0\.5067/);
   assert.equal(originHas(r3, worse.branch), false);
+
+  const r4 = repo(t);
+  const [first, ...others] = selectModelTasks();
+  const partial = evidence([0.8, 0.8, 0.8], { tasks: others.flatMap((task) => runs([1, 1, 1], task.split, task.id)) });
+  const thin = await cycle(t, r4, { proposer: behaviour, measure: async () => ({ measured: true, evidence: partial }) }).run();
+  assert.equal(thin.action, 'unmeasured');
+  assert.equal(thin.reason, `it changes the agent's behaviour and was not measured on the whole suite: its evidence has no runs on both sides of ${first.id}`);
+});
+
+test('evidence covers the active suite, on its current version, with runs of every task on both sides', () => {
+  const ids = selectModelTasks().map((task) => task.id);
+  assert.deepEqual(coverageProblems(evidence([0.8, 0.8, 0.8])), []);
+  assert.deepEqual(coverageProblems(evidence([0.8, 0.8, 0.8]), ['t-train']), [], 'the tasks it must cover can be named');
+  assert.deepEqual(coverageProblems(evidence([0.8, 0.8, 0.8], { tasks: [] })), [`its evidence has no runs on both sides of ${ids.join(', ')}`]);
+  const oneSided = buildPromotionEvidence({ baselineTrajectories: runs([1], 'train', 'a'), candidateTrajectories: [], suite: { name: 'model', version: MODEL_SUITE_VERSION } });
+  assert.deepEqual(coverageProblems(oneSided, ['a']), ['its evidence has no runs on both sides of a']);
+  assert.deepEqual(coverageProblems(evidence([0.8, 0.8, 0.8], { suite: null })), [`its evidence was measured on no suite, not the model suite v${MODEL_SUITE_VERSION}`]);
+  assert.deepEqual(coverageProblems(null), ['there is no evidence']);
+});
+
+test('a baseline runs every training task that failed a check again before the planner may plan from it', async () => {
+  const task = selectModelTasks().find((x) => x.split === 'train');
+  const failingCheck = (ok) => [{ name: 'the answer is right', ok }];
+  const run = (taskId, trial, ok) => ({ taskId, trial, split: 'train', measured: true, checkScore: ok ? 1 : 0, checks: failingCheck(ok) });
+  const settings = { ...LOOP_DEFAULTS, baseline: { ...LOOP_DEFAULTS.baseline, trials: 2, confirmTrials: 6 } };
+  const calls = [];
+  const evalOn = (answers) => async (args) => {
+    calls.push(args);
+    return answers[calls.length - 1];
+  };
+  const lines = [];
+
+  // One failure in two looks like a failing task; four more runs that pass show it was chance.
+  const first = { ok: true, trials: 2, trajectories: [run(task.id, 1, true), run(task.id, 2, false)] };
+  const again = { ok: true, trajectories: [1, 2, 3, 4].map((n) => run(task.id, n, true)) };
+  const res = await runBaselineEval({ evalOn: evalOn([first, again]), settings, log: (l) => lines.push(l) });
+  assert.deepEqual(calls[1], ['eval', '--real-model', '--task', task.id, '--trials', '4', '--max-rollouts', '12']);
+  assert.deepEqual(res.trajectories.map((t) => t.trial), [1, 2, 3, 4, 5, 6], 'the extra runs are numbered after the first');
+  assert.deepEqual(failingTasks(summarizeBaseline(res)), [], 'one failure in six: not planned from');
+  assert.equal(lines[0], `[INFO] loop: ${task.id} failed a check; running each 4 more time(s) before planning from it`);
+
+  // Nothing failing: no extra runs. Their run failing: no baseline.
+  calls.length = 0;
+  const clean = { ok: true, trials: 2, trajectories: [run(task.id, 1, true), run(task.id, 2, true)] };
+  assert.equal(await runBaselineEval({ evalOn: evalOn([clean]), settings }), clean);
+  assert.equal(calls.length, 1);
+  calls.length = 0;
+  const broken = await runBaselineEval({ evalOn: evalOn([first, { ok: false, reason: 'incomplete' }]), settings });
+  assert.deepEqual(broken, { ok: false, reason: "the failing tasks' extra runs: incomplete" });
+  calls.length = 0;
+  const off = await runBaselineEval({ evalOn: evalOn([first]), settings: { ...settings, baseline: { ...settings.baseline, confirmTrials: 2 } } });
+  assert.equal(off, first, 'with confirmTrials at trials, nothing more runs');
 });
 
 test("an issue planned from a failing task is refused unless the measurement shows that task improved", async (t) => {
