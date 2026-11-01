@@ -92,7 +92,7 @@ never changes an instance; it reaches instances only through a release (see "Rel
    `paraclete-loop-review` block a merger can read) and any evidence. When the change is refused, it says
    why in a comment on the issue instead, with the files it changed, the tests that failed and the points
    the reviewer found unmet.
-   A measured change takes hours (three real-model runs of each of the model suite's 14 tasks on each
+   A measured change takes hours (three real-model runs of each of the model suite's 15 tasks on each
    side, about 8 minutes a run), so the timer's unit allows a cycle 20 hours; a long cycle only delays the
    next. A cycle starts by removing the checkouts a killed one left registered.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check

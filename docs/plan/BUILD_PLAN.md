@@ -415,8 +415,10 @@ done.
       turns a training task that fails a check into an issue whose change must make that task score
       higher, no task or the held-out tasks worse. Since `v2026.10.27.7.1` the legacy harness's scheduled
       cycles (`r-harness-evolution-cycle`, `r-failure-harvest`, `r-harness-closed-loop`) are off: they ran
-      without the real model and measured nothing. Next: harder model-suite tasks, so the baseline finds
-      more to improve.
+      without the real model and measured nothing. Since `v2026.10.30.1.1` the model suite's tasks are
+      harder (version 3), and since `v2026.10.31.3.1` every role a person can install has tasks of its
+      own (version 4). Next: tasks that exercise Workspace, Drive and Hosting through fakes of their
+      commands, which no rollout can reach today.
     - Since `v2026.10.23.12.1` a release is checked on a dev instance before it is tagged:
       `dev/release-check.mjs` deploys `main`'s head there, requires its status to be clean on that commit
       and the role's smoke mission to pass, and only then cuts the release, with the check recorded in
