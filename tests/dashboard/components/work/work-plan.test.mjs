@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { attemptRows, gateRow, gateState } from '../../../../dashboard/components/work/work-plan.js';
 import { startDashboard } from '../../harness.mjs';
 import { createCheckpointExecutor } from '../../../../agent/work/checkpoint-executor.mjs';
+import { verifyMilestone } from '../../../../agent/organs/cerebellum/verify.mjs';
 import { createApprovalChecker } from '../../../../agent/work/approvals.mjs';
 import { buildSpine } from '../../../../agent/work/checkpoint-spine.mjs';
 import { createHistoryWriter } from '../../../../agent/context/history.mjs';
@@ -238,6 +239,7 @@ ${line}
   const executor = createCheckpointExecutor({
     db: runtime.db,
     callAgent: async (organ) => replies[organ].shift(),
+    verifyMilestone,
     writeHistory: (...args) => history.write(...args),
     approvals: { create: (id, record) => runtime.db.write(`approvals/${id}`, record).then(Boolean) },
     generateId: (prefix) => `${prefix}-${String(++seq).padStart(3, '0')}`,

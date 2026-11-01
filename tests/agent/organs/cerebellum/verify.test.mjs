@@ -1,12 +1,12 @@
-// Tests for agent/work/checkpoint-verify.mjs. The pathologies prevented: a milestone passed on a
+// Tests for agent/organs/cerebellum/verify.mjs. The pathologies prevented: a milestone passed on a
 // view of the evidence that had been cut or compacted, and a pass stood clean when the adversarial
 // check its stakes called for never completed; on the other side, a single empty reply or a request
 // for evidence failed finished work, and a verifier that "could not see" the work condemned it.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyMilestone, readVerdict, CAVEATS, VERIFY_DEFAULTS } from '../../../agent/work/checkpoint-verify.mjs';
-import { smartTruncate } from '../../../agent/providers/vertex-text.mjs';
-import { COLLECTIONS } from '../../../agent/storage/collections.mjs';
+import { verifyMilestone, readVerdict, CAVEATS, VERIFY_DEFAULTS } from '../../../../agent/organs/cerebellum/verify.mjs';
+import { smartTruncate } from '../../../../agent/providers/vertex-text.mjs';
+import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 
 const REF = `${COLLECTIONS.toolResults}/tr-1`;
 

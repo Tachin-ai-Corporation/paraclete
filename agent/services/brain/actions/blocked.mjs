@@ -6,7 +6,7 @@
 // decide loop in envelope-runner.mjs.
 
 import { articulateBlocker, deliverableStandsDespiteMilestone } from '../../../work/finalization.mjs';
-import { extractFailRecommendation } from '../../../work/verdict.mjs';
+import { extractFailRecommendation } from '../../../organs/cerebellum/verdict.mjs';
 import { toStr } from '../../../providers/to-str.mjs';
 
 /**

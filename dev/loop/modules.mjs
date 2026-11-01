@@ -7,8 +7,8 @@
 // pattern is a glob: `*` matches within one path segment, `**` any number of segments. A module with
 // `each` is a template: one module per directory the glob names, `{name}` in its id and patterns
 // standing for that directory's name; one that would own nothing (an organ's skill) is dropped. A test
-// belongs to the owner of the path it mirrors (tests/agent/work/verdict.test.mjs mirrors
-// agent/work/verdict.mjs), unless a module names it; a new test named after a file of a module,
+// belongs to the owner of the path it mirrors (tests/agent/work/approvals.test.mjs mirrors
+// agent/work/approvals.mjs), unless a module names it; a new test named after a file of a module,
 // `<stem>-<what>.test.mjs`, is that file's (a loop may add tests, never change one, so its tests are new
 // files beside the ones that exist).
 //

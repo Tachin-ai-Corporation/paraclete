@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import {
   createCheckpointExecutor, requesterOf, ApprovalNotRaised, VALID_TASK_ORGANS,
 } from '../../../agent/work/checkpoint-executor.mjs';
-import { CAVEATS } from '../../../agent/work/checkpoint-verify.mjs';
+import { CAVEATS, verifyMilestone } from '../../../agent/organs/cerebellum/verify.mjs';
 import { canTransition } from '../../../agent/work/work-transitions.mjs';
 import { buildSpine } from '../../../agent/work/checkpoint-spine.mjs';
 import { deriveStepKey } from '../../../agent/work/step-ledger.mjs';
@@ -115,6 +115,7 @@ function world({ envelope = mission(), script = {}, settings = {}, approvalsOk =
     writeHistory: async (...args) => { history.push(args); },
     approvals: { create: async (id, record) => { approvals.push({ id, record }); return approvalsOk; } },
     generateId: (prefix) => `${prefix}-${++n}`,
+    verifyMilestone: (p) => verifyMilestone({ ...p, settings }),
     settings,
     logger: () => {},
     clock: () => T0,
@@ -153,8 +154,8 @@ const PLAN = [
 describe('createCheckpointExecutor', () => {
   it('names each missing required dependency', () => {
     assert.throws(() => createCheckpointExecutor({}), /deps\.db is required/);
-    const ok = { db: fakeDb(), callAgent: async () => ({}), writeHistory: async () => {}, approvals: { create: async () => true }, generateId: () => 'x' };
-    for (const name of ['callAgent', 'writeHistory', 'approvals', 'generateId']) {
+    const ok = { db: fakeDb(), callAgent: async () => ({}), verifyMilestone: async () => ({}), writeHistory: async () => {}, approvals: { create: async () => true }, generateId: () => 'x' };
+    for (const name of ['callAgent', 'verifyMilestone', 'writeHistory', 'approvals', 'generateId']) {
       assert.throws(() => createCheckpointExecutor({ ...ok, [name]: undefined }), new RegExp(`deps\\.${name} is required`));
     }
     assert.doesNotThrow(() => createCheckpointExecutor(ok));

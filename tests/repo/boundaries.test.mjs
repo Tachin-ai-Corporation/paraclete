@@ -45,6 +45,18 @@ test('the dependency table covers every agent package', () => {
   assert.deepEqual(missing, [], 'add these packages to the "May import" table in agent/README.md');
 });
 
+test('an organ never imports another organ', () => {
+  const crossings = [];
+  for (const path of agentModules.filter((p) => p.startsWith('agent/organs/'))) {
+    const organ = path.split('/')[2];
+    for (const spec of specifiers(readRepoFile(path)).filter((s) => s.startsWith('.'))) {
+      const target = posix.normalize(posix.join(dirname(path), spec));
+      if (target.startsWith('agent/organs/') && target.split('/')[2] !== organ) crossings.push(`${path}: imports ${target}`);
+    }
+  }
+  assert.deepEqual(crossings, []);
+});
+
 test('agent modules import only what the dependency table allows', () => {
   const violations = [];
   for (const path of agentModules) {

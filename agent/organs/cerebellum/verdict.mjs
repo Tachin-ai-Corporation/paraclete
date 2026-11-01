@@ -1,10 +1,11 @@
-// agent/work/verdict.mjs: reads the cerebellum's verdict (the organ that verifies each checkpoint)
-// from its tool log. The verdict is the name of the terminal tool it called (report_pass or
+// agent/organs/cerebellum/verdict.mjs: reads the cerebellum's verdict (the organ that verifies each
+// checkpoint) from its tool log. The verdict is the name of the terminal tool it called (report_pass or
 // report_fail), which is structurally unambiguous; response prose is never parsed
 // for control flow. Running the verifier, and deciding what a verdict does to the mission, belong to
-// the checkpoint executor and the brain's synthesize step, which call these.
+// verify.mjs beside it, the checkpoint executor that runs it, and the brain's synthesize and blocked
+// steps, which call these.
 
-import { lastToolLog } from '../context/tool-record.mjs';
+import { lastToolLog } from '../../context/tool-record.mjs';
 
 /**
  * Extract a verification verdict from a cerebellum response's tool log.

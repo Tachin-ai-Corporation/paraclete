@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { startDashboard } from '../../harness.mjs';
 import { createCheckpointExecutor } from '../../../../agent/work/checkpoint-executor.mjs';
+import { verifyMilestone } from '../../../../agent/organs/cerebellum/verify.mjs';
 import { createApprovalChecker } from '../../../../agent/work/approvals.mjs';
 import { createArchivalSweeper } from '../../../../agent/work/archival.mjs';
 import { buildSpine } from '../../../../agent/work/checkpoint-spine.mjs';
@@ -182,6 +183,7 @@ async function agentWorld(t) {
   const executor = createCheckpointExecutor({
     db: runtime.db,
     callAgent: async (organ) => replies[organ].shift(),
+    verifyMilestone,
     writeHistory: (...args) => history.write(...args),
     approvals: { create: (id, record) => runtime.db.write(`approvals/${id}`, record).then(Boolean) },
     generateId: (prefix) => `${prefix}-${String(++n).padStart(3, '0')}`,

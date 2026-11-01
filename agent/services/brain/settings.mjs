@@ -1,5 +1,6 @@
 // agent/services/brain/settings.mjs: the brain's configuration. Maps config/contracts.json onto the
-// parameters each library takes (the checkpoint executor, the archival sweep, compaction, sessions),
+// parameters each library takes (the checkpoint executor, the cerebellum's verification, the archival
+// sweep, compaction, sessions),
 // takes the effort level from the admin settings (read by readAdminSettings in service-runtime.mjs),
 // and scales an organ's sampling temperature by the effort setting. Pure. The libraries never read
 // configuration; main.mjs calls these and passes the values down.
@@ -49,6 +50,23 @@ export function adminEffort(settings, defaultEffort = 'medium') {
 }
 
 /**
+ * The cerebellum's verification budgets (VERIFY_DEFAULTS in agent/organs/cerebellum/verify.mjs), each
+ * mapped from its contracts key.
+ *
+ * @param {object} c - the contracts
+ * @returns {object}
+ */
+export function verifySettings(c) {
+  return {
+    ctxVerifyInput: c.brain.ctx_verify_input,
+    ctxVerifyPrior: c.brain.ctx_verify_prior,
+    verifyPromptMaxChars: c.brain.verify_prompt_max_chars,
+    verifyFullEvidenceMaxChars: c.brain.verify_full_evidence_max_chars,
+    attackStakesMin: c.brain.attack_duty_stakes_min,
+  };
+}
+
+/**
  * The checkpoint executor's settings (EXECUTOR_DEFAULTS in agent/work/checkpoint-executor.mjs), each
  * mapped from its contracts key.
  *
@@ -57,11 +75,6 @@ export function adminEffort(settings, defaultEffort = 'medium') {
  */
 export function executorSettings(c) {
   return {
-    ctxVerifyInput: c.brain.ctx_verify_input,
-    ctxVerifyPrior: c.brain.ctx_verify_prior,
-    verifyPromptMaxChars: c.brain.verify_prompt_max_chars,
-    verifyFullEvidenceMaxChars: c.brain.verify_full_evidence_max_chars,
-    attackStakesMin: c.brain.attack_duty_stakes_min,
     ctxAgentStep: c.utility.context_budgets.agent_step,
     ctxDispatchFailure: c.utility.context_budgets.dispatch_failure,
     checkpointDigestChars: c.compaction.checkpoint_digest_chars,
@@ -138,6 +151,7 @@ export function brainSettings(c) {
     toolRecord: { ...c.tools.record },
     promotionAuto: c.projects.promotion_auto === true,
     executor: executorSettings(c),
+    verify: verifySettings(c),
     archival: archivalConfig(c),
   };
 }

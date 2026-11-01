@@ -1,9 +1,10 @@
-// agent/work/checkpoint-verify.mjs: the milestone verification of one checkpoint by the cerebellum
+// agent/organs/cerebellum/verify.mjs: the milestone verification of one checkpoint by the cerebellum
 // (the organ that verifies each checkpoint against its acceptance criteria). Builds the verifier's
 // prompts, asks, retries a non-answer, re-verifies on the complete evidence when the first look was
 // partial, tries to overturn a pass when the stakes call for it, and grades the result: met, met
 // with a caveat, or not met. It changes no envelope and no spine; the checkpoint executor applies the
-// result. Called by the checkpoint executor once per checkpoint, after the checkpoint's tasks ran.
+// result. Called by the checkpoint executor once per checkpoint, after the checkpoint's tasks ran: the
+// brain service hands it verifyMilestone (agent/work cannot import an organ).
 //
 // Verification happens at checkpoint boundaries. Each task is judged by the organ that ran it; the
 // cerebellum makes one judgment per checkpoint: did the combined work meet the milestone?
@@ -24,15 +25,15 @@
 //     the pass; an attack that lands fails the milestone, and one that does not complete leaves the
 //     pass standing only as met with a caveat, never as a clean pass.
 
-import { toStr } from '../providers/to-str.mjs';
-import { smartTruncate } from '../providers/vertex-text.mjs';
-import { storedResultRefs, expandToolResults } from '../context/tool-record.mjs';
+import { toStr } from '../../providers/to-str.mjs';
+import { smartTruncate } from '../../providers/vertex-text.mjs';
+import { storedResultRefs, expandToolResults } from '../../context/tool-record.mjs';
 import {
   extractVerdict, extractFailSummary, extractFailRecommendation, extractPassCaveat,
   isMissingEvidenceFail, stakesAtLeast,
 } from './verdict.mjs';
-import { packToolEvidence } from './result-packet.mjs';
-import { isMilestoneVerdict } from './finalization.mjs';
+import { packToolEvidence } from '../../work/result-packet.mjs';
+import { isMilestoneVerdict } from '../../work/finalization.mjs';
 
 /** Verification budgets. Defaults; callers pass the contracts values (brain.*). */
 export const VERIFY_DEFAULTS = Object.freeze({

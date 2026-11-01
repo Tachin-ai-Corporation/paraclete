@@ -9,7 +9,8 @@ the same relative paths.
 |---|---|
 | `services/` | The long-running services and their systemd units: brain, ears, mouth and control |
 | `gateway/` | Model gateway: runs one organ turn against Vertex AI, with tools, caching and fallbacks |
-| `work/` | Missions, checkpoints, approvals, scheduling and verification verdicts |
+| `organs/` | The brain's organs, one directory each: what is that organ's own, such as the cerebellum's checkpoint verification and verdicts |
+| `work/` | Missions, checkpoints, approvals and scheduling |
 | `context/` | What goes into a model call: memory windows, compaction, prompt blocks, tool records |
 | `storage/` | Firestore, the git artifact store and the file store |
 | `files/` | Reading, converting and making files with the VM's toolchain, and fetching them from where they were shared |
@@ -24,7 +25,8 @@ A package may import only the packages listed after it:
 
 | Package | May import |
 |---|---|
-| `services/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, `release`, and `gateway` from `services/gateway/` only |
+| `services/` | `organs`, `work`, `context`, `files`, `storage`, `providers`, `auth`, `release`, and `gateway` from `services/gateway/` only |
+| `organs/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, `release`; never another organ |
 | `cli/` | `work`, `context`, `files`, `storage`, `providers`, `auth`, `release` |
 | `work/` | `context`, `files`, `storage`, `providers`, `auth`, `release` |
 | `context/` | `storage`, `providers`, `auth` |

@@ -4,10 +4,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadContracts } from '../../../../config/contracts.mjs';
 import { EXECUTOR_DEFAULTS } from '../../../../agent/work/checkpoint-executor.mjs';
+import { VERIFY_DEFAULTS } from '../../../../agent/organs/cerebellum/verify.mjs';
 import { DEFAULT_ARCHIVAL_CONFIG } from '../../../../agent/work/archival.mjs';
 import { ORGANS } from '../../../../agent/gateway/organs.mjs';
 import {
-  ORGAN_BASE_TEMPERATURE, adminEffort, archivalConfig, brainSettings, executorSettings, organTemperature,
+  ORGAN_BASE_TEMPERATURE, adminEffort, archivalConfig, brainSettings, executorSettings, organTemperature, verifySettings,
 } from '../../../../agent/services/brain/settings.mjs';
 
 const contracts = loadContracts();
@@ -47,8 +48,15 @@ test('every checkpoint executor setting maps from a contracts key', () => {
   assert.deepEqual(allDefined(s), []);
   assert.equal(s.ctxAgentStep, contracts.utility.context_budgets.agent_step);
   assert.equal(s.ctxDispatchFailure, contracts.utility.context_budgets.dispatch_failure);
-  assert.equal(s.ctxVerifyInput, contracts.brain.ctx_verify_input);
   assert.equal(s.transitionGuard, 'enforce');
+});
+
+test("every one of the cerebellum's verification budgets maps from a contracts key", () => {
+  const v = verifySettings(contracts);
+  assert.deepEqual(Object.keys(v).sort(), Object.keys(VERIFY_DEFAULTS).sort());
+  assert.deepEqual(allDefined(v), []);
+  assert.equal(v.ctxVerifyInput, contracts.brain.ctx_verify_input);
+  assert.equal(v.attackStakesMin, contracts.brain.attack_duty_stakes_min);
 });
 
 test('every archival threshold maps from a contracts key', () => {
