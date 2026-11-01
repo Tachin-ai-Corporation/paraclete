@@ -69,8 +69,8 @@ export const CEREBELLUM_ITEMS = Object.freeze([
     flaw: 'the file is in summary/, not summaries/',
     instruction: "Save the quarter's summary",
     acceptCriteria: 'the summary is saved as summaries/q1.md',
-    clean: [row('1.1', `${tool('ls summaries', 'q1.md')}\nSaved the quarter's summary.`)],
-    defect: [row('1.1', `${tool('ls summary summaries', 'summary:\nq1.md\nls: cannot access \'summaries\': No such file or directory')}\nSaved the quarter's summary.`)],
+    clean: [row('1.1', `${tool('ls summaries && head -3 summaries/q1.md', 'q1.md\n# Q1 2027 summary\nRevenue rose 8% on the quarter, led by the North region; costs held flat.')}\nSaved the quarter's summary.`)],
+    defect: [row('1.1', `${tool('ls summary summaries && head -3 summary/q1.md', 'summary:\nq1.md\nls: cannot access \'summaries\': No such file or directory\n# Q1 2027 summary\nRevenue rose 8% on the quarter, led by the North region; costs held flat.')}\nSaved the quarter's summary.`)],
   }),
   ...pair({
     id: 'cb-five-incidents',
