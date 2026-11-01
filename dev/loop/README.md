@@ -132,6 +132,16 @@ count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, n
 - **It waits** only for its own open pull requests, and for reverts: another lane's change reaches
   other files, and a measurement main's merges made stale is refused by the guard. The global loop,
   whose changes are not scoped, waits for every loop pull request.
+- **It is measured on its organ's bench,** when its module is an organ with one (`dev/harness2/bench.mjs`;
+  `cycle.mjs` `measureBench`): every item `measure.benchTrials` (3) times a side, the sides taking
+  turns item by item, and a guard sample of `measure.guardTasks` (3) model-suite tasks the change
+  reaches, `measure.guardTrials` (1) time a side, so a change that makes the organ better at its own
+  job but breaks whole missions is caught; what looks worse runs again until it has
+  `measure.confirmTrials`. A bench item is an organ turn or two, so this takes minutes. The evidence
+  must cover the bench and its guard sample (`benchCoverageProblems`), on an issue that names that
+  organ's module, and the Loop guard calls it stale only when main changed what a bench run reaches:
+  anything but the other organs and the other roles. Any other lane is measured as the global loop
+  is, on the tasks its change reaches.
 - **It counts** its own cycles against `maxCyclesPerDay`, and records its lane in each cycle record.
 - **It leaves** the revert, the release and the baseline of the model suite to the global cycle: on a
   broken main it stops (`main-broken`) and opens nothing, so two cycles never revert one merge.

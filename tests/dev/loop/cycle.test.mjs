@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
-  branchFor, branchOwner, clearStaleCheckouts, coverageProblems, isolatedCheckout, laneSlug, main, measureSides, parseNameStatus, refusalComment, regressionProblems,
+  benchCoverageProblems, benchOrgan, branchFor, branchOwner, clearStaleCheckouts, coverageProblems, isolatedCheckout, laneSlug, main, measureBench, measureSides,
+  parseNameStatus, refusalComment, regressionProblems,
   runBaselineEval, runCycle, settleLoopPullRequests,
   slugFor, trustedNotes, worseTasks,
 } from '../../../dev/loop/cycle.mjs';
@@ -25,6 +26,7 @@ import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
 import { failingTasks, summarizeBaseline } from '../../../dev/loop/baseline.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
 import { MODEL_SUITE_VERSION, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
+import { BENCH_VERSION, selectBenchItems } from '../../../dev/harness2/bench.mjs';
 
 const NOW = new Date('2027-01-21T12:00:00Z');
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -1036,4 +1038,59 @@ test("a lane waits for its own open pull requests and for reverts, never for ano
   const globalGh = fakeGh({ prs, states: { 5: ['MERGED'], 6: ['MERGED'], 7: ['MERGED'], 8: ['MERGED'] } });
   await settleLoopPullRequests({ repoRoot: r.work, settings: LOOP_DEFAULTS, execGh: globalGh.exec, sleep: async () => {} });
   assert.deepEqual(viewed(globalGh), [5, 6, 7, 8], 'the global loop waits for every one');
+});
+
+test("an organ lane's change is measured on its organ's bench and a guard sample of the suite, the sides taking turns", async () => {
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const items = selectBenchItems({ organ: 'cerebellum' }).map((i) => i.id);
+  const arg = (c, flag) => c[c.indexOf(flag) + 1];
+  const run = async (worseItem = null) => {
+    const calls = [];
+    const evalOn = async (side, args) => {
+      calls.push([side, ...args]);
+      const id = args.includes('--item') ? arg(args, '--item') : arg(args, '--task');
+      const n = Number(arg(args, '--trials'));
+      const again = calls.filter((c) => c[0] === side && (c.includes('--item') ? arg(c, '--item') : arg(c, '--task')) === id).length > 1;
+      const caps = side === 'candidate' && id === worseItem && !again ? [1, 1, 0] : Array(n).fill(1);
+      return { ok: true, trajectories: taskRuns({ [id]: caps.slice(0, n) }) };
+    };
+    const res = await measureBench({ evalOn, issue: { number: 4, title: 't', body: '' }, organ: 'cerebellum', changedPaths: ['agent/organs/cerebellum/verify.mjs'], settings });
+    return { res, calls };
+  };
+  const { res, calls } = await run();
+  assert.equal(res.measured, true, res.reason);
+  assert.equal(res.evidence.suite.name, 'bench:cerebellum');
+  const benchCalls = calls.filter((c) => c[1] === 'bench');
+  assert.equal(benchCalls.length, items.length * 2);
+  assert.deepEqual(benchCalls.slice(0, 4).map((c) => c[0]), ['baseline', 'candidate', 'candidate', 'baseline'], 'the sides take turns, the first alternating');
+  assert.ok(benchCalls.every((c) => arg(c, '--trials') === '3' && arg(c, '--organ') === 'cerebellum'));
+  const all = selectModelTasks().map((t) => t.id);
+  assert.deepEqual(res.evidence.suite.guard.tasks, all.slice(4, 7), 'three tasks the change reaches, starting where the issue says');
+  assert.ok(calls.filter((c) => c[1] === 'eval').every((c) => arg(c, '--trials') === '1'));
+  assert.deepEqual(benchCoverageProblems(res.evidence, 'cerebellum'), []);
+  assert.deepEqual(regressionProblems(res.evidence), []);
+
+  const worse = await run(items[0]);
+  const again = worse.calls.filter((c) => c[1] === 'bench' && arg(c, '--item') === items[0]);
+  assert.deepEqual(again.map((c) => [c[0], arg(c, '--trials')]), [['baseline', '3'], ['candidate', '3'], ['baseline', '3'], ['candidate', '3']],
+    'an item that looks worse runs again on both sides until it has six runs');
+});
+
+test("a bench measurement covers every item and its guard sample, on the bench's and the suite's versions", async () => {
+  const items = selectBenchItems({ organ: 'cerebellum' });
+  const guard = selectModelTasks().slice(0, 2);
+  const all = [...items.flatMap((i) => runs([1, 1, 1], i.split, i.id)), ...guard.flatMap((t) => runs([1], t.split, t.id))];
+  const suite = { name: 'bench:cerebellum', version: BENCH_VERSION, guard: { name: 'model', version: MODEL_SUITE_VERSION, tasks: guard.map((t) => t.id) } };
+  const build = (b, s = suite) => buildPromotionEvidence({ baselineTrajectories: b, candidateTrajectories: b, suite: s });
+  assert.deepEqual(benchCoverageProblems(build(all), 'cerebellum'), []);
+  assert.deepEqual(benchCoverageProblems(build(all.filter((t) => t.taskId !== items[0].id)), 'cerebellum'), [`its evidence has no runs on both sides of ${items[0].id}`]);
+  assert.deepEqual(benchCoverageProblems(build(all.filter((t) => t.taskId !== guard[1].id)), 'cerebellum'), [`its evidence has no runs on both sides of ${guard[1].id}`]);
+  assert.match(benchCoverageProblems(build(all, { ...suite, version: BENCH_VERSION + 1 }), 'cerebellum').join(' | '), new RegExp(`not bench:cerebellum v${BENCH_VERSION}`));
+  assert.match(benchCoverageProblems(build(all, { ...suite, guard: { ...suite.guard, version: 1 } }), 'cerebellum').join(' | '), /its guard sample was not measured on the model suite/);
+  assert.match(benchCoverageProblems(evidence([0.8, 0.8, 0.8]), 'cerebellum').join(' | '), new RegExp(`measured on model v${MODEL_SUITE_VERSION}, not bench:cerebellum`));
+  assert.equal(benchOrgan('organ:cerebellum'), 'cerebellum');
+  assert.equal(benchOrgan('organ:temporal-memory'), 'temporal-memory');
+  assert.equal(benchOrgan('organ:cortex'), null, 'no bench yet');
+  assert.equal(benchOrgan('role:designer'), null);
+  assert.equal(benchOrgan(null), null);
 });
