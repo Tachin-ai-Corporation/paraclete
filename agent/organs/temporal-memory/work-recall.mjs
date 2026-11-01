@@ -1,10 +1,10 @@
-// agent/context/work-recall.mjs: recall of the agent's past work for its prompts. Extracts cues from
+// agent/organs/temporal-memory/work-recall.mjs: recall of the agent's past work for its prompts. Extracts cues from
 // a request, scores past envelopes against them (term overlap, recency, outcome, type), and renders
 // a digest of recent work grouped by day with each outcome marked. One project holds one agent, so
 // all work in the collection is the agent's own. It only reads: the caller injects firestoreQuery
 // and firestoreRead. Used by the brain when it assembles context.
 
-import { COLLECTIONS } from '../storage/collections.mjs';
+import { COLLECTIONS } from '../../storage/collections.mjs';
 
 const MAX_CUES = 8;
 const HALF_LIFE_DAYS = 30;

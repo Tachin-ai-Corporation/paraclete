@@ -14,11 +14,8 @@
       "lane": true,
       "job": "Builds the recall packet a mission starts from, and consolidates memory",
       "owns": [
+        "agent/organs/temporal-memory/**",
         "prompts/temporal-memory.md",
-        "agent/services/brain/memory.mjs",
-        "agent/context/work-recall.mjs",
-        "agent/context/core-memory-rank.mjs",
-        "agent/context/context-maintenance.mjs",
         "agent/work/memory-scope.mjs",
         "agent/cli/core-memory-read.mjs",
         "agent/cli/core-memory-write.mjs",

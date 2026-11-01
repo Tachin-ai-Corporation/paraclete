@@ -1,4 +1,4 @@
-// Tests for agent/services/brain/memory.mjs: recall (the candidates the brain gathers, the packet the
+// Tests for agent/organs/temporal-memory/memory.mjs: recall (the candidates the brain gathers, the packet the
 // memory organ builds from them, and its one escalation), the working-memory files, and the records
 // a finished mission leaves: its working-memory line and its lessons, never a definition.
 import { test, before, after, beforeEach } from 'node:test';
@@ -11,7 +11,7 @@ import { createClient } from '../../../../agent/storage/firestore.mjs';
 import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 import {
   PRELOADED_END, PRELOADED_START, createMemory, createMemoryFiles, parseEscalation, parseResourceFact, renderCoreMemory,
-} from '../../../../agent/services/brain/memory.mjs';
+} from '../../../../agent/organs/temporal-memory/memory.mjs';
 
 const NOW = Date.parse('2026-10-17T12:00:00.000Z');
 let firestore;

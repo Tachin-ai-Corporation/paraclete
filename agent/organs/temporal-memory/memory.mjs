@@ -1,4 +1,4 @@
-// agent/services/brain/memory.mjs: the brain's half of memory. Recall: the brain gathers the raw
+// agent/organs/temporal-memory/memory.mjs: the brain's half of memory. Recall: the brain gathers the raw
 // candidates deterministically (working memory, Core Memory, the last week's work, work matching the
 // request's cues, and the known resources) and hands them to the temporal-memory organ (the organ that
 // maintains the agent's memory), which builds the one packet every other organ sees, and may ask once
@@ -11,12 +11,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { COLLECTIONS } from '../../storage/collections.mjs';
 import { toStr } from '../../providers/to-str.mjs';
-import { extractCues, recentWorkDigest, searchWork } from '../../context/work-recall.mjs';
-import { rankCoreMemory } from '../../context/core-memory-rank.mjs';
+import { extractCues, recentWorkDigest, searchWork } from './work-recall.mjs';
+import { rankCoreMemory } from './core-memory-rank.mjs';
 import {
   buildMaintenancePrompt, buildProcessMaintenancePrompt, lessonLine, parseMaintenanceResponse,
   shouldMaintainContext, shouldMaintainProcesses,
-} from '../../context/context-maintenance.mjs';
+} from './context-maintenance.mjs';
 import { renderResources, resourceKey } from '../../work/resource-ledger.mjs';
 import { isMemoryScoped } from '../../work/memory-scope.mjs';
 

@@ -35,7 +35,7 @@ used in a mission is in the [culture of work](CULTURE_OF_WORK.md).
 | Project | Durable facts about a working area | The `projects` collection | Rendered into the prompts of each mission in that project (`buildContext` in `agent/work/projects.mjs`) | The agent, with `project-manage`; the brain, when a mission publishes or a project completes |
 | Responsibility | Work the agent owns on a clock or an event | A role package's `responsibilities.json`; the `responsibilities` collection | As a mission's instruction and context when it fires (`agent/work/scheduler.mjs`) | A release; the agent, with `responsibility-manage`; a dashboard admin, on or off |
 | Role package | One role's focus and heavier tools | `roles/<id>/` | Installed with the generic role; each part reaches the agent as its own layer | A release |
-| Memory | What the agent learned and what it is working on | `MEMORY.md` and `DEEP_TRUTHS.md` under the data root; the `core_memory` collection | Working memory and Deep Truths in every cortex turn; Core Memory through recall (`agent/services/brain/memory.mjs`) | The agent only |
+| Memory | What the agent learned and what it is working on | `MEMORY.md` and `DEEP_TRUTHS.md` under the data root; the `core_memory` collection | Working memory and Deep Truths in every cortex turn; Core Memory through recall (`agent/organs/temporal-memory/memory.mjs`) | The agent only |
 | The mission | One piece of work's particulars | Its envelope and its mission tree | That mission only | The brain, while it runs |
 
 ## Code, not text
@@ -236,7 +236,7 @@ them, to know what the agent already has, and records a lesson about one as memo
 it never edits one and never copies one in, where the copy would go stale (`prompts/temporal-memory.md`,
 and step 5 of the consolidation in `roles/generic/responsibilities.json`). After a mission, the lessons
 it taught about its project and its playbooks are appended to working memory, and the project and
-playbooks are left as they are (`recordLessons` in `agent/services/brain/memory.mjs`).
+playbooks are left as they are (`recordLessons` in `agent/organs/temporal-memory/memory.mjs`).
 
 **How the code keeps it there.** When temporal-memory runs a task (consolidation is its main one), its
 tools are file reads, one memory command at a time with no shell (`MEMORY_COMMANDS`, plus read-only

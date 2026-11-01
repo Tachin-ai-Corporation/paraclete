@@ -409,7 +409,7 @@ work has gone well, with optional recall phrases (`intent_keywords`). It is neve
    fires (`agent/work/scheduler.mjs`).
 4. After the mission, temporal-memory may write one lesson per playbook the mission drew on into
    working memory; the playbook itself is not changed (`recordLessons` in
-   `agent/services/brain/memory.mjs`).
+   `agent/organs/temporal-memory/memory.mjs`).
 
 The library is the installed playbooks of the generic role and the instance's role (generic first;
 the first id wins, `agent/work/role-packages.mjs`) with the agent's own playbooks from the `processes`

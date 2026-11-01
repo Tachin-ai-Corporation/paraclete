@@ -1,7 +1,7 @@
-// agent/context/core-memory-rank.mjs: how Core Memory entries rank against a search. Firestore has no
+// agent/organs/temporal-memory/core-memory-rank.mjs: how Core Memory entries rank against a search. Firestore has no
 // substring search, so a reader fetches the entries its filters allow and ranks them here: by value
 // (importance x confidence), multiplied by how many search terms each matches. Pure: it reads nothing
-// and renders nothing. Called by the brain's recall (agent/services/brain/memory.mjs), which picks the
+// and renders nothing. Called by the brain's recall (agent/organs/temporal-memory/memory.mjs), which picks the
 // candidates it hands the memory organ, and by the core-memory-read command, which prints them in this
 // order.
 
