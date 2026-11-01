@@ -52,10 +52,25 @@ export const RESPONSIBILITY_SCHEMA = {
         type: 'integer', nullable: true, min: 0,
         describe: 'Floor between firings, independent of the cron: a guard against a tight schedule',
       },
+      // Open, for guidance of the author's own; the fields below are typed because code reads them.
+      // The scheduler prints them into the mission and the dashboard lists the steps, so a step
+      // written as an object printed "[object Object]" and broke the list.
       context: {
         type: 'object', open: true, default: {},
         describe: 'Guidance carried into the mission: purpose, process steps, reference files, prior '
           + 'learnings. Not the place for success_criteria, which is a top-level field.',
+        properties: {
+          purpose: { type: 'string', nullable: true, describe: 'Why this responsibility exists' },
+          process: {
+            type: 'array', nullable: true, items: { type: 'string', minLength: 1 },
+            describe: 'The steps a firing follows, each one a line of text',
+          },
+          reference_files: {
+            type: 'array', nullable: true, items: { type: 'string', minLength: 1 },
+            describe: 'Paths a firing should read',
+          },
+          prior_learnings: { type: 'string', nullable: true, describe: 'What earlier firings taught' },
+        },
       },
 
       project_id: { type: 'string', nullable: true, pattern: ID_PATTERN },
