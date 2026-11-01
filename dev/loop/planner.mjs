@@ -107,7 +107,7 @@ export function buildPlanBrief({ items }) {
     '',
     'How to choose:',
     '- Read the code an item names before you choose it. Change nothing, and run nothing.',
-    '- Choose an item one change to this repository can finish within an hour of work, that tests run by `npm test` can show done. Skip an item that asks a person to decide something, needs live infrastructure, another project or a person to check by hand, or would change what judges a change (dev/loop/, the evaluation and merge code in dev/harness2/, dev/release*.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md, the package manifests).',
+    '- Choose an item one change to this repository can finish within an hour of work, that tests run by `npm test` can show done. Skip an item that asks a person to decide something, needs live infrastructure, another project or a person to check by hand, or would change what judges a change (dev/loop/, dev/harness2/, dev/release*.mjs, dev/smoke.mjs, dev/status.mjs, dev/deploy.mjs, dev/dev-env.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md, the package manifests).',
     '- Prefer the item whose change helps most and is least likely to break something.',
     '',
     `Write ${PLAN_LIMITS.pointsMin} to ${PLAN_LIMITS.pointsMax} points the change is done when. Each point is something a reviewer can check by reading the change and its tests: name the files, the behaviour, and the new tests. Ask for tests in a new test file under tests/, named for what it tests: a test file that exists already may not be changed by the change. Do not add a point about OPEN_ITEMS.md: that one is added for you.`,

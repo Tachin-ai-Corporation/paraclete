@@ -47,7 +47,7 @@ export function buildBrief({ issue, notes = [], testCommand, budget }) {
     '- Make the smallest change that resolves the whole issue: every point it says the change is done when. Doing less is not a smaller change.',
     '- A change that adds or changes code must add a new test file under tests/ that exercises it, or it is refused. Never change or remove an existing test.',
     '- After the tests pass, a reviewer reads your change and the files it touches, and checks every point the issue says the change is done when. Code that nothing uses, a claim the code does not bear out, or a point left undone gets the change refused.',
-    '- Never change what judges a change or runs this loop: dev/loop/, the evaluation, benchmark, evidence and merge code in dev/harness2/, dev/release*.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md and the package manifests. A change to any of them is refused whole.',
+    '- Never change what judges a change or runs this loop: dev/loop/, dev/harness2/, dev/release*.mjs, dev/smoke.mjs, dev/status.mjs, dev/deploy.mjs, dev/dev-env.mjs, .github/, install/, migrations/, roles/*/role.json, config/contracts.mjs, docs/canon/, DEVELOPING.md and the package manifests. A change to any of them is refused whole.',
     `- Run \`${testCommand.join(' ')}\` before you finish, and fix what fails.`,
     '- Do not commit, push, open pull requests or call GitHub: the loop does that after it checks your change.',
     `- You have about ${budget.wallMinutes} minutes and ${budget.maxTurns} turns. If the issue cannot be resolved within them, or should not be, change nothing and say why.`,

@@ -125,6 +125,28 @@ export function worseTasks(evidence, rules = DEFAULT_EVIDENCE_RULES) {
 const standardError = (b, c) => Math.sqrt((b.sd ?? 0) ** 2 / b.n + (c.sd ?? 0) ** 2 / c.n);
 
 /**
+ * Why the evidence does not measure what it must, if it does not: it was measured on another suite or
+ * another version of it, or a task of the active suite (`taskIds`) has no run on one side. Without
+ * this, evidence of a few tasks would pass for evidence of all. Pure.
+ *
+ * @param {object|null} evidence  buildPromotionEvidence's result
+ * @param {string[]} [taskIds]    the tasks it must cover; default every active model-suite task
+ * @returns {string[]}
+ */
+export function coverageProblems(evidence, taskIds = selectModelTasks().map((t) => t.id)) {
+  if (!evidence) return ['there is no evidence'];
+  const problems = [];
+  if (evidence.suite?.name !== 'model' || evidence.suite?.version !== MODEL_SUITE_VERSION) {
+    const was = evidence.suite ? `${evidence.suite.name} v${evidence.suite.version}` : 'no suite';
+    problems.push(`its evidence was measured on ${was}, not the model suite v${MODEL_SUITE_VERSION}`);
+  }
+  const ran = new Map((evidence.perTask || []).map((t) => [t.taskId, t]));
+  const missing = taskIds.filter((id) => !(ran.get(id)?.baseline?.n > 0 && ran.get(id)?.candidate?.n > 0));
+  if (missing.length) problems.push(`its evidence has no runs on both sides of ${missing.join(', ')}`);
+  return problems;
+}
+
+/**
  * Why the measured evidence shows the change made the agent worse, if it does: the runs were not
  * real-model runs, too few, or a task, the held-out tasks or the whole suite lost capability beyond
  * the evidence rules' tolerances and beyond run-to-run noise (`noiseZ` standard errors of the
@@ -379,16 +401,45 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
 }
 
 /**
- * A baseline: the model suite run on main's head with real-model runs, in a clone of its own, as
- * defaultMeasure runs each side. Returns runCli's result.
+ * The evaluation a baseline is: every task `baseline.trials` times, then every training task that
+ * failed a check run again until it has `baseline.confirmTrials` runs, through `evalOn(args)` (the args
+ * of dev/harness2 `eval --real-model`). A check that failed once in two runs is half of them, which
+ * is enough to plan an issue from (failingTasks), and two of the three tasks the loop had targeted were
+ * such chance failures, each costing a measurement of hours; with the extra runs, a check must fail
+ * in half of six. Returns runCli's result, the extra runs numbered after the first ones.
+ *
+ * @param {object} o  { evalOn, settings, log }
+ * @returns {Promise<object>}
+ */
+export async function runBaselineEval({ evalOn, settings, log = () => {} }) {
+  const { trials, maxRollouts, confirmTrials = 0 } = settings.baseline;
+  const ran = await evalOn(['eval', '--real-model', '--trials', String(trials), '--max-rollouts', String(maxRollouts)]);
+  const more = Math.max(0, confirmTrials - trials);
+  if (!ran?.ok || !more) return ran;
+  const suspects = failingTasks(summarizeBaseline(ran)).map((t) => t.id);
+  if (!suspects.length) return ran;
+  log(`[INFO] loop: ${suspects.join(', ')} failed a check; running each ${more} more time(s) before planning from it`);
+  const again = await evalOn([
+    'eval', '--real-model', '--task', suspects.join(','), '--trials', String(more), '--max-rollouts', String(more * suspects.length * ROLLOUT_RETRY.attempts),
+  ]);
+  if (!again?.ok) return { ok: false, reason: `the failing tasks' extra runs: ${again?.reason || 'no result'}` };
+  return {
+    ...ran,
+    trajectories: [...ran.trajectories, ...again.trajectories.map((t) => ({ ...t, trial: t.trial + trials }))],
+    notEvaluated: [...(ran.notEvaluated || []), ...(again.notEvaluated || [])],
+  };
+}
+
+/**
+ * A baseline: runBaselineEval on main's head, in a clone of its own, as defaultMeasure runs each side.
  */
 async function defaultBaseline({ repoRoot, head, settings, execGit, log }) {
   let side = null;
   try {
     side = isolatedCheckout({ repoRoot, commit: head, execGit, prefix: 'paraclete-loop-baseline-' });
     const { runCli } = await import('../harness2/cli.mjs');
-    const args = ['eval', '--real-model', '--trials', String(settings.baseline.trials), '--max-rollouts', String(settings.baseline.maxRollouts)];
-    return await runCli(args, { repoRoot: side.root, stderr: { write: (line) => log(String(line).trimEnd()) } });
+    const stderr = { write: (line) => log(String(line).trimEnd()) };
+    return await runBaselineEval({ evalOn: (args) => runCli(args, { repoRoot: side.root, stderr }), settings, log });
   } catch (err) {
     return { ok: false, reason: err.message };
   } finally {
@@ -921,6 +972,8 @@ export async function runCycle({
         repoRoot, base, candidateRoot: worktree, changedPaths: changes.map((c) => c.path), issue, settings, execGit, log,
       });
       if (!measurement.measured) return refuse('unmeasured', `it changes the agent's behaviour and could not be measured: ${measurement.reason}`, { changes, tests, behaviour, measurement });
+      const uncovered = coverageProblems(measurement.evidence);
+      if (uncovered.length) return refuse('unmeasured', `it changes the agent's behaviour and was not measured on the whole suite: ${uncovered.join('; ')}`, { changes, tests, behaviour, measurement });
       const worse = regressionProblems(measurement.evidence);
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });
     }

@@ -29,7 +29,7 @@ import { pathToFileURL } from 'node:url';
 import { parseEvidenceBlock } from '../harness2/evidence.mjs';
 import { MEASURED_BASE_MARKER, issueTarget, measuredBase, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
-import { regressionProblems } from './cycle.mjs';
+import { coverageProblems, regressionProblems } from './cycle.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted, revertGuard } from './sentinel.mjs';
 
@@ -146,6 +146,7 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
     const evidence = parseEvidenceBlock(pr.body);
     if (!evidence) problems.push("it changes the agent's behaviour and carries no evidence block (```json paraclete-h2-evidence)");
     else {
+      problems.push(...coverageProblems(evidence));
       problems.push(...regressionProblems(evidence));
       const measured = new Set((evidence.touchedPaths || []).map((p) => String(p).replace(/\\/g, '/')));
       const unmeasured = changes.map((c) => c.path).filter((p) => !measured.has(p));

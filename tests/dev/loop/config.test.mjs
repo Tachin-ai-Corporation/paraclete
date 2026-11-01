@@ -8,6 +8,8 @@ import { LOOP_UNIT, loopUnits, main as timerMain } from '../../../dev/loop/timer
 test('the referee and secrets are refused; existing tests may only be added to', () => {
   for (const rel of [
     'dev/loop/cycle.mjs', 'dev/harness2/evidence.mjs', 'dev/harness2/model-suite.mjs', 'dev/harness2/merge.mjs', 'dev/release.mjs',
+    'dev/harness2/live-runner.mjs', 'dev/harness2/substrate.mjs', 'dev/harness2/cli.mjs', 'dev/harness2/curriculum.mjs',
+    'dev/harness2/lab-follow-main.sh', 'dev/release-check.mjs', 'dev/smoke.mjs', 'dev/status.mjs', 'dev/deploy.mjs', 'dev/dev-env.mjs',
     '.github/workflows/ci.yml', 'install/install.sh', 'migrations/001.mjs', 'roles/generic/role.json', 'config/contracts.mjs',
     'docs/canon/PRODUCT.md', 'DEVELOPING.md', 'package.json', 'agent/package-lock.json', '.local/notes.md', '.env',
   ]) {
@@ -16,7 +18,7 @@ test('the referee and secrets are refused; existing tests may only be added to',
   assert.match(pathRefusal('tests/agent/x.test.mjs', 'M'), /existing test/);
   assert.match(pathRefusal('tests/agent/x.test.mjs', 'D'), /existing test/);
   assert.equal(pathRefusal('tests/agent/new.test.mjs', 'A'), null);
-  for (const rel of ['agent/work/approvals.mjs', 'prompts/motor.md', 'dashboard/app/page.js', 'docs/guides/SKILLS.md', 'dev/harness2/curriculum.mjs', 'roles/generic/prompts/cortex.md']) {
+  for (const rel of ['agent/work/approvals.mjs', 'prompts/motor.md', 'dashboard/app/page.js', 'docs/guides/SKILLS.md', 'dev/say.mjs', 'roles/generic/prompts/cortex.md']) {
     assert.equal(pathRefusal(rel, 'M'), null, rel);
   }
 });

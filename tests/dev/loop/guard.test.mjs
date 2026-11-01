@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPromotionEvidence, formatEvidenceMarkdown } from '../../../dev/harness2/evidence.mjs';
+import { MODEL_SUITE_VERSION, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
 import { isLoopBranch, loopGuard, main, parseReviewBlock, resolvedIssue } from '../../../dev/loop/guard.mjs';
 import { doneWhen, formatReviewMarkdown } from '../../../dev/loop/reviewer.mjs';
 import { revertBody } from '../../../dev/loop/sentinel.mjs';
@@ -90,10 +91,13 @@ test('what merges is what was reviewed, file by file', () => {
   assert.match(check({ pr: { body: body({ files: {} }) } }).problems.join(' | '), /not the change that was reviewed/, 'a review that names no files binds nothing');
 });
 
-const runs = (caps) => caps.map((capability, i) => ({ taskId: 't', split: 'train', trial: i + 1, capability, measured: true }));
-const evidence = (touchedPaths, cand = [0.8, 0.8, 0.8]) => buildPromotionEvidence({
+const runs = (caps, taskId = 't', split = 'train') => caps.map((capability, i) => ({ taskId, split, trial: i + 1, capability, measured: true }));
+/** Every active task of the model suite, passing on both sides: what a whole measurement covers. */
+const everyTask = () => selectModelTasks().flatMap((task) => runs([1, 1, 1], task.id, task.split));
+const evidence = (touchedPaths, cand = [0.8, 0.8, 0.8], { tasks = everyTask(), suite = { name: 'model', version: MODEL_SUITE_VERSION } } = {}) => buildPromotionEvidence({
   candidate: { id: 'loop-33', lens: 'LOOP', touchedPaths, proposal: { source: 'coding-agent' } },
-  baselineTrajectories: runs([0.8, 0.8, 0.8]), candidateTrajectories: runs(cand),
+  baselineTrajectories: [...runs([0.8, 0.8, 0.8]), ...tasks], candidateTrajectories: [...runs(cand), ...tasks],
+  suite,
 });
 
 test("a change to the agent's behaviour carries measured evidence that names its files and shows nothing worse", () => {
@@ -105,6 +109,11 @@ test("a change to the agent's behaviour carries measured evidence that names its
   assert.equal(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched)) } }).ok, true);
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(['agent/work/thing.mjs'])) } }).problems.join(' | '), /its evidence did not measure tests\/agent\/thing\.test\.mjs/);
   assert.match(check({ files: agentFiles, pr: { body: withEvidence(evidence(touched, [0.5, 0.5, 0.5])) } }).problems.join(' | '), /got worse/);
+  const [first, ...others] = selectModelTasks();
+  const partial = evidence(touched, undefined, { tasks: others.flatMap((task) => runs([1, 1, 1], task.id, task.split)) });
+  assert.match(check({ files: agentFiles, pr: { body: withEvidence(partial) } }).problems.join(' | '), new RegExp(`its evidence has no runs on both sides of ${first.id}$`));
+  const oldSuite = evidence(touched, undefined, { suite: { name: 'model', version: MODEL_SUITE_VERSION - 1 } });
+  assert.match(check({ files: agentFiles, pr: { body: withEvidence(oldSuite) } }).problems.join(' | '), new RegExp(`measured on model v${MODEL_SUITE_VERSION - 1}, not the model suite v${MODEL_SUITE_VERSION}`));
 });
 
 test("a pull request for an issue planned from a failing task must show that task improved", () => {

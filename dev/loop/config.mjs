@@ -54,7 +54,7 @@ export const LOOP_DEFAULTS = Object.freeze({
   /** Measuring main's head on the model suite (baseline.mjs), so the planner finds the tasks the agent
    * fails: off unless the lab driver's local settings turn it on, as it spends model time; at most once
    * in `everyHours`, with this many runs of every task, within this cap. */
-  baseline: Object.freeze({ enabled: false, everyHours: 24, trials: 2, maxRollouts: 40 }),
+  baseline: Object.freeze({ enabled: false, everyHours: 24, trials: 2, maxRollouts: 40, confirmTrials: 6 }),
 });
 
 /** Developer-local settings: which proposer command to run (never committed: `.local/` is ignored). */
@@ -64,12 +64,15 @@ const posix = (p) => String(p || '').replace(/\\/g, '/').replace(/^\.\//, '');
 
 /**
  * The referee: what judges a change, and the loop itself. A proposal that changes any of these is
- * refused; a person changes them. Patterns are repo-relative.
+ * refused; a person changes them. Patterns are repo-relative. All of dev/harness2/ is here, not only
+ * the files that score a run: the runner seeds the tasks and marks runs measured, and the lab scripts
+ * and the release check's helpers decide what is released, so a change to any of them changes every
+ * later measurement.
  */
 export const REFEREE_PATHS = Object.freeze([
   /^dev\/loop\//,
-  /^dev\/harness2\/(evidence|evidence-check|calibration|model-suite|model-runs|merge|pause|health|surface|validate)\.mjs$/,
-  /^dev\/release(-check)?\.mjs$/,
+  /^dev\/harness2\//,
+  /^dev\/(release|release-check|smoke|status|deploy|dev-env)\.mjs$/,
   /^\.github\//,
   /^install\//,
   /^migrations\//,
