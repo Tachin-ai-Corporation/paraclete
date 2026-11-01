@@ -17,7 +17,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
-  clearStaleCheckouts, coverageProblems, isolatedCheckout, main, measureSides, parseNameStatus, refusalComment, regressionProblems, runBaselineEval, runCycle,
+  branchFor, branchOwner, clearStaleCheckouts, coverageProblems, isolatedCheckout, laneSlug, main, measureSides, parseNameStatus, refusalComment, regressionProblems,
+  runBaselineEval, runCycle, settleLoopPullRequests,
   slugFor, trustedNotes, worseTasks,
 } from '../../../dev/loop/cycle.mjs';
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
@@ -125,7 +126,7 @@ function cycle(t, r, o = {}) {
       ...(o.clock ? { clock: o.clock } : {}),
       sleep: o.sleep || (async () => {}),
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
-      issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), dryRun: Boolean(o.dryRun), log: () => {},
+      issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), lane: o.lane ?? null, dryRun: Boolean(o.dryRun), log: () => {},
     }),
   };
 }
@@ -945,11 +946,13 @@ test("an issue that names its module allows a change to that module's files only
   const scoped = { ...ISSUE, body: 'Steps are lost.\n\n**Done when:**\n- The cortex keeps them.\n\n<!-- loop-module: organ:cortex -->' };
   const outside = await cycle(t, repo(t), {
     gh: fakeGh({ issues: [scoped] }),
+    lane: 'organ:cortex',
     proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n', 'prompts/motor.md': '# Motor\n' }),
   }).run();
   assert.deepEqual([outside.action, outside.reason], ['out-of-module', 'it changes files outside its module organ:cortex: prompts/motor.md (organ:motor)']);
   const inside = await cycle(t, repo(t), {
     gh: fakeGh({ issues: [scoped] }),
+    lane: 'organ:cortex',
     proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n' }),
     measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }),
   }).run();
@@ -972,4 +975,65 @@ test("a measurement runs the tasks the change reaches: a role's files, that role
   assert.deepEqual(coverageProblems(res.evidence, designer), []);
   const none = await measureSides({ evalOn, issue, changedPaths: ['roles/paraclete-h2/prompts/cortex.md'], settings });
   assert.deepEqual(none, { measured: false, reason: 'no model-suite task runs what it changes (a role without tasks of its own)' });
+});
+
+test("a lane's branches are its own, told apart from the global loop's and from reverts", () => {
+  assert.equal(laneSlug('organ:cerebellum'), 'organ-cerebellum');
+  const issue = { number: 12, title: 'Catch a missing row' };
+  assert.equal(branchFor({ prefix: 'loop/', issue }), 'loop/12-catch-a-missing-row');
+  assert.equal(branchFor({ prefix: 'loop/', issue, lane: 'organ:cerebellum' }), 'loop/m/organ-cerebellum/12-catch-a-missing-row');
+  assert.deepEqual(branchOwner('loop/m/organ-cerebellum/12-catch-a-missing-row', 'loop/'), { issue: 12, lane: 'organ-cerebellum' });
+  assert.deepEqual(branchOwner('loop/12-catch-a-missing-row', 'loop/'), { issue: 12, lane: '' });
+  assert.equal(branchOwner('loop/revert-0123456789ab', 'loop/'), null, 'a revert is no issue\'s');
+  assert.equal(branchOwner('claude/12-catch', 'loop/'), null);
+});
+
+test("a lane takes only its module's issues, on a branch of its own, and leaves releases and the baseline to the global cycle", async (t) => {
+  const scoped = { ...ISSUE, number: 9, createdAt: '2027-01-19T10:00:00Z', body: 'Steps are lost.\n\n**Done when:**\n- The cortex keeps them.\n\n<!-- loop-module: organ:cortex -->' };
+  const released = [];
+  const release = async () => { released.push(1); return { action: 'none', reason: 'nothing to release' }; };
+  const global = await cycle(t, repo(t), { gh: fakeGh({ issues: [scoped, ISSUE] }), release }).run();
+  assert.equal(global.issue, 7, 'the global cycle passes the older, scoped issue by');
+  assert.equal(released.length, 1);
+
+  const r = repo(t);
+  const lane = await cycle(t, r, {
+    gh: fakeGh({ issues: [scoped, ISSUE] }),
+    release,
+    lane: 'organ:cortex',
+    baseline: async () => { throw new Error('a lane measures no baseline of the model suite'); },
+    settings: { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } },
+    proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n' }),
+    measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }),
+  }).run();
+  assert.equal(lane.action, 'opened', lane.reason);
+  assert.equal(lane.issue, 9);
+  assert.match(lane.branch, /^loop\/m\/organ-cortex\/9-the-guide-explains-the-loop$/);
+  assert.equal(released.length, 1, 'a lane cuts no release');
+  assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).loop.lane, 'organ:cortex');
+
+  const none = await cycle(t, repo(t), { gh: fakeGh({ issues: [ISSUE] }), lane: 'organ:cortex' }).run();
+  assert.deepEqual([none.action, none.reason], ['no-work', 'no open loop issue for organ:cortex is waiting']);
+  const unknown = await cycle(t, repo(t), { lane: 'organ:spleen' }).run();
+  assert.deepEqual([unknown.action, unknown.reason], ['no-work', 'organ:spleen is not a module with a lane in dev/loop/modules.json']);
+  const noLane = await cycle(t, repo(t), { lane: 'platform:brain-spine' }).run();
+  assert.equal(noLane.reason, 'platform:brain-spine is not a module with a lane in dev/loop/modules.json');
+});
+
+test("a lane waits for its own open pull requests and for reverts, never for another lane's", async (t) => {
+  const prs = [
+    { number: 5, headRefName: 'loop/m/organ-cortex/8-keep-steps' },
+    { number: 6, headRefName: 'loop/m/organ-motor/9-retry-less' },
+    { number: 7, headRefName: 'loop/revert-0123456789ab' },
+    { number: 8, headRefName: 'loop/10-the-guide' },
+  ];
+  const r = repo(t);
+  const viewed = (gh) => [...new Set(gh.calls.filter((a) => a[0] === 'pr' && a[1] === 'view').map((a) => Number(a[2])))].sort();
+  const laneGh = fakeGh({ prs, states: { 5: ['MERGED'], 7: ['MERGED'] } });
+  const lane = await settleLoopPullRequests({ repoRoot: r.work, settings: LOOP_DEFAULTS, execGh: laneGh.exec, sleep: async () => {}, lane: 'organ:cortex' });
+  assert.deepEqual(lane.open, []);
+  assert.deepEqual(viewed(laneGh), [5, 7], "the cortex lane's own and the revert");
+  const globalGh = fakeGh({ prs, states: { 5: ['MERGED'], 6: ['MERGED'], 7: ['MERGED'], 8: ['MERGED'] } });
+  await settleLoopPullRequests({ repoRoot: r.work, settings: LOOP_DEFAULTS, execGh: globalGh.exec, sleep: async () => {} });
+  assert.deepEqual(viewed(globalGh), [5, 6, 7, 8], 'the global loop waits for every one');
 });

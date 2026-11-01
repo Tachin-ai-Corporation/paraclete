@@ -280,9 +280,38 @@ export function trustedNotes(comments) {
  * @param {string} prefix          the issue's branch prefix: `loop/<issue>-`
  * @returns {object[]}
  */
-export function pullRequestComments(pullRequests, prefix) {
+/** A lane's module id as a branch name may hold it: organ:cerebellum is organ-cerebellum. */
+export function laneSlug(lane) {
+  return String(lane || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+}
+
+/**
+ * The branch a cycle works on: `<prefix><issue>-<slug>` for the global loop, and
+ * `<prefix>m/<lane>/<issue>-<slug>` in a lane, so each lane's pull requests can be told apart.
+ */
+export function branchFor({ prefix, issue, lane = null }) {
+  return `${prefix}${lane ? `m/${laneSlug(lane)}/` : ''}${issue.number}-${slugFor(issue.title)}`;
+}
+
+/**
+ * Where a loop branch belongs: its issue, and its lane's slug ('' for the global loop's). Null for
+ * any other branch, a revert's among them.
+ *
+ * @returns {{ issue: number, lane: string }|null}
+ */
+export function branchOwner(name, prefix) {
+  const rest = String(name || '').startsWith(prefix) ? String(name).slice(prefix.length) : null;
+  const m = rest === null ? null : /^(?:m\/([a-z0-9-]+)\/)?(\d+)-/.exec(rest);
+  return m ? { issue: Number(m[2]), lane: m[1] || '' } : null;
+}
+
+/**
+ * The comments and reviews on the loop's earlier pull requests: for one issue (`issueNumber`, in any
+ * lane), or every one on a branch under `prefix`.
+ */
+export function pullRequestComments(pullRequests, prefix, issueNumber = null) {
   return (pullRequests || [])
-    .filter((p) => String(p.headRefName || '').startsWith(prefix))
+    .filter((p) => (issueNumber === null ? String(p.headRefName || '').startsWith(prefix) : branchOwner(p.headRefName, prefix)?.issue === issueNumber))
     .flatMap((p) => [
       ...(p.comments || []),
       ...(p.reviews || []).map((r) => ({ ...r, createdAt: r.submittedAt || r.createdAt })),
@@ -493,10 +522,19 @@ export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
  * @param {object} o  { repoRoot, repo, settings, execGh, dryRun, sleep, log }
  * @returns {Promise<{ open: number[] }>} the loop's pull requests still open when the wait ran out
  */
-export async function settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun = false, sleep, log = () => {} }) {
+export async function settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun = false, sleep, lane = null, log = () => {} }) {
   const repoArgs = repo ? ['--repo', repo] : [];
   const listed = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
-  let open = listed.filter((p) => String(p.headRefName || '').startsWith(settings.branchPrefix)).map((p) => p.number);
+  // A lane waits for its own pull requests and for reverts: another lane's change reaches other files,
+  // and the Loop guard refuses one whose measurement main's merges made stale. The global loop, whose
+  // changes are not scoped, waits for every loop pull request.
+  const waitsFor = (name) => {
+    if (!String(name || '').startsWith(settings.branchPrefix)) return false;
+    if (!lane) return true;
+    const owner = branchOwner(name, settings.branchPrefix);
+    return !owner || owner.lane === laneSlug(lane);
+  };
+  let open = listed.filter((p) => waitsFor(p.headRefName)).map((p) => p.number);
   if (!open.length) return { open };
   if (dryRun) {
     log(`[INFO] loop: a dry run: ${open.map((n) => `#${n}`).join(', ')} would be brought up to date and waited for`);
@@ -597,10 +635,11 @@ async function reviewChange({ issue, changes, tests, summary, base, worktree, se
 
 /** The day's cycles that ran a proposer, the issues tried and failed lately, and each issue's refused
  * attempts, from the cycle log. */
-function pastCycles(records, now, retryAfterHours) {
+function pastCycles(records, now, retryAfterHours, lane = null) {
   const day = now.toISOString().slice(0, 10);
-  // A dry run spends nothing a person would count, and refuses nothing for good.
-  const loop = records.filter((c) => c.command === 'loop' && c.loop && !c.loop.dryRun);
+  // A dry run spends nothing a person would count, and refuses nothing for good. Each lane counts its
+  // own cycles: one lane's busy day does not spend another's.
+  const loop = records.filter((c) => c.command === 'loop' && c.loop && !c.loop.dryRun && (c.loop.lane ?? null) === lane);
   const attempts = new Map();
   for (const c of loop.filter((r) => FAILED.has(r.loop.action))) attempts.set(c.loop.issue, (attempts.get(c.loop.issue) || 0) + 1);
   return {
@@ -650,6 +689,7 @@ export async function runCycle({
   repo,
   issueNumber = null,
   retry = false,
+  lane = null,
   dryRun = false,
   now = new Date(),
   env = process.env,
@@ -692,6 +732,7 @@ export async function runCycle({
             },
           }),
           loop: {
+            ...(lane ? { lane } : {}),
             issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
             tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
             ...(result.planned ? { planned: true } : {}),
@@ -716,23 +757,40 @@ export async function runCycle({
   const loopPause = loopPauseReason({ repoRoot, repo, execGh });
   if (loopPause) return finish({ action: 'paused', reason: `the loop is paused: ${loopPause}` });
 
+  // A lane is a module of dev/loop/modules.json with a lane: it takes only the issues that name it.
+  if (lane) {
+    let known = null;
+    try {
+      known = loadModules({ files: execGit(['ls-files'], repoRoot).split(/\r?\n/).filter(Boolean) }).find((m) => m.id === lane) || null;
+    } catch (err) {
+      log(`[WARN] could not read the modules: ${err.message}`);
+    }
+    if (!known?.lane) return finish({ action: 'no-work', reason: `${lane} is not a module with a lane in dev/loop/modules.json` });
+  }
+
   // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
   // holding its branch, which would stop the next cycle on that issue. No other cycle runs now.
   clearStaleCheckouts({ repoRoot, execGit, log });
 
   // A loop merge that broke main is reverted first, and nothing new is built on a broken main.
+  // The global cycle opens the revert; a lane only reads main's state, so two cycles never revert one
+  // merge, and stops on a broken main as the global cycle does.
   let health;
   try {
-    health = checkMain({ repoRoot, repo, settings, execGit, execGh, now, dryRun, log, removeCheckout });
+    health = checkMain({ repoRoot, repo, settings, execGit, execGh, now, dryRun: dryRun || Boolean(lane), log, removeCheckout });
   } catch (err) {
     health = { state: 'unknown', reason: err.message };
     log(`[WARN] could not read main's CI: ${err.message}`);
   }
+  if (lane && health.state === 'reverting') {
+    return finish({ action: 'main-broken', reason: `${String(health.reason).replace(/: a dry run reverts nothing$/, '')}; the global cycle reverts it` });
+  }
   if (health.state === 'reverting') return finish({ action: 'reverting', reason: health.reason, pullRequest: health.pullRequest || null });
   if (health.state === 'broken') return finish({ action: 'main-broken', reason: health.reason });
 
-  // The loop's merges reach instances in a release, cut once they ran healthy on the lab.
-  try {
+  // The loop's merges reach instances in a release, cut once they ran healthy on the lab: by the global
+  // cycle, once, never by each lane.
+  if (!lane) try {
     const out = { write: (text) => log(String(text).trimEnd()) };
     const released = await release({ settings, ctx: devContext({ stdout: out, stderr: out }), now, dryRun });
     if (released.action === 'released') {
@@ -746,7 +804,7 @@ export async function runCycle({
   }
 
   // One loop change in flight: nothing is measured while an earlier one waits to be merged.
-  const { open } = await settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun, sleep, log });
+  const { open } = await settleLoopPullRequests({ repoRoot, repo, settings, execGh, dryRun, sleep, lane, log });
   if (open.length) {
     const named = open.map((n) => `#${n}`).join(', ');
     return finish({
@@ -758,7 +816,7 @@ export async function runCycle({
   // The agent's own measured weak spots: main's head on the model suite, at most once a day and only
   // after main moved, so the planner can turn a task it fails into an issue. A cycle that measures
   // stops there: a baseline takes hours, and an attempt measured after it could outrun the unit.
-  if (settings.baseline.enabled) {
+  if (settings.baseline.enabled && !lane) {
     let head = null;
     try {
       execGit(['fetch', '--quiet', 'origin', 'main'], repoRoot);
@@ -790,7 +848,7 @@ export async function runCycle({
 
   // The day's cap holds back new attempts, which spend model time. The revert and the release above keep
   // limits of their own (maxRevertsPerDay, release.minHoursBetween), so a spent day stops neither.
-  const past = pastCycles(records, now, settings.retryAfterHours);
+  const past = pastCycles(records, now, settings.retryAfterHours, lane);
   if (past.today >= settings.maxCyclesPerDay) {
     return finish({ action: 'capped', reason: `today's ${settings.maxCyclesPerDay} cycles are spent` });
   }
@@ -798,9 +856,11 @@ export async function runCycle({
   // 2. The issue: the oldest open one with the label, no open loop pull request, not tried lately.
   const issues = JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', settings.label, '--state', 'open',
     '--json', 'number,title,body,url,createdAt', '--limit', '100'], repoRoot) || '[]')
+    // A lane's issues name its module; the global loop's name none.
+    .filter((i) => (issueModule(i.body) || null) === lane)
     .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
-  const busy = (n) => openPrs.some((p) => String(p.headRefName || '').startsWith(`${settings.branchPrefix}${n}-`));
+  const busy = (n) => openPrs.some((p) => branchOwner(p.headRefName, settings.branchPrefix)?.issue === n);
   const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
   // An issue refused maxAttempts times is given up: what the loop cannot do stops holding it.
   const stuck = issues.filter((i) => (past.attempts.get(i.number) || 0) >= settings.maxAttempts);
@@ -851,7 +911,7 @@ export async function runCycle({
   let planReason = null;
   // No issue waits: the planner opens one, from a task the baseline found failing or from the open
   // items, and this cycle takes it.
-  if (!issue && !issueNumber && (settings.planner.command || settings.baseline.enabled)) {
+  if (!issue && !issueNumber && !lane && (settings.planner.command || settings.baseline.enabled)) {
     let res;
     try {
       res = await planIssue({ repoRoot, repo, settings, execGh, execGit, planner, dryRun, log });
@@ -870,12 +930,12 @@ export async function runCycle({
     return finish({
       action: 'no-work',
       reason: issueNumber
-        ? `issue #${issueNumber} is not open with the ${settings.label} label, has an open loop pull request, or was tried lately`
-        : `no open ${settings.label} issue is waiting${planReason ? `, and the planner planned none: ${planReason}` : ''}`,
+        ? `issue #${issueNumber} is not open with the ${settings.label} label${lane ? ` for ${lane}` : ''}, has an open loop pull request, or was tried lately`
+        : `no open ${settings.label} issue ${lane ? `for ${lane} ` : ''}is waiting${planReason ? `, and the planner planned none: ${planReason}` : ''}`,
     });
   }
   result = { ...result, planned };
-  const branch = `${settings.branchPrefix}${issue.number}-${slugFor(issue.title)}`;
+  const branch = branchFor({ prefix: settings.branchPrefix, issue, lane });
   result = { ...result, issue: issue.number, branch };
   log(`[INFO] loop: issue #${issue.number}: ${issue.title}`);
   const comments = [];
@@ -886,7 +946,7 @@ export async function runCycle({
   }
   try {
     const closed = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'closed', '--json', 'number,headRefName,comments,reviews', '--limit', '100'], repoRoot) || '[]');
-    comments.push(...pullRequestComments(closed, `${settings.branchPrefix}${issue.number}-`));
+    comments.push(...pullRequestComments(closed, settings.branchPrefix, issue.number));
   } catch (err) {
     log(`[WARN] could not read the loop's earlier pull requests for #${issue.number}: ${err.message}`);
   }
@@ -1014,12 +1074,13 @@ export async function runCycle({
 }
 
 function parseArgs(argv) {
-  const o = { issue: null, retry: false, repo: null, dryRun: false, json: false };
+  const o = { issue: null, retry: false, repo: null, lane: null, dryRun: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === '--issue') o.issue = Number(argv[++i]);
     else if (a === '--retry') o.retry = true;
     else if (a === '--repo') o.repo = argv[++i] || null;
+    else if (a === '--lane') o.lane = argv[++i] || null;
     else if (a === '--dry-run') o.dryRun = true;
     else if (a === '--json') o.json = true;
     else return { error: `unknown argument: ${a}` };
@@ -1041,11 +1102,11 @@ export async function main(argv, deps = {}) {
   const stderr = deps.stderr || process.stderr;
   const opts = parseArgs(argv);
   if (opts.error) {
-    stderr.write(`${opts.error}\nUsage: node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]\n`);
+    stderr.write(`${opts.error}\nUsage: node dev/loop/cycle.mjs [--lane <module>] [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]\n`);
     return 2;
   }
   try {
-    const res = await runCycle({ ...deps, repo: opts.repo || deps.repo, issueNumber: opts.issue, retry: opts.retry, dryRun: opts.dryRun });
+    const res = await runCycle({ ...deps, repo: opts.repo || deps.repo, issueNumber: opts.issue, retry: opts.retry, lane: opts.lane, dryRun: opts.dryRun });
     const shown = { ...res, measurement: res.measurement ? { measured: res.measurement.measured, reason: res.measurement.reason } : null };
     stdout.write(opts.json ? `${JSON.stringify(shown, null, 2)}\n`
       : `loop: ${res.action}${res.issue ? ` #${res.issue}` : ''}${res.pullRequest ? ` -> ${res.pullRequest}` : ''}${res.reason ? `: ${res.reason}` : ''}\n`);
