@@ -384,7 +384,7 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   const partial = evidence([0.8, 0.8, 0.8], { tasks: others.flatMap((task) => runs([1, 1, 1], task.split, task.id)) });
   const thin = await cycle(t, r4, { proposer: behaviour, measure: async () => ({ measured: true, evidence: partial }) }).run();
   assert.equal(thin.action, 'unmeasured');
-  assert.equal(thin.reason, `it changes the agent's behaviour and was not measured on the whole suite: its evidence has no runs on both sides of ${first.id}`);
+  assert.equal(thin.reason, `it changes the agent's behaviour and was not measured on the tasks it reaches: its evidence has no runs on both sides of ${first.id}`);
 });
 
 test('evidence covers the active suite, on its current version, with runs of every task on both sides', () => {
@@ -939,4 +939,37 @@ test('the command prints the outcome and exits 0 for any outcome, 2 for a usage 
   assert.equal(code, 0);
   assert.equal(JSON.parse(out).action, 'paused');
   assert.equal(await main(['--issue', 'x'], { stdout: { write() {} }, stderr: { write() {} } }), 2);
+});
+
+test("an issue that names its module allows a change to that module's files only", async (t) => {
+  const scoped = { ...ISSUE, body: 'Steps are lost.\n\n**Done when:**\n- The cortex keeps them.\n\n<!-- loop-module: organ:cortex -->' };
+  const outside = await cycle(t, repo(t), {
+    gh: fakeGh({ issues: [scoped] }),
+    proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n', 'prompts/motor.md': '# Motor\n' }),
+  }).run();
+  assert.deepEqual([outside.action, outside.reason], ['out-of-module', 'it changes files outside its module organ:cortex: prompts/motor.md (organ:motor)']);
+  const inside = await cycle(t, repo(t), {
+    gh: fakeGh({ issues: [scoped] }),
+    proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n' }),
+    measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }),
+  }).run();
+  assert.equal(inside.action, 'opened', inside.reason);
+});
+
+test("a measurement runs the tasks the change reaches: a role's files, that role's tasks", async () => {
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const asked = [];
+  const evalOn = async (side, args) => {
+    const task = args[args.indexOf('--task') + 1];
+    asked.push(task);
+    return { ok: true, trajectories: taskRuns({ [task]: [1, 1, 1] }) };
+  };
+  const issue = { number: 8, title: 't', body: '' };
+  const designer = selectModelTasks().filter((task) => task.role === 'designer').map((task) => task.id);
+  const res = await measureSides({ evalOn, issue, changedPaths: ['roles/designer/prompts/cortex.md'], settings });
+  assert.equal(res.measured, true);
+  assert.deepEqual([...new Set(asked)], designer);
+  assert.deepEqual(coverageProblems(res.evidence, designer), []);
+  const none = await measureSides({ evalOn, issue, changedPaths: ['roles/paraclete-h2/prompts/cortex.md'], settings });
+  assert.deepEqual(none, { measured: false, reason: 'no model-suite task runs what it changes (a role without tasks of its own)' });
 });

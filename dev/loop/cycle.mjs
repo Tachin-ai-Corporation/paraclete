@@ -53,6 +53,7 @@ import { pauseState } from '../harness2/pause.mjs';
 import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
+import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
 import { STUCK_LABEL, isCurrentBaseline, planIssue } from './planner.mjs';
 import {
   MEASURED_BASE_MARKER, baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline,
@@ -303,7 +304,8 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
 
 /**
  * Both sides of a measurement, through `evalOn(side, args)` (side 'baseline' or 'candidate'; args those
- * of dev/harness2 `eval --real-model`): every task `measure.trials` times (a target task
+ * of dev/harness2 `eval --real-model`): every task the change reaches (modules.mjs impactedTasks: a
+ * role's files reach only that role's tasks) `measure.trials` times (a target task
  * `measure.targetTrials` times), then more runs of each task that looks worse, and the evidence.
  * defaultMeasure runs it on two clones.
  *
@@ -317,7 +319,8 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
  * @param {object} o  { evalOn, issue, changedPaths, settings, taskIds, log }
  * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
  */
-export async function measureSides({ evalOn, issue, changedPaths, settings, taskIds = selectModelTasks().map((t) => t.id), log = () => {} }) {
+export async function measureSides({ evalOn, issue, changedPaths, settings, taskIds = impactedTasks(changedPaths), log = () => {} }) {
+  if (!taskIds.length) return { measured: false, reason: 'no model-suite task runs what it changes (a role without tasks of its own)' };
   const target = issueTarget(issue.body);
   const runsOf = (id) => (id === target ? Math.max(settings.measure.trials, settings.measure.targetTrials || 0) : settings.measure.trials);
   const planned = taskIds.reduce((n, id) => n + runsOf(id), 0);
@@ -930,6 +933,13 @@ export async function runCycle({
       if (refusals.length) return refuse('refused-paths', refusals.join('; '), { changes, repairs });
       const untested = testRefusal(changes);
       if (untested) return refuse('untested', untested, { changes, repairs });
+      // An issue that names its module allows changes to that module's files only (modules.mjs).
+      const moduleId = issueModule(issue.body);
+      if (moduleId) {
+        const files = [...execGit(['ls-files'], worktree).split('\n').filter(Boolean), ...changes.map((c) => c.path)];
+        const outside = moduleProblems(changes, moduleId, loadModules({ files }));
+        if (outside.length) return refuse('out-of-module', outside.join('; '), { changes, repairs });
+      }
 
       tests = await runTests({ worktree, settings });
       if (tests.ok || repairs >= settings.repairRounds) break;
@@ -972,8 +982,8 @@ export async function runCycle({
         repoRoot, base, candidateRoot: worktree, changedPaths: changes.map((c) => c.path), issue, settings, execGit, log,
       });
       if (!measurement.measured) return refuse('unmeasured', `it changes the agent's behaviour and could not be measured: ${measurement.reason}`, { changes, tests, behaviour, measurement });
-      const uncovered = coverageProblems(measurement.evidence);
-      if (uncovered.length) return refuse('unmeasured', `it changes the agent's behaviour and was not measured on the whole suite: ${uncovered.join('; ')}`, { changes, tests, behaviour, measurement });
+      const uncovered = coverageProblems(measurement.evidence, impactedTasks(changes.flatMap((c) => [c.path, c.oldPath].filter(Boolean))));
+      if (uncovered.length) return refuse('unmeasured', `it changes the agent's behaviour and was not measured on the tasks it reaches: ${uncovered.join('; ')}`, { changes, tests, behaviour, measurement });
       const worse = regressionProblems(measurement.evidence);
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });
     }

@@ -22,6 +22,7 @@ never changes an instance; it reaches instances only through a release (see "Rel
 | `guard.mjs` | The check every loop pull request must pass before it merges, run by CI (`.github/workflows/loop-guard.yml`) and by the merger: the issue, the referee and test rules, the review re-judged and bound to the files it changes, and the evidence of a behaviour change, measured against a main that still stands |
 | `merger.mjs` | Merges at most one passing loop pull request per run, within a daily cap, and closes those that cannot pass; run each hour by `.github/workflows/harness-merge.yml` |
 | `config.mjs` | The loop's budget and caps, the paths a proposal may not touch (the referee), the paths that change the agent's behaviour |
+| `modules.mjs`, `modules.json` | The modules the repo is split into, each a set of files one lane owns (`docs/plan/MODULAR_LOOPS.md`): which module owns a path, which model-suite tasks a change reaches, and whether a change for an issue that names its module keeps to that module's files |
 | `test-report.mjs` | Reads which tests failed from the suite's output, with each one's error (for a test file that could not load, the error it printed), for the refusal comment and the cycle record |
 | `timer.mjs` | Prints the systemd units that run a cycle on a schedule on the lab driver, and how to install them. Nothing installs them for you |
 
@@ -90,9 +91,16 @@ never changes an instance; it reaches instances only through a release (see "Rel
    infrastructure (the network, a git command) runs again, and one that keeps failing is left out; more
    than a quarter of a side's runs left out, and that side could not be measured (`ROLLOUT_RETRY` in
    `dev/harness2/substrate.mjs`). Any other failure of a rollout is a failed run of its side. The change
-   is refused when it could not be measured, when its evidence does not cover every active task on both
-   sides on the current version of the suite (the Loop guard checks this again), or when any task, the
-   held-out tasks or the whole suite got worse. It does not have to improve the suite: a fix may not show there.
+   is refused when it could not be measured, when its evidence does not cover every task it reaches on
+   both sides on the current version of the suite (the Loop guard checks this again), or when any task,
+   the held-out tasks or the whole suite got worse. What a change reaches follows the product's loading
+   rules (`modules.mjs` `impactedTasks`): a file in `roles/<r>/` other than generic's is read only by role
+   r, so it is measured on r's tasks alone, and only a change on main that reaches those tasks makes its
+   measurement stale; anything else the agent reads reaches every task.
+   An issue that names its module (`<!-- loop-module: <id> -->`) allows a change to that module's files
+   only, its tests among them (a test is its mirror's module's; a new one is named
+   `<stem>-<what>.test.mjs` after a file of the module); the cycle refuses anything else as
+   `out-of-module`, and the Loop guard checks it again. It does not have to improve the suite: a fix may not show there.
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
    and carries the proposer's summary, the tests' result, the review (each point and a

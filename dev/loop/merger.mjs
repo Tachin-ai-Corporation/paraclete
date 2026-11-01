@@ -43,7 +43,7 @@ import { PAUSE_FILE, pauseState } from '../harness2/pause.mjs';
 import { MAIN, REMOTE, checkRuns, ciVerdict } from '../release.mjs';
 import { LOOP_DEFAULTS } from './config.mjs';
 import { measuredBase } from './baseline.mjs';
-import { isLoopBranch, loopGuard, resolvedIssue } from './guard.mjs';
+import { isLoopBranch, loopGuard, resolvedIssue, trackedFiles } from './guard.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted } from './sentinel.mjs';
 
 /** The workflow dispatched on main after a merge, or when main's head has no CI. */
@@ -228,7 +228,7 @@ export async function mergeLoopPullRequests(o = {}) {
       const sha = String(pr.headRefOid || '');
       const runs = await checkRuns({ exec }, repo, sha);
       const compare = await ghJson(exec, ['api', ...API_JSON, `repos/${repo}/compare/${result.mainHead}...${sha}`], `how #${number} compares with ${MAIN}`);
-      const guard = loopGuard({ pr, files, issue, reverted, mainChanged });
+      const guard = loopGuard({ pr, files, issue, reverted, mainChanged, repoFiles: trackedFiles() });
       const { refusals, waits } = loopMergeBlockers({ pr, runs, behindBy: compare?.behind_by, guard });
       if (refusals.length) {
         if (!dryRun) {

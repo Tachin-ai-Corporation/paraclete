@@ -189,3 +189,31 @@ test('the workflow runs on every change to a pull request, read-only, with the b
   assert.match(yml, /^ {4}name: Loop guard$/m, 'the check name branch protection requires');
   assert.match(yml, /node dev\/loop\/guard\.mjs --pr "\$\{\{ github\.event\.pull_request\.number \}\}" --repo "\$\{\{ github\.repository \}\}"/);
 });
+
+test("a role's change is measured on that role's tasks only, and only a change on main that reaches them makes it stale", () => {
+  const roleFiles = [{ filename: 'roles/designer/prompts/cortex.md', status: 'modified', sha: SHA.plan }];
+  const reviewed = { 'roles/designer/prompts/cortex.md': SHA.plan };
+  const designer = selectModelTasks().filter((task) => task.role === 'designer');
+  const own = designer.flatMap((task) => runs([1, 1, 1], task.id, task.split));
+  const measured = buildPromotionEvidence({
+    candidate: { id: 'loop-33', lens: 'LOOP', touchedPaths: ['roles/designer/prompts/cortex.md'], proposal: { source: 'coding-agent' } },
+    baselineTrajectories: own, candidateTrajectories: own, suite: { name: 'model', version: MODEL_SUITE_VERSION },
+  });
+  const verdict = (mainChanged) => check({ files: roleFiles, mainChanged, pr: { body: body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(measured)}${measuredOn}` }) } });
+  assert.equal(verdict([]).ok, true, "evidence of the designer's tasks covers a designer change");
+  assert.equal(verdict(['roles/finance-analyst/prompts/cortex.md', 'roles/designer/role.json']).ok, true, "another role's change does not reach them");
+  assert.match(verdict(['prompts/motor.md']).problems.join(' | '), /what the agent reads changed on main since \(prompts\/motor\.md\): it must be measured again/);
+  assert.match(verdict(['roles/designer/memory.md']).problems.join(' | '), /must be measured again/, "the designer's own files do");
+});
+
+test('a pull request for an issue that names its module keeps to that module', () => {
+  const scoped = { ...ISSUE, body: `${ISSUE.body}\n<!-- loop-module: platform:dashboard -->` };
+  const repoFiles = ['dashboard/components/work/WorkPlan.jsx', 'prompts/motor.md'];
+  const guard = (o) => loopGuard({ pr: pr(), files: FILES, issue: scoped, mainChanged: [], repoFiles, ...o });
+  assert.match(guard({}).problems.join(' | '), /names the module platform:dashboard, which has no lane/);
+  const cortexIssue = { ...ISSUE, body: `${ISSUE.body}\n<!-- loop-module: organ:cortex -->` };
+  assert.match(loopGuard({ pr: pr(), files: FILES, issue: cortexIssue, mainChanged: [], repoFiles }).problems.join(' | '),
+    /it changes files outside its module organ:cortex: dashboard\/components\/work\/WorkPlan\.jsx \(platform:dashboard\), tests\/dashboard\/components\/work\/work-plan\.test\.mjs \(platform:dashboard\)/);
+  assert.match(loopGuard({ pr: pr(), files: FILES, issue: cortexIssue, mainChanged: [] }).problems.join(' | '), /names the module organ:cortex, and the repo's files could not be read/);
+  assert.deepEqual(check().problems, [], 'an issue without a module is not scoped');
+});

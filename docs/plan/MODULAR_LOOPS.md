@@ -162,7 +162,7 @@ Since 2026-10-17, 68 commits changed product code. Of those:
 
 ### 2.1 A module, and the rule that makes lanes safe
 
-A module is a set of files that one lane owns. The registry, *dev/loop/modules.json*, names each
+A module is a set of files that one lane owns. The registry, `dev/loop/modules.json`, names each
 module's:
 
 - **id and kind:** organ, skill, role, tool or platform;
@@ -336,12 +336,21 @@ phase 2's first two organs are done.
 | Phase | Work | Done when |
 |---|---|---|
 | **0. Fix the instrument** | Each side runs its own product code, in a rollout process that imports the brain and gateway from the side. Retry transient errors; a failed rollout counts as not evaluated. Interleave the sides. Confirm a target before planning it. The guard checks the evidence's coverage and suite version. Close the referee gaps in 1.4. | A deliberately broken brain function on the candidate side is refused as a regression. A baseline survives an injected network fault. |
-| **1. Registry and ownership** (no files move) | Write *dev/loop/modules.json*, starting from `dev/harness2/surface.mjs`'s components: six organ modules (globs over today's files), the role and skill modules, and platform modules. Add the ownership test, and the lane rule to the cycle and the guard. Tag the model suite's tasks with capabilities. Add module, lane and bench to `docs/GLOSSARY.md`. | Every product file is owned exactly once. A lane change outside its globs is refused. |
+| **1. Registry and ownership** (no files move) | Write `dev/loop/modules.json`, starting from `dev/harness2/surface.mjs`'s components: six organ modules (globs over today's files), the role and skill modules, and platform modules. Add the ownership test, and the lane rule to the cycle and the guard. Tag the model suite's tasks with capabilities. Add module, lane and bench to `docs/GLOSSARY.md`. | Every product file is owned exactly once. A lane change outside its globs is refused. |
 | **2. Organ modules** | Build *agent/interfaces/*, then *agent/organs/<organ>/*, one organ at a time: cerebellum and temporal-memory first, then prefrontal, motor, cortex and temporal-research. Move the prompts, the text held in code, the definitions and the config fragments, then split the shared files (2.2). Split the shared fixtures and tests per organ. Give each organ its own backlog. | A repo test finds no instruction text for an organ outside its directory. Any one organ's behaviour can change through its own directory alone. |
 | **3. Benches and capability tasks** | The bench runner, and benches for the cerebellum, recall and the prefrontal. Tasks that seed stored state, and tasks that span several missions. Training tasks for the four roles that have only held-out tasks. | Each pilot organ's bench can tell a 5-point change from noise in under an hour. |
 | **4. Two lanes in parallel** | The lane runner (2.5), the merge queue, and the sentinel's walk back through merges. Pilot: cerebellum (verification) and temporal-memory (recall). | Both lanes run at once for a week, each merges a measured gain, and no regression stays on main past the next daily baseline. |
 | **5. Capability canaries** | The scenario runner, memory and verification batteries, and harvesting their failures into the pilot lanes' backlogs. | The memory battery runs daily on a canary, and its failures arrive as bench items. |
 | **6. More lanes** | Roles (each measured on its own tasks), procedure-only skills, then skills with commands once the skill library and the per-package tests exist, then tools once `tools.mjs` is split. Prefrontal, motor and cortex lanes once their benches exist. | Lanes are added by registry entry, without changes to the loop. |
+
+**Progress:**
+
+- **Phase 0, code:** done.
+  - #96: each side runs its own product code.
+  - #97: runs survive infrastructure errors, and the sides take turns task by task.
+  - #98: a failing task is confirmed before it is targeted, evidence must cover what it measures, and all of `dev/harness2/` is the referee.
+  - Its exit test on the lab driver is still to run.
+- **Phase 1:** the registry, the ownership test (`tests/dev/loop/modules.test.mjs`), the lane rule in the cycle and the guard, and measurement scoped to the tasks a change reaches (a role's files reach only that role's tasks). The capability tags on tasks wait for phase 3, where benches and organ tasks give them something to select: until then every organ's change reaches every task.
 
 **Throughput, roughly:**
 
