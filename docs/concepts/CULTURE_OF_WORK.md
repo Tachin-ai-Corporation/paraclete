@@ -190,10 +190,10 @@ mission is tried again later: a mission waiting on an approval nobody can see wo
 
 **The milestone.** When a checkpoint's tasks are done, the cerebellum judges whether their combined
 work meets the checkpoint's acceptance criteria (`verifyMilestone` in
-`agent/work/checkpoint-verify.mjs`):
+`agent/organs/cerebellum/verify.mjs`):
 
 - The verdict is the verdict tool the cerebellum called, `report_pass` or `report_fail`, read from the
-  tool log; prose is never read for it (`agent/work/verdict.mjs`).
+  tool log; prose is never read for it (`agent/organs/cerebellum/verdict.mjs`).
 - It is graded: met, met with a caveat (a gap that does not defeat the deliverable, shown to the
   person), or not met.
 - A first look made on a partial view of the evidence is checked again on the complete evidence, and

@@ -6,7 +6,7 @@
       "kind": "organ",
       "lane": true,
       "job": "Verifies each checkpoint and the final answer, and owns the verdict",
-      "owns": ["prompts/cerebellum.md", "agent/work/checkpoint-verify.mjs", "agent/work/verdict.mjs", "skills/verification/**"]
+      "owns": ["agent/organs/cerebellum/**", "prompts/cerebellum.md", "skills/verification/**"]
     },
     {
       "id": "organ:temporal-memory",

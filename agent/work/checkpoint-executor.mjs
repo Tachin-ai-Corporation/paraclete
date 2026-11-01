@@ -4,8 +4,9 @@
 // work, raises approval gates, has the cerebellum (the organ that verifies each checkpoint) judge the
 // milestone, records the verdict on the checkpoint spine, and commits the mission tree after a
 // checkpoint passes. A failed task or a failed milestone halts the plan: nothing proceeds past it.
-// Deciding what to plan, and what to do with the results, is the brain's. Verification is
-// checkpoint-verify.mjs, reading a task's result is task-outcome.mjs, the ledger is step-ledger.mjs.
+// Deciding what to plan, and what to do with the results, is the brain's. Verification is the
+// cerebellum's (agent/organs/cerebellum/verify.mjs, handed in as deps.verifyMilestone), reading a
+// task's result is task-outcome.mjs, the ledger is step-ledger.mjs.
 // Constructed by the brain service, which calls executeCheckpoints for a new plan, a scoped re-plan,
 // a crash resume (from `_cp_progress`) and a resume after an approval (from `source_meta.paused_*`).
 //
@@ -69,17 +70,16 @@ import { buildResultPacket } from './result-packet.mjs';
 import { isMilestoneVerdict } from './finalization.mjs';
 import { deriveStepKey, completedStep, recordStep, clearCheckpointSteps } from './step-ledger.mjs';
 import { applyMotorCheck, prepareRetry, withEvidenceWarnings } from './task-outcome.mjs';
-import { verifyMilestone, VERIFY_DEFAULTS } from './checkpoint-verify.mjs';
 
 /** The organs a checkpoint task may run on. Planning and verifying organs never run tasks. */
 export const VALID_TASK_ORGANS = Object.freeze(['motor', 'temporal-research', 'temporal-memory']);
 
 /**
  * Executor settings, with the contracts key each one maps from. Defaults; callers pass the contracts
- * values. The verification budgets are VERIFY_DEFAULTS in checkpoint-verify.mjs.
+ * values. The verification budgets are the cerebellum's (VERIFY_DEFAULTS in
+ * agent/organs/cerebellum/verify.mjs), which the verifier it is handed carries.
  */
 export const EXECUTOR_DEFAULTS = Object.freeze({
-  ...VERIFY_DEFAULTS,
   ctxAgentStep: 8000, // default; no contracts key yet. A task row keeps this much of its output
   ctxDispatchFailure: 3000, // default; no contracts key yet. A failed task row keeps this much
   checkpointDigestChars: 12000, // default; callers pass the contracts value (compaction.checkpoint_digest_chars)
@@ -168,6 +168,8 @@ function readTask(task) {
  *   for the cerebellum. callAgent renders the payload into the turn's messages (the project context
  *   travels only in _projectContext; _requester is the asking person's email, '' for scheduled
  *   work) and sends `exec` from _exec. A throw counts as a failed turn.
+ * @param {Function} deps.verifyMilestone - the cerebellum's check of one checkpoint
+ *   (agent/organs/cerebellum/verify.mjs verifyMilestone, with its budgets bound by the caller)
  * @param {Function} deps.writeHistory - async (envelopeId, prevStatus, newStatus, actor, detail): the
  *   brain's history writer (agent/context/history.mjs)
  * @param {object}   deps.approvals   - { create(approvalId, record) => Promise<boolean> }: the checker
@@ -195,9 +197,12 @@ export function createCheckpointExecutor(deps = {}) {
     summarizeForDelivery = null, addressFromMeta = null,
     clock = Date.now,
   } = deps;
+  // The cerebellum's milestone check, handed in: agent/work never imports an organ (agent/README.md).
+  const verifyMilestone = deps.verifyMilestone;
   const required = [
     ['db', db && typeof db.read === 'function' && typeof db.write === 'function'],
     ['callAgent', typeof callAgent === 'function'],
+    ['verifyMilestone', typeof verifyMilestone === 'function'],
     ['writeHistory', typeof writeHistory === 'function'],
     ['approvals', approvals && typeof approvals.create === 'function'],
     ['generateId', typeof generateId === 'function'],
@@ -700,7 +705,6 @@ export function createCheckpointExecutor(deps = {}) {
         stakes: envelope.stakes || 'routine',
         loadBearing: (envelope._brief?.parts || []).some((part) => part && part.load_bearing),
         readToolResult,
-        settings: s,
         log,
       });
     } catch (e) {

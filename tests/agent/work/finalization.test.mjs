@@ -8,7 +8,7 @@ import {
   isMilestoneVerdict, isWorkRow, isRealTaskFailure, isRealTaskSuccess,
   deliverableStandsDespiteMilestone, articulateBlocker, renderCaveatSection,
 } from '../../../agent/work/finalization.mjs';
-import { extractFailRecommendation } from '../../../agent/work/verdict.mjs';
+import { extractFailRecommendation } from '../../../agent/organs/cerebellum/verdict.mjs';
 
 // Rows as the checkpoint executor pushes them.
 const taskOK       = { step: '1.1', agent: 'motor', success: true };

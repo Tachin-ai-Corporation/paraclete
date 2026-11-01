@@ -8,7 +8,7 @@
 // The missing-evidence re-check belongs to the checkpoint executor and is not repeated here. Called
 // by the decide loop in envelope-runner.mjs.
 
-import { extractFailSummary, extractPassCaveat, extractVerdict, stakesAtLeast } from '../../../work/verdict.mjs';
+import { extractFailSummary, extractPassCaveat, extractVerdict, stakesAtLeast } from '../../../organs/cerebellum/verdict.mjs';
 import { finalizeBlockedBySpine } from '../../../work/checkpoint-spine.mjs';
 import { renderCaveatSection } from '../../../work/finalization.mjs';
 import { renderResources } from '../../../work/resource-ledger.mjs';
@@ -151,7 +151,7 @@ export async function handleSynthesize(ctx, deps) {
   let caveat = '';
   if (!isSynthExempt(envelope, settings.synthVerifyMinChars)) {
     const stakes = envelope.stakes || 'routine';
-    const established = establishedEvidence(priorResults, settings.executor?.ctxVerifyPrior || 16000);
+    const established = establishedEvidence(priorResults, settings.verify?.ctxVerifyPrior || 16000);
     const known = renderResources(envelope.context?.resources, { limit: settings.resourceLedger?.recallLimit ?? 40 });
     try {
       const verification = await callAgent('cerebellum', {

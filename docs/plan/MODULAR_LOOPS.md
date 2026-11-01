@@ -30,7 +30,7 @@ nothing until they are fixed.
    - So both sides of a measurement run main's brain, gateway, context and work code. Only the
      prompts, skills, roles, contracts and the commands the motor launches come from the side.
    - A change to organ code (recall ranking in `agent/context/work-recall.mjs`, verification in
-     `agent/work/checkpoint-verify.mjs`) is measured as no change. The code changes the loop
+     `agent/organs/cerebellum/verify.mjs`) is measured as no change. The code changes the loop
      measured so far (#71, #87) were measured this way.
 2. **What a change affects is a yes or no.**
    - `isBehaviourPath` in `dev/loop/config.mjs` decides whether a change is measured, and a yes runs
@@ -66,7 +66,7 @@ No organ has a module of its own. An organ is made of four kinds of pieces:
 
 | Organ | Closest thing to its own code | What it shares with other organs |
 |---|---|---|
-| cerebellum | `agent/work/checkpoint-verify.mjs` (379 lines) and `agent/work/verdict.mjs` | the verdict tools in `tools.mjs`; the answer check in `actions/synthesize.mjs` |
+| cerebellum | `agent/organs/cerebellum/verify.mjs` (379 lines) and `agent/organs/cerebellum/verdict.mjs` | the verdict tools in `tools.mjs`; the answer check in `actions/synthesize.mjs` |
 | temporal-memory | `agent/services/brain/memory.mjs` (353), `agent/context/work-recall.mjs`, `agent/context/core-memory-rank.mjs`, `agent/context/context-maintenance.mjs` | the memory tools in `tools.mjs`; the memory fence in `checkpoint-executor.mjs`; `agent/work/memory-scope.mjs` |
 | prefrontal | none | `prompt-assembly.mjs`, `envelope-runner.mjs`, `actions/checkpoint-plan.mjs`, `agent/work/checkpoint-spine.mjs` |
 | motor | none | `agent/work/checkpoint-executor.mjs` (960), `agent/work/task-outcome.mjs`, `tools.mjs` |
@@ -79,14 +79,14 @@ What keeps organs from separating:
   organs. Examples: `actions/checkpoint-plan.mjs` (cortex, prefrontal and memory) and
   `actions/synthesize.mjs` (cortex and cerebellum).
 - **Instruction text lives in code.** About 15 code files carry text an organ reads. Examples: the
-  four verifier prompts in `checkpoint-verify.mjs`, the recall and escalation instructions in
+  four verifier prompts in the cerebellum's `verify.mjs`, the recall and escalation instructions in
   `memory.mjs`, the lesson prompts, and the descriptions of the verdict tools. A loop that edits only
   `prompts/<organ>.md` cannot reach any of it.
 - **The shapes organs hand each other have no single home.**
   - The list of organs is written in about 11 places, the dashboard among them.
   - The plan, checkpoint and task shape is written in at least 7, with fields renamed between them.
   - The cerebellum's attack duty is written in 4: `prompts/cerebellum.md`,
-    `skills/verification/SKILL.md`, `checkpoint-verify.mjs` and `synthesize.mjs`.
+    `skills/verification/SKILL.md`, the cerebellum's `verify.mjs` and `synthesize.mjs`.
 - **Tunables, skills and tests are single shared files.**
   - `config/contracts.json` (306 lines) holds every organ's tunables.
   - One skill index is shared by every organ with tools.

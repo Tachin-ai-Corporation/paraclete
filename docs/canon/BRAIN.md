@@ -67,7 +67,7 @@ against the mission's decision budget. The cerebellum's verdict is the name of t
   model's choice a value code can check, and an unreadable answer a known case.
 - **How the code gives it.** `CORTEX_SCHEMAS` and `enforceSchema()` in
   `agent/providers/vertex-text.mjs`, `agent/providers/json-repair.mjs`, the decide loop in
-  `agent/services/brain/envelope-runner.mjs`, and `extractVerdict()` in `agent/work/verdict.mjs`.
+  `agent/services/brain/envelope-runner.mjs`, and `extractVerdict()` in `agent/organs/cerebellum/verdict.mjs`.
 
 ### B-4. The cortex chooses among moves that code defines
 
@@ -138,7 +138,7 @@ verification that cannot run, fails the milestone as inconclusive.
 
 - **Why.** The organ that did the work is the worst judge of it. A pass that nobody rendered is a
   pass nobody checked.
-- **How the code gives it.** `verifyMilestone()` in `agent/work/checkpoint-verify.mjs`, called by
+- **How the code gives it.** `verifyMilestone()` in `agent/organs/cerebellum/verify.mjs`, called by
   `agent/work/checkpoint-executor.mjs`. `CEREBELLUM_TOOLSET` in `agent/gateway/tools.mjs`;
   `forceToolCall` in `agent/gateway/organs.mjs`, applied by `agent/gateway/google-step.mjs`;
   `session.excluded_organs` in `config/contracts.json`, applied by `agent/gateway/server.mjs`.
@@ -157,12 +157,12 @@ still out of view the milestone is inconclusive, not failed work.
 - **Why.** "Sounds right" is how confident wrong answers pass, and a verifier shown a cut record fails
   work that was fine. Judging the stored evidence, whole, makes both rarer.
 - **How the code gives it.** `agent/gateway/turn-loop.mjs` appends the tool log;
-  `agent/context/tool-record.mjs` stores and digests large results; `agent/work/checkpoint-verify.mjs`
-  runs the re-check; `isMissingEvidenceFail()` in `agent/work/verdict.mjs` tells "not visible" from
+  `agent/context/tool-record.mjs` stores and digests large results; `agent/organs/cerebellum/verify.mjs`
+  runs the re-check; `isMissingEvidenceFail()` in `agent/organs/cerebellum/verdict.mjs` tells "not visible" from
   "wrong". The log is the gateway's alone: a tool-log marker a model writes into its own text is made
   inert (`quoteToolLogMarkers()` in `agent/context/tool-record.mjs`), and the verdict and the task's
   outcome read the last block, the gateway's (`lastToolLog()`). **Missing:** the verifier cannot ask
-  for a [probe](../GLOSSARY.md); nothing services one (`agent/work/checkpoint-verify.mjs` says so).
+  for a [probe](../GLOSSARY.md); nothing services one (`agent/organs/cerebellum/verify.mjs` says so).
 
 ### B-10. The verdict is graded, and the verifier owns it
 
@@ -176,8 +176,8 @@ says so.
 - **Why.** A two-way switch either blocks working deliverables over small gaps or passes them
   silently. A graded verdict passes what works and tells the person what is missing.
 - **How the code gives it.** The `caveat` argument of `report_pass` in `agent/gateway/tools.mjs`;
-  `extractPassCaveat()` in `agent/work/verdict.mjs`; the grades and the module's own caveats in
-  `agent/work/checkpoint-verify.mjs`; `renderCaveatSection()` and `isRealTaskFailure()` in
+  `extractPassCaveat()` in `agent/organs/cerebellum/verdict.mjs`; the grades and the module's own caveats in
+  `agent/organs/cerebellum/verify.mjs`; `renderCaveatSection()` and `isRealTaskFailure()` in
   `agent/work/finalization.mjs`, which never count an inconclusive or timed-out row as failed work.
 
 ### B-11. Scrutiny rises with the stakes
@@ -193,9 +193,9 @@ warning.
 
 - **Why.** Verification costs model calls. Spending them where a mistake would do harm buys the most
   safety for the least time and money.
-- **How the code gives it.** `agent/work/checkpoint-verify.mjs` and
+- **How the code gives it.** `agent/organs/cerebellum/verify.mjs` and
   `agent/services/brain/actions/synthesize.mjs`, from `brain.attack_duty_stakes_min` in
-  `config/contracts.json`; `stakesAtLeast()` in `agent/work/verdict.mjs`; the warning in
+  `config/contracts.json`; `stakesAtLeast()` in `agent/organs/cerebellum/verdict.mjs`; the warning in
   `agent/services/brain/actions/checkpoint-plan.mjs`. **Not structural:** after that one warning the
   plan runs as written; an approval gate before a destructive step is the cortex's and the motor's
   prompt rule (`prompts/cortex.md`, `prompts/motor.md`), not a check.

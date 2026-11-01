@@ -50,7 +50,7 @@ test('a lane is never given a file of the referee or a secret', () => {
 test('the organ modules own their prompts, instruction files and skills; the rest has the owner the plan gives it', () => {
   const expected = {
     'prompts/cerebellum.md': 'organ:cerebellum',
-    'agent/work/checkpoint-verify.mjs': 'organ:cerebellum',
+    'agent/organs/cerebellum/verify.mjs': 'organ:cerebellum',
     'skills/verification/SKILL.md': 'organ:cerebellum',
     'agent/services/brain/memory.mjs': 'organ:temporal-memory',
     'skills/memory-recall/SKILL.md': 'organ:temporal-memory',
@@ -91,14 +91,14 @@ test('the organ modules own their prompts, instruction files and skills; the res
 });
 
 test("a test belongs to the module of the path it mirrors, unless a module names it", () => {
-  assert.equal(owner('tests/agent/work/verdict.test.mjs'), 'organ:cerebellum');
+  assert.equal(owner('tests/agent/organs/cerebellum/verdict.test.mjs'), 'organ:cerebellum');
   assert.equal(owner('tests/agent/context/work-recall.test.mjs'), 'organ:temporal-memory');
   assert.equal(owner('tests/skills/drive/drive-get.test.mjs'), 'skill:drive');
   assert.equal(owner('tests/roles/designer/contrast-check.test.mjs'), 'role:designer');
   assert.equal(owner('tests/dev/loop/cycle.test.mjs'), 'repo:loop');
   assert.equal(owner('tests/content/packages.test.mjs'), 'repo:rules');
-  assert.equal(owner('tests/agent/work/verdict-twice.test.mjs'), 'organ:cerebellum', "a new test named after a file of a module is that module's");
-  assert.equal(owner('tests/agent/work/checkpoint-verify-attack.test.mjs'), 'organ:cerebellum', 'the longest stem wins');
+  assert.equal(owner('tests/agent/context/work-recall-ranking.test.mjs'), 'organ:temporal-memory', "a new test named after a file of a module is that module's");
+  assert.equal(owner('tests/agent/work/memory-scope-fence.test.mjs'), 'organ:temporal-memory', 'the longest stem wins');
   assert.equal(owner('tests/agent/work/a-new-thing.test.mjs'), 'platform:brain-spine', "named after nothing: its directory's owner");
 });
 
@@ -111,7 +111,7 @@ test("a change's tasks follow the product's loading rules: a role's files reach 
   assert.deepEqual(impactedTasks(['roles/designer/skills/accessibility-checks/SKILL.md']), designer);
   assert.deepEqual(impactedTasks(['roles/generic/processes/p-x.json']), all, "generic's reach every role");
   assert.deepEqual(impactedTasks(['prompts/motor.md']), all);
-  assert.deepEqual(impactedTasks(['agent/work/verdict.mjs']), all);
+  assert.deepEqual(impactedTasks(['agent/organs/cerebellum/verdict.mjs']), all);
   assert.deepEqual(impactedTasks(['roles/designer/role.json', 'docs/GLOSSARY.md', 'dev/say.mjs']), [], 'nothing the agent reads');
   assert.deepEqual(impactedTasks(['roles/paraclete-h2/prompts/cortex.md']), [], 'a role without tasks cannot be measured');
   const finance = suite.filter((t) => t.role === 'finance-analyst').map((t) => t.id);
@@ -121,12 +121,12 @@ test("a change's tasks follow the product's loading rules: a role's files reach 
 test('a change for a module keeps to its files and tests; a module it does not have, or with no lane, is refused', () => {
   assert.equal(issueModule('Fix it.\n<!-- loop-module: organ:cerebellum -->'), 'organ:cerebellum');
   assert.equal(issueModule('no marker'), null);
-  const inside = [{ path: 'prompts/cerebellum.md' }, { path: 'agent/work/verdict.mjs' }, { path: 'tests/agent/work/verdict-twice.test.mjs' }];
+  const inside = [{ path: 'prompts/cerebellum.md' }, { path: 'agent/organs/cerebellum/verdict.mjs' }, { path: 'tests/agent/organs/cerebellum/verdict-twice.test.mjs' }];
   assert.deepEqual(moduleProblems(inside, 'organ:cerebellum', modules), []);
   assert.deepEqual(moduleProblems([...inside, { path: 'prompts/motor.md' }, { path: 'docs/plan/OPEN_ITEMS.md' }], 'organ:cerebellum', modules), [
     'it changes files outside its module organ:cerebellum: prompts/motor.md (organ:motor), docs/plan/OPEN_ITEMS.md (repo:docs)',
   ]);
-  assert.match(moduleProblems([{ path: 'agent/work/verdict.mjs', oldPath: 'agent/work/checkpoint-executor.mjs' }], 'organ:cerebellum', modules)[0],
+  assert.match(moduleProblems([{ path: 'agent/organs/cerebellum/verdict.mjs', oldPath: 'agent/work/checkpoint-executor.mjs' }], 'organ:cerebellum', modules)[0],
     /agent\/work\/checkpoint-executor\.mjs \(platform:brain-spine\)/, "a rename's old path counts");
   assert.deepEqual(moduleProblems(inside, 'organ:spleen', modules), ['its issue names the module organ:spleen, which dev/loop/modules.json does not have']);
   assert.deepEqual(moduleProblems(inside, 'platform:brain-spine', modules), ['its issue names the module platform:brain-spine, which has no lane: only a person changes it']);

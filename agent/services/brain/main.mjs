@@ -31,6 +31,7 @@ import { createApprovalChecker } from '../../work/approvals.mjs';
 import { createArchivalSweeper } from '../../work/archival.mjs';
 import { createArtifactManager } from '../../work/artifacts.mjs';
 import { createCheckpointExecutor } from '../../work/checkpoint-executor.mjs';
+import { verifyMilestone } from '../../organs/cerebellum/verify.mjs';
 import { createProcessRegistry } from '../../work/process-registry.mjs';
 import { createProjectRegistry } from '../../work/projects.mjs';
 import { readPlatformVersion, stampPlatformVersion } from '../../work/platform-version.mjs';
@@ -238,6 +239,7 @@ export function buildBrain(runtime, deps = {}) {
   const executor = createCheckpointExecutor({
     db,
     callAgent,
+    verifyMilestone: (p) => verifyMilestone({ ...p, settings: settings.verify }),
     writeHistory: store.writeHistory,
     approvals,
     generateId: store.newId,

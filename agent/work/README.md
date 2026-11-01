@@ -17,7 +17,7 @@ that must be deterministic.
 | Envelope state | `work-transitions.mjs` (legal status changes), `work-schema.mjs` (record shapes), `work-ids.mjs`, `validate-schema.mjs`, `platform-version.mjs` (the release stamped on each envelope the brain creates) |
 | Planning | `plan-utils.mjs` (plans into checkpoint lists), `plan-lint.mjs`, `checkpoint-spine.mjs` (the verified skeleton of a mission) |
 | Running a checkpoint | `checkpoint-executor.mjs` (runs one checkpoint's tasks: retries, approval gates, milestone verification), `step-ledger.mjs` (what each step did, kept on the checkpoint), `task-outcome.mjs` (whether a task succeeded, and the evidence-floor warning) |
-| Verification | `verdict.mjs` (reads the verifier's verdict), `checkpoint-verify.mjs` (the verifier's turn on a checkpoint), `agent-output.mjs` (spots failures in motor output), `result-packet.mjs` (evidence between organs) |
+| Verification | `agent-output.mjs` (spots failures in motor output), `result-packet.mjs` (evidence between organs). The verifier's turn on a checkpoint and reading its verdict are the cerebellum's (`agent/organs/cerebellum/`), which the brain service hands the executor |
 | Finishing | `finalization.mjs`, `deliverable.mjs`, `mission-record.mjs` |
 | Mission state | `blackboard.mjs`, `resource-ledger.mjs`, `artifacts.mjs` (mission working trees and publishing), `memory-scope.mjs` |
 | Approvals | `approvals.mjs` (the approval gate's lifecycle) |

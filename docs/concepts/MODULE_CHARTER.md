@@ -48,7 +48,7 @@ others:
 |---|---|
 | Every status change is a legal move | `agent/work/work-transitions.mjs` |
 | Missions never nest | `enforceMissionParentInvariant` in `agent/work/plan-utils.mjs` |
-| A checkpoint passes only on the verifier's verdict tool call, never on prose | `agent/work/verdict.mjs` |
+| A checkpoint passes only on the verifier's verdict tool call, never on prose | `agent/organs/cerebellum/verdict.mjs` |
 | A mission is not reported complete while its last checkpoint is unmet | `finalizeBlockedBySpine` in `agent/work/checkpoint-spine.mjs` |
 | A memory-scoped mission runs only on the memory organs and opens no approval gate | `fenceMemoryTask` in `agent/work/memory-scope.mjs` |
 | The memory organ, running a task, can write nothing but memory | `MEMORY_TOOLSET` in `agent/gateway/tools.mjs`; `MEMORY_COMMANDS` in `agent/services/gateway/settings.mjs` |
