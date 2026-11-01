@@ -70,6 +70,25 @@ test('a real-model eval with --task runs the named tasks only, and refuses a nam
   assert.deepEqual([none.ok, none.reason], [false, 'no model-suite task is named no-such-task']);
 });
 
+test('a real-model eval whose runs keep failing on infrastructure measures nothing, and says why', async () => {
+  const record = { cleanups: 0, contexts: 0 };
+  const lines = [];
+  const offline = () => {
+    const ctx = fakeContext({ maxRollouts: 10 }, record)();
+    ctx.startGateway = async () => { throw new TypeError('fetch failed'); };
+    return ctx;
+  };
+  const res = await runCli(['eval', '--real-model', '--role', 'devops-engineer'], {
+    repoRoot: REPO, createModelRunContext: offline, stderr: { write: (l) => lines.push(l) }, retry: { attempts: 2, backoffMs: 1 }, sleep: async () => {},
+  });
+  assert.equal(res.ok, false);
+  assert.match(res.reason, /^2 of 2 runs failed on infrastructure and were not evaluated \(more than 25%\): fetch failed$/);
+  assert.deepEqual(res.notEvaluated.map((r) => [r.taskId, r.attempts]), [['devops-plan-order', 2], ['devops-log-forensics', 2]]);
+  assert.deepEqual(res.trajectories, []);
+  assert.equal(record.cleanups, 1);
+  assert.match(lines.join(''), /devops-plan-order \(trial 1\) failed on infrastructure \(fetch failed\); running it again \(attempt 2 of 2\)/);
+});
+
 test('a real-model run whose estimate is over its cap is refused before it spends anything, and cleans up', async (t) => {
   const record = { cleanups: 0, contexts: 0 };
   const res = await runCli(['eval', '--real-model', '--role', 'devops-engineer', '--max-rollouts', '1'], {

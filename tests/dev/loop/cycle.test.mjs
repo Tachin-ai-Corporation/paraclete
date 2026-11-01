@@ -489,33 +489,56 @@ test('a regression counts only beyond run-to-run noise, for a task and for the h
   assert.deepEqual(worseTasks(judge({ a: [1, 1, 1], b: [1, 1, 1] }, { a: [1, 1, 0], b: [1, 1, 1] })), ['a'], 'what looks worse, before any noise test');
 });
 
-test("a measurement runs a target task's extra runs, and runs a task that looks worse again before it judges", async () => {
+test("a measurement takes turns between the sides task by task, runs a target task's extra runs, and runs a task that looks worse again before it judges", async () => {
   const calls = [];
   const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
-  const answers = {
-    baseline: { main: { a: [1, 1, 1], b: [1, 1, 1] }, a: { a: [1, 1, 1] }, b: { b: [1, 1, 1] } },
-    candidate: { main: { a: [1, 1, 1], b: [1, 1, 0] }, a: { a: [1, 1, 1] }, b: { b: [1, 1, 1] } },
+  // Each call answers with that side's runs of the task, as many as it asked for; a task's second
+  // call on a side is its re-run.
+  const caps = {
+    baseline: { a: [1, 1, 1, 1, 1, 1], b: [1, 1, 1], 'b-again': [1, 1, 1] },
+    candidate: { a: [1, 1, 1, 1, 1, 1], b: [1, 1, 0], 'b-again': [1, 1, 1] },
   };
+  const arg = (c, flag) => c[c.indexOf(flag) + 1];
   const evalOn = (cand) => async (side, args) => {
     calls.push([side, ...args]);
-    const task = args.includes('--task') ? args[args.indexOf('--task') + 1] : 'main';
-    return { ok: true, trajectories: taskRuns((side === 'candidate' && cand ? cand : answers[side])[task]) };
+    const task = arg(args, '--task');
+    const again = calls.filter((c) => c[0] === side && arg(c, '--task') === task).length > 1;
+    const answers = side === 'candidate' && cand ? cand : caps[side];
+    return { ok: true, trajectories: taskRuns({ [task]: answers[again ? `${task}-again` : task].slice(0, Number(arg(args, '--trials'))) }) };
   };
   const targeted = { number: 9, title: 'a passes', body: '<!-- loop-target: a -->' };
-  const res = await measureSides({ evalOn: evalOn(null), issue: targeted, changedPaths: ['skills/x/x.mjs'], settings });
+  const res = await measureSides({ evalOn: evalOn(null), issue: targeted, changedPaths: ['skills/x/x.mjs'], settings, taskIds: ['a', 'b'] });
   assert.equal(res.measured, true);
-  assert.deepEqual(calls.map((c) => [c[0], c.includes('--task') ? c[c.indexOf('--task') + 1] : 'all', c[c.indexOf('--trials') + 1]]), [
-    ['baseline', 'all', '3'], ['baseline', 'a', '3'], ['candidate', 'all', '3'], ['candidate', 'a', '3'], ['baseline', 'b', '3'], ['candidate', 'b', '3'],
-  ], "the target's extra runs on each side, then b, which looked worse, again on each side");
+  assert.deepEqual(calls.map((c) => [c[0], arg(c, '--task'), arg(c, '--trials'), arg(c, '--max-rollouts')]), [
+    ['baseline', 'a', '6', '18'], ['candidate', 'a', '6', '18'],
+    ['candidate', 'b', '3', '9'], ['baseline', 'b', '3', '9'],
+    ['baseline', 'b', '3', '9'], ['candidate', 'b', '3', '9'],
+  ], 'the target runs 6 times a side; the sides take turns, the first alternating; b, which looked worse, runs again on each side; each cap leaves room for retries');
   const b = res.evidence.perTask.find((t) => t.taskId === 'b');
   assert.deepEqual([b.baseline.n, b.candidate.n, b.candidate.mean], [6, 6, 0.8333]);
   assert.deepEqual(regressionProblems(res.evidence), [], 'one bad run in six is within noise');
 
   calls.length = 0;
-  const still = { ...answers.candidate, main: { a: [1, 1, 1], b: [0, 0, 1] }, b: { b: [0, 0, 0] } };
-  const worse = await measureSides({ evalOn: evalOn(still), issue: { number: 8, title: 't', body: '' }, changedPaths: ['skills/x/x.mjs'], settings });
-  assert.equal(calls.filter((c) => c.includes('--task')).length, 2, 'no target: only the re-runs of b');
+  const still = { a: [1, 1, 1], b: [0, 0, 1], 'b-again': [0, 0, 0] };
+  const worse = await measureSides({ evalOn: evalOn(still), issue: { number: 8, title: 't', body: '' }, changedPaths: ['skills/x/x.mjs'], settings, taskIds: ['a', 'b'] });
+  assert.deepEqual(calls.map((c) => [c[0], arg(c, '--task'), arg(c, '--trials')]), [
+    ['baseline', 'a', '3'], ['candidate', 'a', '3'], ['candidate', 'b', '3'], ['baseline', 'b', '3'], ['baseline', 'b', '3'], ['candidate', 'b', '3'],
+  ], 'no target: every task 3 times a side, then the re-runs of b');
   assert.match(regressionProblems(worse.evidence).join(' | '), /task b got worse: capability 1 -> 0\.1667 \(6 and 6 runs\)/);
+});
+
+test('a measurement that would pass its cap, or whose side cannot be run, measures nothing and says which side', async () => {
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure, maxRollouts: 5 } };
+  const never = async () => { throw new Error('nothing runs over the cap'); };
+  const over = await measureSides({ evalOn: never, issue: { number: 8, title: 't', body: '' }, changedPaths: ['skills/x/x.mjs'], settings, taskIds: ['a', 'b'] });
+  assert.deepEqual([over.measured, over.reason], [false, 'a side needs 6 runs, over measure.maxRollouts (5)']);
+
+  const roomy = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const failing = (bad) => async (side) => (side === bad ? { ok: false, reason: '5 of 6 runs failed on infrastructure' } : { ok: true, trajectories: taskRuns({ a: [1, 1, 1] }) });
+  const base = await measureSides({ evalOn: failing('baseline'), issue: { number: 8, title: 't', body: '' }, changedPaths: [], settings: roomy, taskIds: ['a'] });
+  assert.equal(base.reason, "main's head could not be measured: 5 of 6 runs failed on infrastructure");
+  const cand = await measureSides({ evalOn: failing('candidate'), issue: { number: 8, title: 't', body: '' }, changedPaths: [], settings: roomy, taskIds: ['a'] });
+  assert.equal(cand.reason, 'the change could not be measured: 5 of 6 runs failed on infrastructure');
 });
 
 test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {

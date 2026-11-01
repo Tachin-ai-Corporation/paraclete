@@ -48,8 +48,9 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence, formatEvidenceMarkdown } from '../harness2/evidence.mjs';
 import { appendCycleRecord, cycleRecord, readCycleRecords } from '../harness2/health.mjs';
-import { MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
+import { MODEL_SUITE_VERSION, selectModelTasks } from '../harness2/model-suite.mjs';
 import { pauseState } from '../harness2/pause.mjs';
+import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { STUCK_LABEL, isCurrentBaseline, planIssue } from './planner.mjs';
@@ -280,27 +281,39 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
 
 /**
  * Both sides of a measurement, through `evalOn(side, args)` (side 'baseline' or 'candidate'; args those
- * of dev/harness2 `eval --real-model`): every task `measure.trials` times, a target task's extra runs,
- * then more runs of each task that looks worse, and the evidence. defaultMeasure runs it on two clones.
+ * of dev/harness2 `eval --real-model`): every task `measure.trials` times (a target task
+ * `measure.targetTrials` times), then more runs of each task that looks worse, and the evidence.
+ * defaultMeasure runs it on two clones.
  *
- * @param {object} o  { evalOn, issue, changedPaths, settings, log }
+ * The sides take turns, task by task, the first side alternating: a measurement takes hours, and the
+ * model's latency and quota drift over them, so one side run wholly before the other met different
+ * conditions. Each task's call may run each rollout again on an infrastructure error
+ * (dev/harness2/substrate.mjs ROLLOUT_RETRY), and its cap leaves room for that.
+ *
+ * @param {object} o  { evalOn, issue, changedPaths, settings, taskIds, log }
  * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
  */
-export async function measureSides({ evalOn, issue, changedPaths, settings, log = () => {} }) {
-  const args = ['eval', '--real-model', '--trials', String(settings.measure.trials), '--max-rollouts', String(settings.measure.maxRollouts)];
+export async function measureSides({ evalOn, issue, changedPaths, settings, taskIds = selectModelTasks().map((t) => t.id), log = () => {} }) {
   const target = issueTarget(issue.body);
-  const extra = target ? Math.max(0, (settings.measure.targetTrials || 0) - settings.measure.trials) : 0;
-  const runSide = async (side) => {
-    const res = await evalOn(side, args);
-    if (!res.ok || !extra) return res;
-    const more = await evalOn(side, ['eval', '--real-model', '--task', target, '--trials', String(extra), '--max-rollouts', String(extra)]);
-    if (!more.ok) return { ok: false, reason: `the target task's extra runs: ${more.reason || 'no result'}` };
-    return { ...res, trajectories: [...res.trajectories, ...more.trajectories.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }))] };
-  };
-  const baseline = await runSide('baseline');
-  if (!baseline.ok) return { measured: false, reason: `main's head could not be measured: ${baseline.reason || 'no result'}` };
-  const candidate = await runSide('candidate');
-  if (!candidate.ok) return { measured: false, reason: `the change could not be measured: ${candidate.reason || 'no result'}` };
+  const runsOf = (id) => (id === target ? Math.max(settings.measure.trials, settings.measure.targetTrials || 0) : settings.measure.trials);
+  const planned = taskIds.reduce((n, id) => n + runsOf(id), 0);
+  if (planned > settings.measure.maxRollouts) {
+    return { measured: false, reason: `a side needs ${planned} runs, over measure.maxRollouts (${settings.measure.maxRollouts})` };
+  }
+  const evalTask = (side, ids, trials) => evalOn(side, [
+    'eval', '--real-model', '--task', ids.join(','), '--trials', String(trials), '--max-rollouts', String(trials * ids.length * ROLLOUT_RETRY.attempts),
+  ]);
+  const runs = { baseline: [], candidate: [] };
+  const cannot = (side, why) => (side === 'baseline' ? `main's head could not be measured: ${why}` : `the change could not be measured: ${why}`);
+  for (const [i, id] of taskIds.entries()) {
+    for (const side of i % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline']) {
+      const res = await evalTask(side, [id], runsOf(id));
+      if (!res.ok) return { measured: false, reason: cannot(side, res.reason || 'no result') };
+      runs[side].push(...res.trajectories);
+    }
+  }
+  const baseline = { trajectories: runs.baseline };
+  const candidate = { trajectories: runs.candidate };
   const judged = (b, c) => buildPromotionEvidence({
     candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
     baselineTrajectories: b,
@@ -311,15 +324,14 @@ export async function measureSides({ evalOn, issue, changedPaths, settings, log 
   // A task that looks worse runs more times on both sides before the change is judged on it: one
   // unlucky run in three is no regression.
   const confirm = Math.max(0, (settings.measure.confirmTrials || 0) - settings.measure.trials);
-  const recheck = confirm ? worseTasks(evidence).filter((id) => id !== target || !extra) : [];
+  const recheck = confirm ? worseTasks(evidence).filter((id) => runsOf(id) < settings.measure.confirmTrials) : [];
   if (recheck.length) {
     log(`[INFO] loop: ${recheck.join(', ')} looked worse; running each ${confirm} more time(s) on both sides`);
-    const more = (side) => evalOn(side, ['eval', '--real-model', '--task', recheck.join(','), '--trials', String(confirm), '--max-rollouts', String(confirm * recheck.length)]);
-    const moreBase = await more('baseline');
+    const moreBase = await evalTask('baseline', recheck, confirm);
     if (!moreBase.ok) return { measured: false, reason: `main's head could not be measured again on ${recheck.join(', ')}: ${moreBase.reason || 'no result'}` };
-    const moreCand = await more('candidate');
+    const moreCand = await evalTask('candidate', recheck, confirm);
     if (!moreCand.ok) return { measured: false, reason: `the change could not be measured again on ${recheck.join(', ')}: ${moreCand.reason || 'no result'}` };
-    const later = (runs) => runs.map((t) => ({ ...t, trial: t.trial + settings.measure.trials }));
+    const later = (runs) => runs.map((t) => ({ ...t, trial: t.trial + runsOf(t.taskId) }));
     evidence = judged([...baseline.trajectories, ...later(moreBase.trajectories)], [...candidate.trajectories, ...later(moreCand.trajectories)]);
   }
   return { measured: Boolean(evidence.measured), evidence, reason: evidence.measured ? null : 'some runs were not real-model runs' };
