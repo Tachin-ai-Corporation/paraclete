@@ -149,7 +149,14 @@ count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, n
   own (phase 4 of the plan).
 
 Each lane runs in a checkout of its own: `clearStaleCheckouts` clears every loop checkout of the
-repo it runs in, and two cycles in one repo would clear each other's.
+repo it runs in, and two cycles in one repo would clear each other's. On the lab driver,
+`node dev/loop/timer.mjs --lane <module>` prints how to set a lane up (a clone of the harness
+checkout under `/var/lib/paraclete/lanes/<slug>`, with its remote, its loop settings in `.local/` and
+its installed packages) and the template units that run it (`paraclete-loop-lane@<slug>`): before
+each cycle the unit fast-forwards the lane's clone to main, so the lane runs the loop as it stands on
+main, and a clone that has strayed from main runs nothing. A lane's cycle runs its clone's own
+`dev/loop/cycle.mjs` by its absolute path, which tells it from the global cycle, the one the
+follow-main timer waits for before it moves the harness checkout.
 
 ## The proposer
 

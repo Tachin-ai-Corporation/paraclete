@@ -862,15 +862,18 @@ export async function runCycle({
   const loopPause = loopPauseReason({ repoRoot, repo, execGh });
   if (loopPause) return finish({ action: 'paused', reason: `the loop is paused: ${loopPause}` });
 
-  // A lane is a module of dev/loop/modules.json with a lane: it takes only the issues that name it.
+  // A lane is a module of dev/loop/modules.json with a lane: it takes only the issues that name it. It
+  // is named by its id or by its slug (a systemd instance name: organ-cerebellum).
   if (lane) {
     let known = null;
     try {
-      known = loadModules({ files: execGit(['ls-files'], repoRoot).split(/\r?\n/).filter(Boolean) }).find((m) => m.id === lane) || null;
+      known = loadModules({ files: execGit(['ls-files'], repoRoot).split(/\r?\n/).filter(Boolean) })
+        .find((m) => m.id === lane || laneSlug(m.id) === lane) || null;
     } catch (err) {
       log(`[WARN] could not read the modules: ${err.message}`);
     }
     if (!known?.lane) return finish({ action: 'no-work', reason: `${lane} is not a module with a lane in dev/loop/modules.json` });
+    lane = known.id;
   }
 
   // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
