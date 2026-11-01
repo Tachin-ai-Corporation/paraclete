@@ -40,13 +40,16 @@ import {
   parseFollowMainOutput,
   parseIntervalMinutes,
 } from './lab-updater.mjs';
-import { usageFromLog } from './model-runs.mjs';
+import { loadSideProduct, usageFromLog } from './model-runs.mjs';
 import { isModelTask } from './model-suite.mjs';
 import { DEFAULT_JUDGE_COMMITTEE, buildJudgePacket, evaluateWithFrontierCommittee } from './judge.mjs';
 import { applyProposal, buildProposalPrompt, createVertexProposalGenerator, parseProposal } from './proposer.mjs';
 import { runTier1Evaluation, selectBenchmarkTasks } from './substrate.mjs';
 import { DEFAULT_ROLES, rolesForStage } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
+
+/** The product code a scripted rollout runs: the harness's own, since every side gets the same answers. */
+const HARNESS_PRODUCT = Object.freeze({ buildBrain, COLLECTIONS, SUBCOLLECTIONS, createClient });
 
 function defaultExecGit(args, cwd) {
   return execFileSync('git', args, {
@@ -416,9 +419,9 @@ export async function startInProcessFixtureGateway({
  * gateway, which reads its own installed organ prompts, not the candidate's.
  *
  * With `opts.realModel` (model-runs.mjs createModelRunContext) every organ answers through the real
- * model: the product's gateway starts for this rollout from the side's own checkout (the baseline's,
- * or the one `opts.filePatches` makes), the brain reads that checkout and calls the real utility model,
- * and the clock is the wall clock. A model-suite task (model-suite.mjs) is seeded into the motor's
+ * model: the side's own checkout (the baseline's, or the one `opts.filePatches` makes) supplies both
+ * the code and the files, so its gateway and its brain run (model-runs.mjs loadSideProduct), read that
+ * checkout and call the real utility model, and the clock is the wall clock. A model-suite task (model-suite.mjs) is seeded into the motor's
  * workspace and checked there afterwards, and the share of its checks that passed is the run's
  * capability (`checkScore`). The result carries `measured: true`, the only runs promotion evidence
  * accepts (evidence.mjs).
@@ -487,7 +490,11 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
   let timedOut = false;
 
   try {
-    const db = createClient({
+    // A real-model rollout runs the side's own product code; a scripted one, which measures nothing,
+    // runs the harness's.
+    const product = realModel ? await (realModel.product || loadSideProduct)(surfaceRoot) : HARNESS_PRODUCT;
+    const { COLLECTIONS, SUBCOLLECTIONS } = product;
+    const db = product.createClient({
       projectId,
       firestoreHost,
       getAccessToken: async () => 'test-token',
@@ -503,6 +510,7 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
         db,
         project: realModel.access.project,
         accessToken: await realModel.access.getAccessToken(),
+        product,
         // The agent's own commands read this rollout's instance record (its Firestore, its data root),
         // never the instance the harness runs on.
         env: { ...process.env, PARACLETE_INSTANCE: writeRolloutInstance({ workspaceDir, surfaceRoot, role, firestoreHost, gcsOrigin }) },
@@ -584,7 +592,7 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
     // A rollout has no artifact manager, so no mission tree: its task messages must not name one, or a
     // motor that follows them writes its work there, and the task is seeded into, and checked in, the
     // motor's working directory.
-    const brain = buildBrain(runtime, {
+    const brain = product.buildBrain(runtime, {
       ...(vertexText ? { vertexText } : {}),
       gatewayToken: gateway.token,
       artifacts: null,

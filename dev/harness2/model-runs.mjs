@@ -1,7 +1,8 @@
 // dev/harness2/model-runs.mjs: what a real-model run (`--real-model`) needs to measure a harness change.
 // In such a run every organ's turn goes to the real model, through the product's own gateway, started
-// in-process from one side of the comparison: the baseline, or a candidate. That way the prompts,
-// playbooks and contracts the model sees are that side's, and a change shows in the result. The
+// in-process from one side of the comparison: the baseline, or a candidate. That way the code, prompts,
+// playbooks and contracts the model's turns pass through are that side's, and a change shows in the
+// result. The
 // scripted in-process gateway (live-runner.mjs) gives every side the same answers, and a `--gateway-url`
 // gateway reads its own installed prompts, so neither measures a change (evidence.mjs refuses both).
 //
@@ -13,8 +14,11 @@
 //   lacks (tests, the harness and its benchmark, history) is within its agent's reach; `prepareRole`
 //   gives a root the command launchers of the role a rollout runs (install/vm/launchers.mjs, as an
 //   install does);
-// - startModelGateway: the gateway (agent/services/gateway/main.mjs buildGateway) for one rollout,
-//   on loopback, against the side's checkout and the rollout's data directory;
+// - loadSideProduct: the product code a rollout runs (the brain, the gateway and what they import),
+//   imported from the side's root, never from the harness's checkout, so a change to that code is
+//   measured too, not only one to the files it reads;
+// - startModelGateway: the side's gateway (its agent/services/gateway/main.mjs buildGateway) for one
+//   rollout, on loopback, against the side's checkout and the rollout's data directory;
 // - usageFromLog: the brain's per-turn token telemetry line, as a usage record;
 // - createSpendMeter and estimateRollouts: the cap on one run's model rollouts and tokens;
 // - createModelRunContext: all of the above for one run, shared by its rollouts.
@@ -27,8 +31,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createModelClients } from '../../agent/gateway/model-clients.mjs';
-import { buildGateway } from '../../agent/services/gateway/main.mjs';
+import { pathToFileURL } from 'node:url';
 import { dataPaths, loadInstance } from '../../config/instance.mjs';
 import { writeLaunchers } from '../../install/vm/launchers.mjs';
 import { resolveVertexAccessToken } from './judge.mjs';
@@ -216,7 +219,47 @@ export function createSideRoots({ repoRoot, execGit = defaultExecGit, tmpRoot = 
 }
 
 /**
- * The product's gateway for one rollout: built by the gateway service's own buildGateway against the
+ * The product modules a rollout runs, by their path in an install root, and what each must export.
+ * These exports are the harness's port into the product: a side that renames one cannot be measured,
+ * and its run fails saying which.
+ */
+export const SIDE_PRODUCT_MODULES = Object.freeze([
+  Object.freeze({ path: 'agent/services/brain/main.mjs', exports: Object.freeze(['buildBrain']) }),
+  Object.freeze({ path: 'agent/services/gateway/main.mjs', exports: Object.freeze(['buildGateway']) }),
+  Object.freeze({ path: 'agent/gateway/model-clients.mjs', exports: Object.freeze(['createModelClients']) }),
+  Object.freeze({ path: 'agent/storage/collections.mjs', exports: Object.freeze(['COLLECTIONS', 'SUBCOLLECTIONS']) }),
+  Object.freeze({ path: 'agent/storage/firestore.mjs', exports: Object.freeze(['createClient']) }),
+]);
+
+/**
+ * The product code one side runs, imported from that side's root. Both sides of a measurement used to
+ * run the harness's own brain and gateway, reading only the side's prompts, skills, roles and
+ * contracts, so a change to the code itself measured as no change. Each root is a module graph of its
+ * own (an import is keyed by its file's URL), so the two sides never share product modules; packages
+ * under the linked agent/node_modules are shared, as an install shares them.
+ *
+ * @param {string} sideRoot
+ * @param {object} [o]
+ * @param {Function} [o.importModule]  (url) => module; a fake in tests
+ * @returns {Promise<{ root: string, buildBrain: Function, buildGateway: Function, createModelClients: Function, COLLECTIONS: object, SUBCOLLECTIONS: object, createClient: Function }>}
+ */
+export async function loadSideProduct(sideRoot, { importModule = (url) => import(url) } = {}) {
+  if (!sideRoot) throw new Error('loadSideProduct: sideRoot is required');
+  const product = { root: sideRoot };
+  for (const { path: rel, exports } of SIDE_PRODUCT_MODULES) {
+    const file = path.join(sideRoot, rel);
+    if (!fs.existsSync(file)) throw new Error(`the side at ${sideRoot} has no ${rel}`);
+    const mod = await importModule(pathToFileURL(file).href);
+    for (const name of exports) {
+      if (mod[name] === undefined) throw new Error(`the side's ${rel} does not export ${name}`);
+      product[name] = mod[name];
+    }
+  }
+  return product;
+}
+
+/**
+ * The side's gateway for one rollout: built by that side's own gateway service, buildGateway, against the
  * side's checkout (its prompts, skills and role) and the rollout's data directory, with a fresh token,
  * listening on a free loopback port. Claude stays off: the rollout's Firestore has no admin settings.
  *
@@ -229,13 +272,16 @@ export function createSideRoots({ repoRoot, execGit = defaultExecGit, tmpRoot = 
  * @param {string} o.project
  * @param {string} [o.accessToken]  a fixed token for the model clients (off the VM)
  * @param {object} [o.env]          the environment the agent's commands start from
- * @param {Function} [o.createClients]
+ * @param {object} [o.product]      the side's product code (loadSideProduct); default loaded from sideRoot
+ * @param {Function} [o.createClients]  default the side's createModelClients
  * @param {Function} [o.log]
  * @returns {Promise<{ url: string, token: string, stop: () => Promise<void> }>}
  */
 export async function startModelGateway({
-  sideRoot, role, contracts, dataRoot, db, project, accessToken, env, createClients = createModelClients, log = () => {},
+  sideRoot, role, contracts, dataRoot, db, project, accessToken, env, product, createClients, log = () => {},
 }) {
+  const code = product || await loadSideProduct(sideRoot);
+  const clients = createClients || code.createModelClients;
   const token = randomBytes(24).toString('hex');
   const tokenFile = path.join(dataRoot, 'gateway-token');
   fs.mkdirSync(dataRoot, { recursive: true });
@@ -269,8 +315,8 @@ export async function startModelGateway({
       data: dataPaths(instance),
     },
   };
-  const gateway = await buildGateway(runtime, {
-    createClients: (o) => createClients({ ...o, ...(accessToken ? { accessToken } : {}) }),
+  const gateway = await code.buildGateway(runtime, {
+    createClients: (o) => clients({ ...o, ...(accessToken ? { accessToken } : {}) }),
     ...(env ? { env } : {}),
   });
   const { port } = await gateway.listen({ port: 0, host: '127.0.0.1' });
@@ -351,24 +397,31 @@ export const DEFAULT_ROLLOUT_TIMEOUT_MS = 20 * 60 * 1000;
 
 /**
  * Everything one real-model run shares across its rollouts: the model access, the side checkouts,
- * the spend meter, the gateway starter and the rollout timeout. `cleanup` removes the checkouts; the
- * run's owner (cli.mjs) calls it once, when the run ends.
+ * each side's product code (loaded once per side root), the spend meter, the gateway starter and the
+ * rollout timeout. `cleanup` removes the checkouts; the run's owner (cli.mjs) calls it once, when the
+ * run ends.
  *
  * @param {object} o
  * @param {string} o.repoRoot
  * @param {object} [o.access]         modelAccess()'s result; default modelAccess()
  * @param {object} [o.limits]         DEFAULT_SPEND_LIMITS, or others
  * @param {object} [o.sides]          createSideRoots()'s result; default one for repoRoot
+ * @param {Function} [o.loadProduct]  loadSideProduct, or a fake in tests
  * @param {Function} [o.startGateway] startModelGateway, or a fake in tests
  * @param {number} [o.timeoutMs]
- * @returns {{ access: object, sides: object, meter: object, startGateway: Function, timeoutMs: number, cleanup: () => void }}
+ * @returns {{ access: object, sides: object, product: (root: string) => Promise<object>, meter: object, startGateway: Function, timeoutMs: number, cleanup: () => void }}
  */
 export function createModelRunContext({
-  repoRoot, access, limits = {}, sides, startGateway = startModelGateway, timeoutMs = DEFAULT_ROLLOUT_TIMEOUT_MS,
+  repoRoot, access, limits = {}, sides, loadProduct = loadSideProduct, startGateway = startModelGateway, timeoutMs = DEFAULT_ROLLOUT_TIMEOUT_MS,
 } = {}) {
+  const products = new Map();
   const ctx = {
     access: access || modelAccess(),
     sides: sides || createSideRoots({ repoRoot }),
+    product: (root) => {
+      if (!products.has(root)) products.set(root, loadProduct(root));
+      return products.get(root);
+    },
     meter: createSpendMeter(limits),
     startGateway,
     timeoutMs,
