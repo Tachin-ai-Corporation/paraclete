@@ -121,6 +121,7 @@ function List({ data, isAdmin, list }) {
             <tbody>
               {rows.map((r) => {
                 const from = origin(r);
+                const steps = Array.isArray(r.steps) ? r.steps : [];
                 return (
                   <Fragment key={r.id}>
                     <tr>
@@ -128,7 +129,14 @@ function List({ data, isAdmin, list }) {
                         <div className={styles.name}>{r.name}</div>
                         <code className={styles.id}>{r.id}</code>
                         {r.instruction && <p className={styles.preview}>{r.instruction}</p>}
-                        {r.has_process && (
+                        {steps.length > 0 ? (
+                          <details className={styles.steps}>
+                            <summary>{`Follows a process of ${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`}</summary>
+                            <ol className={styles.stepList}>
+                              {steps.map((step, i) => <li key={i}>{step}</li>)}
+                            </ol>
+                          </details>
+                        ) : r.has_process && (
                           <p className="muted">{r.process_steps > 0 ? `Follows a process of ${r.process_steps} steps` : 'Follows a playbook'}</p>
                         )}
                       </td>

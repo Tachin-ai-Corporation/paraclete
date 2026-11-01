@@ -15,8 +15,6 @@ import { cronNextFire } from '../../work/scheduler.mjs';
 import { ID_PATTERN } from '../../work/work-ids.mjs';
 import { StoreConflict } from '../../storage/firestore.mjs';
 
-const INSTRUCTION_PREVIEW_CHARS = 200;
-
 /**
  * The installed role packages' responsibilities, generic first, as collectDefaults() takes them. A
  * role without a responsibilities.json has none; an unreadable one is logged and skipped, so one bad
@@ -177,7 +175,7 @@ async function effectiveResponsibilities({ db, contracts, paths, instance, readT
 }
 
 function summarize(r, at) {
-  const process = Array.isArray(r.context?.process) ? r.context.process : [];
+  const steps = Array.isArray(r.context?.process) ? r.context.process : [];
   return {
     id: r.id || 'unknown',
     name: r.name || r.id || 'Unnamed',
@@ -186,9 +184,10 @@ function summarize(r, at) {
     enabled: r.enabled !== false,
     next_fire: r.enabled !== false && r.schedule ? nextFire(r.schedule, r.timezone || 'UTC', at) : null,
     min_spacing_minutes: r.min_spacing_minutes || 0,
-    instruction: (r.instruction || '').substring(0, INSTRUCTION_PREVIEW_CHARS),
-    has_process: process.length > 0 || Boolean(r.processRef),
-    process_steps: process.length,
+    instruction: r.instruction || '',
+    has_process: steps.length > 0 || Boolean(r.processRef),
+    process_steps: steps.length,
+    steps,
     triggerable: r.triggerable === true,
     locked: r.locked === true,
     source: describeProvenance(r),
