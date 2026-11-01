@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "organ:cerebellum",
+      "kind": "organ",
+      "lane": true,
+      "job": "Verifies each checkpoint and the final answer, and owns the verdict",
+      "owns": ["prompts/cerebellum.md", "agent/work/checkpoint-verify.mjs", "agent/work/verdict.mjs", "skills/verification/**"]
+    },
+    {
+      "id": "organ:temporal-memory",
+      "kind": "organ",
+      "lane": true,
+      "job": "Builds the recall packet a mission starts from, and consolidates memory",
+      "owns": [
+        "prompts/temporal-memory.md",
+        "agent/services/brain/memory.mjs",
+        "agent/context/work-recall.mjs",
+        "agent/context/core-memory-rank.mjs",
+        "agent/context/context-maintenance.mjs",
+        "agent/work/memory-scope.mjs",
+        "agent/cli/core-memory-read.mjs",
+        "agent/cli/core-memory-write.mjs",
+        "agent/cli/core-memory-retire.mjs",
+        "agent/cli/update-deep-truths.mjs",
+        "agent/cli/session-summary.mjs",
+        "skills/memory-recall/**",
+        "skills/memory-consolidate/**"
+      ]
+    },
+    {
+      "id": "organ:prefrontal",
+      "kind": "organ",
+      "lane": true,
+      "job": "Analyzes the work into a Brief and structures checkpoint plans",
+      "owns": ["prompts/prefrontal.md", "agent/work/plan-utils.mjs", "agent/work/plan-lint.mjs", "skills/plan-structuring/**"]
+    },
+    {
+      "id": "organ:motor",
+      "kind": "organ",
+      "lane": true,
+      "job": "Runs tasks with tools",
+      "owns": ["prompts/motor.md", "agent/work/task-outcome.mjs", "agent/work/agent-output.mjs"]
+    },
+    {
+      "id": "organ:cortex",
+      "kind": "organ",
+      "lane": true,
+      "job": "Decides each next step: classifies what comes in, chooses each move and writes the answer",
+      "owns": [
+        "prompts/cortex.md",
+        "prompts/identity.md",
+        "agent/services/brain/actions/index.mjs",
+        "agent/services/brain/actions/blocked.mjs",
+        "agent/services/brain/actions/needs-input.mjs",
+        "agent/services/brain/actions/status-update.mjs",
+        "agent/services/brain/actions/synthesize-with-failure.mjs",
+        "agent/services/brain/actions/wait.mjs",
+        "agent/services/brain/actions/trigger-responsibility.mjs",
+        "agent/services/brain/intake.mjs",
+        "agent/services/brain/intake-handlers.mjs",
+        "agent/services/brain/mission-context.mjs",
+        "agent/services/brain/waits.mjs",
+        "agent/services/brain/approval-replies.mjs"
+      ]
+    },
+    {
+      "id": "organ:temporal-research",
+      "kind": "organ",
+      "lane": true,
+      "job": "Researches outside sources",
+      "owns": ["prompts/temporal-research.md", "skills/web-search/**"]
+    },
+    {
+      "id": "platform:role-grants",
+      "kind": "platform",
+      "lane": false,
+      "job": "What each role is granted and installs: person-owned, and the referee's",
+      "owns": ["roles/*/role.json"]
+    },
+    {
+      "id": "role:{name}",
+      "kind": "role",
+      "lane": true,
+      "each": "roles/*/",
+      "job": "One role package: its organ prompt appends, skills, playbooks, responsibilities and first memory",
+      "owns": ["roles/{name}/**"]
+    },
+    {
+      "id": "skill:{name}",
+      "kind": "skill",
+      "lane": true,
+      "each": "skills/*/",
+      "job": "One skill package: its procedure, manifest and commands",
+      "owns": ["skills/{name}/**"]
+    },
+    {
+      "id": "platform:brain-spine",
+      "kind": "platform",
+      "lane": false,
+      "job": "The deterministic spine every organ passes through: the mission loop, the executor, prompt assembly, the gateway's turns and tools, until each organ's part of it moves to its own module",
+      "owns": ["agent/services/brain/**", "agent/work/**", "agent/context/**", "agent/gateway/**", "agent/providers/vertex-text.mjs", "agent/providers/json-repair.mjs", "agent/services/gateway/**"]
+    },
+    {
+      "id": "platform:services",
+      "kind": "platform",
+      "lane": false,
+      "job": "The control, ears and mouth services",
+      "owns": ["agent/services/control/**", "agent/services/ears/**", "agent/services/mouth/**"]
+    },
+    {
+      "id": "platform:agent-foundation",
+      "kind": "platform",
+      "lane": false,
+      "job": "Storage, auth, release, providers, the file toolchain, the shared commands and the service runtime",
+      "owns": ["agent/**"]
+    },
+    {
+      "id": "platform:content-index",
+      "kind": "platform",
+      "lane": false,
+      "job": "The indexes of the prompts, roles and skills directories",
+      "owns": ["prompts/**", "roles/*", "skills/*"]
+    },
+    {
+      "id": "platform:config",
+      "kind": "platform",
+      "lane": false,
+      "job": "The shared contracts and instance configuration",
+      "owns": ["config/**"]
+    },
+    {
+      "id": "platform:install",
+      "kind": "platform",
+      "lane": false,
+      "job": "The installer, the VM bootstrap, the manifest and the migrations",
+      "owns": ["install/**", "migrations/**"]
+    },
+    {
+      "id": "platform:dashboard",
+      "kind": "platform",
+      "lane": false,
+      "job": "The web dashboard",
+      "owns": ["dashboard/**"]
+    },
+    {
+      "id": "repo:rules",
+      "kind": "repo",
+      "lane": false,
+      "job": "Whole-repo tests and the test fakes and runner every module shares",
+      "owns": ["tests/repo/**", "tests/content/**", "tests/fakes/**", "tests/integration/**", "tests/*"]
+    },
+    {
+      "id": "repo:loop",
+      "kind": "repo",
+      "lane": false,
+      "job": "The self-improvement loop and the harness it measures with: the referee",
+      "owns": ["dev/loop/**", "dev/harness2/**"]
+    },
+    {
+      "id": "repo:dev-tools",
+      "kind": "repo",
+      "lane": false,
+      "job": "Tooling for working on the repo",
+      "owns": ["dev/**"]
+    },
+    {
+      "id": "repo:docs",
+      "kind": "repo",
+      "lane": false,
+      "job": "The build plan, the glossary, the product rules and the guides",
+      "owns": ["docs/**"]
+    },
+    {
+      "id": "repo:ci",
+      "kind": "repo",
+      "lane": false,
+      "job": "Continuous integration and the merge workflows",
+      "owns": [".github/**"]
+    },
+    {
+      "id": "repo:root",
+      "kind": "repo",
+      "lane": false,
+      "job": "The repo's root files: the guidance files, the licence and the package manifest",
+      "owns": ["*"]
+    }
+  ]
+}

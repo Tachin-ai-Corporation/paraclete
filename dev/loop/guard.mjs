@@ -30,6 +30,7 @@ import { parseEvidenceBlock } from '../harness2/evidence.mjs';
 import { MEASURED_BASE_MARKER, issueTarget, measuredBase, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
 import { coverageProblems, regressionProblems } from './cycle.mjs';
+import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted, revertGuard } from './sentinel.mjs';
 
@@ -98,7 +99,7 @@ function changedSince(getJson, repo, base) {
  * @param {string[]|null} [p.mainChanged]  the paths main changed since the commit the evidence was
  *                                         measured against; null when unknown
  */
-export function loopGuard({ pr, files, issue, reverted = null, mainChanged = null }) {
+export function loopGuard({ pr, files, issue, reverted = null, mainChanged = null, repoFiles = null }) {
   if (!isLoopBranch(pr?.headRefName) || pr?.isCrossRepository) return { loop: false, ok: true, problems: [], issue: null };
   if (isRevertBranch(pr.headRefName)) {
     const { ok, problems } = revertGuard({ pr, files, reverted });
@@ -118,6 +119,11 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
   problems.push(...changes.flatMap((c) => [pathRefusal(c.path, c.status), c.oldPath ? pathRefusal(c.oldPath, 'D') : null]).filter(Boolean));
   const untested = testRefusal(changes);
   if (untested) problems.push(untested);
+  const moduleId = issue && issue.number === number ? issueModule(issue.body) : null;
+  if (moduleId) {
+    if (!Array.isArray(repoFiles)) problems.push(`its issue names the module ${moduleId}, and the repo's files could not be read`);
+    else problems.push(...moduleProblems(changes, moduleId, loadModules({ files: [...repoFiles, ...changes.map((c) => c.path)] })));
+  }
 
   const block = parseReviewBlock(pr.body);
   if (!block) {
@@ -143,10 +149,14 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
   const target = issue && issue.number === number ? issueTarget(issue.body) : null;
   if (target && !behaviour) problems.push(`its issue targets the task ${target}, and it changes nothing the agent reads`);
   if (behaviour) {
+    // What the change reaches, by the product's loading rules (modules.mjs): a role's files reach only
+    // that role's tasks, so its evidence covers those, and only a change on main that reaches them
+    // makes it stale.
+    const tasks = impactedTasks(changes.flatMap((c) => [c.path, c.oldPath].filter(Boolean)));
     const evidence = parseEvidenceBlock(pr.body);
     if (!evidence) problems.push("it changes the agent's behaviour and carries no evidence block (```json paraclete-h2-evidence)");
     else {
-      problems.push(...coverageProblems(evidence));
+      problems.push(...coverageProblems(evidence, tasks));
       problems.push(...regressionProblems(evidence));
       const measured = new Set((evidence.touchedPaths || []).map((p) => String(p).replace(/\\/g, '/')));
       const unmeasured = changes.map((c) => c.path).filter((p) => !measured.has(p));
@@ -157,7 +167,8 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
       else if (!Array.isArray(mainChanged)) problems.push(`what main changed since ${base.slice(0, 12)}, the commit it was measured against, could not be read`);
       else {
         const moved = mainChanged.filter((p) => isBehaviourPath(p));
-        if (moved.length) {
+        const reached = new Set(impactedTasks(moved));
+        if (tasks.some((id) => reached.has(id))) {
           problems.push(`it was measured against ${base.slice(0, 12)}, and what the agent reads changed on main since (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ', ...' : ''}): it must be measured again`);
         }
       }
@@ -203,7 +214,22 @@ export async function readLoopPullRequest(execGh, number, repo) {
   }
   const base = measuredBase(pr.body);
   const mainChanged = base ? changedSince((p) => JSON.parse(execGh(['api', '-H', 'Accept: application/vnd.github+json', p])), repo, base) : null;
-  return { pr, files, issue, reverted: null, mainChanged };
+  return { pr, files, issue, reverted: null, mainChanged, repoFiles: trackedFiles() };
+}
+
+/**
+ * The files the repo tracks in the checkout the guard runs in (main's, in CI), which the module rule
+ * reads; null when git cannot list them.
+ *
+ * @param {Function} [execGit]  (args) => stdout
+ * @returns {string[]|null}
+ */
+export function trackedFiles(execGit = (args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })) {
+  try {
+    return execGit(['ls-files']).split('\n').map((l) => l.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
 }
 
 function parseArgs(argv) {
