@@ -32,8 +32,11 @@ export const LOOP_DEFAULTS = Object.freeze({
   testTimeoutMinutes: 40,
   /** A behaviour change is measured on both sides with this many runs of every task, within this cap;
    * an issue planned from a failing task has its target task run `targetTrials` times a side, and a
-   * task that looks worse is run `confirmTrials` times a side before the change is judged on it. */
-  measure: Object.freeze({ trials: 3, targetTrials: 6, confirmTrials: 6, maxRollouts: 120 }),
+   * task that looks worse is run `confirmTrials` times a side before the change is judged on it. A
+   * change in an organ's lane is measured on its organ's bench instead (cycle.mjs measureBench):
+   * every item `benchTrials` times a side, and a guard sample of `guardTasks` model-suite tasks the
+   * change reaches, `guardTrials` times a side. */
+  measure: Object.freeze({ trials: 3, targetTrials: 6, confirmTrials: 6, maxRollouts: 120, benchTrials: 3, guardTasks: 3, guardTrials: 1 }),
   /** The planner (planner.mjs) opens an issue only while fewer loop issues than this are open; an
    * answer refused by its checks is asked for again this many times, with the problems named. */
   planner: Object.freeze({ maxOpen: 2, retries: 1, wallMinutes: 15, maxTurns: 60, maxTokens: 2_000_000 }),

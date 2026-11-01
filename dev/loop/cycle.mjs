@@ -49,6 +49,7 @@ import { pathToFileURL } from 'node:url';
 import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence, formatEvidenceMarkdown } from '../harness2/evidence.mjs';
 import { appendCycleRecord, cycleRecord, readCycleRecords } from '../harness2/health.mjs';
 import { MODEL_SUITE_VERSION, selectModelTasks } from '../harness2/model-suite.mjs';
+import { BENCHES, BENCH_VERSION, selectBenchItems } from '../harness2/bench.mjs';
 import { pauseState } from '../harness2/pause.mjs';
 import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
@@ -134,17 +135,41 @@ const standardError = (b, c) => Math.sqrt((b.sd ?? 0) ** 2 / b.n + (c.sd ?? 0) *
  * @param {string[]} [taskIds]    the tasks it must cover; default every active model-suite task
  * @returns {string[]}
  */
-export function coverageProblems(evidence, taskIds = selectModelTasks().map((t) => t.id)) {
+export function coverageProblems(evidence, taskIds = selectModelTasks().map((t) => t.id), suite = { name: 'model', version: MODEL_SUITE_VERSION }) {
   if (!evidence) return ['there is no evidence'];
   const problems = [];
-  if (evidence.suite?.name !== 'model' || evidence.suite?.version !== MODEL_SUITE_VERSION) {
+  if (evidence.suite?.name !== suite.name || evidence.suite?.version !== suite.version) {
     const was = evidence.suite ? `${evidence.suite.name} v${evidence.suite.version}` : 'no suite';
-    problems.push(`its evidence was measured on ${was}, not the model suite v${MODEL_SUITE_VERSION}`);
+    problems.push(`its evidence was measured on ${was}, not ${suite.name === 'model' ? 'the model suite' : suite.name} v${suite.version}`);
   }
   const ran = new Map((evidence.perTask || []).map((t) => [t.taskId, t]));
   const missing = taskIds.filter((id) => !(ran.get(id)?.baseline?.n > 0 && ran.get(id)?.candidate?.n > 0));
   if (missing.length) problems.push(`its evidence has no runs on both sides of ${missing.join(', ')}`);
   return problems;
+}
+
+/**
+ * Why a measurement on an organ's bench (measureBench) does not cover what it must: every item of
+ * the bench, on its current version, and the guard tasks it names, on the model suite's. Pure.
+ *
+ * @param {object|null} evidence
+ * @param {string} organ
+ * @returns {string[]}
+ */
+export function benchCoverageProblems(evidence, organ) {
+  const guard = evidence?.suite?.guard || null;
+  const problems = coverageProblems(evidence, [...selectBenchItems({ organ }).map((i) => i.id), ...(guard?.tasks || [])],
+    { name: `bench:${organ}`, version: BENCH_VERSION });
+  if (evidence && (guard?.name !== 'model' || guard?.version !== MODEL_SUITE_VERSION)) {
+    problems.push(`its guard sample was not measured on the model suite v${MODEL_SUITE_VERSION}`);
+  }
+  return problems;
+}
+
+/** The organ a lane's module is, when that organ has a bench: `organ:cerebellum` is cerebellum. */
+export function benchOrgan(lane) {
+  const organ = /^organ:(.+)$/.exec(String(lane || ''))?.[1] || null;
+  return organ && BENCHES[organ] ? organ : null;
 }
 
 /**
@@ -163,7 +188,14 @@ export function regressionProblems(evidence, rules = DEFAULT_EVIDENCE_RULES) {
   if (!evidence) return ['there is no measurement'];
   const problems = [];
   if (!evidence.measured) problems.push('some runs were not real-model runs of their own side');
-  const trials = Math.min(evidence.trials?.baseline ?? 0, evidence.trials?.candidate ?? 0);
+  // A bench measurement's guard tasks (measureBench) run once, unless they look worse, when they run
+  // until they have confirmTrials: the minimum counts the bench's items, and a guard task's drop is
+  // judged on its runs below like any task's.
+  const guard = new Set(evidence.suite?.guard?.tasks || []);
+  const counted = (evidence.perTask || []).filter((t) => !guard.has(t.taskId));
+  const trials = guard.size
+    ? (counted.length ? Math.min(...counted.map((t) => Math.min(t.baseline?.n ?? 0, t.candidate?.n ?? 0))) : 0)
+    : Math.min(evidence.trials?.baseline ?? 0, evidence.trials?.candidate ?? 0);
   if (trials < r.minTrials) problems.push(`a task ran only ${trials} time(s) on one side; ${r.minTrials} are needed`);
   for (const t of evidence.perTask || []) {
     if (!t.baseline?.n || !t.candidate?.n) continue;
@@ -403,13 +435,84 @@ export async function measureSides({ evalOn, issue, changedPaths, settings, task
 }
 
 /**
+ * The measurement of a change in an organ's lane, on that organ's bench (dev/harness2/bench.mjs):
+ * every item `measure.benchTrials` times a side (a target item `measure.targetTrials`), the sides
+ * taking turns item by item; then a guard sample of the model suite, `measure.guardTasks` of the tasks
+ * the change reaches (where the sample starts turns with the issue), `measure.guardTrials` times a
+ * side, so a change that makes the organ better at its own job but breaks whole missions is caught;
+ * then more runs of whatever looks worse, as measureSides does. A bench item is an organ turn or two,
+ * so this takes minutes where the whole suite takes hours. The evidence names the bench and the guard
+ * tasks (`suite.guard`), which the cycle and the Loop guard check it covers (benchCoverageProblems).
+ *
+ * @param {object} o  { evalOn, issue, organ, changedPaths, settings, log }
+ * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
+ */
+export async function measureBench({ evalOn, issue, organ, changedPaths, settings, log = () => {} }) {
+  const m = settings.measure;
+  const items = selectBenchItems({ organ }).map((i) => i.id);
+  if (!items.length) return { measured: false, reason: `there is no bench for ${organ}` };
+  const reached = impactedTasks(changedPaths);
+  const start = reached.length ? issue.number % reached.length : 0;
+  const guard = [...reached.slice(start), ...reached.slice(0, start)].slice(0, m.guardTasks);
+  const target = issueTarget(issue.body);
+  const isItem = new Set(items);
+  const base = (id) => (isItem.has(id) ? m.benchTrials : m.guardTrials);
+  const trialsOf = (id) => (id === target ? Math.max(base(id), m.targetTrials) : base(id));
+  const argsFor = (id, trials) => {
+    const cap = String(trials * ROLLOUT_RETRY.attempts);
+    return isItem.has(id)
+      ? ['bench', '--real-model', '--organ', organ, '--item', id, '--trials', String(trials), '--max-rollouts', cap]
+      : ['eval', '--real-model', '--task', id, '--trials', String(trials), '--max-rollouts', cap];
+  };
+  const cannot = (side, why) => (side === 'baseline' ? `main's head could not be measured: ${why}` : `the change could not be measured: ${why}`);
+  const ids = [...items, ...guard];
+  const planned = ids.reduce((n, id) => n + trialsOf(id), 0);
+  const runs = { baseline: [], candidate: [] };
+  const skipped = { baseline: [], candidate: [] };
+  for (const [i, id] of ids.entries()) {
+    for (const side of i % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline']) {
+      const res = await evalOn(side, argsFor(id, trialsOf(id)));
+      if (!res.ok && !res.incomplete) return { measured: false, reason: cannot(side, res.reason || 'no result') };
+      runs[side].push(...(res.trajectories || []));
+      skipped[side].push(...(res.notEvaluated || []));
+    }
+  }
+  for (const side of ['baseline', 'candidate']) {
+    if (skipped[side].length > planned * ROLLOUT_RETRY.maxNotEvaluatedShare) {
+      return { measured: false, reason: cannot(side, `${skipped[side].length} of ${planned} runs failed on infrastructure and were not evaluated: ${skipped[side][0].reason}`) };
+    }
+  }
+  const suite = { name: `bench:${organ}`, version: BENCH_VERSION, guard: { name: 'model', version: MODEL_SUITE_VERSION, tasks: guard } };
+  const judged = (b, c) => buildPromotionEvidence({
+    candidate: { id: `loop-${issue.number}`, lens: 'LOOP', touchedPaths: changedPaths, proposal: { source: 'coding-agent', hypothesis: issue.title } },
+    baselineTrajectories: b,
+    candidateTrajectories: c,
+    suite,
+  });
+  let evidence = judged(runs.baseline, runs.candidate);
+  const recheck = worseTasks(evidence).filter((id) => trialsOf(id) < m.confirmTrials);
+  if (recheck.length) {
+    log(`[INFO] loop: ${recheck.join(', ')} looked worse; running each again until it has ${m.confirmTrials} runs on both sides`);
+    for (const id of recheck) {
+      for (const side of ['baseline', 'candidate']) {
+        const res = await evalOn(side, argsFor(id, m.confirmTrials - trialsOf(id)));
+        if (!res.ok) return { measured: false, reason: `${cannot(side, res.reason || 'no result')} (again, on ${id})` };
+        runs[side].push(...res.trajectories.map((t) => ({ ...t, trial: t.trial + trialsOf(id) })));
+      }
+    }
+    evidence = judged(runs.baseline, runs.candidate);
+  }
+  return { measured: Boolean(evidence.measured), evidence, reason: evidence.measured ? null : 'some runs were not real-model runs' };
+}
+
+/**
  * The measurement of a behaviour change: the model suite run on main's head and on the change, with
  * real-model runs (dev/harness2 `eval --real-model`), as promotion evidence. For an issue planned from a
  * failing task, that task runs `measure.targetTrials` times on each side, so whether it improved beyond
  * noise can be told; a task that looks worse runs `measure.confirmTrials` times on each side before the
  * change is judged on it (extra runs also weigh in the suite's mean).
  */
-async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, execGit, log }) {
+async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, lane = null, execGit, log }) {
   const sides = [];
   try {
     // Both sides are measured in clones of their own, never in worktrees of this repo: a measured run
@@ -421,10 +524,12 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
     sides.push(candidateSide);
     const { runCli } = await import('../harness2/cli.mjs');
     const stderr = { write: (line) => log(String(line).trimEnd()) };
-    return await measureSides({
-      evalOn: (side, args) => runCli(args, { repoRoot: side === 'baseline' ? baseSide.root : candidateSide.root, stderr }),
-      issue, changedPaths, settings, log,
-    });
+    const evalOn = (side, args) => runCli(args, { repoRoot: side === 'baseline' ? baseSide.root : candidateSide.root, stderr });
+    // An organ's lane is measured on its organ's bench; anything else on the tasks the change reaches.
+    const organ = benchOrgan(lane);
+    return organ
+      ? await measureBench({ evalOn, issue, organ, changedPaths, settings, log })
+      : await measureSides({ evalOn, issue, changedPaths, settings, log });
   } catch (err) {
     return { measured: false, reason: err.message };
   } finally {
@@ -1039,10 +1144,13 @@ export async function runCycle({
     let measurement = null;
     if (behaviour) {
       measurement = await measure({
-        repoRoot, base, candidateRoot: worktree, changedPaths: changes.map((c) => c.path), issue, settings, execGit, log,
+        repoRoot, base, candidateRoot: worktree, changedPaths: changes.map((c) => c.path), issue, settings, lane, execGit, log,
       });
       if (!measurement.measured) return refuse('unmeasured', `it changes the agent's behaviour and could not be measured: ${measurement.reason}`, { changes, tests, behaviour, measurement });
-      const uncovered = coverageProblems(measurement.evidence, impactedTasks(changes.flatMap((c) => [c.path, c.oldPath].filter(Boolean))));
+      const organ = benchOrgan(lane);
+      const uncovered = organ
+        ? benchCoverageProblems(measurement.evidence, organ)
+        : coverageProblems(measurement.evidence, impactedTasks(changes.flatMap((c) => [c.path, c.oldPath].filter(Boolean))));
       if (uncovered.length) return refuse('unmeasured', `it changes the agent's behaviour and was not measured on the tasks it reaches: ${uncovered.join('; ')}`, { changes, tests, behaviour, measurement });
       const worse = regressionProblems(measurement.evidence);
       if (worse.length) return refuse('regressed', worse.join('; '), { changes, tests, behaviour, measurement });

@@ -29,8 +29,8 @@ import { pathToFileURL } from 'node:url';
 import { parseEvidenceBlock } from '../harness2/evidence.mjs';
 import { MEASURED_BASE_MARKER, issueTarget, measuredBase, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
-import { coverageProblems, regressionProblems } from './cycle.mjs';
-import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
+import { benchCoverageProblems, coverageProblems, regressionProblems } from './cycle.mjs';
+import { impactedTasks, issueModule, loadModules, moduleProblems, ownerOf } from './modules.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted, revertGuard } from './sentinel.mjs';
 
@@ -156,7 +156,15 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
     const evidence = parseEvidenceBlock(pr.body);
     if (!evidence) problems.push("it changes the agent's behaviour and carries no evidence block (```json paraclete-h2-evidence)");
     else {
-      problems.push(...coverageProblems(evidence, tasks));
+      // Evidence from an organ's bench (cycle.mjs measureBench) is an organ lane's: it must cover that
+      // bench and its guard sample, and only for an issue that names that organ's module.
+      const benched = /^bench:(.+)$/.exec(String(evidence.suite?.name || ''))?.[1] || null;
+      if (benched) {
+        if (moduleId !== `organ:${benched}`) problems.push(`its evidence is the ${benched} bench's, and its issue does not name organ:${benched}`);
+        problems.push(...benchCoverageProblems(evidence, benched));
+      } else {
+        problems.push(...coverageProblems(evidence, tasks));
+      }
       problems.push(...regressionProblems(evidence));
       const measured = new Set((evidence.touchedPaths || []).map((p) => String(p).replace(/\\/g, '/')));
       const unmeasured = changes.map((c) => c.path).filter((p) => !measured.has(p));
@@ -167,9 +175,24 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
       else if (!Array.isArray(mainChanged)) problems.push(`what main changed since ${base.slice(0, 12)}, the commit it was measured against, could not be read`);
       else {
         const moved = mainChanged.filter((p) => isBehaviourPath(p));
-        const reached = new Set(impactedTasks(moved));
-        if (tasks.some((id) => reached.has(id))) {
-          problems.push(`it was measured against ${base.slice(0, 12)}, and what the agent reads changed on main since (${moved.slice(0, 3).join(', ')}${moved.length > 3 ? ', ...' : ''}): it must be measured again`);
+        let stale;
+        if (benched) {
+          // A bench run reaches its organ, the spine and the content every organ reads (generic's role,
+          // the skill index): everything but the other organs and the other roles.
+          if (!Array.isArray(repoFiles)) {
+            problems.push(`what main's changes since ${base.slice(0, 12)} reach could not be read: the repo's files could not be listed`);
+            stale = [];
+          } else {
+            const modules = loadModules({ files: [...repoFiles, ...moved] });
+            const away = (owner) => owner && ((owner.kind === 'organ' && owner.id !== `organ:${benched}`) || (owner.kind === 'role' && owner.id !== 'role:generic'));
+            stale = moved.filter((p) => !away(ownerOf(p, modules)));
+          }
+        } else {
+          const reached = new Set(impactedTasks(moved));
+          stale = tasks.some((id) => reached.has(id)) ? moved : [];
+        }
+        if (stale.length) {
+          problems.push(`it was measured against ${base.slice(0, 12)}, and what the agent reads changed on main since (${stale.slice(0, 3).join(', ')}${stale.length > 3 ? ', ...' : ''}): it must be measured again`);
         }
       }
     }

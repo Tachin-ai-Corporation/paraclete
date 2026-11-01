@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPromotionEvidence, formatEvidenceMarkdown } from '../../../dev/harness2/evidence.mjs';
 import { MODEL_SUITE_VERSION, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
+import { BENCH_VERSION, selectBenchItems } from '../../../dev/harness2/bench.mjs';
 import { isLoopBranch, loopGuard, main, parseReviewBlock, resolvedIssue } from '../../../dev/loop/guard.mjs';
 import { doneWhen, formatReviewMarkdown } from '../../../dev/loop/reviewer.mjs';
 import { revertBody } from '../../../dev/loop/sentinel.mjs';
@@ -216,4 +217,37 @@ test('a pull request for an issue that names its module keeps to that module', (
     /it changes files outside its module organ:cortex: dashboard\/components\/work\/WorkPlan\.jsx \(platform:dashboard\), tests\/dashboard\/components\/work\/work-plan\.test\.mjs \(platform:dashboard\)/);
   assert.match(loopGuard({ pr: pr(), files: FILES, issue: cortexIssue, mainChanged: [] }).problems.join(' | '), /names the module organ:cortex, and the repo's files could not be read/);
   assert.deepEqual(check().problems, [], 'an issue without a module is not scoped');
+});
+
+test("an organ lane's bench evidence covers its bench, belongs to its issue's organ, and is stale only when main reaches what a bench runs", () => {
+  const files = [
+    { filename: 'agent/organs/cerebellum/verify.mjs', status: 'modified', sha: SHA.plan },
+    { filename: 'tests/agent/organs/cerebellum/verify-attack.test.mjs', status: 'added', sha: SHA.test },
+  ];
+  const reviewed = { 'agent/organs/cerebellum/verify.mjs': SHA.plan, 'tests/agent/organs/cerebellum/verify-attack.test.mjs': SHA.test };
+  const guardTasks = selectModelTasks().slice(0, 3);
+  const trajectories = [
+    ...selectBenchItems({ organ: 'cerebellum' }).flatMap((i) => runs([1, 1, 1], i.id, i.split)),
+    ...guardTasks.flatMap((task) => runs([1], task.id, task.split)),
+  ];
+  const benchEvidence = buildPromotionEvidence({
+    candidate: { id: 'loop-33', lens: 'LOOP', touchedPaths: files.map((f) => f.filename), proposal: { source: 'coding-agent' } },
+    baselineTrajectories: trajectories,
+    candidateTrajectories: trajectories,
+    suite: { name: 'bench:cerebellum', version: BENCH_VERSION, guard: { name: 'model', version: MODEL_SUITE_VERSION, tasks: guardTasks.map((task) => task.id) } },
+  });
+  const scoped = { ...ISSUE, body: `${ISSUE.body}\n<!-- loop-module: organ:cerebellum -->` };
+  const repoFiles = ['agent/organs/cerebellum/verify.mjs', 'prompts/motor.md', 'agent/gateway/turn-loop.mjs', 'roles/designer/prompts/cortex.md', 'roles/generic/processes/p-x.json', 'skills/drive/SKILL.md'];
+  const verdictFor = ({ issue = scoped, mainChanged = [] } = {}) => loopGuard({
+    pr: pr({ body: body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(benchEvidence)}${measuredOn}` }) }), files, issue, mainChanged, repoFiles,
+  });
+  assert.deepEqual(verdictFor().problems, []);
+  assert.equal(verdictFor({ mainChanged: ['prompts/motor.md', 'roles/designer/prompts/cortex.md'] }).ok, true, "another organ's and another role's files do not reach the cerebellum's bench");
+  for (const reaches of ['agent/gateway/turn-loop.mjs', 'roles/generic/processes/p-x.json', 'skills/drive/SKILL.md']) {
+    assert.match(verdictFor({ mainChanged: [reaches] }).problems.join(' | '), /it must be measured again/, reaches);
+  }
+  const motorIssue = { ...ISSUE, body: `${ISSUE.body}\n<!-- loop-module: organ:motor -->` };
+  assert.match(verdictFor({ issue: motorIssue }).problems.join(' | '), /its evidence is the cerebellum bench's, and its issue does not name organ:cerebellum/);
+  const noFiles = loopGuard({ pr: pr({ body: body({ files: reviewed, extra: `\n${formatEvidenceMarkdown(benchEvidence)}${measuredOn}` }) }), files, issue: scoped, mainChanged: ['prompts/motor.md'] });
+  assert.match(noFiles.problems.join(' | '), /could not be read/);
 });
