@@ -1,10 +1,10 @@
-// Tests for agent/context/work-recall.mjs.
+// Tests for agent/organs/temporal-memory/work-recall.mjs.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   extractCues, scoreRelevance, searchWork, recentWorkDigest, getWorkOutput,
-} from '../../../agent/context/work-recall.mjs';
-import { COLLECTIONS } from '../../../agent/storage/collections.mjs';
+} from '../../../../agent/organs/temporal-memory/work-recall.mjs';
+import { COLLECTIONS } from '../../../../agent/storage/collections.mjs';
 
 const NOW = Date.parse('2026-10-17T12:00:00.000Z');
 const daysAgo = (d) => new Date(NOW - d * 86_400_000).toISOString();

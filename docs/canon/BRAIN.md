@@ -332,7 +332,7 @@ in Core Memory.
   both stable.
 - **How the code gives it.** `MEMORY_TOOLSET` in `agent/gateway/tools.mjs`; `MEMORY_COMMANDS` and
   `MEMORY_READ_VIEWS` in `agent/services/gateway/settings.mjs`; `agent/work/memory-scope.mjs`;
-  `agent/context/context-maintenance.mjs`. **Gap:** a memory-scoped mission still lets a task run on
+  `agent/organs/temporal-memory/context-maintenance.mjs`. **Gap:** a memory-scoped mission still lets a task run on
   temporal-research, whose toolset is open (B-2).
 
 ### B-19. Recall is gathered by code before the work starts
@@ -346,8 +346,8 @@ character, and only one known id is that close, code repairs it before the plan 
 
 - **Why.** What the agent knows is the cheapest and most trusted source, and an id resolved once
   should never be searched for again or retyped from memory.
-- **How the code gives it.** `recall()` in `agent/services/brain/memory.mjs`,
-  `agent/context/work-recall.mjs`, `agent/context/core-memory-rank.mjs`,
+- **How the code gives it.** `recall()` in `agent/organs/temporal-memory/memory.mjs`,
+  `agent/organs/temporal-memory/work-recall.mjs`, `agent/organs/temporal-memory/core-memory-rank.mjs`,
   `agent/work/resource-ledger.mjs`, and `repairPlan()` in
   `agent/services/brain/actions/checkpoint-plan.mjs`.
 

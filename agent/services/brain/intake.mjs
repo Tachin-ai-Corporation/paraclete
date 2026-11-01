@@ -10,7 +10,7 @@ import { COLLECTIONS } from '../../storage/collections.mjs';
 import { firestoreEncode } from '../../storage/firestore.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { appendTurn, compactThread, readThread, threadKeyFor } from '../../context/thread-ledger.mjs';
-import { extractCues, recentWorkDigest } from '../../context/work-recall.mjs';
+import { extractCues, recentWorkDigest } from '../../organs/temporal-memory/work-recall.mjs';
 import { classifyBlocks, cortexSystem, cortexUser, respondComposeBlocks } from './prompt-assembly.mjs';
 
 /** Attempts at one intake before it is marked failed. */

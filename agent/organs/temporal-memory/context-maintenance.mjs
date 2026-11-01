@@ -1,4 +1,4 @@
-// agent/context/context-maintenance.mjs: the lesson step after a mission. When a finished mission
+// agent/organs/temporal-memory/context-maintenance.mjs: the lesson step after a mission. When a finished mission
 // worked in a project or followed a process playbook, the temporal-memory organ (the organ that
 // maintains the agent's memory) is asked what durable lesson the run taught. The lesson is memory:
 // the brain appends it to working memory (MEMORY.md), and the nightly consolidation decides whether

@@ -1,8 +1,8 @@
-// Tests for agent/context/core-memory-rank.mjs: Core Memory ranked by value and matched search terms,
+// Tests for agent/organs/temporal-memory/core-memory-rank.mjs: Core Memory ranked by value and matched search terms,
 // entries matching no term dropped, ties newest first, and the defaults for unweighted entries.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rankCoreMemory } from '../../../agent/context/core-memory-rank.mjs';
+import { rankCoreMemory } from '../../../../agent/organs/temporal-memory/core-memory-rank.mjs';
 
 test('Core Memory ranks by value and matched terms; with terms, an entry that matches none is dropped', () => {
   const entries = [

@@ -52,7 +52,7 @@ test('the organ modules own their prompts, instruction files and skills; the res
     'prompts/cerebellum.md': 'organ:cerebellum',
     'agent/organs/cerebellum/verify.mjs': 'organ:cerebellum',
     'skills/verification/SKILL.md': 'organ:cerebellum',
-    'agent/services/brain/memory.mjs': 'organ:temporal-memory',
+    'agent/organs/temporal-memory/memory.mjs': 'organ:temporal-memory',
     'skills/memory-recall/SKILL.md': 'organ:temporal-memory',
     'agent/cli/core-memory-write.mjs': 'organ:temporal-memory',
     'skills/plan-structuring/SKILL.md': 'organ:prefrontal',
@@ -92,12 +92,12 @@ test('the organ modules own their prompts, instruction files and skills; the res
 
 test("a test belongs to the module of the path it mirrors, unless a module names it", () => {
   assert.equal(owner('tests/agent/organs/cerebellum/verdict.test.mjs'), 'organ:cerebellum');
-  assert.equal(owner('tests/agent/context/work-recall.test.mjs'), 'organ:temporal-memory');
+  assert.equal(owner('tests/agent/organs/temporal-memory/work-recall.test.mjs'), 'organ:temporal-memory');
   assert.equal(owner('tests/skills/drive/drive-get.test.mjs'), 'skill:drive');
   assert.equal(owner('tests/roles/designer/contrast-check.test.mjs'), 'role:designer');
   assert.equal(owner('tests/dev/loop/cycle.test.mjs'), 'repo:loop');
   assert.equal(owner('tests/content/packages.test.mjs'), 'repo:rules');
-  assert.equal(owner('tests/agent/context/work-recall-ranking.test.mjs'), 'organ:temporal-memory', "a new test named after a file of a module is that module's");
+  assert.equal(owner('tests/agent/work/resource-ledger-recall.test.mjs'), 'platform:brain-spine', "a new test named after a file is that file's module's");
   assert.equal(owner('tests/agent/work/memory-scope-fence.test.mjs'), 'organ:temporal-memory', 'the longest stem wins');
   assert.equal(owner('tests/agent/work/a-new-thing.test.mjs'), 'platform:brain-spine', "named after nothing: its directory's owner");
 });

@@ -40,7 +40,7 @@ import { adminEffort, brainSettings, organTemperature } from './settings.mjs';
 import { createGatewayClient, readGatewayToken, toolResultDigester } from './gateway-client.mjs';
 import { addressFor, addressOf, createEnvelopeStore } from './envelope-store.mjs';
 import { capabilityMap, readSkills } from './prompt-assembly.mjs';
-import { createMemory, createMemoryFiles } from './memory.mjs';
+import { createMemory, createMemoryFiles } from '../../organs/temporal-memory/memory.mjs';
 import { createCompletion, missionDirIn } from './completion.mjs';
 import { createMissionContext } from './mission-context.mjs';
 import { createEnvelopeRunner } from './envelope-runner.mjs';

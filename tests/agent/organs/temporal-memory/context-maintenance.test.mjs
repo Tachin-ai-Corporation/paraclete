@@ -1,11 +1,11 @@
-// Tests for agent/context/context-maintenance.mjs. The step asks for a lesson that the brain appends
+// Tests for agent/organs/temporal-memory/context-maintenance.mjs. The step asks for a lesson that the brain appends
 // to working memory; it never writes project context or replaces a playbook's narrative.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   shouldMaintainContext, buildMaintenancePrompt, parseMaintenanceResponse, shouldMaintainProcesses,
   buildProcessMaintenancePrompt, lessonLine,
-} from '../../../agent/context/context-maintenance.mjs';
+} from '../../../../agent/organs/temporal-memory/context-maintenance.mjs';
 
 const ON = { enabled: true };
 const OFF = { enabled: false };

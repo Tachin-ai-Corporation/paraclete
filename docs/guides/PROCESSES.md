@@ -53,7 +53,7 @@ Two consequences:
 | Planning | Playbooks whose `intent_keywords` occur in the goal, matched as lowercase substrings. They are recorded on the mission as `recalled_processes`, and when the prefrontal structures the plan it gets them with the first 200 characters of each narrative | `agent/services/brain/actions/checkpoint-plan.mjs` |
 | A responsibility fires with a `processRef` | That playbook's whole narrative, in the mission's context | `fireResponsibility` in `agent/work/scheduler.mjs` |
 | A mission in a project that lists playbooks | A reminder to plan with those playbooks | `agent/services/brain/prompt-assembly.mjs` |
-| After a mission completes | For up to three playbooks it recalled, the memory organ may write one lesson line to working memory. It never edits the playbook | `agent/context/context-maintenance.mjs`, `recordLessons` in `agent/services/brain/memory.mjs` |
+| After a mission completes | For up to three playbooks it recalled, the memory organ may write one lesson line to working memory. It never edits the playbook | `agent/organs/temporal-memory/context-maintenance.mjs`, `recordLessons` in `agent/organs/temporal-memory/memory.mjs` |
 
 What follows for a writer:
 

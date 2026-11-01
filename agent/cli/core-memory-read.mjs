@@ -5,11 +5,11 @@
 //
 // Firestore has no substring search, so --query matches terms against each entry's fact and tags
 // here, over the entries the filters return, with the ranking recall uses
-// (agent/context/core-memory-rank.mjs).
+// (agent/organs/temporal-memory/core-memory-rank.mjs).
 
 import { pathToFileURL } from 'node:url';
 import { StoreUnavailable } from '../storage/firestore.mjs';
-import { rankCoreMemory } from '../context/core-memory-rank.mjs';
+import { rankCoreMemory } from '../organs/temporal-memory/core-memory-rank.mjs';
 import { CliError, createCliRuntime } from './cli-runtime.mjs';
 
 /** The most entries one read searches. Core Memory is pruned nightly and stays far below this. */

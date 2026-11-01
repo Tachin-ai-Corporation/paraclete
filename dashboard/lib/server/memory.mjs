@@ -11,7 +11,7 @@
 // Field names stay the agent's, so what the dashboard shows matches what the agent reads.
 //
 // Firestore has no text search, so the browser searches and filters what this returns. Entries come
-// most valuable first, the agent's own order with no search terms (agent/context/core-memory-rank.mjs,
+// most valuable first, the agent's own order with no search terms (agent/organs/temporal-memory/core-memory-rank.mjs,
 // which the dashboard may not import): importance x confidence, an entry without them counting as 0.5
 // and 0.9, newest first on a tie.
 

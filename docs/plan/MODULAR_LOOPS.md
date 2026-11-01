@@ -29,7 +29,7 @@ nothing until they are fixed.
      `buildGateway` statically, from the harness's own checkout.
    - So both sides of a measurement run main's brain, gateway, context and work code. Only the
      prompts, skills, roles, contracts and the commands the motor launches come from the side.
-   - A change to organ code (recall ranking in `agent/context/work-recall.mjs`, verification in
+   - A change to organ code (recall ranking in `agent/organs/temporal-memory/work-recall.mjs`, verification in
      `agent/organs/cerebellum/verify.mjs`) is measured as no change. The code changes the loop
      measured so far (#71, #87) were measured this way.
 2. **What a change affects is a yes or no.**
@@ -67,7 +67,7 @@ No organ has a module of its own. An organ is made of four kinds of pieces:
 | Organ | Closest thing to its own code | What it shares with other organs |
 |---|---|---|
 | cerebellum | `agent/organs/cerebellum/verify.mjs` (379 lines) and `agent/organs/cerebellum/verdict.mjs` | the verdict tools in `tools.mjs`; the answer check in `actions/synthesize.mjs` |
-| temporal-memory | `agent/services/brain/memory.mjs` (353), `agent/context/work-recall.mjs`, `agent/context/core-memory-rank.mjs`, `agent/context/context-maintenance.mjs` | the memory tools in `tools.mjs`; the memory fence in `checkpoint-executor.mjs`; `agent/work/memory-scope.mjs` |
+| temporal-memory | `agent/organs/temporal-memory/memory.mjs` (353), `agent/organs/temporal-memory/work-recall.mjs`, `agent/organs/temporal-memory/core-memory-rank.mjs`, `agent/organs/temporal-memory/context-maintenance.mjs` | the memory tools in `tools.mjs`; the memory fence in `checkpoint-executor.mjs`; `agent/work/memory-scope.mjs` |
 | prefrontal | none | `prompt-assembly.mjs`, `envelope-runner.mjs`, `actions/checkpoint-plan.mjs`, `agent/work/checkpoint-spine.mjs` |
 | motor | none | `agent/work/checkpoint-executor.mjs` (960), `agent/work/task-outcome.mjs`, `tools.mjs` |
 | cortex | the move handlers in `agent/services/brain/actions/` | `prompt-assembly.mjs` (584), `envelope-runner.mjs` (600), `agent/providers/vertex-text.mjs` (548) |
@@ -351,6 +351,7 @@ phase 2's first two organs are done.
   - #98: a failing task is confirmed before it is targeted, evidence must cover what it measures, and all of `dev/harness2/` is the referee.
   - Its exit test on the lab driver is still to run.
 - **Phase 1:** the registry, the ownership test (`tests/dev/loop/modules.test.mjs`), the lane rule in the cycle and the guard, and measurement scoped to the tasks a change reaches (a role's files reach only that role's tasks). The capability tags on tasks wait for phase 3, where benches and organ tasks give them something to select: until then every organ's change reaches every task.
+- **Phase 2, the pilot organs:** `agent/organs/` holds each organ's own code; no organ imports another, and only `services/` (and `cli/`, for an organ's own commands) imports one. The cerebellum (`agent/organs/cerebellum/`: its checkpoint verification and verdict reading, which the brain service hands the executor) and the memory organ (`agent/organs/temporal-memory/`: recall, past-work recall, Core Memory's ranking and the lesson step) are moved. Their prompts stay in `prompts/` until every organ has a directory; the parts still in shared files (the verdict tools, the answer check, the memory fence) are named in each organ's README.
 
 **Throughput, roughly:**
 
