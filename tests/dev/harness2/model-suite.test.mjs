@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MODEL_SUITE, RETIRED_TASKS, SPLITS, isModelTask, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
+import { contrastRatio, parseColor, toHex } from '../../../roles/designer/skills/accessibility-checks/contrast-check.mjs';
 
 const write = (dir, rel, text) => {
   fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -370,7 +371,275 @@ test('alg none is refused', () => {
       slowest_path: Object.entries(times).filter(([, xs]) => xs.length >= 20).sort((a, b) => mean(b[1]) - mean(a[1]))[0][0],
     }));
   },
+  // Version 4. The palette fixed with the designer role's own contrast-check arithmetic, each failing
+  // color moved along its own hue and saturation until it passes everywhere it is used.
+  'design-contrast-fix': (dir) => {
+    const { color } = JSON.parse(fs.readFileSync(path.join(dir, 'design/tokens.json'), 'utf8'));
+    const usage = JSON.parse(fs.readFileSync(path.join(dir, 'design/usage.json'), 'utf8'));
+    const fixed = fixPalette(color, usage);
+    write(dir, 'design/tokens.json', `${JSON.stringify({ color: fixed }, null, 2)}\n`);
+    const ratio = (palette, u) => contrastRatio(parseColor(palette[u.foreground]), parseColor(palette[u.background])).toFixed(2);
+    write(dir, 'design/contrast.md', ['| Pair | Kind | Before | After | Color |', '|---|---|---|---|---|',
+      ...usage.map((u) => `| ${u.foreground} on ${u.background} | ${u.kind} | ${ratio(color, u)} | ${ratio(fixed, u)} | ${fixed[u.foreground]} |`)].join('\n'));
+  },
+  'fin-invoice-report': (dir) => write(dir, 'report.json', JSON.stringify(invoiceReport(dir))),
+  'pm-tracker-update': (dir) => {
+    write(dir, 'tracker.csv', `${TRACKER_AFTER.join('\n')}\n`);
+    write(dir, 'flags.json', JSON.stringify({ overdue: ['A-8'], unowned: ['A-4', 'A-11'], stale: ['A-4', 'A-8'] }));
+  },
+  'ea-meeting-times': (dir) => write(dir, 'options.json', JSON.stringify(meetingTimes(dir))),
+  // The dates worked out with Date arithmetic and the README's holidays, not written in.
+  'legal-contract-dates': (dir) => {
+    const day = (iso, n) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+    const months = (iso, n) => {
+      const d = new Date(`${iso}T00:00:00Z`);
+      d.setUTCMonth(d.getUTCMonth() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const holidays = new Set(['2026-01-01', '2026-04-03', '2026-04-06', '2026-05-01', '2026-05-14', '2026-05-25', '2026-12-25']);
+    let claim = '2026-04-30';
+    for (let n = 0; n < 10;) {
+      claim = day(claim, 1);
+      if (![0, 6].includes(new Date(`${claim}T00:00:00Z`).getUTCDay()) && !holidays.has(claim)) n += 1;
+    }
+    const renewal = months('2026-03-15', 24);
+    write(dir, 'review.json', JSON.stringify({
+      initial_term_ends: day(renewal, -1),
+      non_renewal_notice_by: day(day(renewal, -1), -90),
+      price_increase_notice_by: day(renewal, -60),
+      implementation_plan_due: day('2026-03-15', 45),
+      april_2026_credit_claim_by: claim,
+      inconsistencies: [
+        { sections: ['4.1', 'Schedule A'], issue: 'The fee is EUR 48,000 a year in 4.1 and EUR 45,000 in Schedule A.', quote: 'Customer shall pay the Subscription Fee of EUR 48,000 per year' },
+        { sections: ['9.2'], issue: 'There is no Section 9.4.', quote: 'following the procedure in Section 9.4' },
+        { sections: ['10.2'], issue: 'There is no Schedule B.', quote: 'sent to the addresses in Schedule B' },
+        { sections: ['7.1'], issue: 'Customer Data is never defined; 1.4 defines Customer Materials.', quote: 'Supplier shall process Customer Data only' },
+      ],
+    }));
+  },
+  'web-moved-pages': (dir) => fixSite(dir),
 };
+
+/** A color as [hue, saturation, lightness], by another route than the suite's. */
+function toHsl([r, g, b]) {
+  const [R, G, B] = [r, g, b].map((v) => v / 255);
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l * 100];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = max === R ? (G - B) / d + (G < B ? 6 : 0) : max === G ? (B - R) / d + 2 : (R - G) / d + 4;
+  return [h * 60, s * 100, l * 100];
+}
+
+/** CSS Color 4's hsl() to sRGB. */
+function fromHsl(h, s, l) {
+  const S = s / 100;
+  const L = l / 100;
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    return Math.round(255 * (L - S * Math.min(L, 1 - L) * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
+/** Every failing foreground moved to the nearest lightness, in steps of 0.01, that passes wherever it is used. */
+function fixPalette(color, usage, { min = { text: 4.5, 'large-text': 3, 'non-text': 3 } } = {}) {
+  const passes = (token, c) => usage.filter((u) => u.foreground === token).every((u) => contrastRatio(c, parseColor(color[u.background])) >= min[u.kind]);
+  const fixed = { ...color };
+  for (const token of new Set(usage.map((u) => u.foreground))) {
+    if (passes(token, parseColor(color[token]))) continue;
+    const [h, s, l] = toHsl(parseColor(color[token]));
+    for (let step = 1; step <= 10000; step += 1) {
+      const hit = [l - step / 100, l + step / 100].filter((L) => L >= 0 && L <= 100).map((L) => fromHsl(h, s, L)).find((c) => passes(token, c));
+      if (hit) {
+        fixed[token] = toHex(hit);
+        break;
+      }
+    }
+  }
+  return fixed;
+}
+
+/** The September report from the export, read line by line; `wrong` makes one of the mistakes the task is built around. */
+function invoiceReport(dir, wrong = {}) {
+  const rows = fs.readFileSync(path.join(dir, 'billing/export.csv'), 'utf8').trim().split('\n').slice(1).map((line) => {
+    const cut = line.indexOf(',"[');
+    const [service, , , usageStart, , invoiceMonth, type, cost] = line.slice(0, cut).split(',');
+    const credit = JSON.parse(line.slice(cut + 2, -1).replace(/""/g, '"')).reduce((a, c) => a + c.amount, 0);
+    const month = wrong.byUsageMonth ? usageStart.slice(0, 7).replace('-', '') : invoiceMonth;
+    return { service, month, type, cost: wrong.roundEachRow ? Math.round(Number(cost) * 100) / 100 : Number(cost), credit };
+  });
+  const totals = (month) => {
+    const out = {};
+    for (const r of rows.filter((x) => x.month === month && x.type === 'regular')) {
+      out[r.service] = out[r.service] || { cost: 0, credits: 0 };
+      out[r.service].cost += r.cost;
+      out[r.service].credits += r.credit;
+    }
+    for (const s of Object.values(out)) s.net = s.cost + s.credits;
+    return out;
+  };
+  const now = totals('202609');
+  const before = totals('202608');
+  const typed = (type) => rows.filter((r) => r.month === '202609' && r.type === type).reduce((a, r) => a + r.cost + r.credit, 0);
+  const basis = (s) => (s ? (wrong.grossChange ? s.cost : s.net) : 0);
+  const moved = (name) => basis(now[name]) - basis(before[name]);
+  const budget = Object.fromEntries(fs.readFileSync(path.join(dir, 'billing/budget.csv'), 'utf8').trim().split('\n').slice(1).map((l) => l.split(',')).map(([k, v]) => [k, Number(v)]));
+  const cents = (x) => Math.round(x * 100) / 100;
+  return {
+    currency: 'EUR',
+    services: Object.fromEntries(Object.entries(now).map(([k, s]) => [k, { cost: cents(s.cost), credits: cents(s.credits), net: cents(s.net) }])),
+    tax: cents(typed('tax')),
+    adjustments: cents(typed('adjustment')),
+    rounding: cents(typed('rounding_error')),
+    total: cents(Object.values(now).reduce((a, s) => a + s.net, 0) + typed('tax') + typed('adjustment') + typed('rounding_error')),
+    drivers: Object.keys(now).filter((k) => !before[k] || Math.abs(moved(k) / basis(before[k])) > 0.15).sort((a, b) => Math.abs(moved(b)) - Math.abs(moved(a))),
+    over_budget: Object.keys(now).filter((k) => now[k].net > budget[k]).sort(),
+  };
+}
+
+/** The tracker as the meeting of 4 November leaves it. */
+const TRACKER_AFTER = Object.freeze([
+  'ID,Action,Owner,Due,Status,Source,Opened,Updated,Note',
+  'A-1,Send the kickoff deck to the steering group,Lena,2026-10-09,done,Weekly 2026-10-07,2026-10-07,2026-10-09,',
+  'A-2,Prepare the launch checklist,Sam,2026-11-20,open,Weekly 2026-10-14,2026-10-14,2026-11-04,"Due moved from 2026-11-12 to fit the new launch date, as Sam agreed"',
+  'A-3,Review the vendor contract,Priya,2026-11-02,done,Weekly 2026-10-21,2026-10-21,2026-11-04,Finished and signed off',
+  'A-4,Update the onboarding guide,missing,2026-11-20,open,Weekly 2026-10-07,2026-10-07,2026-10-07,',
+  'A-5,Run the load test on staging,Omar,2026-11-09,blocked,Weekly 2026-10-21,2026-10-21,2026-11-04,Waits for the staging environment to be rebuilt',
+  'A-6,Build the analytics dashboard,Raj,2026-11-16,open,Weekly 2026-10-28,2026-10-28,2026-11-04,"Lena asked for 2026-11-09; Raj could not commit, so the due date stays"',
+  'A-7,Run the customer survey,Lena,2026-11-30,dropped,Weekly 2026-10-14,2026-10-14,2026-11-04,Marketing is running its own survey',
+  'A-8,Collect the security questionnaire answers,Wen,2026-10-30,open,Weekly 2026-10-14,2026-10-14,2026-10-14,',
+  'A-9,Send the updated vendor list,Wen,2026-11-06,open,Weekly 2026-11-04,2026-11-04,2026-11-04,',
+  'A-10,Draft the migration runbook,Priya,2026-11-13,open,Weekly 2026-11-04,2026-11-04,2026-11-04,',
+  'A-11,Refresh the risk register,missing,missing,open,Weekly 2026-11-04,2026-11-04,2026-11-04,',
+  'A-12,Book the venue for the launch party,Sam,2026-11-18,open,Weekly 2026-11-04,2026-11-04,2026-11-04,',
+  'A-13,Check when the TLS certificate expires,Omar,2026-11-04,open,Weekly 2026-11-04,2026-11-04,2026-11-04,',
+]);
+
+/** A wall-clock reading of an instant in a zone, with Intl. */
+function wallClock(ms, zone) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', weekday: 'short',
+  }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}`, weekday: p.weekday };
+}
+
+/** The instant a local wall-clock time names in a zone. */
+function instantOf(local, zone) {
+  const naive = Date.parse(`${local.slice(0, 16)}:00Z`);
+  const offsetAt = (t) => Date.parse(`${wallClock(t, zone).date}T${wallClock(t, zone).time}:00Z`) - t;
+  return naive - offsetAt(naive - offsetAt(naive));
+}
+
+/**
+ * The three earliest times by the meeting rules, from the calendars in `dir`, every time zone through
+ * Intl; `wrong` makes one of the mistakes the task is built around.
+ */
+function meetingTimes(dir, wrong = {}) {
+  const names = ['lena', 'omar', 'kenji'];
+  const cals = Object.fromEntries(names.map((n) => [n, JSON.parse(fs.readFileSync(path.join(dir, 'calendars', `${n}.json`), 'utf8'))]));
+  const days = ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'];
+  const nextDay = (d) => new Date(Date.parse(`${d}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
+  const busy = Object.fromEntries(names.map((n) => {
+    const { zone, events } = cals[n];
+    const at = (t) => (t.endsWith('Z') ? Date.parse(t) : instantOf(t, zone));
+    const blocking = events.filter((e) => e.status !== 'cancelled' && (wrong.declinedBlocks || e.response !== 'declined') && e.show_as !== 'free');
+    return [n, blocking.flatMap((e) => {
+      if (e.date) return [[instantOf(`${e.date}T00:00`, zone), instantOf(`${nextDay(e.date)}T00:00`, zone)]];
+      if (e.repeat === 'weekdays') {
+        return days.filter((d) => d >= e.start.slice(0, 10)).map((d) => [instantOf(`${d}${e.start.slice(10)}`, zone), instantOf(`${d}${e.end.slice(10)}`, zone)]);
+      }
+      return [[at(e.start), at(e.end)]];
+    })];
+  }));
+  const found = [];
+  for (let t = Date.parse('2026-11-02T00:00:00Z'); t < Date.parse('2026-11-07T00:00:00Z') && found.length < 3; t += 30 * 60000) {
+    const end = t + 3600000;
+    const fits = names.every((n) => {
+      const { zone, working_hours: hours } = cals[n];
+      const [a, b] = [wallClock(t, zone), wallClock(end, zone)];
+      return a.date === b.date && !['Sat', 'Sun'].includes(a.weekday) && a.time >= hours.start && b.time <= hours.end
+        && busy[n].every(([s, e]) => e <= t || s >= end);
+    });
+    if (fits) {
+      found.push({
+        start_utc: new Date(t).toISOString().replace('.000Z', 'Z'),
+        end_utc: new Date(end).toISOString().replace('.000Z', 'Z'),
+        local: Object.fromEntries(names.map((n) => [n, `${wallClock(t, cals[n].zone).date} ${wallClock(t, cals[n].zone).time}`])),
+      });
+    }
+  }
+  return found;
+}
+
+/**
+ * The site fixed by following each link through a Firebase Hosting resolver of its own: the redirects in
+ * order, then cleanUrls, then files. `wrong` makes one of the mistakes the task is built around.
+ */
+function fixSite(dir, wrong = {}) {
+  const hosting = JSON.parse(fs.readFileSync(path.join(dir, 'firebase.json'), 'utf8')).hosting;
+  const files = new Set(listPublic(path.join(dir, 'public')));
+  const pageOf = (file) => `/${file.replace(/(^|\/)index\.html$/, '$1').replace(/\.html$/, '')}`;
+  const match = (source, p) => {
+    const re = new RegExp(`^${source.split('/').map((seg) => (seg === '**' ? '.*' : seg.startsWith(':') ? `(?<${seg.slice(1)}>[^/]+)` : seg.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))).join('/')}$`);
+    const m = re.exec(p);
+    return m ? m.groups || {} : null;
+  };
+  const step = (p) => {
+    const rules = wrong.mostSpecificRule ? [...hosting.redirects].sort((a, b) => b.source.length - a.source.length) : hosting.redirects;
+    for (const r of rules) {
+      const m = match(r.source, p);
+      if (m) return { to: r.destination.replace(/:(\w+)/g, (_, k) => m[k]) };
+    }
+    if (p.endsWith('.html')) return { to: p.slice(0, -'.html'.length).replace(/\/index$/, '/') };
+    if (p.endsWith('/')) return files.has(`${p.slice(1)}index.html`) ? { page: p } : null;
+    if (files.has(`${p.slice(1)}.html`)) return { page: p };
+    if (files.has(`${p.slice(1)}/index.html`)) return { to: `${p}/` };
+    return null;
+  };
+  const follow = (p) => {
+    let at = p;
+    for (let hops = 0; hops < 10; hops += 1) {
+      const next = step(at);
+      if (!next) return hops ? at : null;
+      if (next.page) return next.page;
+      if (wrong.oneHop && hops === 0) return next.to;
+      at = next.to;
+    }
+    return null;
+  };
+  for (const file of [...files].filter((f) => f.endsWith('.html'))) {
+    const base = `https://www.example.com${pageOf(file)}`;
+    const html = fs.readFileSync(path.join(dir, 'public', file), 'utf8')
+      .replace(/(<a\b[^>]*?\bhref=")([^"]*)(")/g, (all, a, href, b) => {
+        const url = new URL(href, base);
+        return url.origin === 'https://www.example.com' ? `${a}${follow(url.pathname) || href}${b}` : all;
+      })
+      .replace(/(<(?:link|img)\b[^>]*?\b(?:href|src)=")([^"]*)(")/g, (all, a, src, b) => {
+        const at = new URL(src, base).pathname;
+        return `${a}${files.has(at.slice(1)) ? at : `/${src.replace(/^(\.\.?\/)+/, '')}`}${b}`;
+      });
+    write(path.join(dir, 'public'), file, html);
+  }
+  const indexed = [...files].filter((f) => f.endsWith('.html') && f !== '404.html'
+    && !/<meta name="robots" content="noindex">/.test(fs.readFileSync(path.join(dir, 'public', f), 'utf8')));
+  write(dir, 'public/sitemap.xml', [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+    ...indexed.sort().map((f) => `  <url><loc>https://www.example.com${pageOf(f)}</loc></url>`),
+    '</urlset>',
+    '',
+  ].join('\n'));
+}
+
+/** Every file under `dir`, relative, with forward slashes. */
+function listPublic(dir, base = dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory()
+    ? listPublic(path.join(dir, e.name), base)
+    : [path.relative(base, path.join(dir, e.name)).replace(/\\/g, '/')]));
+}
 
 function workspace(t, task) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `h2-suite-${task.id}-`));
@@ -515,15 +784,144 @@ test('a fix that edits the tests instead of the code fails the unchanged-test ch
   assert.match(res.summary, /failed: test\/range\.test\.mjs is unchanged/);
 });
 
+test("version 4's traps: each plausible wrong answer fails the checks that name it", (t) => {
+  const failed = (id, edit) => {
+    const task = MODEL_SUITE.find((x) => x.id === id);
+    const dir = workspace(t, task);
+    SOLUTIONS[id](dir);
+    edit(dir);
+    return task.verify(dir).checks.filter((c) => !c.ok).map((c) => c.name);
+  };
+  const tokens = (dir, edit) => {
+    const file = path.join(dir, 'design/tokens.json');
+    const palette = edit(JSON.parse(fs.readFileSync(file, 'utf8')).color, JSON.parse(fs.readFileSync(path.join(dir, 'design/usage.json'), 'utf8')));
+    write(dir, 'design/tokens.json', JSON.stringify({ color: palette }));
+    write(dir, 'design/contrast.md', Object.values(palette).join('\n'));
+  };
+  // The ratio rounded to two decimals: link's 4.4957 read as 4.50, and left alone.
+  assert.deepEqual(failed('design-contrast-fix', (dir) => tokens(dir, (p) => ({ ...p, link: '#2077d6' }))),
+    ['every pair in design/usage.json meets its level', 'link, at 4.4957:1, falls short of 4.5 and is darkened by the smallest change']);
+  // text-muted fixed against white only, where it also sits on surface-alt.
+  assert.deepEqual(failed('design-contrast-fix', (dir) => tokens(dir, (p, usage) => {
+    const original = { ...p, 'text-muted': '#7c8591' };
+    return { ...p, 'text-muted': fixPalette(original, usage.filter((u) => !(u.foreground === 'text-muted' && u.background === 'surface-alt')))['text-muted'] };
+  })), ['every pair in design/usage.json meets its level', 'text-muted passes on surface-alt too, by the smallest change of lightness']);
+  // Large text held to the 4.5:1 of normal text.
+  assert.deepEqual(failed('design-contrast-fix', (dir) => tokens(dir, (p, usage) => ({ ...p, success: fixPalette({ ...p, success: '#1f9d63' }, usage, { min: { text: 4.5, 'large-text': 4.5, 'non-text': 3 } }).success }))),
+    ['success, large text at 3.46:1, is as it was']);
+  // A safe red, not the same red made darker.
+  assert.deepEqual(failed('design-contrast-fix', (dir) => tokens(dir, (p) => ({ ...p, danger: '#c00000' }))),
+    ['danger keeps its hue and saturation, by the smallest change of lightness']);
+
+  const report = (wrong) => (dir) => write(dir, 'report.json', JSON.stringify(invoiceReport(dir, wrong)));
+  // The usage dates instead of the invoice month.
+  assert.deepEqual(failed('fin-invoice-report', report({ byUsageMonth: true })), [
+    "Compute Engine nets 1407.15: two credits on a row, and 31 August's late usage",
+    "Networking nets 108.50: 30 September's usage is on October's invoice",
+    'the total is 2962.98',
+    'over budget: Cloud Run, Compute Engine, Vertex AI',
+  ]);
+  // Each row rounded to the cent before it is summed: every service drifts, and Cloud Run, whose rows all
+  // sit just above a cent, falls under its budget.
+  const rounded = failed('fin-invoice-report', report({ roundEachRow: true }));
+  for (const name of ['Cloud Run nets 25.45: rounded once, at the end', 'the total is 2962.98', 'over budget: Cloud Run, Compute Engine, Vertex AI']) {
+    assert.ok(rounded.includes(name), name);
+  }
+  // The change judged on gross cost, so BigQuery's promotion credit is missed.
+  assert.deepEqual(failed('fin-invoice-report', report({ grossChange: true })), ['the drivers are Vertex AI and Networking, the largest change first']);
+
+  const tracker = (edit) => (dir) => write(dir, 'tracker.csv', `${edit([...TRACKER_AFTER]).join('\n')}\n`);
+  // The unowned items sorted as text, A-11 before A-4.
+  assert.deepEqual(failed('pm-tracker-update', (dir) => write(dir, 'flags.json', JSON.stringify({ overdue: ['A-8'], unowned: ['A-11', 'A-4'], stale: ['A-4', 'A-8'] }))),
+    ["flags.json: the unowned items are A-4 and the risk register's"]);
+  // A due date moved that its owner never agreed.
+  assert.deepEqual(failed('pm-tracker-update', tracker((rows) => rows.map((r) => r.replace('Raj,2026-11-16', 'Raj,2026-11-09')))),
+    ['A-6 is still due 2026-11-16, and open: its owner did not agree to 9 November']);
+  // A remark that commits no one, taken as an item; and "the end of next week" read as its Sunday.
+  assert.deepEqual(failed('pm-tracker-update', tracker((rows) => [...rows, 'A-14,Look at caching for the reports page,Omar,missing,open,Weekly 2026-11-04,2026-11-04,2026-11-04,'])),
+    ['five new items, A-9 to A-13, open, from the meeting, and none for a remark that commits no one']);
+  assert.deepEqual(failed('pm-tracker-update', tracker((rows) => rows.map((r) => r.replace('Priya,2026-11-13', 'Priya,2026-11-15')))),
+    ['Priya drafts the runbook by the end of next week, 2026-11-13']);
+
+  // A declined invitation taken as busy.
+  assert.deepEqual(failed('ea-meeting-times', (dir) => write(dir, 'options.json', JSON.stringify(meetingTimes(dir, { declinedBlocks: true })))), [
+    'options.json is a list of three times',
+    'Tuesday 3 November, 16:30 UTC: Kenji declined the demo then',
+    "each attendee's local start time is right",
+  ]);
+  // New York and Los Angeles still on daylight saving time, as they were in October.
+  assert.deepEqual(failed('ea-meeting-times', (dir) => {
+    for (const [name, zone] of [['lena', 'Etc/GMT+4'], ['kenji', 'Etc/GMT+7']]) {
+      const file = path.join(dir, 'calendars', `${name}.json`);
+      write(dir, `calendars/${name}.json`, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), zone }));
+    }
+    write(dir, 'options.json', JSON.stringify(meetingTimes(dir)));
+  }), [
+    'Tuesday 3 November, 16:30 UTC: Kenji declined the demo then',
+    "Wednesday 4 November, 16:30 UTC: Kenji's focus time shows as free",
+    "Friday 6 November, 16:30 UTC: Lena's sync is cancelled, and Kenji's panel starts as it ends",
+    "none at 16:00 UTC: Lena's weekday 1:1 is at 11:00 in New York, 16:00 UTC once daylight saving ends on 1 November",
+    "none on Monday or Thursday: Omar's partner call, given in UTC, and his day out of office",
+    "each attendee's local start time is right",
+  ]);
+
+  const review = (edit) => (dir) => {
+    const file = path.join(dir, 'review.json');
+    write(dir, 'review.json', JSON.stringify(edit(JSON.parse(fs.readFileSync(file, 'utf8')))));
+  };
+  // 2028's 29 February forgotten; the holidays forgotten; a quote retyped with curly quotes.
+  assert.deepEqual(failed('legal-contract-dates', review((r) => ({ ...r, non_renewal_notice_by: '2027-12-14' }))), ['notice of non-renewal by 2027-12-15: 2028 is a leap year']);
+  assert.deepEqual(failed('legal-contract-dates', review((r) => ({ ...r, april_2026_credit_claim_by: '2026-05-14' }))),
+    ["April's service credit claimed by 2026-05-18: ten Business Days skip 1 May and 14 May"]);
+  assert.deepEqual(failed('legal-contract-dates', review((r) => ({ ...r, inconsistencies: r.inconsistencies.map((e, i) => (i === 3 ? { ...e, quote: 'Supplier shall process “Customer Data” only' } : e)) }))),
+    ['every quote is copied exactly from contract.md']);
+
+  // The most specific redirect taken for the first that matches.
+  assert.deepEqual(failed('web-moved-pages', (dir) => {
+    for (const f of listPublic(path.join(dir, 'public'))) if (f.endsWith('.html')) write(dir, `public/${f}`, fs.readFileSync(path.join(dir, 'public', f), 'utf8').replace(/href="\/help"/g, 'href="/developers/api"'));
+  }), ['every link to one of our pages is its own root-relative address, reached with no redirect', 'API and Getting started go to /help: the first redirect that matches wins']);
+  // One redirect followed where two chain.
+  assert.deepEqual(failed('web-moved-pages', (dir) => {
+    for (const f of listPublic(path.join(dir, 'public'))) if (f.endsWith('.html')) write(dir, `public/${f}`, fs.readFileSync(path.join(dir, 'public', f), 'utf8').replace(/href="\/company\/overview"/g, 'href="/company"'));
+  }), ['every link to one of our pages is its own root-relative address, reached with no redirect', 'About goes straight to /company/overview, not through /company']);
+  // A relative stylesheet left in a page that lives in a directory; and the 404 page in the sitemap.
+  assert.deepEqual(failed('web-moved-pages', (dir) => write(dir, 'public/news/index.html', fs.readFileSync(path.join(dir, 'public/news/index.html'), 'utf8').replace('href="/css/site.css"', 'href="css/site.css"'))),
+    ['every stylesheet and image is a file in public/']);
+  assert.deepEqual(failed('web-moved-pages', (dir) => write(dir, 'public/sitemap.xml', fs.readFileSync(path.join(dir, 'public/sitemap.xml'), 'utf8').replace('</urlset>', '  <url><loc>https://www.example.com/404</loc></url>\n</urlset>'))),
+    ['the sitemap leaves out the 404 page and the noindex draft, and lists nothing else']);
+});
+
+test('version 4: the reference times, dates and links are what an independent reading of the task gives', (t) => {
+  const task = (id) => MODEL_SUITE.find((x) => x.id === id);
+  const times = meetingTimes(workspace(t, task('ea-meeting-times')));
+  assert.deepEqual(times.map((m) => [m.start_utc, m.local.lena, m.local.omar, m.local.kenji]), [
+    ['2026-11-03T16:30:00Z', '2026-11-03 11:30', '2026-11-03 17:30', '2026-11-03 08:30'],
+    ['2026-11-04T16:30:00Z', '2026-11-04 11:30', '2026-11-04 17:30', '2026-11-04 08:30'],
+    ['2026-11-06T16:30:00Z', '2026-11-06 11:30', '2026-11-06 17:30', '2026-11-06 08:30'],
+  ]);
+  const site = workspace(t, task('web-moved-pages'));
+  fixSite(site);
+  const index = fs.readFileSync(path.join(site, 'public/index.html'), 'utf8');
+  for (const href of ['/pricing', '/company/overview', '/help', '/news/2025/launch']) assert.ok(index.includes(`href="${href}"`), href);
+  const palette = workspace(t, task('design-contrast-fix'));
+  SOLUTIONS['design-contrast-fix'](palette);
+  const fixed = JSON.parse(fs.readFileSync(path.join(palette, 'design/tokens.json'), 'utf8')).color;
+  assert.deepEqual(Object.keys(fixed).filter((k) => fixed[k] !== JSON.parse(task('design-contrast-fix').files['design/tokens.json']).color[k]).sort(),
+    ['border-input', 'danger', 'icon', 'link', 'text-muted', 'text-on-dark']);
+});
+
 test('selection by role and split; a role without tasks runs the generic ones as that role', () => {
-  assert.deepEqual(selectModelTasks({ role: 'data-engineer' }).map((t) => t.id), ['data-join-clean-orders', 'data-tz-months']);
-  assert.deepEqual(selectModelTasks({ role: 'data-engineer', split: 'holdout' }).map((t) => t.id), ['data-tz-months']);
-  const legal = selectModelTasks({ role: 'legal-advisor' });
-  assert.deepEqual(legal.map((t) => [t.id, t.role]), [['gen-meeting-schedule', 'legal-advisor'], ['gen-constrained-brief', 'legal-advisor']]);
-  assert.equal(typeof legal[0].verify, 'function');
+  assert.deepEqual(selectModelTasks({ role: 'software-engineer' }).map((t) => t.id), ['se-csv-rfc4180', 'se-perf-latest-per-id']);
+  assert.deepEqual(selectModelTasks({ role: 'software-engineer', split: 'holdout' }).map((t) => t.id), ['se-perf-latest-per-id']);
+  assert.deepEqual(selectModelTasks({ role: 'legal-advisor' }).map((t) => [t.id, t.role]), [['legal-contract-dates', 'legal-advisor']]);
+  const lab = selectModelTasks({ role: 'paraclete-h2' });
+  assert.deepEqual(lab.map((t) => [t.id, t.role]), [['gen-constrained-brief', 'paraclete-h2']]);
+  assert.equal(typeof lab[0].verify, 'function');
   assert.equal(selectModelTasks().length, MODEL_SUITE.length - RETIRED_TASKS.length, 'a retired task is never selected');
   assert.ok(RETIRED_TASKS.every((id) => MODEL_SUITE.some((t) => t.id === id)), 'and stays defined');
   assert.deepEqual(selectModelTasks({ ids: ['data-revenue-summary'] }).map((t) => t.id), ['data-revenue-summary'], 'unless a run names it');
   const live = selectModelTasks();
-  assert.deepEqual([live.filter((t) => t.split === 'train').length, live.filter((t) => t.split === 'holdout').length], [7, 7]);
+  assert.deepEqual([live.filter((t) => t.split === 'train').length, live.filter((t) => t.split === 'holdout').length], [8, 7]);
+  assert.deepEqual([...new Set(live.map((t) => t.role))].sort(), ['data-engineer', 'designer', 'devops-engineer', 'executive-assistant', 'finance-analyst', 'generic',
+    'legal-advisor', 'project-manager', 'qa-engineer', 'security-engineer', 'software-engineer', 'web-master'], 'every role a person can install has tasks of its own');
 });

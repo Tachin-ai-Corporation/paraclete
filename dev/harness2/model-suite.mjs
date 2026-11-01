@@ -20,16 +20,19 @@ import os from 'node:os';
 import path from 'node:path';
 
 /** The suite's version, recorded in promotion evidence: a change to the tasks makes runs incomparable. */
-export const MODEL_SUITE_VERSION = 3;
+export const MODEL_SUITE_VERSION = 4;
 
 /**
- * Tasks every real-model run of the lab scored perfect (version 1's ten, through the lab's first
- * baselines of 2026-10-27 to 2026-10-30): they measure nothing any more. They stay defined, so records
- * that name them still read, and a run that names one by id still runs it; no other run selects them.
+ * Tasks every real-model run of the lab scored perfect: they measure nothing any more. Version 1's ten,
+ * through the lab's first baselines of 2026-10-27 to 2026-10-30; and five of version 2's six, through
+ * every baseline from 2026-10-28 to 2026-10-31 (the sixth, qa-find-seeded-bugs, still fails some runs).
+ * They stay defined, so records that name them still read, and a run that names one by id still runs
+ * it; no other run selects them.
  */
 export const RETIRED_TASKS = Object.freeze([
   'se-fix-failing-test', 'se-implement-from-spec', 'qa-reproduce-then-fix', 'devops-fix-service-config', 'devops-incident-summary',
   'data-revenue-summary', 'data-dedupe-customers', 'gen-action-items', 'gen-extract-contacts', 'sec-remove-hardcoded-key',
+  'se-lru-cache-ttl', 'data-join-clean-orders', 'devops-crashloop-diagnosis', 'sec-review-and-fix', 'gen-meeting-schedule',
 ]);
 
 /** The splits: `train` reaches the proposer, `holdout` only the evidence. */
@@ -1090,6 +1093,577 @@ function logAnswers(text) {
 const ACCESS_LOG = accessLog();
 const LOG_ANSWERS = Object.freeze(logAnswers(ACCESS_LOG));
 
+// ---- Version 4: the roles version 3 left unmeasured, each task built around a mistake its own skill warns of ----
+
+const PALETTE = Object.freeze({
+  surface: '#ffffff', 'surface-alt': '#f1f3f5', 'surface-dark': '#1e293b',
+  text: '#111827', 'text-muted': '#7c8591', 'text-on-dark': '#64748b', link: '#2077d6',
+  success: '#1f9d63', danger: '#e5484d', 'border-input': '#c4cbd4', icon: '#959ca6', 'heading-accent': '#818cf8',
+});
+
+/** Where each color of the palette is used: on which background, and as what. */
+const PALETTE_USAGE = Object.freeze([
+  { foreground: 'text', background: 'surface', kind: 'text', where: 'body copy' },
+  { foreground: 'text-muted', background: 'surface', kind: 'text', where: 'captions' },
+  { foreground: 'text-muted', background: 'surface-alt', kind: 'text', where: 'table footnotes' },
+  { foreground: 'text-on-dark', background: 'surface-dark', kind: 'text', where: 'footer links' },
+  { foreground: 'link', background: 'surface', kind: 'text', where: 'links in body copy' },
+  { foreground: 'success', background: 'surface', kind: 'large-text', where: 'status headlines, 24px' },
+  { foreground: 'danger', background: 'surface', kind: 'text', where: 'form errors' },
+  { foreground: 'border-input', background: 'surface', kind: 'non-text', where: 'text field borders' },
+  { foreground: 'icon', background: 'surface-alt', kind: 'non-text', where: 'toolbar icons' },
+  { foreground: 'heading-accent', background: 'surface-dark', kind: 'large-text', where: 'section headings on dark, 28px' },
+]);
+
+const CONTRAST_MIN = Object.freeze({ text: 4.5, 'large-text': 3, 'non-text': 3 });
+
+const PALETTE_README = `# palette
+
+\`design/tokens.json\` holds the palette: \`{ "color": { "<token>": "#rrggbb", ... } }\`.
+\`design/usage.json\` lists where each color appears: a \`foreground\` token on a \`background\` token, as
+\`text\`, \`large-text\` or \`non-text\` (icons, borders).
+
+The palette must meet WCAG 2.2 AA everywhere it is used: a contrast ratio of at least 4.5:1 for \`text\`,
+and 3:1 for \`large-text\` and \`non-text\`. The ratio is the exact one WCAG defines, never rounded: 4.497
+is below 4.5.
+
+- Change only the foreground colors that fall short somewhere they are used. The backgrounds, and the
+  colors that pass wherever they appear, stay as they are.
+- Change a color only in its HSL lightness: its hue and saturation stay as they are, as closely as
+  \`#rrggbb\` can hold them.
+- Of the lightness values that pass everywhere the color is used, take the one nearest its present one.
+
+\`design/contrast.md\`: a table with one row per entry of \`design/usage.json\`: the pair, its kind, its ratio
+before and after, and the color the foreground now has.
+`;
+
+/** An sRGB channel made linear, for WCAG 2's relative luminance. */
+const linearChannel = (c) => {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+const luminance = ([r, g, b]) => 0.2126 * linearChannel(r) + 0.7152 * linearChannel(g) + 0.0722 * linearChannel(b);
+
+/** The WCAG contrast ratio of two colors, unrounded. */
+function contrastRatio(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** A #rgb or #rrggbb color as [r, g, b], or null. */
+function rgbOf(text) {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(text ?? '').trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1];
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+}
+
+const hexOf = (rgb) => `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+
+/** A color as [hue in degrees, saturation in percent, lightness in percent]. */
+function hslOf([r, g, b]) {
+  const [R, G, B] = [r / 255, g / 255, b / 255];
+  const max = Math.max(R, G, B);
+  const min = Math.min(R, G, B);
+  const l = (max + min) / 2;
+  const d = max - min;
+  if (d === 0) return [0, 0, l * 100];
+  const h = max === R ? ((G - B) / d) % 6 : max === G ? (B - R) / d + 2 : (R - G) / d + 4;
+  return [(h * 60 + 360) % 360, (d / (1 - Math.abs(2 * l - 1))) * 100, l * 100];
+}
+
+function rgbFromHsl(h, s, l) {
+  const L = l / 100;
+  const c = (1 - Math.abs(2 * L - 1)) * (s / 100);
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = L - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return [r, g, b].map((v) => Math.round((v + m) * 255));
+}
+
+/** Whether `color` as `token` meets every pair it is the foreground of, the backgrounds as in `palette`. */
+const passesWhereUsed = (token, color, palette) => PALETTE_USAGE.filter((p) => p.foreground === token)
+  .every((p) => rgbOf(palette[p.background]) && contrastRatio(color, rgbOf(palette[p.background])) >= CONTRAST_MIN[p.kind]);
+
+/** The HSL lightness nearest a token's own, in steps of 0.05, at which it passes wherever it is used. */
+function nearestPassingLightness(token) {
+  const [h, s, l] = hslOf(rgbOf(PALETTE[token]));
+  for (let step = 0; step <= 2000; step += 1) {
+    for (const L of [l - step * 0.05, l + step * 0.05]) {
+      if (L >= 0 && L <= 100 && passesWhereUsed(token, rgbFromHsl(h, s, L), PALETTE)) return L;
+    }
+  }
+  return null;
+}
+
+/** Where a color sits against the line of an original's hue and saturation: the nearest lightness on it, and how far a channel is off it there. */
+function onHueLine(color, original) {
+  const [h, s] = hslOf(original);
+  let best = { lightness: 0, off: Infinity };
+  for (let step = 0; step <= 2000; step += 1) {
+    const off = Math.max(...rgbFromHsl(h, s, step * 0.05).map((v, i) => Math.abs(v - color[i])));
+    if (off < best.off) best = { lightness: step * 0.05, off };
+  }
+  return best;
+}
+
+/** The colors that fall short somewhere, each with the lightness the palette's rules ask for. */
+const PALETTE_FIXES = Object.freeze(Object.fromEntries(Object.keys(PALETTE)
+  .filter((t) => !passesWhereUsed(t, rgbOf(PALETTE[t]), PALETTE))
+  .map((t) => [t, nearestPassingLightness(t)])));
+
+/**
+ * The billing task's Cloud Billing export: one row per service, project and day, from 1 August to
+ * 4 October 2026, in EUR. Compute Engine's development rows carry two credits; August's last day of
+ * Compute Engine is billed on September's invoice, and September's last day of networking on
+ * October's; BigQuery's September usage grows, but a one-off promotion credit takes it below August;
+ * Cloud Run's rows sit a fraction of a cent off the cent, so rounding each row first loses money;
+ * Vertex AI starts in September; and the invoice's tax, an adjustment and its rounding are rows of
+ * their own. Deterministic.
+ */
+function billingExport() {
+  const rand = seededRandom(20261101);
+  const between = (lo, hi) => lo + rand() * (hi - lo);
+  const money = (n) => Number(n.toFixed(6));
+  const rows = [];
+  const add = (r) => rows.push({ project: 'shop-prod', cost_type: 'regular', credits: [], ...r });
+  const DAY = 86400000;
+  const first = Date.UTC(2026, 7, 1);
+  const iso = (d) => d.toISOString().replace('.000Z', 'Z');
+  for (let d = 0; d < 65; d += 1) {
+    const start = new Date(first + d * DAY);
+    const usage = { usage_start_time: iso(start), usage_end_time: iso(new Date(first + (d + 1) * DAY)) };
+    const ym = `${start.getUTCFullYear()}${String(start.getUTCMonth() + 1).padStart(2, '0')}`;
+    const sept = ym === '202609';
+    const compute = (project, lo, hi) => {
+      const cost = money(between(lo, hi));
+      const credits = [{ name: 'Sustained use discount', amount: money(-cost * 0.08), type: 'SUSTAINED_USAGE_DISCOUNT' }];
+      if (project === 'shop-dev') credits.push({ name: 'Free tier', amount: -0.75, type: 'FREE_TIER' });
+      return { service: 'Compute Engine', sku: 'N2 Instance Core running in Frankfurt', project, cost, credits };
+    };
+    const lateAugust = ym === '202608' && start.getUTCDate() === 31;
+    add({ ...usage, ...compute('shop-prod', 38, 42), invoice_month: lateAugust ? '202609' : ym });
+    add({ ...usage, ...compute('shop-dev', 9, 11), invoice_month: lateAugust ? '202609' : ym });
+    add({ ...usage, service: 'Cloud Storage', sku: 'Standard Storage Frankfurt', cost: money(between(6, 7)), invoice_month: ym });
+    add({ ...usage, service: 'BigQuery', sku: 'Analysis', cost: money(sept ? between(16.5, 17.5) : between(11.5, 12.5)), invoice_month: ym });
+    for (const project of ['shop-prod', 'shop-dev']) {
+      add({ ...usage, service: 'Cloud Run', sku: 'CPU Allocation Time', project, cost: money(0.4137 + Math.floor(rand() * 3) / 100), invoice_month: ym });
+    }
+    if (start.getTime() >= Date.UTC(2026, 8, 10)) add({ ...usage, service: 'Vertex AI', sku: 'Online prediction', cost: money(between(20, 25)), invoice_month: ym });
+    const lateSeptember = sept && start.getUTCDate() === 30;
+    add({ ...usage, service: 'Networking', sku: 'Network Internet Egress Europe', cost: money(sept ? between(3.5, 4) : between(4.6, 5)), invoice_month: lateSeptember ? '202610' : ym });
+  }
+  const at = (day) => ({ usage_start_time: `2026-${day}T00:00:00Z`, usage_end_time: iso(new Date(Date.parse(`2026-${day}T00:00:00Z`) + DAY)) });
+  add({ ...at('09-15'), service: 'BigQuery', sku: 'Analysis', cost: 0, invoice_month: '202609', credits: [{ name: 'Startup program', amount: -150, type: 'PROMOTION' }] });
+  add({ ...at('09-30'), service: 'Cloud Storage', sku: 'Standard Storage Frankfurt', cost: -12.4, invoice_month: '202609', cost_type: 'adjustment' });
+  add({ ...at('08-31'), service: 'Invoice', sku: 'Tax', project: '', cost: 371.42, invoice_month: '202608', cost_type: 'tax' });
+  add({ ...at('09-30'), service: 'Invoice', sku: 'Tax', project: '', cost: 398.17, invoice_month: '202609', cost_type: 'tax' });
+  add({ ...at('09-30'), service: 'Invoice', sku: 'Rounding', project: '', cost: 0.003, invoice_month: '202609', cost_type: 'rounding_error' });
+  const quoted = (s) => `"${String(s).replace(/"/g, '""')}"`;
+  const header = 'service,sku,project,usage_start_time,usage_end_time,invoice_month,cost_type,cost,currency,credits';
+  return `${header}\n${rows.map((r) => [r.service, r.sku, r.project, r.usage_start_time, r.usage_end_time, r.invoice_month, r.cost_type, r.cost, 'EUR', quoted(JSON.stringify(r.credits))].join(',')).join('\n')}\n`;
+}
+
+const BILLING_BUDGET = 'service,budget\nCompute Engine,1400\nCloud Storage,200\nBigQuery,400\nCloud Run,25.30\nVertex AI,450\nNetworking,120\n';
+
+const BILLING_README = `# September invoice
+
+\`billing/export.csv\` is our Cloud Billing export: one row per service, SKU, project and day. Amounts are in
+the export's \`currency\`. \`credits\` is a JSON list of the row's credits, each with a negative \`amount\`.
+\`billing/budget.csv\` is each service's budget for September 2026.
+
+Write \`report.json\` for the September 2026 invoice, the rows whose \`invoice_month\` is \`202609\`:
+
+    {
+      "currency": "...",
+      "services": { "<service>": { "cost": 0, "credits": 0, "net": 0 }, ... },
+      "tax": 0, "adjustments": 0, "rounding": 0, "total": 0,
+      "drivers": ["<service>", ...],
+      "over_budget": ["<service>", ...]
+    }
+
+- \`services\`: for each service, its \`regular\` rows (\`cost_type\`): the sum of their \`cost\`, the sum of
+  their credits, and \`net\`, the two together.
+- \`tax\`, \`adjustments\` and \`rounding\`: the rows whose \`cost_type\` is \`tax\`, \`adjustment\` and
+  \`rounding_error\`, each with its credits.
+- \`total\`: everything on the invoice: every service's \`net\`, the tax, the adjustments and the rounding.
+- \`drivers\`: the services whose \`net\` moved by more than 15% from the August 2026 invoice (\`202608\`),
+  and those August's invoice does not have; the largest change in amount first.
+- \`over_budget\`: the services whose \`net\` is over their budget, in alphabetical order.
+- Amounts are rounded to the cent only as they are written.
+`;
+
+/** The billing task's answers, from the export and the budget themselves. */
+function billingAnswers(text, budgetText) {
+  const [header, ...rows] = csvRows(text);
+  const col = Object.fromEntries(header.map((h, i) => [h, i]));
+  const sum = (list) => list.reduce((a, b) => a + b, 0);
+  const lines = rows.map((r) => ({
+    service: r[col.service], month: r[col.invoice_month], type: r[col.cost_type], cost: Number(r[col.cost]),
+    credits: sum(JSON.parse(r[col.credits]).map((c) => c.amount)),
+  }));
+  const regular = (month) => {
+    const out = {};
+    for (const l of lines.filter((x) => x.month === month && x.type === 'regular')) {
+      const s = out[l.service] || (out[l.service] = { cost: 0, credits: 0, net: 0 });
+      s.cost += l.cost;
+      s.credits += l.credits;
+      s.net += l.cost + l.credits;
+    }
+    return out;
+  };
+  const services = regular('202609');
+  const previous = regular('202608');
+  const ofType = (type) => sum(lines.filter((x) => x.month === '202609' && x.type === type).map((x) => x.cost + x.credits));
+  const [tax, adjustments, rounding] = ['tax', 'adjustment', 'rounding_error'].map(ofType);
+  const moves = Object.entries(services).map(([name, s]) => ({ name, change: s.net - (previous[name]?.net || 0), before: previous[name]?.net || 0 }));
+  const budget = Object.fromEntries(csvRows(budgetText).slice(1).map(([name, b]) => [name, Number(b)]));
+  return {
+    services, tax, adjustments, rounding,
+    total: sum(Object.values(services).map((s) => s.net)) + tax + adjustments + rounding,
+    drivers: moves.filter((m) => !m.before || Math.abs(m.change / m.before) > 0.15).sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).map((m) => m.name),
+    overBudget: Object.keys(services).filter((name) => services[name].net > budget[name]).sort(),
+  };
+}
+
+const BILLING_EXPORT = billingExport();
+const BILLING_ANSWERS = Object.freeze(billingAnswers(BILLING_EXPORT, BILLING_BUDGET));
+
+/** What each service's net catches, for its check's name. */
+const BILLING_TRAPS = Object.freeze({
+  'Compute Engine': "two credits on a row, and 31 August's late usage",
+  'Cloud Storage': 'the adjustment is not a regular cost',
+  BigQuery: 'its promotion credit',
+  'Cloud Run': 'rounded once, at the end',
+  'Vertex AI': 'new in September',
+  Networking: "30 September's usage is on October's invoice",
+});
+
+const TRACKER_HEADER = Object.freeze(['ID', 'Action', 'Owner', 'Due', 'Status', 'Source', 'Opened', 'Updated', 'Note']);
+
+const TRACKER_CSV = `${TRACKER_HEADER.join(',')}
+A-1,Send the kickoff deck to the steering group,Lena,2026-10-09,done,Weekly 2026-10-07,2026-10-07,2026-10-09,
+A-2,Prepare the launch checklist,Sam,2026-11-12,open,Weekly 2026-10-14,2026-10-14,2026-10-28,
+A-3,Review the vendor contract,Priya,2026-11-02,open,Weekly 2026-10-21,2026-10-21,2026-10-28,
+A-4,Update the onboarding guide,missing,2026-11-20,open,Weekly 2026-10-07,2026-10-07,2026-10-07,
+A-5,Run the load test on staging,Omar,2026-11-09,open,Weekly 2026-10-21,2026-10-21,2026-10-28,
+A-6,Build the analytics dashboard,Raj,2026-11-16,open,Weekly 2026-10-28,2026-10-28,2026-10-28,
+A-7,Run the customer survey,Lena,2026-11-30,open,Weekly 2026-10-14,2026-10-14,2026-10-21,
+A-8,Collect the security questionnaire answers,Wen,2026-10-30,open,Weekly 2026-10-14,2026-10-14,2026-10-14,
+`;
+
+const TRACKER_NOTES = `# Weekly project meeting, Wednesday 4 November 2026
+
+Attendees: Lena (chair), Sam, Priya, Omar, Raj, Wen
+
+## Updates
+
+- Priya: the vendor contract review is finished and signed off (A-3).
+- Omar can't start the staging load test (A-5) until the staging environment is rebuilt; he is waiting on the infrastructure ticket.
+- Lena asked whether the launch checklist (A-2) could move to Friday 20 November, to fit the new launch date. Sam agreed.
+- Lena would like Raj's analytics dashboard (A-6) a week earlier, by 9 November. Raj said he would try, but couldn't commit to it.
+- Marketing is running its own customer survey, so we're dropping ours (A-7).
+
+## Discussion
+
+- Wen will send the updated vendor list by Friday.
+- Priya will draft the migration runbook by the end of next week.
+- We should refresh the risk register soon.
+- Sam will book the venue for the launch party by the 18th.
+- Omar mentioned he might look at caching for the reports page at some point.
+- Lena: could someone check when the TLS certificate expires? Omar: I'll check it today.
+`;
+
+const TRACKER_README = `# action tracker
+
+\`tracker.csv\` is the project's action tracker: \`${TRACKER_HEADER.join(',')}\`. Dates are YYYY-MM-DD. Status
+is \`open\`, \`done\`, \`blocked\` or \`dropped\`. An unknown owner or due date is \`missing\`, never a guess.
+
+After a meeting, the tracker is updated from its notes:
+
+- **Never delete a row,** and never rewrite an item's ID, Action, Owner, Source or Opened. A change to an
+  item sets its Status, its Note (why it changed) and its Updated (the meeting's date). Its Due changes
+  only when its owner agreed the new date; a date someone asked for without that goes in the Note.
+- **Each new action item** is a new row: the next ID (\`A-<n>\`, in the order the notes give them), the
+  action, its owner, its due date, \`open\`, the meeting as its Source (\`Weekly <date>\`), and the meeting's
+  date as Opened and Updated.
+- An action item is a commitment a named person made, or a request someone accepted. "We", "the team"
+  or "someone" is no owner: \`missing\`. A remark that commits no one ("might", "at some point") is not an
+  item.
+- A due date in words is read against the meeting's date: a weekday is the next one after the meeting,
+  "today" is the meeting's date, "the 18th" is the next 18th, and "the end of next week" is the Friday
+  of the week after the meeting's (weeks start on Monday). "Soon" or "later" is \`missing\`.
+
+\`flags.json\`, as of the meeting's date, from the tracker as updated:
+
+    { "overdue": [...], "unowned": [...], "stale": [...] }
+
+- \`overdue\`: open items whose Due is before the meeting's date.
+- \`unowned\`: open or blocked items whose Owner is \`missing\`.
+- \`stale\`: open items whose Updated is more than 14 days before the meeting's date.
+
+Each list holds IDs in the order of their number (A-2 before A-10).
+`;
+
+const CONTRACT_MD = `# Software Subscription Agreement
+
+This Software Subscription Agreement (the "Agreement") is made between Northwind Analytics Ltd ("Supplier") and Harbor Logistics GmbH ("Customer").
+
+## 1. Definitions
+
+1.1 "Effective Date" means 15 March 2026.
+
+1.2 "Services" means the hosted analytics platform described in Schedule A.
+
+1.3 "Subscription Fee" means the annual fee set out in Schedule A.
+
+1.4 "Customer Materials" means data, files and other content that Customer uploads to the Services.
+
+1.5 "Business Day" means a day other than a Saturday, a Sunday or a public holiday in Germany.
+
+## 2. Services
+
+2.1 Supplier shall provide the Services to Customer from the Effective Date.
+
+2.2 Supplier shall deliver an implementation plan to Customer within forty-five (45) days after the Effective Date.
+
+## 3. Term and renewal
+
+3.1 This Agreement starts on the Effective Date and continues for twenty-four (24) months (the "Initial Term").
+
+3.2 After the Initial Term, this Agreement renews automatically for successive periods of twelve (12) months (each a "Renewal Term"), unless either party gives written notice of non-renewal at least ninety (90) days before the end of the then-current term.
+
+## 4. Fees and payment
+
+4.1 Customer shall pay the Subscription Fee of EUR 48,000 per year, invoiced annually in advance.
+
+4.2 Customer shall pay each invoice within thirty (30) days of the invoice date.
+
+4.3 Supplier may increase the Subscription Fee for a Renewal Term by written notice given at least sixty (60) days before that Renewal Term starts.
+
+## 5. Service levels
+
+5.1 Supplier shall make the Services available 99.5% of the time in each calendar month.
+
+5.2 Customer may claim a service credit for a month by notice given within ten (10) Business Days after the end of that month.
+
+## 6. Confidentiality
+
+6.1 Each party shall keep the other party's confidential information confidential during the term of this Agreement and for three (3) years after it ends.
+
+## 7. Data protection
+
+7.1 Supplier shall process Customer Data only on Customer's documented instructions.
+
+7.2 Supplier shall notify Customer of any personal data breach affecting Customer Materials within seventy-two (72) hours after becoming aware of it.
+
+## 8. Liability
+
+8.1 Each party's total liability under this Agreement is limited to the fees paid in the twelve (12) months before the claim.
+
+## 9. Termination
+
+9.1 Either party may terminate this Agreement by written notice if the other party commits a material breach.
+
+9.2 A party may terminate under Section 9.1 only if the breach is not cured within thirty (30) days after notice of it, following the procedure in Section 9.4.
+
+9.3 Sections 6, 8 and 10 survive termination.
+
+## 10. General
+
+10.1 This Agreement is governed by the laws of England and Wales.
+
+10.2 Notices under this Agreement must be in writing and sent to the addresses in Schedule B.
+
+## Schedule A: Services and fees
+
+Services: the Northwind hosted analytics platform, Business edition, for up to 50 users.
+
+Subscription Fee: EUR 45,000 per year.
+`;
+
+const CONTRACT_README = `# contract review
+
+Write \`review.json\` from \`contract.md\`:
+
+    {
+      "initial_term_ends": "YYYY-MM-DD",
+      "non_renewal_notice_by": "YYYY-MM-DD",
+      "price_increase_notice_by": "YYYY-MM-DD",
+      "implementation_plan_due": "YYYY-MM-DD",
+      "april_2026_credit_claim_by": "YYYY-MM-DD",
+      "inconsistencies": [{ "sections": ["..."], "issue": "...", "quote": "..." }]
+    }
+
+- \`initial_term_ends\`: the last day of the Initial Term. A period of N months from a date ends on the day
+  before the same date N months later.
+- \`non_renewal_notice_by\`: the last day a notice of non-renewal can be given for the agreement to end with
+  its Initial Term.
+- \`price_increase_notice_by\`: the last day Supplier can give notice of a price increase for the first
+  Renewal Term.
+- \`implementation_plan_due\`: the last day for the implementation plan of Section 2.2.
+- \`april_2026_credit_claim_by\`: the last day Customer can claim a service credit for April 2026.
+- "At least N days before" a date is at the latest that date minus N days; "within N days after" a date
+  ends N days after it. Germany's nationwide public holidays in 2026 that fall on a weekday are 1 January,
+  3 April, 6 April, 1 May, 14 May, 25 May and 25 December.
+- \`inconsistencies\`: every place the document contradicts itself or points at nothing: two provisions
+  that state different amounts for the same thing, a reference to a section or schedule the document does
+  not contain, and a term used as a defined one (capitalized) that the document never defines. \`sections\`
+  says where each is (\`"4.1"\`, \`"Schedule A"\`); \`quote\` is the text at issue, copied exactly from
+  \`contract.md\`.
+
+\`contract.md\` is the document under review: leave it as it is. This review is an aid for our lawyer, not
+legal advice.
+`;
+
+/** Each attendee's calendar for the meeting-times task. */
+const MEETING_CALENDARS = Object.freeze({
+  'calendars/lena.json': {
+    zone: 'America/New_York',
+    working_hours: { start: '08:30', end: '17:30' },
+    events: [
+      { title: '1:1 with Sam', start: '2026-10-05T11:00', end: '2026-10-05T11:30', repeat: 'weekdays' },
+      { title: 'Dentist', start: '2026-11-04T13:30', end: '2026-11-04T14:30' },
+      { title: 'Budget sync', start: '2026-11-06T11:30', end: '2026-11-06T12:00', status: 'cancelled' },
+    ],
+  },
+  'calendars/omar.json': {
+    zone: 'Europe/Berlin',
+    working_hours: { start: '09:00', end: '18:30' },
+    events: [
+      { title: 'Partner call', start: '2026-11-02T16:45:00Z', end: '2026-11-02T17:15:00Z' },
+      { title: 'Team lunch', start: '2026-11-03T12:00', end: '2026-11-03T13:00' },
+      { title: 'Out of office', date: '2026-11-05' },
+    ],
+  },
+  'calendars/kenji.json': {
+    zone: 'America/Los_Angeles',
+    working_hours: { start: '08:00', end: '17:00' },
+    events: [
+      { title: 'Vendor demo', start: '2026-11-03T08:30', end: '2026-11-03T09:30', response: 'declined' },
+      { title: 'Focus time', start: '2026-11-04T08:00', end: '2026-11-04T10:00', show_as: 'free' },
+      { title: 'Hiring panel', start: '2026-11-06T09:30', end: '2026-11-06T10:30' },
+    ],
+  },
+});
+
+const MEETING_README = `# meeting times
+
+\`calendars/<name>.json\` is each attendee's calendar: their \`zone\` (an IANA time zone), their
+\`working_hours\` (\`start\` and \`end\`, local time, Monday to Friday) and their \`events\`.
+
+- An event's \`start\` and \`end\` are local times in the calendar's zone, unless they end in \`Z\` (UTC). An
+  all-day event has a \`date\` instead, and takes that whole day in the calendar's zone. \`"repeat":
+  "weekdays"\` repeats an event at the same local time every Monday to Friday from its first day.
+- An event blocks its time unless it is cancelled (\`"status": "cancelled"\`), its attendee declined it
+  (\`"response": "declined"\`), or it shows as free (\`"show_as": "free"\`). An event that ends as a time
+  starts, or starts as it ends, does not overlap it.
+- A time works when it starts on the hour or the half hour, lies within every attendee's working hours
+  that day in their own zone, and overlaps no event that blocks for any of them.
+
+Write \`options.json\`: the three earliest times that work, earliest first:
+
+    [{ "start_utc": "2026-...Z", "end_utc": "2026-...Z", "local": { "lena": "YYYY-MM-DD HH:MM", "omar": "...", "kenji": "..." } }, ...]
+
+\`local\` is each attendee's start time in their own zone.
+`;
+
+/** The three times the meeting rules allow (worked out by hand, and checked in the tests with Intl). */
+const MEETING_TIMES = Object.freeze(['2026-11-03', '2026-11-04', '2026-11-06'].map((day) => Object.freeze({
+  start: `${day}T16:30:00Z`,
+  local: Object.freeze({ lena: `${day} 11:30`, omar: `${day} 17:30`, kenji: `${day} 08:30` }),
+})));
+
+const SITE_NAV = '<nav><a href="/">Home</a> <a href="/pricing-2025">Pricing</a> <a href="/news/">News</a> <a href="/about">About</a> <a href="/docs/api">API</a></nav>';
+
+function sitePage(title, body, { head = '', css = 'css/site.css', logo = 'img/logo.svg', nav = SITE_NAV } = {}) {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>${title}</title>
+<link rel="stylesheet" href="${css}">${head}
+</head>
+<body>
+<header><img src="${logo}" alt="Northwind"> ${nav}</header>
+<main>
+${body}
+</main>
+</body>
+</html>
+`;
+}
+
+const SITE_FILES = Object.freeze({
+  'firebase.json': `${JSON.stringify({
+    hosting: {
+      public: 'public',
+      cleanUrls: true,
+      redirects: [
+        { source: '/about', destination: '/company', type: 301 },
+        { source: '/company', destination: '/company/overview', type: 301 },
+        { source: '/docs/**', destination: '/help', type: 301 },
+        { source: '/docs/api', destination: '/developers/api', type: 301 },
+        { source: '/blog/:year/:slug', destination: '/news/:year/:slug', type: 301 },
+        { source: '/pricing-2025', destination: '/pricing', type: 301 },
+      ],
+    },
+  }, null, 2)}\n`,
+  'public/index.html': sitePage('Northwind', '<h1>Analytics for logistics teams</h1>\n<p>Every shipment and every lane, in one place. <a href="/blog/2025/launch">Read about our launch</a>.</p>'),
+  'public/pricing.html': sitePage('Pricing', '<h1>Pricing</h1>\n<p>Plans start at 49 euros a month. The <a href="https://www.example.com/blog/2025/launch">launch post</a> says what each plan includes.</p>'),
+  'public/news/index.html': sitePage('News', '<h1>News</h1>\n<ul>\n<li><a href="2025/launch.html">Launch</a>: Northwind is live.</li>\n</ul>'),
+  'public/news/2025/launch.html': sitePage('Northwind is live', '<h1>Northwind is live</h1>\n<p>Today we open Northwind to every logistics team. <a href="../../about.html">About us</a> | <a href="../index.html">All news</a></p>', { css: '../../css/site.css', logo: '../../img/logo.svg' }),
+  'public/company/overview.html': sitePage('About Northwind', '<h1>About Northwind</h1>\n<p>We build analytics for logistics teams. New here? Start with <a href="/docs/start">Getting started</a>.</p>', { css: '/css/site.css', logo: '/img/logo.svg' }),
+  'public/help.html': sitePage('Help', '<h1>Help</h1>\n<p>Guides and answers for every part of Northwind.</p>'),
+  'public/404.html': sitePage('Page not found', '<h1>Page not found</h1>\n<p><a href="/">Go to the home page</a></p>', { css: '/css/site.css', logo: '/img/logo.svg', nav: '' }),
+  'public/drafts/pricing-v2.html': sitePage('Pricing (draft)', '<h1>Pricing</h1>\n<p>Draft: plans from 39 euros a month.</p>', { head: '\n<meta name="robots" content="noindex">', css: '/css/site.css', logo: '/img/logo.svg' }),
+  'public/css/site.css': 'body { font-family: system-ui, sans-serif; margin: 0 auto; max-width: 48rem; }\n',
+  'public/img/logo.svg': '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="32"><text x="0" y="24">Northwind</text></svg>\n',
+});
+
+const SITE_README = `# site
+
+\`public/\` is the site's source, served by Firebase Hosting as \`firebase.json\` says. With \`cleanUrls\`,
+\`/news/2025/launch\` serves \`public/news/2025/launch.html\`, a page's address with \`.html\` redirects to the
+one without it, and a directory's \`index.html\` is served at the directory's address with its trailing
+slash (\`/news/\`). Hosting applies the first redirect in \`redirects\` whose \`source\` matches (\`:name\` is one
+path segment, \`**\` any number of them) before it serves any file.
+
+Several pages moved, and the redirects keep their old addresses working. Fix the site:
+
+- Every link (\`<a href>\`) to one of our pages, written relative, root-relative or on
+  \`https://www.example.com\`, points straight at that page's own address: root-relative, its path without
+  \`.html\` (for a directory's index, the directory's path with its trailing slash), reached with no redirect.
+- Every stylesheet and image a page loads (\`<link href>\`, \`<img src>\`) is a file in \`public/\`.
+- \`public/sitemap.xml\` lists, each as a \`<url><loc>\`, the full address (\`https://www.example.com\` and the
+  page's own address) of every page a search engine should index: not the 404 page, and not a page marked
+  \`<meta name="robots" content="noindex">\`.
+
+Leave \`firebase.json\`, and the text of every page, as they are.
+`;
+
+/** A page's own address on the site, from its file under public/: `/`, `/news/`, `/news/2025/launch`. */
+const sitePath = (rel) => `/${rel.replace(/(^|\/)index\.html$/, '$1').replace(/\.html$/, '')}`;
+const SITE_PAGES = Object.freeze(Object.keys(SITE_FILES).filter((f) => f.startsWith('public/') && f.endsWith('.html')).map((f) => f.slice('public/'.length)));
+const SITE_INDEXED = Object.freeze(['/', '/pricing', '/news/', '/news/2025/launch', '/company/overview', '/help']);
+
+/** A page's text as a reader sees it: tags dropped, spaces collapsed. */
+const pageText = (html) => String(html).replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+/** A page's links, with their text, and the stylesheets and images it loads. */
+function pageRefs(html) {
+  const links = [...String(html).matchAll(/<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>([\s\S]*?)<\/a>/gi)].map((m) => ({ href: m[2].trim(), text: pageText(m[3]) }));
+  const assets = [...String(html).matchAll(/<(?:link|img|script)\b[^>]*?\b(?:href|src)\s*=\s*(["'])(.*?)\1/gi)].map((m) => m[2].trim());
+  return { links, assets };
+}
+
+/** A link's path on the site, or null when it leads elsewhere. */
+function sitePathOf(href, page) {
+  if (/^(mailto:|tel:|#)/i.test(href)) return null;
+  const url = new URL(href, `https://www.example.com${sitePath(page)}`);
+  return url.origin === 'https://www.example.com' ? url.pathname : null;
+}
+
 /** Whether every create or update in `actions` comes after those of what it needs, and every delete after the deletes of what needs it. */
 function planOrderHolds(actions) {
   const at = new Map(actions.map((a, i) => [a, i]));
@@ -1694,6 +2268,223 @@ export const MODEL_SUITE = Object.freeze([
         check('no other upstream', ok && Object.keys(errors).every((up) => up in want.errors_by_upstream)),
         check(`the top clients are ${want.top_clients.join(', ')}`, JSON.stringify(value?.top_clients) === JSON.stringify(want.top_clients), `got ${JSON.stringify(value?.top_clients)}`),
         check(`the slowest path is ${want.slowest_path}`, value?.slowest_path === want.slowest_path, `got ${JSON.stringify(value?.slowest_path)}`),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'design-contrast-fix',
+    role: 'designer',
+    split: 'train',
+    prompt: "Make our palette accessible: every color pair in design/usage.json must meet WCAG 2.2 AA for its kind. Fix design/tokens.json exactly as README.md says, and write design/contrast.md with each pair's ratio before and after.",
+    files: {
+      'README.md': PALETTE_README,
+      'design/tokens.json': `${JSON.stringify({ color: PALETTE }, null, 2)}\n`,
+      'design/usage.json': `${JSON.stringify(PALETTE_USAGE, null, 2)}\n`,
+    },
+    checks: (dir, { original }) => {
+      const { ok, value } = json(dir, 'design/tokens.json');
+      const given = value?.color && typeof value.color === 'object' ? value.color : {};
+      const now = Object.fromEntries(Object.keys(PALETTE).map((t) => [t, rgbOf(given[t])]));
+      const complete = ok && Object.values(now).every(Boolean);
+      const nowHex = Object.fromEntries(Object.entries(now).map(([t, c]) => [t, c ? hexOf(c) : null]));
+      const same = (...tokens) => tokens.every((t) => nowHex[t] === PALETTE[t]);
+      const short = complete ? PALETTE_USAGE.filter((p) => contrastRatio(now[p.foreground], now[p.background]) < CONTRAST_MIN[p.kind]) : PALETTE_USAGE;
+      const changed = Object.keys(PALETTE).filter((t) => nowHex[t] && nowHex[t] !== PALETTE[t]);
+      const audit = (read(dir, 'design/contrast.md') || '').toLowerCase();
+      const fixed = (token, name) => {
+        if (!complete) return check(name, false, 'design/tokens.json does not hold every color');
+        const line = onHueLine(now[token], rgbOf(PALETTE[token]));
+        const want = PALETTE_FIXES[token];
+        return check(name, passesWhereUsed(token, now[token], nowHex) && line.off <= 2 && Math.abs(line.lightness - want) <= 2,
+          `got ${nowHex[token]}: lightness ${line.lightness.toFixed(1)}, ${line.off} off its hue and saturation; the nearest lightness that passes is ${want.toFixed(1)}`);
+      };
+      return [
+        check('design/tokens.json is JSON with every color', complete),
+        check('every pair in design/usage.json meets its level', complete && short.length === 0, short.map((p) => `${p.foreground} on ${p.background}`).join(', ')),
+        check('the backgrounds are as they were', same('surface', 'surface-alt', 'surface-dark')),
+        check('success, large text at 3.46:1, is as it was', same('success')),
+        check('text and heading-accent, which pass, are as they were', same('text', 'heading-accent')),
+        fixed('text-muted', 'text-muted passes on surface-alt too, by the smallest change of lightness'),
+        fixed('text-on-dark', 'text-on-dark, on a dark background, is lightened by the smallest change'),
+        fixed('link', 'link, at 4.4957:1, falls short of 4.5 and is darkened by the smallest change'),
+        fixed('danger', 'danger keeps its hue and saturation, by the smallest change of lightness'),
+        fixed('border-input', 'border-input meets 3:1 as non-text, by the smallest change of lightness'),
+        fixed('icon', 'icon meets 3:1 on surface-alt, by the smallest change of lightness'),
+        check('design/usage.json is unchanged', sameText(read(dir, 'design/usage.json'), original('design/usage.json'))),
+        check('design/contrast.md gives each changed color', changed.length > 0 && changed.every((t) => audit.includes(nowHex[t])), changed.filter((t) => !audit.includes(nowHex[t])).join(', ')),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'fin-invoice-report',
+    role: 'finance-analyst',
+    split: 'train',
+    prompt: 'Write report.json for our September 2026 Google Cloud invoice from the billing export in billing/, exactly as README.md defines it.',
+    files: { 'README.md': BILLING_README, 'billing/export.csv': BILLING_EXPORT, 'billing/budget.csv': BILLING_BUDGET },
+    checks: (dir) => {
+      const { ok, value } = json(dir, 'report.json');
+      const services = value?.services && typeof value.services === 'object' ? value.services : {};
+      const want = BILLING_ANSWERS;
+      const got = (v) => `got ${JSON.stringify(v)}`;
+      return [
+        check('report.json is JSON', ok && value !== null && typeof value === 'object'),
+        check('the currency is EUR', value?.currency === 'EUR', got(value?.currency)),
+        check('the services are the six with regular costs', JSON.stringify(Object.keys(services).sort()) === JSON.stringify(Object.keys(want.services).sort()), got(Object.keys(services))),
+        ...Object.entries(want.services).map(([name, s]) => check(`${name} nets ${s.net.toFixed(2)}: ${BILLING_TRAPS[name]}`, near(services[name]?.net, s.net), got(services[name]?.net))),
+        check(`tax ${want.tax.toFixed(2)} and adjustments ${want.adjustments.toFixed(2)}, each on its own line`, near(value?.tax, want.tax) && near(value?.adjustments, want.adjustments), got([value?.tax, value?.adjustments])),
+        check(`the total is ${want.total.toFixed(2)}`, near(value?.total, want.total), got(value?.total)),
+        check(`the drivers are ${want.drivers.join(' and ')}, the largest change first`, JSON.stringify(value?.drivers) === JSON.stringify(want.drivers), got(value?.drivers)),
+        check(`over budget: ${want.overBudget.join(', ')}`, JSON.stringify(value?.over_budget) === JSON.stringify(want.overBudget), got(value?.over_budget)),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'pm-tracker-update',
+    role: 'project-manager',
+    split: 'train',
+    prompt: "Update tracker.csv, our action tracker, from the notes of the weekly meeting of 4 November 2026 in notes/2026-11-04-weekly.md, following the tracker's rules in README.md, and write flags.json as README.md describes.",
+    files: { 'README.md': TRACKER_README, 'tracker.csv': TRACKER_CSV, 'notes/2026-11-04-weekly.md': TRACKER_NOTES },
+    checks: (dir) => {
+      const rowsOf = (text) => csvRows(text).slice(1).map((r) => Object.fromEntries(TRACKER_HEADER.map((h, i) => [h, String(r[i] ?? '').trim()])));
+      const text = read(dir, 'tracker.csv');
+      const header = (csvRows(text)[0] || []).map((h) => h.trim()).join(',');
+      const items = rowsOf(text);
+      const before = rowsOf(TRACKER_CSV);
+      const byId = new Map(items.map((i) => [i.ID, i]));
+      const item = (id) => byId.get(id) || {};
+      const lower = (s) => String(s ?? '').toLowerCase();
+      const meeting = '2026-11-04';
+      const asWas = (id) => byId.has(id) && TRACKER_HEADER.every((h) => item(id)[h] === before.find((b) => b.ID === id)[h]);
+      const fresh = items.filter((i) => !before.some((b) => b.ID === i.ID));
+      const find = (re) => fresh.find((i) => re.test(i.Action)) || {};
+      const owes = (re, owner, due) => lower(find(re).Owner) === owner && find(re).Due === due;
+      const risk = find(/risk register/i);
+      const { value: flags } = json(dir, 'flags.json');
+      const flagged = (key) => JSON.stringify(Array.isArray(flags?.[key]) ? flags[key].map((x) => String(x).trim()) : null);
+      const byNumber = (ids) => [...ids].sort((a, b) => Number(a.slice(2)) - Number(b.slice(2)));
+      const got = (v) => `got ${JSON.stringify(v)}`;
+      return [
+        check('tracker.csv keeps its header and every row, with ID, Action, Owner, Source and Opened as they were', header === TRACKER_HEADER.join(',')
+          && before.every((b) => byId.has(b.ID) && ['Action', 'Owner', 'Source', 'Opened'].every((h) => item(b.ID)[h] === b[h]))),
+        check('A-3 is done', lower(item('A-3').Status) === 'done', got(item('A-3').Status)),
+        check('A-5 is blocked, with a note', lower(item('A-5').Status) === 'blocked' && Boolean(item('A-5').Note), got(item('A-5').Status)),
+        check('A-7 is dropped, with a note', lower(item('A-7').Status) === 'dropped' && Boolean(item('A-7').Note), got(item('A-7').Status)),
+        check('A-2 is due 2026-11-20: its owner agreed', item('A-2').Due === '2026-11-20', got(item('A-2').Due)),
+        check('A-6 is still due 2026-11-16, and open: its owner did not agree to 9 November', item('A-6').Due === '2026-11-16' && lower(item('A-6').Status) === 'open', got([item('A-6').Due, item('A-6').Status])),
+        check('A-2, A-3, A-5 and A-7 were updated on 2026-11-04, and A-1, A-4 and A-8 are as they were',
+          ['A-2', 'A-3', 'A-5', 'A-7'].every((id) => item(id).Updated === meeting) && ['A-1', 'A-4', 'A-8'].every(asWas)),
+        check('five new items, A-9 to A-13, open, from the meeting, and none for a remark that commits no one', fresh.length === 5
+          && JSON.stringify(byNumber(fresh.map((i) => i.ID))) === JSON.stringify(['A-9', 'A-10', 'A-11', 'A-12', 'A-13'])
+          && fresh.every((i) => lower(i.Status) === 'open' && i.Opened === meeting && i.Updated === meeting && i.Source.includes(meeting)), got(fresh.map((i) => `${i.ID} ${i.Action}`))),
+        check('Wen sends the vendor list by Friday, 2026-11-06', owes(/vendor list/i, 'wen', '2026-11-06'), got(find(/vendor list/i).Due)),
+        check('Priya drafts the runbook by the end of next week, 2026-11-13', owes(/runbook/i, 'priya', '2026-11-13'), got(find(/runbook/i).Due)),
+        check('the risk register has no owner and no due date', lower(risk.Owner) === 'missing' && lower(risk.Due) === 'missing', got([risk.Owner, risk.Due])),
+        check('Sam books the venue by the 18th, 2026-11-18', owes(/venue/i, 'sam', '2026-11-18'), got(find(/venue/i).Due)),
+        check('Omar checks the certificate today, 2026-11-04', owes(/certificate|tls/i, 'omar', meeting), got(find(/certificate|tls/i).Due)),
+        check('flags.json: A-8 is the one overdue item', flagged('overdue') === JSON.stringify(['A-8']), flagged('overdue')),
+        check("flags.json: the unowned items are A-4 and the risk register's", Boolean(risk.ID) && flagged('unowned') === JSON.stringify(byNumber(['A-4', risk.ID])), flagged('unowned')),
+        check('flags.json: the stale items are A-4 and A-8', flagged('stale') === JSON.stringify(['A-4', 'A-8']), flagged('stale')),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'ea-meeting-times',
+    role: 'executive-assistant',
+    split: 'train',
+    prompt: 'Lena wants a 60-minute Q4 pricing review with Omar and Kenji, any time from Monday 2 to Friday 6 November 2026. From their calendars in calendars/, find the three earliest times that work for all three, and write options.json as README.md describes.',
+    files: { 'README.md': MEETING_README, ...Object.fromEntries(Object.entries(MEETING_CALENDARS).map(([f, c]) => [f, `${JSON.stringify(c, null, 2)}\n`])) },
+    checks: (dir) => {
+      const { ok, value } = json(dir, 'options.json');
+      const list = Array.isArray(value) ? value : [];
+      const at = (iso) => (/Z$/.test(String(iso || '')) ? Date.parse(iso) : NaN);
+      const starts = list.map((o) => at(o?.start_utc));
+      const has = (n) => starts.includes(Date.parse(MEETING_TIMES[n].start));
+      const known = starts.length > 0 && starts.every(Number.isFinite);
+      const local = (o, who) => String(o?.local?.[who] ?? '').replace('T', ' ').slice(0, 16);
+      return [
+        check('options.json is a list of three times', ok && list.length === 3, `got ${list.length}`),
+        check('Tuesday 3 November, 16:30 UTC: Kenji declined the demo then', has(0)),
+        check("Wednesday 4 November, 16:30 UTC: Kenji's focus time shows as free", has(1)),
+        check("Friday 6 November, 16:30 UTC: Lena's sync is cancelled, and Kenji's panel starts as it ends", has(2)),
+        check("none at 16:00 UTC: Lena's weekday 1:1 is at 11:00 in New York, 16:00 UTC once daylight saving ends on 1 November",
+          known && !starts.some((t) => new Date(t).toISOString().slice(11, 16) === '16:00')),
+        check("none on Monday or Thursday: Omar's partner call, given in UTC, and his day out of office", known && !starts.some((t) => [1, 4].includes(new Date(t).getUTCDay()))),
+        check('earliest first, each an hour long', known && starts.every((t, i) => (i === 0 || t > starts[i - 1]) && at(list[i]?.end_utc) - t === 3600000)),
+        check("each attendee's local start time is right", list.length === 3 && MEETING_TIMES.every((m, i) => starts[i] === Date.parse(m.start)
+          && ['lena', 'omar', 'kenji'].every((who) => local(list[i], who) === m.local[who])), JSON.stringify(list.map((o) => o?.local ?? null))),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'legal-contract-dates',
+    role: 'legal-advisor',
+    split: 'holdout',
+    prompt: "Review contract.md for our lawyer: work out its key dates, find where it contradicts itself or points at nothing, and write review.json as README.md describes. Don't change the contract.",
+    files: { 'README.md': CONTRACT_README, 'contract.md': CONTRACT_MD },
+    checks: (dir, { original }) => {
+      const { ok, value } = json(dir, 'review.json');
+      const date = (key, want, name) => check(name, String(value?.[key] ?? '').trim() === want, `got ${JSON.stringify(value?.[key] ?? null)}`);
+      const list = Array.isArray(value?.inconsistencies) ? value.inconsistencies : [];
+      const found = (...patterns) => list.some((e) => patterns.every((re) => re.test(JSON.stringify(e))));
+      const flat = (s) => String(s).replace(/\s+/g, ' ').trim();
+      const text = flat(CONTRACT_MD);
+      const misquoted = list.map((e) => String(e?.quote ?? '')).filter((q) => !flat(q) || !text.includes(flat(q)));
+      return [
+        check('review.json is JSON', ok && value !== null && typeof value === 'object'),
+        date('initial_term_ends', '2028-03-14', 'the Initial Term ends on 2028-03-14'),
+        date('non_renewal_notice_by', '2027-12-15', 'notice of non-renewal by 2027-12-15: 2028 is a leap year'),
+        date('price_increase_notice_by', '2028-01-15', 'notice of a price increase by 2028-01-15'),
+        date('implementation_plan_due', '2026-04-29', 'the implementation plan by 2026-04-29'),
+        date('april_2026_credit_claim_by', '2026-05-18', "April's service credit claimed by 2026-05-18: ten Business Days skip 1 May and 14 May"),
+        check('the fee: EUR 48,000 in 4.1, EUR 45,000 in Schedule A', found(/4\.1/, /schedule\s*a\b/i)),
+        check('Section 9.2 refers to a Section 9.4 the agreement does not have', found(/9\.4/)),
+        check('Section 10.2 refers to a Schedule B the agreement does not have', found(/schedule\s*b\b/i)),
+        check('"Customer Data" (7.1) is never defined', found(/customer data/i)),
+        check('every quote is copied exactly from contract.md', list.length > 0 && misquoted.length === 0, misquoted.slice(0, 3).join(' | ')),
+        check('contract.md is unchanged', sameText(read(dir, 'contract.md'), original('contract.md'))),
+      ];
+    },
+  }),
+  defineTask({
+    id: 'web-moved-pages',
+    role: 'web-master',
+    split: 'holdout',
+    prompt: 'Several pages of our site moved, and firebase.json now redirects their old addresses. Fix the links in public/ so that none needs a redirect or misses, as README.md describes, and write public/sitemap.xml.',
+    files: { 'README.md': SITE_README, ...SITE_FILES },
+    checks: (dir, { original }) => {
+      const canonical = new Set(SITE_PAGES.map(sitePath));
+      const refs = SITE_PAGES.map((rel) => {
+        const html = read(dir, `public/${rel}`);
+        return { rel, ...(html === null ? { links: [], assets: [] } : pageRefs(html)) };
+      });
+      const ours = refs.flatMap((p) => p.links.map((l) => ({ ...l, page: p.rel, at: sitePathOf(l.href, p.rel) }))).filter((l) => l.at !== null);
+      const crooked = ours.filter((l) => !(l.href.startsWith('/') && !l.href.startsWith('//') && canonical.has(l.href)));
+      const linksTo = (re, want) => {
+        const named = ours.filter((l) => re.test(l.text));
+        return named.length > 0 && named.every((l) => l.href === want);
+      };
+      const isFile = (at) => {
+        try {
+          return fs.statSync(path.join(dir, 'public', decodeURIComponent(at))).isFile();
+        } catch {
+          return false;
+        }
+      };
+      const broken = refs.flatMap((p) => p.assets.map((a) => ({ page: p.rel, a, at: sitePathOf(a, p.rel) }))).filter((x) => x.at === null || !isFile(x.at));
+      const changedText = SITE_PAGES.filter((rel) => pageText(read(dir, `public/${rel}`) ?? '') !== pageText(original(`public/${rel}`)));
+      const locs = [...(read(dir, 'public/sitemap.xml') || '').matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)].map((m) => m[1]);
+      const indexed = SITE_INDEXED.map((p) => `https://www.example.com${p}`);
+      return [
+        check('firebase.json is unchanged', sameText(read(dir, 'firebase.json'), original('firebase.json'))),
+        check('every page is still there, its text as it was', changedText.length === 0, changedText.join(', ')),
+        check('every link to one of our pages is its own root-relative address, reached with no redirect', ours.length > 0 && crooked.length === 0,
+          crooked.slice(0, 5).map((l) => `${l.page}: ${l.href}`).join(', ')),
+        check('About goes straight to /company/overview, not through /company', linksTo(/^about/i, '/company/overview')),
+        check('API and Getting started go to /help: the first redirect that matches wins', linksTo(/^(api|getting started)$/i, '/help')),
+        check('the launch post is /news/2025/launch, from every page that links to it', linksTo(/launch/i, '/news/2025/launch')),
+        check('every stylesheet and image is a file in public/', broken.length === 0, broken.slice(0, 5).map((x) => `${x.page}: ${x.a}`).join(', ')),
+        check('the sitemap lists every page a search engine should index', indexed.every((u) => locs.includes(u)), `got ${locs.join(', ')}`),
+        check('the sitemap leaves out the 404 page and the noindex draft, and lists nothing else', locs.length > 0 && locs.every((u) => indexed.includes(u)), `got ${locs.join(', ')}`),
       ];
     },
   }),

@@ -160,7 +160,7 @@ test("the product gateway, started from a side's checkout, sends that side's own
 });
 
 test("a real-model rollout runs from the side's checkout, seeds and checks the motor's workspace, and counts its tokens", async (t) => {
-  const task = selectModelTasks({ role: 'data-engineer', split: 'train' })[0];
+  const task = selectModelTasks({ role: 'finance-analyst', split: 'train' })[0];
   const seen = { patches: [], gateways: [] };
   const sides = {
     forPatches(patches) {
