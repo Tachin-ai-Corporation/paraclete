@@ -30,7 +30,7 @@ import { parseEvidenceBlock } from '../harness2/evidence.mjs';
 import { MEASURED_BASE_MARKER, issueTarget, measuredBase, targetProblems } from './baseline.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, pathRefusal, testRefusal } from './config.mjs';
 import { benchCoverageProblems, coverageProblems, regressionProblems } from './cycle.mjs';
-import { impactedTasks, issueModule, loadModules, moduleProblems, ownerOf } from './modules.mjs';
+import { benchReach, impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
 import { REVIEW_BLOCK, doneWhen, judgeReview, parseReview } from './reviewer.mjs';
 import { isRevertBranch, parseRevertBlock, readReverted, revertGuard } from './sentinel.mjs';
 
@@ -183,9 +183,7 @@ export function loopGuard({ pr, files, issue, reverted = null, mainChanged = nul
             problems.push(`what main's changes since ${base.slice(0, 12)} reach could not be read: the repo's files could not be listed`);
             stale = [];
           } else {
-            const modules = loadModules({ files: [...repoFiles, ...moved] });
-            const away = (owner) => owner && ((owner.kind === 'organ' && owner.id !== `organ:${benched}`) || (owner.kind === 'role' && owner.id !== 'role:generic'));
-            stale = moved.filter((p) => !away(ownerOf(p, modules)));
+            stale = benchReach(moved, benched, loadModules({ files: [...repoFiles, ...moved] }));
           }
         } else {
           const reached = new Set(impactedTasks(moved));
