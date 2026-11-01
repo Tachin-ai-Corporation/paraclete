@@ -2892,7 +2892,7 @@ printf '{"repo":"%s","commit":"%s"}\n' "$4" "$2" > "$(dirname "$0")/../release.j
       assert.match(r.line, new RegExp(`upgrade=current checkout=fast-forwarded:${checkout.first.slice(0, 12)}\\.\\.${checkout.second.slice(0, 12)}$`));
       assert.equal(checkout.head(), checkout.second);
       assert.ok(r.calls.includes('runuser paraclete'), 'git runs as the checkout\'s owner');
-      assert.ok(r.calls.includes('pgrep -f -- dev/harness2|harness-(cycle|eval|promote)'));
+      assert.ok(r.calls.includes('pgrep -f -- dev/harness2|(^| )dev/loop/cycle\\.mjs|harness-(cycle|eval|promote)'));
       assert.ok(!`${r.stdout}${r.stderr}`.includes(TOKEN), 'the token never reaches the output');
 
       const again = vm.run(['--harness-checkout', checkout.path], { FAKE_MAIN_HEAD: checkout.second });

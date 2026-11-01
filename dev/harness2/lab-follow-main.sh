@@ -19,8 +19,8 @@
 #      /var/log/paraclete-lab-follow-main-upgrade.log;
 #   4. with --harness-checkout <dir> (the driver only), fast-forwards that checkout to origin/main as its
 #      owner, the paraclete user, and only when it is on main with no changes (untracked files count),
-#      no harness process runs (`pgrep -f` for dev/harness2 and the paraclete-h2 role's three harness
-#      commands), and origin/main contains its HEAD. It never resets, stashes or merges anything else;
+#      no harness process runs (`pgrep -f` for dev/harness2, the global loop's cycle and the
+#      paraclete-h2 role's three harness commands), and origin/main contains its HEAD. It never resets, stashes or merges anything else;
 #   5. prints one line, which the journal keeps: the repository, the installed commit, main's head, the
 #      agent, and what happened to the install and to the checkout.
 # Running it twice is safe: the second run finds everything current, or the lock held.
@@ -47,9 +47,10 @@ HARNESS_USER=paraclete
 UNIT=paraclete-lab-follow-main
 # A mission longer than this no longer holds an upgrade back, counted from the first skip.
 BUSY_LIMIT_SECONDS=$((24 * 60 * 60))
-# What a running harness looks like on the command line: the CLI, or one of the paraclete-h2 role's
-# commands that load it from the checkout.
-HARNESS_PATTERN='dev/harness2|harness-(cycle|eval|promote)'
+# What a running harness looks like on the command line: the CLI, the global loop's cycle (run from the
+# checkout by its relative path; a lane's cycle names its own clone's path, and moving this checkout
+# does not touch it), or one of the paraclete-h2 role's commands that load it from the checkout.
+HARNESS_PATTERN='dev/harness2|(^| )dev/loop/cycle\.mjs|harness-(cycle|eval|promote)'
 
 readonly COMMIT_PATTERN='^[0-9a-f]{40}$'
 readonly REPO_PATTERN='^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9_.-]+$'

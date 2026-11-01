@@ -1,9 +1,10 @@
-// Tests for dev/loop/config.mjs and dev/loop/timer.mjs: which paths a proposal may change, which change
+// Tests for dev/loop/config.mjs, dev/loop/timer.mjs and the loop pattern in dev/harness2/lab-follow-main.sh: which paths a proposal may change, which change
 // the agent's behaviour, the local settings over the defaults, and the timer units a person installs.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { LOOP_DEFAULTS, isBehaviourPath, isCodePath, loadLoopSettings, pathRefusal, testRefusal } from '../../../dev/loop/config.mjs';
-import { LOOP_UNIT, loopUnits, main as timerMain } from '../../../dev/loop/timer.mjs';
+import { LANE_UNIT, LOOP_UNIT, laneUnits, loopUnits, main as timerMain } from '../../../dev/loop/timer.mjs';
 
 test('the referee and secrets are refused; existing tests may only be added to', () => {
   for (const rel of [
@@ -79,4 +80,33 @@ test('the timer units: one cycle as the checkout owner, every few hours, install
   assert.equal(timerMain(['--interval-hours', '12'], { stdout: { write: (s) => { out += s; } }, stderr: { write() {} } }), 0);
   assert.match(out, /OnUnitActiveSec=12h/);
   assert.match(out, /# To install, on the driver:/);
+});
+
+test("a lane's units: a template instance per lane, run in the lane's own clone fast-forwarded to main first", () => {
+  const l = laneUnits({ lane: 'organ:cerebellum', repo: 'your-org/paraclete' });
+  assert.equal(l.slug, 'organ-cerebellum');
+  assert.match(l.service, /^WorkingDirectory=\/var\/lib\/paraclete\/lanes\/%i$/m);
+  assert.match(l.service, /^ExecStartPre=\/usr\/bin\/git -C \/var\/lib\/paraclete\/lanes\/%i pull --ff-only --quiet origin main$/m);
+  assert.match(l.service, /^ExecStart=\/usr\/bin\/node \/var\/lib\/paraclete\/lanes\/%i\/dev\/loop\/cycle\.mjs --lane %i --repo your-org\/paraclete$/m);
+  assert.match(l.service, /^TimeoutStartSec=20h$/m);
+  assert.match(l.timer, /^OnUnitActiveSec=6h$/m);
+  assert.ok(l.setup.some((c) => c === 'sudo -u paraclete git clone --quiet /var/lib/paraclete/harness2-repo /var/lib/paraclete/lanes/organ-cerebellum'));
+  assert.ok(l.setup.some((c) => c.includes('remote set-url origin "$(git -C /var/lib/paraclete/harness2-repo remote get-url origin)"')), 'the remote is copied, never printed');
+  assert.ok(l.setup.some((c) => c.includes('ln -s /var/lib/paraclete/harness2-repo/agent/node_modules')));
+  assert.ok(l.install.some((c) => c.includes(`${LANE_UNIT}@.service`)) && l.install.some((c) => c.includes(`enable --now ${LANE_UNIT}@organ-cerebellum.timer`)));
+  assert.throws(() => laneUnits({}), /--lane names the module/);
+  assert.throws(() => laneUnits({ lane: 'organ:cerebellum', lanesRoot: '/tmp/x y' }), /characters a unit file cannot hold/);
+  let out = '';
+  assert.equal(timerMain(['--lane', 'organ:temporal-memory'], { stdout: { write: (s) => { out += s; } }, stderr: { write() {} } }), 0);
+  assert.match(out, /# To set the lane organ-temporal-memory up, on the driver:/);
+  assert.match(out, /enable --now paraclete-loop-lane@organ-temporal-memory\.timer/);
+});
+
+test("the follow-main timer waits for the global loop's cycle in the harness checkout, never for a lane's", () => {
+  const script = readFileSync(new URL('../../../dev/harness2/lab-follow-main.sh', import.meta.url), 'utf8');
+  const pattern = new RegExp(/^HARNESS_PATTERN='(.+)'$/m.exec(script)[1]);
+  assert.equal(pattern.test('/usr/bin/node dev/loop/cycle.mjs --repo your-org/paraclete'), true, 'the global cycle');
+  assert.equal(pattern.test('/usr/bin/node /var/lib/paraclete/lanes/organ-cerebellum/dev/loop/cycle.mjs --lane organ-cerebellum'), false, "a lane's cycle runs in its own clone");
+  assert.equal(pattern.test('node dev/harness2/cli.mjs eval --real-model'), true);
+  assert.equal(pattern.test('/opt/paraclete/bin/harness-cycle --action health'), true);
 });

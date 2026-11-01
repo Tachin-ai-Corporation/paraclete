@@ -1094,3 +1094,17 @@ test("a bench measurement covers every item and its guard sample, on the bench's
   assert.equal(benchOrgan('role:designer'), null);
   assert.equal(benchOrgan(null), null);
 });
+
+test("a lane is named by its module's id or by its slug, as a systemd instance names it", async (t) => {
+  const scoped = { ...ISSUE, body: 'Steps are lost.\n\n**Done when:**\n- The cortex keeps them.\n\n<!-- loop-module: organ:cortex -->' };
+  const r = repo(t);
+  const bySlug = await cycle(t, r, {
+    gh: fakeGh({ issues: [scoped] }),
+    lane: 'organ-cortex',
+    proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nKeep the steps.\n' }),
+    measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }),
+  }).run();
+  assert.equal(bySlug.action, 'opened', bySlug.reason);
+  assert.match(bySlug.branch, /^loop\/m\/organ-cortex\//);
+  assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).loop.lane, 'organ:cortex', 'recorded by its id');
+});
