@@ -12,8 +12,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  DEFAULT_SPEND_LIMITS, SpendCapReached, createModelRunContext, createSideRoots, createSpendMeter, estimateRollouts,
-  modelAccess, startModelGateway, usageFromLog,
+  DEFAULT_SPEND_LIMITS, SIDE_PRODUCT_MODULES, SpendCapReached, createModelRunContext, createSideRoots, createSpendMeter,
+  estimateRollouts, loadSideProduct, modelAccess, startModelGateway, usageFromLog,
 } from '../../../dev/harness2/model-runs.mjs';
 import { selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
 import { runInProcessBrainRollout, snapshotCandidateConfig, startInProcessFixtureGateway } from '../../../dev/harness2/live-runner.mjs';
@@ -138,6 +138,8 @@ test("the product gateway, started from a side's checkout, sends that side's own
     db: { read: async () => null },
     project: 'your-gcp-project',
     accessToken: 'fixed-token',
+    // This side holds only the files the gateway reads, so its code is the repo's.
+    product: await loadSideProduct(REPO),
     createClients: (o) => {
       created.push(o);
       return { project: o.project, googleLocation: o.googleLocation, anthropicLocation: null, google, anthropic: null };
@@ -204,4 +206,108 @@ test("a real-model rollout runs from the side's checkout, seeds and checks the m
   assert.ok(realModel.meter.summary().tokens > 0, "the brain's telemetry was counted");
   assert.ok(rollout.usageRecords.length > 0);
   assert.match(rollout.evalCritique.improvementPrescription, /ended with \d+\/\d+ checks passed/);
+});
+
+/** A side root whose product modules are stubs that say which side they came from. */
+function stubSide(t, name, { omit = null, without = null } = {}) {
+  const root = tmp(t, `h2-product-${name}-`);
+  const bodies = {
+    'agent/services/brain/main.mjs': `export function buildBrain() { return '${name}-brain'; }\n`,
+    'agent/services/gateway/main.mjs': `export async function buildGateway() { return '${name}-gateway'; }\n`,
+    'agent/gateway/model-clients.mjs': `export function createModelClients() { return '${name}-clients'; }\n`,
+    'agent/storage/collections.mjs': `export const COLLECTIONS = { intake: '${name}-intake' };\nexport const SUBCOLLECTIONS = {};\n`,
+    'agent/storage/firestore.mjs': `export function createClient() { return '${name}-db'; }\n`,
+  };
+  for (const [rel, body] of Object.entries(bodies)) {
+    if (rel === omit) continue;
+    const text = without && rel === without.path ? body.replace(new RegExp(`export (async )?function ${without.name}\\b`), 'function hidden') : body;
+    fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    fs.writeFileSync(path.join(root, rel), text);
+  }
+  return root;
+}
+
+test("a side's product code is imported from that side's root, each side its own", async (t) => {
+  assert.deepEqual(SIDE_PRODUCT_MODULES.map((m) => m.path).sort(), [
+    'agent/gateway/model-clients.mjs', 'agent/services/brain/main.mjs', 'agent/services/gateway/main.mjs',
+    'agent/storage/collections.mjs', 'agent/storage/firestore.mjs',
+  ]);
+  const base = await loadSideProduct(stubSide(t, 'base'));
+  const cand = await loadSideProduct(stubSide(t, 'cand'));
+  assert.equal(base.buildBrain(), 'base-brain');
+  assert.equal(cand.buildBrain(), 'cand-brain', 'the candidate runs its own brain, not the baseline\'s or the harness\'s');
+  assert.equal(await cand.buildGateway(), 'cand-gateway');
+  assert.equal(cand.createModelClients(), 'cand-clients');
+  assert.equal(cand.COLLECTIONS.intake, 'cand-intake');
+  assert.equal(cand.createClient(), 'cand-db');
+
+  // Every product module a real rollout runs exists, with its exports, in an install root of this repo.
+  const repo = await loadSideProduct(REPO);
+  for (const name of ['buildBrain', 'buildGateway', 'createModelClients', 'createClient']) assert.equal(typeof repo[name], 'function', name);
+});
+
+test('a side without a product module, or one that no longer exports what the harness calls, cannot be measured', async (t) => {
+  await assert.rejects(loadSideProduct(stubSide(t, 'gone', { omit: 'agent/services/brain/main.mjs' })), /has no agent\/services\/brain\/main\.mjs/);
+  await assert.rejects(
+    loadSideProduct(stubSide(t, 'renamed', { without: { path: 'agent/services/gateway/main.mjs', name: 'buildGateway' } })),
+    /agent\/services\/gateway\/main\.mjs does not export buildGateway/,
+  );
+  await assert.rejects(loadSideProduct(''), /sideRoot is required/);
+});
+
+test("a real-model rollout runs the side's product code, loaded once per side, and hands it to the side's gateway", async (t) => {
+  const task = selectModelTasks({ role: 'finance-analyst', split: 'train' })[0];
+  const seen = { loads: [], brains: 0, gatewayProducts: [] };
+  const realModel = createModelRunContext({
+    repoRoot: REPO,
+    access: { project: 'your-gcp-project', getAccessToken: async () => 'rollout-token' },
+    sides: { forPatches: () => ({ root: REPO, key: 'k' }), prepareRole: (side, role) => ({ role, launchers: 0, problem: null }), cleanupAll() {} },
+    limits: { maxRollouts: 5 },
+    loadProduct: async (root) => {
+      seen.loads.push(root);
+      const real = await loadSideProduct(root);
+      return { ...real, buildBrain: (...args) => { seen.brains += 1; return real.buildBrain(...args); } };
+    },
+    startGateway: async (o) => {
+      seen.gatewayProducts.push(o.product);
+      return startInProcessFixtureGateway({
+        task, fixture: null, workspaceDir: o.dataRoot, configSnapshot: snapshotCandidateConfig(o.sideRoot, o.role), usageRecords: [],
+      });
+    },
+    timeoutMs: 60_000,
+  });
+  const substrate = await startTier1Substrate();
+  t.after(() => substrate.close());
+  const ctx = { firestoreUrl: substrate.firestoreUrl, gcsUrl: substrate.gcsUrl, firestore: substrate.firestore, gcs: substrate.gcs };
+  await runInProcessBrainRollout(task, ctx, { repoRoot: REPO, realModel });
+  await runInProcessBrainRollout(task, ctx, { repoRoot: REPO, realModel });
+
+  assert.deepEqual(seen.loads, [REPO], 'a side root is imported once for the whole run');
+  assert.equal(seen.brains, 2, "each rollout built the side's brain");
+  assert.equal(seen.gatewayProducts.length, 2);
+  assert.equal(seen.gatewayProducts[0], seen.gatewayProducts[1], 'the gateway gets the same side product');
+  assert.equal(seen.gatewayProducts[0].root, REPO);
+});
+
+test("a candidate whose brain is broken fails its rollout, where the harness's brain would have run", async (t) => {
+  const task = selectModelTasks({ role: 'finance-analyst', split: 'train' })[0];
+  const realModel = createModelRunContext({
+    repoRoot: REPO,
+    access: { project: 'your-gcp-project', getAccessToken: async () => 'rollout-token' },
+    sides: { forPatches: () => ({ root: REPO, key: 'k' }), prepareRole: (side, role) => ({ role, launchers: 0, problem: null }), cleanupAll() {} },
+    loadProduct: async (root) => ({
+      ...(await loadSideProduct(root)),
+      buildBrain: () => { throw new Error('CANDIDATE-BRAIN-BROKEN'); },
+    }),
+    startGateway: async (o) => startInProcessFixtureGateway({
+      task, fixture: null, workspaceDir: o.dataRoot, configSnapshot: snapshotCandidateConfig(o.sideRoot, o.role), usageRecords: [],
+    }),
+    timeoutMs: 60_000,
+  });
+  const substrate = await startTier1Substrate();
+  t.after(() => substrate.close());
+  await assert.rejects(
+    runInProcessBrainRollout(task, { firestoreUrl: substrate.firestoreUrl, gcsUrl: substrate.gcsUrl, firestore: substrate.firestore, gcs: substrate.gcs }, { repoRoot: REPO, realModel }),
+    /CANDIDATE-BRAIN-BROKEN/,
+  );
 });
