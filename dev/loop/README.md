@@ -28,7 +28,7 @@ never changes an instance; it reaches instances only through a release (see "Rel
 
 ## One cycle
 
-`node dev/loop/cycle.mjs [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
+`node dev/loop/cycle.mjs [--lane <module>] [--issue <n> [--retry]] [--repo <owner/name>] [--dry-run] [--json]`
 
 1. **Stops** while the harness is paused (`dev/harness2/PAUSED`, or `PARACLETE_H2_PAUSED`), or while the
    loop is (the repository variable `PARACLETE_LOOP_PAUSED`, set to anything but `0`; read through
@@ -117,6 +117,29 @@ never changes an instance; it reaches instances only through a release (see "Rel
 A `--dry-run` cycle does everything up to the pull request, pushes and comments nothing, and does not
 count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, nothing to do, paused),
 1 when the cycle broke, 2 for a usage mistake.
+
+## Lanes
+
+`node dev/loop/cycle.mjs --lane <module>` runs a cycle for one module of `modules.json` with a lane
+(`organ:cerebellum`, `role:designer`, `skill:drive`): a loop that changes only that module's files
+(`docs/plan/MODULAR_LOOPS.md`). Without `--lane` a cycle is the global loop's, as before.
+
+- **Its issues** are the open `loop` issues that name its module (`<!-- loop-module: <id> -->`); the
+  global loop takes only the ones that name none. A change for one may touch only the module's
+  files (`out-of-module` otherwise, and the Loop guard checks it again).
+- **Its branches** are `loop/m/<lane>/<issue>-<slug>` (`organ:cerebellum` is `organ-cerebellum` there),
+  so its pull requests are told apart from another lane's and from the global loop's.
+- **It waits** only for its own open pull requests, and for reverts: another lane's change reaches
+  other files, and a measurement main's merges made stale is refused by the guard. The global loop,
+  whose changes are not scoped, waits for every loop pull request.
+- **It counts** its own cycles against `maxCyclesPerDay`, and records its lane in each cycle record.
+- **It leaves** the revert, the release and the baseline of the model suite to the global cycle: on a
+  broken main it stops (`main-broken`) and opens nothing, so two cycles never revert one merge.
+- **It plans nothing yet:** its issues are written by a person until each lane has a planner of its
+  own (phase 4 of the plan).
+
+Each lane runs in a checkout of its own: `clearStaleCheckouts` clears every loop checkout of the
+repo it runs in, and two cycles in one repo would clear each other's.
 
 ## The proposer
 
