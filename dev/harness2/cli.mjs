@@ -515,6 +515,8 @@ async function runCliCommand(argv, deps) {
           deps,
         })
       : await runTier1Evaluation({ stage, role: flags.role, tasks, trials, deps });
+    // Too many runs that never ran measure nothing: the run says why instead of passing thin results on.
+    if (evalRes.incomplete) return { ok: false, reason: evalRes.incomplete, ...evalRes };
     return {
       ok: true,
       credo: CAPABILITY_CREDO.name,

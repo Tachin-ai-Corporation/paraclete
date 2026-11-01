@@ -198,9 +198,83 @@ export async function startTier1Substrate(deps = {}) {
 }
 
 /**
+ * How a rollout that throws is treated. A network failure (the metadata server, a model endpoint, a
+ * local fake) is no fault of the side, so the rollout runs again, up to `attempts` times in all, after
+ * `backoffMs` times the attempt (a wait of 30 s, then a minute: long enough to outlast a short outage, short
+ * beside a rollout's minutes); one that still fails is not evaluated, and left out of the run's
+ * results rather than ending the run, as one such error once ended a baseline 3.4 hours in. A run with
+ * more than `maxNotEvaluatedShare` of its rollouts not evaluated is incomplete, and measures nothing.
+ * Any other error is most likely the side's own code failing, so it is a failed run: capability 0, and
+ * one failed check, `the rollout ran`, that says what threw.
+ */
+export const ROLLOUT_RETRY = Object.freeze({ attempts: 3, backoffMs: 30_000, maxNotEvaluatedShare: 0.25 });
+
+const NETWORK_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',
+  'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_CLOSED',
+]);
+const NETWORK_MESSAGE = /\b(fetch failed|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b/;
+
+/**
+ * Whether a rollout's error is a failure of what the rollout runs on, not of the side: a network error
+ * (by its code or message, or its cause's), or a git command that failed while a side was being made.
+ *
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isInfrastructureError(err) {
+  for (let e = err, depth = 0; e && typeof e === 'object' && depth < 5; e = e.cause, depth += 1) {
+    if (NETWORK_CODES.has(e.code)) return true;
+    const message = String(e.message || '');
+    if (NETWORK_MESSAGE.test(message) || /^Command failed: git /.test(message)) return true;
+  }
+  return false;
+}
+
+/** The result of a rollout that threw for a reason of the side's own: it ran, and passed nothing. */
+function failedRollout(err, measured) {
+  const detail = String(err?.message || err).slice(0, 240);
+  return {
+    measured,
+    scripted: false,
+    error: detail,
+    checkScore: 0,
+    fixtureVerification: { ok: false, summary: `the rollout failed: ${detail}`, checks: [{ name: 'the rollout ran', ok: false, detail }] },
+  };
+}
+
+/**
+ * One rollout, run again on an infrastructure error. Returns `{ rollout }` or `{ notEvaluated }`; a
+ * run that reached its spend cap (SpendCapReached, model-runs.mjs) still stops the whole run.
+ */
+async function attemptRollout(run, { task, trial, retry, failedRunsMeasured, sleep, log }) {
+  const label = `${task.id} (trial ${trial})`;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return { rollout: await run() };
+    } catch (err) {
+      if (err?.name === 'SpendCapReached') throw err;
+      const message = String(err?.message || err);
+      if (!isInfrastructureError(err)) {
+        log(`[WARN] ${label} failed: ${message}; it counts as a failed run`);
+        return { rollout: failedRollout(err, failedRunsMeasured) };
+      }
+      if (attempt >= retry.attempts) {
+        log(`[WARN] ${label} failed ${attempt} time(s) on infrastructure (${message}); it is not evaluated`);
+        return { notEvaluated: { taskId: task.id, trial, attempts: attempt, reason: message.slice(0, 300) } };
+      }
+      log(`[WARN] ${label} failed on infrastructure (${message}); running it again (attempt ${attempt + 1} of ${retry.attempts})`);
+      await sleep(retry.backoffMs * attempt);
+    }
+  }
+}
+
+/**
  * Evaluate a candidate harness on Tier-1 hermetic benchmark tasks.
  * Accepts an injectable `runTaskRollout(task, ctx)` executor so tests can run
- * deterministically and live runs can wire the local gateway + brain loop.
+ * deterministically and live runs can wire the local gateway + brain loop. A rollout that throws is
+ * run again or counted as ROLLOUT_RETRY says; the result lists the runs not evaluated, and says the
+ * run is `incomplete` when too many were.
  *
  * @param {object} opts
  * @param {object[]} [opts.tasks]
@@ -208,26 +282,39 @@ export async function startTier1Substrate(deps = {}) {
  * @param {string} [opts.role]
  * @param {(task: object, ctx: object) => Promise<object>} [opts.runTaskRollout]
  * @param {number} [opts.trials]  How many times each task runs (default 1)
+ * @param {boolean} [opts.failedRunsMeasured]  a real-model run: a rollout that fails counts as measured
+ * @param {object} [opts.retry]   ROLLOUT_RETRY, or others
+ * @param {Function} [opts.sleep] (ms) => Promise; a fake in tests
+ * @param {Function} [opts.log]   (line) => void; default the deps' stderr
  * @param {object} [opts.deps]
  */
 export async function runTier1Evaluation(opts = {}) {
   const tasks = opts.tasks || selectBenchmarkTasks({ stage: opts.stage, role: opts.role });
   const trials = Math.max(1, Math.floor(Number(opts.trials) || 1));
   const synthetic = typeof opts.runTaskRollout !== 'function';
+  const retry = { ...ROLLOUT_RETRY, ...(opts.retry || {}) };
+  const sleep = opts.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const log = opts.log || ((line) => (opts.deps?.stderr || process.stderr).write(`${line}\n`));
   const substrate = await startTier1Substrate(opts.deps);
 
   try {
     const trajectories = [];
+    const notEvaluated = [];
     const runs = Array.from({ length: trials }, (_, i) => tasks.map((task) => ({ task, trial: i + 1 }))).flat();
     for (const { task, trial } of runs) {
       let rollout;
       if (typeof opts.runTaskRollout === 'function') {
-        rollout = await opts.runTaskRollout(task, {
+        const outcome = await attemptRollout(() => opts.runTaskRollout(task, {
           firestoreUrl: substrate.firestoreUrl,
           gcsUrl: substrate.gcsUrl,
           firestore: substrate.firestore,
           gcs: substrate.gcs,
-        });
+        }), { task, trial, retry, failedRunsMeasured: Boolean(opts.failedRunsMeasured), sleep, log });
+        if (outcome.notEvaluated) {
+          notEvaluated.push(outcome.notEvaluated);
+          continue;
+        }
+        rollout = outcome.rollout;
       } else {
         // Default dry-run synthetic rollout when no live LLM executor is supplied.
         rollout = {
@@ -291,10 +378,15 @@ export async function runTier1Evaluation(opts = {}) {
     const holdout = trajectories.filter((t) => t.split === 'holdout');
     const train = trajectories.filter((t) => t.split !== 'holdout');
     const summary = aggregateTrajectoryScores(holdout.length && train.length ? train : trajectories, opts.budgets);
+    const share = runs.length ? notEvaluated.length / runs.length : 0;
     return {
       tier: 'tier1',
       trials,
       trajectories,
+      notEvaluated,
+      ...(share > retry.maxNotEvaluatedShare
+        ? { incomplete: `${notEvaluated.length} of ${runs.length} runs failed on infrastructure and were not evaluated (more than ${Math.round(retry.maxNotEvaluatedShare * 100)}%): ${notEvaluated[0].reason}` }
+        : {}),
       summary,
       ...(holdout.length ? { holdoutSummary: aggregateTrajectoryScores(holdout, opts.budgets) } : {}),
     };

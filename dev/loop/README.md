@@ -83,9 +83,14 @@ never changes an instance; it reaches instances only through a release (see "Rel
    `roles/*/` other than `role.json`) is committed and then measured. The model suite runs on main's
    head and on the change, each in a clone of its own (never a worktree of this repo: the measured agent
    runs model-chosen commands for hours), with real-model runs (`node dev/harness2/cli.mjs eval --real-model`,
-   `measure.trials` runs of each task, within `measure.maxRollouts`). The change is refused when it
-   could not be measured, or when any task, the held-out tasks or the whole suite got worse. It does not
-   have to improve the suite: a fix may not show there.
+   `measure.trials` runs of each task, within `measure.maxRollouts`). Each side runs its own code and
+   reads its own files (`dev/harness2/model-runs.mjs` `loadSideProduct`). The sides take turns, task by
+   task, so drift in the model's latency and quota over the hours falls on both. A rollout that fails on
+   infrastructure (the network, a git command) runs again, and one that keeps failing is left out; more
+   than a quarter of a side's runs left out, and that side could not be measured (`ROLLOUT_RETRY` in
+   `dev/harness2/substrate.mjs`). Any other failure of a rollout is a failed run of its side. The change
+   is refused when it could not be measured, or when any task, the held-out tasks or the whole suite got
+   worse. It does not have to improve the suite: a fix may not show there.
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
    and carries the proposer's summary, the tests' result, the review (each point and a

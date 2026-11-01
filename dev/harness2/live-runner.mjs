@@ -1149,6 +1149,10 @@ export async function evaluateLiveTarget(opts = {}) {
     tasks,
     trials: opts.trials,
     runTaskRollout: opts.runTaskRollout || defaultRollout,
+    // A real-model rollout that fails ran the side's own code, so it counts against that side.
+    failedRunsMeasured: Boolean(opts.realModel),
+    ...(opts.deps?.retry ? { retry: opts.deps.retry } : {}),
+    ...(opts.deps?.sleep ? { sleep: opts.deps.sleep } : {}),
     deps: opts.deps,
   });
 
