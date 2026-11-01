@@ -205,9 +205,9 @@ contracts' `vertex.models`, `claude_candidates` included; `running` is the gatew
 Params: none.
 Result: `{ responsibilities: [...], issues: [{ id, reason }], store_error }`, each responsibility
 `{ id, name, schedule, timezone, enabled, next_fire, min_spacing_minutes, instruction, has_process,
-process_steps, triggerable, locked, source, origin, revision, updated_by }`. `origin` is `default`,
-`override` or `agent`. With an unreadable store, the installed defaults are listed and
-`store_error` says why.
+process_steps, steps, triggerable, locked, source, origin, revision, updated_by }`. `steps` is the
+array of step strings from `context.process` (`[]` when none). `origin` is `default`, `override` or
+`agent`. With an unreadable store, the installed defaults are listed and `store_error` says why.
 
 ### `set_responsibility_enabled`
 

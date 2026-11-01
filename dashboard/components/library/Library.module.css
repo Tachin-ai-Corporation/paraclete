@@ -15,6 +15,21 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.steps > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.steps > summary:hover { color: var(--text-secondary); }
+.stepList {
+  margin-top: var(--space-1);
+  padding-left: 1.4em;
+  color: var(--text-secondary);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.stepList li + li { margin-top: 2px; }
 .badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .actions { white-space: nowrap; text-align: right; }
 .actions > * + * { margin-left: var(--space-2); }

@@ -88,8 +88,6 @@ The dashboard works around each of these today; each names where the fix belongs
   merges the two (as `process-ops list` does) would show the whole library. Nothing writes
   `processes/{id}/revisions` yet; the dashboard reads `{ revision|version, name, description,
   narrative, status, who, when }`.
-- **Responsibility steps.** Control's `responsibilities` result carries only a step count and a
-  200-character instruction; return the steps to show them.
 - **Notices.** Messages the agent sends to no thread have no `thread_id` field, so the dashboard reads
   the agent's newest 100 messages to find them (the `sender` + `timestamp` index). Writing
   `thread_id: null` and supporting `IS_NULL` in `query()` would make it an exact query.
