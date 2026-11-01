@@ -18,6 +18,7 @@ developers of this repo, human or AI. Find the row that matches your question.
 | How do I give the agent scheduled work? | [guides/RESPONSIBILITIES.md](guides/RESPONSIBILITIES.md) |
 | What are we building, and in what order? | [plan/BUILD_PLAN.md](plan/BUILD_PLAN.md) |
 | What did an earlier phase leave for a later one? | [plan/OPEN_ITEMS.md](plan/OPEN_ITEMS.md) |
+| How will the self-improvement loop work on several modules at once? | [plan/MODULAR_LOOPS.md](plan/MODULAR_LOOPS.md) |
 | How do I work on this repo? | [../DEVELOPING.md](../DEVELOPING.md) |
 
 **Installed:** no.
