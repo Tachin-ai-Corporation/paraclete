@@ -200,13 +200,14 @@ export async function startTier1Substrate(deps = {}) {
 /**
  * How a rollout that throws is treated. A network failure (the metadata server, a model endpoint, a
  * local fake) is no fault of the side, so the rollout runs again, up to `attempts` times in all, after
- * `backoffMs` times the attempt; one that still fails is not evaluated, and left out of the run's
+ * `backoffMs` times the attempt (a wait of 30 s, then a minute: long enough to outlast a short outage, short
+ * beside a rollout's minutes); one that still fails is not evaluated, and left out of the run's
  * results rather than ending the run, as one such error once ended a baseline 3.4 hours in. A run with
  * more than `maxNotEvaluatedShare` of its rollouts not evaluated is incomplete, and measures nothing.
  * Any other error is most likely the side's own code failing, so it is a failed run: capability 0, and
  * one failed check, `the rollout ran`, that says what threw.
  */
-export const ROLLOUT_RETRY = Object.freeze({ attempts: 3, backoffMs: 5000, maxNotEvaluatedShare: 0.25 });
+export const ROLLOUT_RETRY = Object.freeze({ attempts: 3, backoffMs: 30_000, maxNotEvaluatedShare: 0.25 });
 
 const NETWORK_CODES = new Set([
   'ECONNRESET', 'ECONNREFUSED', 'ECONNABORTED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH',

@@ -541,6 +541,29 @@ test('a measurement that would pass its cap, or whose side cannot be run, measur
   assert.equal(cand.reason, 'the change could not be measured: 5 of 6 runs failed on infrastructure');
 });
 
+test('runs not evaluated are judged over the whole side, not one task call: one in a few is no reason to stop', async () => {
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const issue = { number: 8, title: 't', body: '' };
+  const lost = (taskId) => ({ taskId, trial: 3, attempts: 3, reason: 'fetch failed' });
+  // Each task call returns its runs; for the tasks in `gaps`, one run in three never ran, which is past
+  // the share inside that call (the CLI says incomplete), but not over the side.
+  const evalOn = (gaps) => async (side, args) => {
+    const task = args[args.indexOf('--task') + 1];
+    if (side === 'candidate' && gaps.includes(task)) {
+      return { ok: false, incomplete: 'too few', reason: 'too few', trajectories: taskRuns({ [task]: [1, 1] }), notEvaluated: [lost(task)] };
+    }
+    return { ok: true, trajectories: taskRuns({ [task]: [1, 1, 1] }), notEvaluated: [] };
+  };
+  const ids = ['a', 'b', 'c', 'd'];
+  const one = await measureSides({ evalOn: evalOn(['b']), issue, changedPaths: [], settings, taskIds: ids });
+  assert.equal(one.measured, true, 'one run of twelve left out');
+  assert.deepEqual(one.evidence.perTask.find((t) => t.taskId === 'b').candidate.n, 2);
+  const many = await measureSides({ evalOn: evalOn(['a', 'b', 'c', 'd']), issue, changedPaths: [], settings, taskIds: ids });
+  assert.deepEqual([many.measured, many.reason], [false, 'the change could not be measured: 4 of 12 runs failed on infrastructure and were not evaluated: fetch failed']);
+  const broken = await measureSides({ evalOn: async () => ({ ok: false, reason: 'no model access' }), issue, changedPaths: [], settings, taskIds: ids });
+  assert.equal(broken.reason, "main's head could not be measured: no model access", 'any other refusal still stops it');
+});
+
 test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {
   const prs = [{ number: 5, headRefName: 'loop/7-earlier-try', title: 't' }, { number: 6, headRefName: 'claude/other', title: 'o' }];
   const r = repo(t);

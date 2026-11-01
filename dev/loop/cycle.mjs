@@ -288,7 +288,9 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
  * The sides take turns, task by task, the first side alternating: a measurement takes hours, and the
  * model's latency and quota drift over them, so one side run wholly before the other met different
  * conditions. Each task's call may run each rollout again on an infrastructure error
- * (dev/harness2/substrate.mjs ROLLOUT_RETRY), and its cap leaves room for that.
+ * (dev/harness2/substrate.mjs ROLLOUT_RETRY), and its cap leaves room for that. A run still not
+ * evaluated is left out, and the share of those is judged over the whole side, not one task's call:
+ * one call holds only a few runs, so one bad run would be past the share there.
  *
  * @param {object} o  { evalOn, issue, changedPaths, settings, taskIds, log }
  * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
@@ -304,12 +306,21 @@ export async function measureSides({ evalOn, issue, changedPaths, settings, task
     'eval', '--real-model', '--task', ids.join(','), '--trials', String(trials), '--max-rollouts', String(trials * ids.length * ROLLOUT_RETRY.attempts),
   ]);
   const runs = { baseline: [], candidate: [] };
+  const skipped = { baseline: [], candidate: [] };
   const cannot = (side, why) => (side === 'baseline' ? `main's head could not be measured: ${why}` : `the change could not be measured: ${why}`);
   for (const [i, id] of taskIds.entries()) {
     for (const side of i % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline']) {
       const res = await evalTask(side, [id], runsOf(id));
-      if (!res.ok) return { measured: false, reason: cannot(side, res.reason || 'no result') };
-      runs[side].push(...res.trajectories);
+      // A call too few of whose runs ran is still kept: the side as a whole is judged below.
+      if (!res.ok && !res.incomplete) return { measured: false, reason: cannot(side, res.reason || 'no result') };
+      runs[side].push(...(res.trajectories || []));
+      skipped[side].push(...(res.notEvaluated || []));
+    }
+  }
+  for (const side of ['baseline', 'candidate']) {
+    if (skipped[side].length > planned * ROLLOUT_RETRY.maxNotEvaluatedShare) {
+      const why = `${skipped[side].length} of ${planned} runs failed on infrastructure and were not evaluated: ${skipped[side][0].reason}`;
+      return { measured: false, reason: cannot(side, why) };
     }
   }
   const baseline = { trajectories: runs.baseline };
