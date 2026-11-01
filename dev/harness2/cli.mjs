@@ -21,6 +21,7 @@ import { DEFAULT_EVIDENCE_RULES, buildPromotionEvidence, judgeEvidence } from '.
 import { calibrateMeasurement } from './calibration.mjs';
 import { SpendCapReached, createModelRunContext, estimateRollouts } from './model-runs.mjs';
 import { MODEL_SUITE_VERSION, selectModelTasks } from './model-suite.mjs';
+import { BENCHES, BENCH_VERSION, loadBenchPorts, runBenchItem, selectBenchItems } from './bench.mjs';
 import { pauseState } from './pause.mjs';
 import {
   appendCycleRecord, collectHealthInputs, cycleRecord, formatHealthMarkdown, loopHealth, syncHealthIssues,
@@ -74,6 +75,8 @@ Subcommands:
                                    Run Tier-1 hermetic or live target benchmark evaluation
   judge    [--stage stage1|stage2] [--role <role>] [--judge-committee [models]]
                                    Score target harness rollouts with the Frontier Model Committee (gemini-4-argon + claude-opus-5-5)
+  bench    --real-model --organ cerebellum|temporal-memory [--split train|holdout] [--item <id>[,<id>...]] [--trials <n>]
+                                   Ask one organ directly, through the real model, on its bench's items (bench.mjs)
   canary   [--agent <vm-name>] [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>] [--stage stage1|stage2] [--role <role>]
                                    Run Tier-2 canary evaluation with read-only smoke check, against the lab's canary
                                    (paraclete-h2-canary in the canary's project) unless --agent names another VM.
@@ -339,7 +342,7 @@ export async function runEvolutionLoop(opts = {}) {
 const CYCLE_COMMANDS = new Set(['evolve', 'promote', 'curriculum']);
 
 /** The commands `--real-model` applies to. */
-const REAL_MODEL_COMMANDS = new Set(['eval', 'judge', 'evolve', 'promote', 'curriculum']);
+const REAL_MODEL_COMMANDS = new Set(['eval', 'judge', 'evolve', 'promote', 'curriculum', 'bench']);
 
 function note(deps, line) {
   (deps.stderr || process.stderr).write(`${line}\n`);
@@ -523,6 +526,32 @@ async function runCliCommand(argv, deps) {
       ...(useFrontierJudge ? { committee: judgeCommittee, dimensions: JUDGE_DIMENSIONS } : {}),
       ...evalRes,
     };
+  }
+
+  if (subcommand === 'bench') {
+    // One organ's bench (bench.mjs), on this checkout's code: the organ asked directly, through the
+    // real model, as many times as --trials says.
+    if (!realModel) return { ok: false, reason: 'a bench asks the real model: pass --real-model' };
+    const organ = typeof flags.organ === 'string' ? flags.organ : '';
+    if (!BENCHES[organ]) return { ok: false, reason: `there is no bench for ${organ || 'no organ'}; name one with --organ: ${Object.keys(BENCHES).join(', ')}` };
+    const items = selectBenchItems({ organ, split: flags.split, ids: typeof flags.item === 'string' ? flags.item.split(',') : undefined });
+    if (!items.length) return { ok: false, reason: `the ${organ} bench has no item named ${flags.item}` };
+    const refused = overCap(deps, realModel, items.length * trials);
+    if (refused) return refused;
+    const side = realModel.sides.forPatches({});
+    const product = await realModel.product(side.root);
+    const ports = await (deps.loadBenchPorts || loadBenchPorts)(side.root, organ);
+    const evalRes = await runTier1Evaluation({
+      tasks: items,
+      trials,
+      runTaskRollout: (item) => runBenchItem(item, { sideRoot: side.root, product, ports, realModel, callAgent: deps.benchCallAgent || null }),
+      failedRunsMeasured: true,
+      ...(deps.retry ? { retry: deps.retry } : {}),
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+      deps,
+    });
+    if (evalRes.incomplete) return { ok: false, reason: evalRes.incomplete, organ, benchVersion: BENCH_VERSION, ...evalRes };
+    return { ok: true, organ, benchVersion: BENCH_VERSION, ...evalRes };
   }
 
   if (subcommand === 'canary') {
