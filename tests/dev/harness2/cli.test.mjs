@@ -45,12 +45,12 @@ function fakeContext(limits, record) {
 test('a real-model eval measures every run, scores selection on the training tasks only, and cleans up', async () => {
   const record = { cleanups: 0, contexts: 0 };
   const lines = [];
-  const res = await runCli(['eval', '--real-model', '--role', 'software-engineer'], {
+  const res = await runCli(['eval', '--real-model', '--role', 'devops-engineer'], {
     repoRoot: REPO, createModelRunContext: fakeContext({ maxRollouts: 10 }, record), stderr: { write: (l) => lines.push(l) },
   });
   assert.equal(res.ok, true);
   assert.deepEqual(res.trajectories.map((t) => [t.taskId, t.split, t.measured, t.scripted]),
-    [['se-csv-rfc4180', 'train', true, false], ['se-perf-latest-per-id', 'holdout', true, false]]);
+    [['devops-plan-order', 'train', true, false], ['devops-log-forensics', 'holdout', true, false]]);
   assert.equal(res.summary.count, 1, 'selection sees the training task only');
   assert.equal(res.holdoutSummary.count, 1);
   assert.equal(res.spend.rollouts, 2);
@@ -72,7 +72,7 @@ test('a real-model eval with --task runs the named tasks only, and refuses a nam
 
 test('a real-model run whose estimate is over its cap is refused before it spends anything, and cleans up', async (t) => {
   const record = { cleanups: 0, contexts: 0 };
-  const res = await runCli(['eval', '--real-model', '--role', 'software-engineer', '--max-rollouts', '1'], {
+  const res = await runCli(['eval', '--real-model', '--role', 'devops-engineer', '--max-rollouts', '1'], {
     repoRoot: REPO, createModelRunContext: fakeContext({ maxRollouts: 1 }, record), stderr: quiet,
   });
   assert.equal(res.ok, false);
