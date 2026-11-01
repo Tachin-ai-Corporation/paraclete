@@ -93,6 +93,19 @@ describe('layering: installed defaults, overrides, and the agent\'s own', () => 
     assert.doesNotMatch(reasons, /r-old/, 'a removed record is history, not an issue');
   });
 
+  it('a stored step that is not text keeps its record off the schedule, and says why', () => {
+    const docs = [
+      { id: 'r-standup', mode: 'own', status: 'active', revision: 2, updated_by: 'agent', body: own({ context: { purpose: 'Keep everyone current.', process: [{ step: 'post it' }] } }) },
+      { id: 'r-exec', mode: 'override', status: 'active', revision: 2, updated_by: 'agent', patch: { context: { process: ['gather', 42] } } },
+    ];
+    const { effective, issues } = mergeResponsibilities([installedExec()], docs, opts);
+    assert.deepEqual(effective.map((r) => r.id), ['r-exec']);
+    assert.deepEqual(effective[0].context.process, ['gather', 'synthesize', 'deliver'], 'the default runs instead');
+    const reasons = issues.map((i) => `${i.id}: ${i.reason}`).join('\n');
+    assert.match(reasons, /r-standup: .*context\.process\[0\]: expected string, got object/);
+    assert.match(reasons, /r-exec: .*context\.process\[1\]: expected string, got number/);
+  });
+
   it('an adopted responsibility outlives its default', () => {
     const adopted = { id: 'r-exec', mode: 'own', status: 'active', revision: 1, adopted_from: 'assistant', body: { ...installedExec(), _source: undefined } };
     const { effective } = mergeResponsibilities([], [adopted], opts);
@@ -159,6 +172,22 @@ describe('authoring: planWrite decides every write', () => {
     assert.match(zone.error, /not an IANA zone/);
     const fast = planWrite({ ...base, verb: 'create', id: 'r-fast', input: own({ id: 'r-fast', schedule: '*/10 * * * *' }) });
     assert.match(fast.error, /10 minute\(s\) apart; the floor between two fires is 15/);
+  });
+
+  it('refuses context the scheduler prints and the dashboard lists, unless it is text', () => {
+    const object = planWrite({ ...base, verb: 'create', id: 'r-standup', input: own({ context: { purpose: 'Keep everyone current.', process: ['read the ledger', { step: 'write the digest' }] } }) });
+    assert.equal(object.ok, false);
+    assert.match(object.error, /context\.process\[1\]: expected string, got object/);
+    const blank = planWrite({ ...base, verb: 'update', id: 'r-exec', input: { context: { process: ['gather', ''] } }, installed: installedExec() });
+    assert.match(blank.error, /context\.process\[1\]: length 0 is below the minimum 1/);
+    const files = planWrite({ ...base, verb: 'update', id: 'r-exec', input: { context: { reference_files: 'notes.md' } }, installed: installedExec() });
+    assert.match(files.error, /context\.reference_files: expected array, got string/);
+    const purpose = planWrite({ ...base, verb: 'create', id: 'r-standup', input: own({ context: { purpose: { why: 'digest' }, process: ['post it'] } }) });
+    assert.match(purpose.error, /context\.purpose: expected string, got object/);
+    const cleared = planWrite({ ...base, verb: 'update', id: 'r-exec', input: { context: { reference_files: null } }, installed: installedExec() });
+    assert.equal(cleared.ok, true, 'null clears a field');
+    const extra = planWrite({ ...base, verb: 'create', id: 'r-standup', input: own({ context: { ...own().context, audience: { team: 'ops' } } }) });
+    assert.equal(extra.ok, true, 'guidance of the author\'s own stays open');
   });
 
   it('locked upkeep cannot be changed, disabled, adopted or reset, and nobody can lock their own', () => {

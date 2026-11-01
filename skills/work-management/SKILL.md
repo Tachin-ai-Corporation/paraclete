@@ -66,7 +66,7 @@ put anything the mission needs in the instruction or the project.
 
 A new responsibility needs `id`, `name`, either `schedule` (a five-field cron expression) or `event`
 (`on_complete` or `on_failure`), `instruction`, `success_criteria`, `context.purpose` and
-`context.process` (an array of steps). `timezone` is an IANA zone (default `UTC`); it defaults to
+`context.process` (an array of steps, each one a string). `timezone` is an IANA zone (default `UTC`); it defaults to
 `enabled: true` and `min_spacing_minutes: 30`. Put any identifiers it depends on (folders, documents)
 in a project and set `project_id`; never bury them in the text.
 
