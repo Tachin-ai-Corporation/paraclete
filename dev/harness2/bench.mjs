@@ -21,7 +21,18 @@ import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.
 import { CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS } from './bench-items.mjs';
 
 /** The items' version: a bench's results compare only with results of the same version. */
-export const BENCH_VERSION = 1;
+export const BENCH_VERSION = 2;
+
+/**
+ * Items a version retired: defined, and run only when named. Version 2 retired version 1's
+ * cerebellum pairs and memory items that every run of the first bench baseline judged right
+ * (2026-11-02), keeping two pairs and two items as the floor a change must not break.
+ */
+export const RETIRED_BENCH_ITEMS = Object.freeze([
+  ...['cb-regions-csv', 'cb-invite-date', 'cb-backup-exit', 'cb-summary-path', 'cb-five-incidents', 'cb-invoice-total',
+    'cb-config-untouched', 'cb-word-limit', 'cb-sorted-contacts'].flatMap((id) => [`${id}-clean`, `${id}-defect`]),
+  'mem-client-format', 'mem-deploy-window', 'mem-board-folder', 'mem-copy-review', 'mem-release-freeze', 'mem-key-rotation', 'mem-vendor-renewal',
+]);
 
 /** The benches, by the organ each judges. */
 export const BENCHES = Object.freeze({ cerebellum: CEREBELLUM_ITEMS, 'temporal-memory': MEMORY_ITEMS });
@@ -40,7 +51,7 @@ export const BENCH_PORTS = Object.freeze({
 const BENCH_PROJECT = 'paraclete-bench';
 
 /**
- * The items of one organ's bench, by split or by id.
+ * The items of one organ's bench, by split or by id; a retired item only by its id.
  *
  * @param {object} o
  * @param {string} o.organ
@@ -51,7 +62,7 @@ const BENCH_PROJECT = 'paraclete-bench';
 export function selectBenchItems({ organ, split, ids } = {}) {
   const items = BENCHES[organ];
   if (!items) return [];
-  return items.filter((i) => (!split || i.split === split) && (!ids || ids.includes(i.id)));
+  return items.filter((i) => (!split || i.split === split) && (ids ? ids.includes(i.id) : !RETIRED_BENCH_ITEMS.includes(i.id)));
 }
 
 /**
@@ -81,14 +92,16 @@ export async function loadBenchPorts(sideRoot, organ, { importModule = (url) => 
 /**
  * The checks of a verification: the verdict the item expects, given decisively. A clean item passes
  * when the milestone passes, with a caveat or without; a defective one fails only on a verdict of
- * not met that is not inconclusive (a verifier that never answered caught nothing).
+ * not met that is not inconclusive (a verifier that never answered caught nothing). The check is named
+ * for the kind of work it judges, never for the item's own flaw (bench-items.mjs says why).
  *
  * @returns {Array<{ name: string, ok: boolean, detail?: string }>}
  */
 export function verificationChecks(item, result) {
   const got = result?.inconclusive ? 'no verdict' : result?.passed ? 'pass' : 'fail';
   const ok = item.expect === 'pass' ? got === 'pass' : got === 'fail';
-  return [{ name: `the verifier's verdict is ${item.expect}${item.flaw ? ` (${item.flaw})` : ''}`, ok, ...(ok ? {} : { detail: `got ${got}` }) }];
+  const name = item.expect === 'pass' ? 'the verdict on work that meets its criteria' : `the verdict on work with ${item.kind}`;
+  return [{ name, ok, ...(ok ? {} : { detail: `got ${got}` }) }];
 }
 
 /**
