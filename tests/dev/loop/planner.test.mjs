@@ -269,7 +269,8 @@ test("an organ's lane plans from its bench baseline: a failing training item bec
   assert.equal(issueTarget(body), train.id);
   assert.match(body, /<!-- loop-module: organ:cerebellum -->/);
   assert.match(body, new RegExp(`<!-- loop-plan: bench-cerebellum-${train.id}-v${BENCH_VERSION}-[0-9a-f]{8} -->`));
-  assert.match(body, /failed in 2 of 2 runs: got pass/);
+  assert.match(body, /failed in 2 of 2 runs$/m);
+  assert.doesNotMatch(body, /got pass/, "what a check saw, the organ's own answer, is not quoted");
   assert.equal(doneWhen({ body }).length, 2);
   assert.doesNotMatch(body, new RegExp(train.acceptCriteria.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), "the item's own wording is not quoted");
 
