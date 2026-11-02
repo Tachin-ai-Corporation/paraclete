@@ -79,6 +79,21 @@ test('a baseline is due once a day at most, never again on a head already measur
   assert.equal(baselineDue({ kept: kept(25, 'a'), head: 'b', now: NOW }), true);
   assert.equal(baselineDue({ kept: kept(5, 'a', false), head: 'a', now: NOW }), false, 'a failed attempt is not retried at once');
   assert.equal(baselineDue({ kept: kept(25, 'a', false), head: 'a', now: NOW }), true, 'and is, a day later');
+  assert.equal(baselineDue({ kept: kept(5, 'a', false), head: 'b', now: NOW }), false, 'nor at once on a new head');
+});
+
+test('a new head is measured at once when the kept baseline can plan nothing more', () => {
+  const NOW = new Date('2027-01-21T12:00:00Z');
+  const at = new Date(NOW.getTime() - 5 * 3_600_000).toISOString();
+  const older = { latest: { suiteVersion: MODEL_SUITE_VERSION - 1, commit: 'a' }, attempt: { at, commit: 'a', ok: true } };
+  assert.equal(baselineDue({ kept: older, head: 'b', now: NOW }), true, 'a baseline of another version of the suite');
+  assert.equal(baselineDue({ kept: older, head: 'a', now: NOW }), false, 'never twice on one head');
+  const current = { latest: { suiteVersion: MODEL_SUITE_VERSION, commit: 'a' }, attempt: { at, commit: 'a', ok: true } };
+  assert.equal(baselineDue({ kept: current, head: 'b', now: NOW, stale: true }), true, 'one the caller finds stale');
+  assert.equal(baselineDue({ kept: current, head: 'a', now: NOW, stale: true }), false, 'on a head it has not measured');
+  const failedSince = { ...current, attempt: { at, commit: 'b', ok: false } };
+  assert.equal(baselineDue({ kept: failedSince, head: 'c', now: NOW, stale: true }), true, 'a new head after a failed attempt');
+  assert.equal(baselineDue({ kept: failedSince, head: 'b', now: NOW, stale: true }), false, 'but not the head that failed');
 });
 
 test('the kept file holds the latest summary and the last attempt; a failed attempt keeps the summary before it', (t) => {

@@ -120,13 +120,16 @@ export function writeBaseline({ repoRoot = process.cwd(), kept, summary = null, 
 
 /**
  * Whether a cycle should measure main's head now: never on a head already measured (or tried) with
- * this suite, and at most once in `everyHours`, counted from the last attempt, so a run that fails is
- * not retried every cycle.
+ * this suite, and otherwise once in `everyHours`, counted from the last attempt, so a run that fails is
+ * not retried every cycle. A new head is measured at once when the kept baseline can plan nothing more:
+ * one of another version of the suite (failingTasks reads none of it), or one the caller finds `stale`
+ * (an organ's lane, once what its bench reaches changed on main: planner.mjs benchBaselineCurrent).
  */
-export function baselineDue({ kept, head, now = new Date(), everyHours = 24, version = MODEL_SUITE_VERSION }) {
+export function baselineDue({ kept, head, now = new Date(), everyHours = 24, version = MODEL_SUITE_VERSION, stale = false }) {
   const last = kept?.attempt || null;
   if (!last) return true;
   if (last.commit === head && kept?.latest?.suiteVersion === version) return false;
+  if (last.commit !== head && kept?.latest && (stale || kept.latest.suiteVersion !== version)) return true;
   return now.getTime() - Date.parse(last.at) >= everyHours * 3_600_000;
 }
 
