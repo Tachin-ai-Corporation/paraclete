@@ -416,8 +416,10 @@ done.
       higher, no task or the held-out tasks worse. Since `v2026.10.27.7.1` the legacy harness's scheduled
       cycles (`r-harness-evolution-cycle`, `r-failure-harvest`, `r-harness-closed-loop`) are off: they ran
       without the real model and measured nothing. Since `v2026.10.30.1.1` the model suite's tasks are
-      harder (version 3), and since `v2026.10.31.3.1` every role a person can install has tasks of its
-      own (version 4). The lab was stopped on 2026-11-01. Next:
+      harder (version 3), since `v2026.10.31.3.1` every role a person can install has tasks of its
+      own (version 4), and since `v2026.11.02.6.1` the training tasks apply many exact rules to more
+      than can be checked by eye (version 5): version 4's scored perfect in every run. The lab was
+      stopped on 2026-11-01 and restarted on 2026-11-02 for the modular loops' pilot. Next:
       [MODULAR_LOOPS.md](MODULAR_LOOPS.md), which splits the product into modules (brain organs first,
       then roles, skills and tools), each improved by a loop of its own, in parallel. It starts by
       making a measured run execute the change's own code. After it: tasks that exercise Workspace,

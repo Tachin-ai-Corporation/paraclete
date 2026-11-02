@@ -50,7 +50,7 @@ test('a real-model eval measures every run, scores selection on the training tas
   });
   assert.equal(res.ok, true);
   assert.deepEqual(res.trajectories.map((t) => [t.taskId, t.split, t.measured, t.scripted]),
-    [['devops-plan-order', 'train', true, false], ['devops-log-forensics', 'holdout', true, false]]);
+    [['devops-log-forensics', 'holdout', true, false], ['devops-alert-incidents', 'train', true, false]]);
   assert.equal(res.summary.count, 1, 'selection sees the training task only');
   assert.equal(res.holdoutSummary.count, 1);
   assert.equal(res.spend.rollouts, 2);
@@ -83,10 +83,10 @@ test('a real-model eval whose runs keep failing on infrastructure measures nothi
   });
   assert.equal(res.ok, false);
   assert.match(res.reason, /^2 of 2 runs failed on infrastructure and were not evaluated \(more than 25%\): fetch failed$/);
-  assert.deepEqual(res.notEvaluated.map((r) => [r.taskId, r.attempts]), [['devops-plan-order', 2], ['devops-log-forensics', 2]]);
+  assert.deepEqual(res.notEvaluated.map((r) => [r.taskId, r.attempts]), [['devops-log-forensics', 2], ['devops-alert-incidents', 2]]);
   assert.deepEqual(res.trajectories, []);
   assert.equal(record.cleanups, 1);
-  assert.match(lines.join(''), /devops-plan-order \(trial 1\) failed on infrastructure \(fetch failed\); running it again \(attempt 2 of 2\)/);
+  assert.match(lines.join(''), /devops-log-forensics \(trial 1\) failed on infrastructure \(fetch failed\); running it again \(attempt 2 of 2\)/);
 });
 
 test('a real-model run whose estimate is over its cap is refused before it spends anything, and cleans up', async (t) => {
