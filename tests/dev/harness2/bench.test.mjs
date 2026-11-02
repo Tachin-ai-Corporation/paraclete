@@ -8,8 +8,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  BENCHES, BENCH_PORTS, loadBenchPorts, recallChecks, runBenchItem, selectBenchItems, verificationChecks,
+  BENCHES, BENCH_PORTS, BENCH_VERSION, RETIRED_BENCH_ITEMS, loadBenchPorts, recallChecks, runBenchItem, selectBenchItems, verificationChecks,
 } from '../../../dev/harness2/bench.mjs';
+import { DEFECT_KINDS, RECALL_KEEPS, RECALL_LEAVES } from '../../../dev/harness2/bench-items.mjs';
 import { runCli } from '../../../dev/harness2/cli.mjs';
 import { createModelRunContext, loadSideProduct } from '../../../dev/harness2/model-runs.mjs';
 import { verdict } from '../../agent/services/brain/fake-gateway.mjs';
@@ -42,20 +43,38 @@ test('the items are well formed: unique ids, both splits, and the cerebellum\'s 
     assert.ok(item.query && item.must.length > 0, item.id);
     assert.ok([...item.must, ...item.mustNot].every((m) => m.name && m.re instanceof RegExp), item.id);
   }
+  // A check is named for the kind of mistake it catches, never for its item's facts: a lane's issue
+  // quotes failing checks by name.
+  for (const item of cb) assert.ok(DEFECT_KINDS.includes(item.kind), `${item.id}: ${item.kind}`);
+  for (const item of BENCHES['temporal-memory']) {
+    assert.ok(item.must.every((m) => RECALL_KEEPS.includes(m.name)) && item.mustNot.every((m) => RECALL_LEAVES.includes(m.name)), item.id);
+    const names = [...item.must, ...item.mustNot].map((m) => m.name);
+    assert.equal(new Set(names).size, names.length, `${item.id}: one check a name`);
+  }
   assert.deepEqual(selectBenchItems({ organ: 'cerebellum', ids: ['cb-tests-pass-clean'] }).map((i) => i.id), ['cb-tests-pass-clean']);
   assert.ok(selectBenchItems({ organ: 'cerebellum', split: 'holdout' }).every((i) => i.split === 'holdout'));
   assert.deepEqual(selectBenchItems({ organ: 'cortex' }), []);
+  // Version 2 retired what every run judged right; a retired item runs only when named.
+  assert.equal(BENCH_VERSION, 2);
+  for (const id of RETIRED_BENCH_ITEMS) assert.ok(Object.values(BENCHES).flat().some((i) => i.id === id), `${id} is defined`);
+  assert.ok(selectBenchItems({ organ: 'cerebellum' }).every((i) => !RETIRED_BENCH_ITEMS.includes(i.id)));
+  assert.deepEqual(selectBenchItems({ organ: 'cerebellum', ids: ['cb-regions-csv-defect'] }).map((i) => i.id), ['cb-regions-csv-defect']);
+  assert.deepEqual([selectBenchItems({ organ: 'cerebellum' }).length, selectBenchItems({ organ: 'temporal-memory' }).length], [24, 9]);
+  for (const organ of Object.keys(BENCHES)) {
+    const active = selectBenchItems({ organ });
+    assert.ok(active.some((i) => i.split === 'train') && active.some((i) => i.split === 'holdout'), `${organ}: both splits still run`);
+  }
 });
 
 test('a verdict passes its check only when it is the expected one, given decisively', () => {
-  const clean = { expect: 'pass' };
-  const defect = { expect: 'fail', flaw: 'West is missing' };
+  const clean = { expect: 'pass', kind: 'a row missing' };
+  const defect = { expect: 'fail', kind: 'a row missing', flaw: 'West is missing' };
   assert.equal(verificationChecks(clean, { passed: true, verdict: 'met_with_caveat' })[0].ok, true, 'a pass with a caveat is a pass');
-  assert.deepEqual(verificationChecks(clean, { passed: false })[0], { name: "the verifier's verdict is pass", ok: false, detail: 'got fail' });
+  assert.deepEqual(verificationChecks(clean, { passed: false })[0], { name: 'the verdict on work that meets its criteria', ok: false, detail: 'got fail' });
   assert.equal(verificationChecks(defect, { passed: false, inconclusive: false })[0].ok, true);
   assert.deepEqual(verificationChecks(defect, { passed: false, inconclusive: true })[0], {
-    name: "the verifier's verdict is fail (West is missing)", ok: false, detail: 'got no verdict',
-  }, 'a verifier that never answered caught nothing');
+    name: 'the verdict on work with a row missing', ok: false, detail: 'got no verdict',
+  }, 'a verifier that never answered caught nothing; the flaw itself is not named');
   const item = { must: [{ name: 'says PDF', re: /pdf/i }], mustNot: [{ name: 'leaves out Globex', re: /globex/i }] };
   assert.deepEqual(recallChecks(item, 'Acme wants PDF.').map((c) => c.ok), [true, true, true]);
   assert.deepEqual(recallChecks(item, 'Acme wants PDF; Globex wants Excel.').map((c) => c.ok), [true, true, false]);
