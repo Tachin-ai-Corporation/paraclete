@@ -148,7 +148,9 @@ count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, n
 - **It plans from its own baseline,** when its module is an organ with a bench: with `baseline.enabled`,
   a cycle measures main's head on the organ's bench as often as the global cycle measures the model
   suite (`baseline.everyHours`), confirming a failing training item to `baseline.confirmTrials` runs, and
-  keeps it in `.local/loop/bench-<organ>.json`. When none of its issues waits, the planner turns the worst
+  keeps it in `.local/loop/bench-<organ>.json`. It measures a new head at once, without waiting out the
+  day, once a merge changed what a bench run reaches (the lane's own merge, most often) or the bench's
+  version changed: such a baseline can plan nothing more. When none of its issues waits, the planner turns the worst
   failing training item into one, in code (`planner.mjs` `planLaneIssue`): named for the organ's module,
   targeting the item, quoting only its checks, never planned twice, and only from a bench baseline that
   still describes main (`benchBaselineCurrent`: nothing a bench run reaches changed since). An issue whose
@@ -211,7 +213,8 @@ within `baseline.maxRollouts` (40). A training task that failed a check then run
 `baseline.confirmTrials` (6) runs (`runBaselineEval` in `cycle.mjs`): one failure in two runs is half
 of them, and two of the first three tasks the loop targeted were such chance failures, each costing a
 measurement of hours. It does so at most once in `baseline.everyHours` (24), only when main
-moved since the last, and the cycle stops there, since a baseline takes hours. `baseline.mjs` keeps the
+moved since the last, and the cycle stops there, since a baseline takes hours. A new version of the
+suite is measured on the next new head at once, since a baseline of another version plans nothing. `baseline.mjs` keeps the
 summary in `.local/loop/baseline.json`: per task its capability, and for a training task each check with
 how many runs failed it. A held-out task stays a score, so none of its checks reaches an issue or the
 proposer, and the measurement's held-out check means what it says.

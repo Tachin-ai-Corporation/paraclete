@@ -1160,3 +1160,34 @@ test("an organ's lane baselines its bench when due, plans from it in code, and c
   const closed = await cycle(t, r, { gh: closer, lane: 'organ:cerebellum', settings, baseline: async () => { throw new Error('not due'); } }).run();
   assert.ok(closer.calls.some((a) => a[0] === 'issue' && a[1] === 'close' && a[2] === '9'), closed.reason);
 });
+
+test("an organ's lane measures its bench again at once when a change on main reaches it, not for another organ's", async (t) => {
+  const items = selectBenchItems({ organ: 'cerebellum' });
+  const run = (id, trial) => ({ taskId: id, trial, split: items.find((i) => i.id === id).split, measured: true, checkScore: 1,
+    checks: [{ name: "the verifier's verdict is right", ok: true }] });
+  const benchRuns = { ok: true, trials: 2, trajectories: items.flatMap((i) => [1, 2].map((n) => run(i.id, n))) };
+  const settings = { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } };
+  const r = repo(t);
+  const land = (rel) => {
+    fs.mkdirSync(path.dirname(path.join(r.work, rel)), { recursive: true });
+    fs.writeFileSync(path.join(r.work, rel), 'export const changed = true;\n');
+    git(r.work, 'add', '.');
+    git(r.work, 'commit', '--quiet', '-m', `change ${rel}`);
+    git(r.work, 'push', '--quiet', 'origin', 'main');
+  };
+  let asked = 0;
+  const lane = () => cycle(t, r, { gh: fakeGh({ issues: [] }), lane: 'organ:cerebellum', settings, baseline: async () => { asked += 1; return benchRuns; } }).run();
+  assert.equal((await lane()).action, 'baselined');
+
+  // Another organ's change does not reach the cerebellum's bench: its baseline still describes main.
+  land('agent/organs/temporal-memory/memory.mjs');
+  const idle = await lane();
+  assert.equal(asked, 1, idle.reason);
+  assert.equal(idle.action, 'no-work');
+
+  // The cerebellum's own change does: the next cycle measures main's head again, well within the day.
+  land('agent/organs/cerebellum/verify.mjs');
+  const again = await lane();
+  assert.equal(again.action, 'baselined', again.reason);
+  assert.equal(asked, 2);
+});

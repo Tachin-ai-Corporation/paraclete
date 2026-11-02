@@ -965,7 +965,9 @@ export async function runCycle({
 
   // An organ's lane measures its own weak spots: main's head on the organ's bench, as often as the
   // model suite's baseline and kept beside it (benchBaselinePath), so its planner can turn an item
-  // the organ fails into an issue. A bench runs in minutes, but the cycle still stops there.
+  // the organ fails into an issue. A merge that changes what the bench reaches (the lane's own, most
+  // often) leaves a baseline the planner cannot plan from, so the next cycle measures again at once.
+  // A bench runs in minutes, but the cycle still stops there.
   const organ = benchOrgan(lane);
   if (settings.baseline.enabled && organ) {
     let head = null;
@@ -977,7 +979,8 @@ export async function runCycle({
     }
     const file = benchBaselinePath(organ);
     const kept = readBaseline({ repoRoot, file });
-    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours, version: BENCH_VERSION })) {
+    const stale = Boolean(head && kept.latest) && !benchBaselineCurrent({ repoRoot, summary: kept.latest, organ, execGit }).current;
+    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours, version: BENCH_VERSION, stale })) {
       if (dryRun) {
         log(`[INFO] loop: a dry run: main's head ${head.slice(0, 12)} would be measured on the ${organ}'s bench`);
       } else {
