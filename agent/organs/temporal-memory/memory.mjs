@@ -12,7 +12,7 @@ import { dirname } from 'node:path';
 import { COLLECTIONS } from '../../storage/collections.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { extractCues, recentWorkDigest, searchWork } from './work-recall.mjs';
-import { rankCoreMemory } from './core-memory-rank.mjs';
+import { rankCoreMemory, selectQueryMatches } from './core-memory-rank.mjs';
 import {
   buildMaintenancePrompt, buildProcessMaintenancePrompt, lessonLine, parseMaintenanceResponse,
   shouldMaintainContext, shouldMaintainProcesses,
@@ -172,7 +172,7 @@ export function createMemory({
       const enriched = parts.join('\n');
       const scope = context.scope || 'targeted';
       const cues = context.cues || extractCues(enriched);
-      const terms = cues.slice(0, 4).join(' ').toLowerCase().split(/\s+/).filter(Boolean);
+      const terms = [...new Set(cues.join(' ').toLowerCase().split(/\s+/).filter(Boolean))];
       const now = clock();
 
       const blocks = [];
@@ -180,7 +180,7 @@ export function createMemory({
       if (wm) blocks.push(`## Working Memory (MEMORY.md)\n${wm}`);
 
       const entries = await coreMemory();
-      const matched = terms.length ? rankCoreMemory(entries, terms).slice(0, 10) : [];
+      const matched = selectQueryMatches(entries, terms).slice(0, 10);
       if (matched.length) blocks.push(`## Core Memory (query: ${terms.join(' ')})\n${renderCoreMemory(matched)}`);
       const seen = new Set(matched.map((e) => e.id));
       const since = now - 30 * DAY_MS;
@@ -234,7 +234,7 @@ export function createMemory({
         instruction: scope === 'deep'
           ? `Construct a focused recall package for:\n${enriched}${preloaded}`
           : `Recall all relevant context for:\n${enriched}\n\nIf answering requires work history older or broader than the candidates below, emit exactly {"recall_escalate": true, "cues": [...], "reason": "..."} and nothing else.${preloaded}`,
-        accept_criteria: 'Return relevant memory context, "No relevant context found", or an escalation object',
+        accept_criteria: 'Return only the memory context that directly serves the request (silently omitting unrelated or sibling candidates without naming them), "No relevant context found", or an escalation object',
       });
       if (!first?.success || !first.output) {
         log('INFO', 'recall: no context');
@@ -260,7 +260,7 @@ export function createMemory({
           : '## Deep Work History (180d)\nNo older work matched.';
         const second = await callAgent('temporal-memory', {
           instruction: `Construct a focused recall package (no further escalation) for:\n${enriched}\n\n${PRELOADED_START}\n${candidates}\n\n${deepBlock}\n${PRELOADED_END}`,
-          accept_criteria: 'Return relevant memory context or "No relevant context found"',
+          accept_criteria: 'Return only the memory context that directly serves the request (silently omitting unrelated or sibling candidates without naming them), or "No relevant context found"',
         });
         if (second?.success && second.output && !parseEscalation(toStr(second.output))) {
           return { recalled: toStr(second.output).substring(0, RECALLED_MAX_CHARS) };
