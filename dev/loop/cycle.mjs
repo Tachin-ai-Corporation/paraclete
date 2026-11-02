@@ -624,12 +624,25 @@ export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
 }
 
 /**
+ * Merges main into pull request `number` on GitHub (its update-branch), as the user this runs as, so
+ * its CI and the Loop guard run again. False when it was current already, or in conflict.
+ */
+function updateBranch({ execGh, repo, number, cwd }) {
+  try {
+    execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${number}/update-branch`], cwd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The loop's open pull requests (from `branchPrefix` branches, reverts among them), settled before a
  * cycle measures anything. Each is brought up to date with main (main merged into it, as the user this
  * runs as, so its CI and the Loop guard run again: the merger waits for that rather than close it; one
  * current already, or in conflict, which the merger closes, is left as it is). Then the cycle waits for
- * the merger to merge or close them, looking every `merge.pollMinutes` for at most `merge.waitMinutes`.
- * A change measured while one is open would be measured against a main its merge moves, and the guard
+ * the merger to merge or close them, looking every `merge.pollMinutes` for at most `merge.waitMinutes`,
+ * and bringing each up to date again at every look. A change measured while one is open would be measured against a main its merge moves, and the guard
  * refuses such a change once it does (its loop-measured-base). A state that cannot be read counts as
  * open. A dry run updates nothing and waits for nothing.
  *
@@ -654,14 +667,14 @@ export async function settleLoopPullRequests({ repoRoot, repo, settings, execGh,
     log(`[INFO] loop: a dry run: ${open.map((n) => `#${n}`).join(', ')} would be brought up to date and waited for`);
     return { open: [] };
   }
-  for (const n of open) {
-    try {
-      execGh(['api', '-X', 'PUT', `repos/${repo || '{owner}/{repo}'}/pulls/${n}/update-branch`], repoRoot);
-      log(`[INFO] loop: brought #${n} up to date with main`);
-    } catch {
-      // current already, or in conflict
+  // Brought up to date now and at each look after: a merge from another loop while it waits leaves it
+  // behind main again, and the merger merges only one that holds main's head.
+  const bringUpToDate = (numbers) => {
+    for (const n of numbers) {
+      if (updateBranch({ execGh, repo, number: n, cwd: repoRoot })) log(`[INFO] loop: brought #${n} up to date with main`);
     }
-  }
+  };
+  bringUpToDate(open);
   const stillOpen = (n) => {
     try {
       const { state } = JSON.parse(execGh(['pr', 'view', String(n), ...repoArgs, '--json', 'state'], repoRoot) || '{}');
@@ -675,6 +688,7 @@ export async function settleLoopPullRequests({ repoRoot, repo, settings, execGh,
     open = open.filter(stillOpen);
     if (!open.length || i >= polls) break;
     if (i === 0) log(`[INFO] loop: waiting up to ${settings.merge.waitMinutes} minutes for ${open.map((n) => `#${n}`).join(', ')} to be merged or closed`);
+    else bringUpToDate(open);
     await sleep(settings.merge.pollMinutes * 60_000);
   }
   return { open };
@@ -1226,7 +1240,12 @@ export async function runCycle({
     execGit(['push', '--quiet', '--force-with-lease', '-u', 'origin', branch], worktree);
     const body = pullRequestBody({ issue, summary: proposal.summary, changes, tests, review, behaviour, measurement, version, base });
     const url = execGh(['pr', 'create', ...repoArgs, '--base', 'main', '--head', branch, '--title', subject, '--body', body, '--label', settings.label], worktree);
-    return finish({ action: 'opened', pullRequest: String(url).trim().split('\n').pop(), ...fields });
+    const pullRequest = String(url).trim().split('\n').pop();
+    // An attempt takes hours, and another loop may merge meanwhile: main goes into the pull request
+    // now, so the merger can take it without waiting for the next cycle to bring it up to date.
+    const opened = Number(/\/pull\/(\d+)$/.exec(pullRequest)?.[1]);
+    if (opened && updateBranch({ execGh, repo, number: opened, cwd: worktree })) log(`[INFO] loop: brought #${opened} up to date with main`);
+    return finish({ action: 'opened', pullRequest, ...fields });
   } finally {
     removeCheckout({ repoRoot, root: worktree, links, execGit });
     try {
