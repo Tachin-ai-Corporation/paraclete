@@ -5,10 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { MODEL_SUITE_VERSION } from '../../../dev/harness2/model-suite.mjs';
-import { issueTarget, taskPlanKey } from '../../../dev/loop/baseline.mjs';
+import { BENCH_VERSION, selectBenchItems } from '../../../dev/harness2/bench.mjs';
+import { issueTarget, summarizeBaseline, taskPlanKey } from '../../../dev/loop/baseline.mjs';
 import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
-  PLAN_LIMITS, buildPlanBrief, buildPlanRetryBrief, issueBody, itemKey, main, openItems, parsePlan, planIssue, plannedKeys,
+  PLAN_LIMITS, benchBaselineCurrent, buildPlanBrief, buildPlanRetryBrief, issueBody, itemKey, main, openItems, parsePlan, planIssue, planLaneIssue,
+  plannedKeys,
 } from '../../../dev/loop/planner.mjs';
 import { doneWhen } from '../../../dev/loop/reviewer.mjs';
 
@@ -231,4 +233,63 @@ test('the command: 0 when it planned or would, 1 when not, 2 for a usage mistake
   assert.match(out.text, /^would plan: The dashboard imports the agent constants it copies\n/);
   assert.equal(await main([], deps({ planner: async () => ({ output: '{"skip": "none"}', reason: null }) })), 1);
   assert.equal(await main(['--bogus'], deps({ stderr: { write() {} } })), 2);
+});
+
+/** A bench baseline of the cerebellum at `commit`, with `failing` training items failing a check in every run. */
+function benchSummary({ commit = 'a'.repeat(40), failing = [] } = {}) {
+  const items = selectBenchItems({ organ: 'cerebellum' });
+  const runs = items.flatMap((item) => [1, 2].map((trial) => {
+    const bad = failing.includes(item.id);
+    return {
+      taskId: item.id, trial, split: item.split, measured: true, checkScore: bad ? 0 : 1,
+      checks: [{ name: `the verifier's verdict is ${item.expect}`, ok: !bad, ...(bad ? { detail: 'got pass' } : {}) }],
+    };
+  }));
+  return summarizeBaseline({ trials: 2, trajectories: runs }, { commit, at: '2027-01-21T10:00:00Z', tasks: items, suite: 'bench:cerebellum', version: BENCH_VERSION });
+}
+
+/** git in the checkout, as the bench baseline's currency reads it. */
+const benchGitAt = ({ head, changed = [] }) => (args) => {
+  if (args[0] === 'rev-parse') return head;
+  if (args[0] === 'diff') return changed.join('\n');
+  if (args[0] === 'ls-files') return ['agent/organs/cerebellum/verify.mjs', 'prompts/motor.md', 'agent/gateway/turn-loop.mjs'].join('\n');
+  return '';
+};
+
+test("an organ's lane plans from its bench baseline: a failing training item becomes an issue for its module, targeting the item", () => {
+  const train = selectBenchItems({ organ: 'cerebellum', split: 'train' })[0];
+  const held = selectBenchItems({ organ: 'cerebellum', split: 'holdout' })[0];
+  const summary = benchSummary({ failing: [train.id, held.id] });
+  const gh = fakeGh();
+  const res = planLaneIssue({ repoRoot: '/repo', repo: 'your-org/paraclete', settings, execGh: gh.exec, execGit: benchGitAt({ head: 'a'.repeat(40) }), organ: 'cerebellum', summary });
+  assert.equal(res.issue.number, 77, res.reason);
+  assert.equal(res.plan.target, train.id, 'a held-out item is never planned');
+  assert.equal(res.issue.title, `The cerebellum passes its bench's ${train.id} checks`);
+  const body = gh.calls.find((a) => a[1] === 'create')[gh.calls.find((a) => a[1] === 'create').indexOf('--body') + 1];
+  assert.equal(issueTarget(body), train.id);
+  assert.match(body, /<!-- loop-module: organ:cerebellum -->/);
+  assert.match(body, new RegExp(`<!-- loop-plan: bench-cerebellum-${train.id}-v${BENCH_VERSION}-[0-9a-f]{8} -->`));
+  assert.match(body, /failed in 2 of 2 runs: got pass/);
+  assert.equal(doneWhen({ body }).length, 2);
+  assert.doesNotMatch(body, new RegExp(train.acceptCriteria.slice(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), "the item's own wording is not quoted");
+
+  const planned = fakeGh({ all: [{ body: `<!-- loop-plan: ${res.plan.key} -->` }] });
+  assert.match(planLaneIssue({ repoRoot: '/repo', settings, execGh: planned.exec, execGit: benchGitAt({ head: 'a'.repeat(40) }), organ: 'cerebellum', summary }).reason,
+    /no training item of the cerebellum's bench fails a check in its latest baseline, unplanned/);
+  const full = fakeGh({ open: [{ body: '<!-- loop-module: organ:cerebellum -->' }, { body: '<!-- loop-module: organ:cerebellum -->' }, { body: 'global' }] });
+  assert.match(planLaneIssue({ repoRoot: '/repo', settings, execGh: full.exec, execGit: benchGitAt({ head: 'a'.repeat(40) }), organ: 'cerebellum', summary }).reason,
+    /2 issue\(s\) for organ:cerebellum are open, the planner's limit is 2/, 'only its own issues count against the limit');
+});
+
+test("a bench baseline describes main until main changes what a bench run reaches", () => {
+  const summary = benchSummary({ failing: [selectBenchItems({ organ: 'cerebellum', split: 'train' })[0].id] });
+  const at = (o) => benchBaselineCurrent({ repoRoot: '/repo', summary, organ: 'cerebellum', execGit: benchGitAt({ head: 'b'.repeat(40), ...o }) });
+  assert.deepEqual(benchBaselineCurrent({ repoRoot: '/repo', summary, organ: 'cerebellum', execGit: benchGitAt({ head: summary.commit }) }), { current: true, reason: null });
+  assert.equal(at({ changed: ['prompts/motor.md', 'docs/GLOSSARY.md'] }).current, true, "another organ's file, and nothing the agent reads");
+  assert.match(at({ changed: ['agent/gateway/turn-loop.mjs'] }).reason, /what the cerebellum's bench reaches changed since its baseline of a{12} \(agent\/gateway\/turn-loop\.mjs\)/);
+  const gh = fakeGh();
+  assert.match(planLaneIssue({ repoRoot: '/repo', settings, execGh: gh.exec, execGit: benchGitAt({ head: 'b'.repeat(40), changed: ['agent/organs/cerebellum/verify.mjs'] }), organ: 'cerebellum', summary }).reason,
+    /not planning from the cerebellum's bench baseline: what the cerebellum's bench reaches changed/);
+  assert.equal(gh.calls.some((a) => a[1] === 'create'), false);
+  assert.match(benchBaselineCurrent({ repoRoot: '/repo', summary: null, organ: 'cerebellum', execGit: benchGitAt({ head: 'x' }) }).reason, /there is no bench baseline/);
 });

@@ -1108,3 +1108,55 @@ test("a lane is named by its module's id or by its slug, as a systemd instance n
   assert.match(bySlug.branch, /^loop\/m\/organ-cortex\//);
   assert.equal(readCycleRecords({ repoRoot: r.work }).at(-1).loop.lane, 'organ:cortex', 'recorded by its id');
 });
+
+test("an organ's bench baseline runs the bench's items, then the training items that failed again", async () => {
+  const items = selectBenchItems({ organ: 'cerebellum' });
+  const train = items.find((i) => i.split === 'train');
+  const settings = { ...LOOP_DEFAULTS, baseline: { ...LOOP_DEFAULTS.baseline, trials: 2, confirmTrials: 6 } };
+  const calls = [];
+  const verdictRun = (id, trial, ok) => ({ taskId: id, trial, split: 'train', measured: true, checkScore: ok ? 1 : 0, checks: [{ name: 'the verdict', ok }] });
+  const first = { ok: true, trials: 2, trajectories: [verdictRun(train.id, 1, true), verdictRun(train.id, 2, false)] };
+  const again = { ok: true, trajectories: [1, 2, 3, 4].map((n) => verdictRun(train.id, n, true)) };
+  const answers = [first, again];
+  const res = await runBaselineEval({ evalOn: async (args) => { calls.push(args); return answers[calls.length - 1]; }, settings, organ: 'cerebellum' });
+  assert.deepEqual(calls[0], ['bench', '--real-model', '--organ', 'cerebellum', '--trials', '2', '--max-rollouts', String(items.length * 2 * 3)]);
+  assert.deepEqual(calls[1], ['bench', '--real-model', '--organ', 'cerebellum', '--item', train.id, '--trials', '4', '--max-rollouts', '12']);
+  assert.deepEqual(res.trajectories.map((t) => t.trial), [1, 2, 3, 4, 5, 6]);
+});
+
+test("an organ's lane baselines its bench when due, plans from it in code, and closes a target its bench shows passing", async (t) => {
+  const items = selectBenchItems({ organ: 'cerebellum' });
+  const train = items.find((i) => i.split === 'train');
+  const run = (id, trial, ok) => ({ taskId: id, trial, split: items.find((i) => i.id === id).split, measured: true, checkScore: ok ? 1 : 0,
+    checks: [{ name: "the verifier's verdict is right", ok, ...(ok ? {} : { detail: 'got pass' }) }] });
+  const benchRuns = (failing) => ({ ok: true, trials: 2, trajectories: items.flatMap((i) => [1, 2].map((n) => run(i.id, n, i.id !== failing))) });
+  const settings = { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } };
+  const r = repo(t);
+  const asked = [];
+  const baselined = await cycle(t, r, {
+    gh: fakeGh({ issues: [] }), lane: 'organ:cerebellum', settings,
+    baseline: async (o) => { asked.push(o.organ); return benchRuns(train.id); },
+  }).run();
+  assert.equal(baselined.action, 'baselined', baselined.reason);
+  assert.deepEqual(asked, ['cerebellum']);
+  assert.match(baselined.reason, new RegExp(`measured main's head on the cerebellum's bench \\(${items.length} items\\); training items failing a check: ${train.id}`));
+  const kept = JSON.parse(fs.readFileSync(path.join(r.work, '.local/loop/bench-cerebellum.json'), 'utf8'));
+  assert.equal(kept.latest.suite, 'bench:cerebellum');
+  assert.equal(fs.existsSync(path.join(r.work, '.local/loop/baseline.json')), false, "the model suite's baseline is the global cycle's");
+
+  // The bench is measured on this head already: the next cycle plans from it, and takes the issue.
+  const gh = fakeGh({ issues: [] });
+  const planned = await cycle(t, r, { gh, lane: 'organ:cerebellum', settings, baseline: async () => { throw new Error('not due'); } }).run();
+  assert.equal(planned.planned, true, planned.reason);
+  assert.equal(planned.issue, 8);
+  assert.match(planned.branch, /^loop\/m\/organ-cerebellum\/8-/);
+  const created = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'create');
+  assert.match(created[created.indexOf('--body') + 1], new RegExp(`<!-- loop-target: ${train.id} -->[\\s\\S]*<!-- loop-module: organ:cerebellum -->`));
+
+  // An issue whose target item the current bench baseline shows passing is closed, not attempted.
+  const other = items.filter((i) => i.split === 'train')[1];
+  const solved = { ...ISSUE, number: 9, body: `It fails.\n\n**Done when:**\n- It passes.\n\n<!-- loop-target: ${other.id} -->\n<!-- loop-module: organ:cerebellum -->` };
+  const closer = fakeGh({ issues: [solved] });
+  const closed = await cycle(t, r, { gh: closer, lane: 'organ:cerebellum', settings, baseline: async () => { throw new Error('not due'); } }).run();
+  assert.ok(closer.calls.some((a) => a[0] === 'issue' && a[1] === 'close' && a[2] === '9'), closed.reason);
+});

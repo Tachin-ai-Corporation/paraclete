@@ -145,8 +145,15 @@ count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, n
 - **It counts** its own cycles against `maxCyclesPerDay`, and records its lane in each cycle record.
 - **It leaves** the revert, the release and the baseline of the model suite to the global cycle: on a
   broken main it stops (`main-broken`) and opens nothing, so two cycles never revert one merge.
-- **It plans nothing yet:** its issues are written by a person until each lane has a planner of its
-  own (phase 4 of the plan).
+- **It plans from its own baseline,** when its module is an organ with a bench: with `baseline.enabled`,
+  a cycle measures main's head on the organ's bench as often as the global cycle measures the model
+  suite (`baseline.everyHours`), confirming a failing training item to `baseline.confirmTrials` runs, and
+  keeps it in `.local/loop/bench-<organ>.json`. When none of its issues waits, the planner turns the worst
+  failing training item into one, in code (`planner.mjs` `planLaneIssue`): named for the organ's module,
+  targeting the item, quoting only its checks, never planned twice, and only from a bench baseline that
+  still describes main (`benchBaselineCurrent`: nothing a bench run reaches changed since). An issue whose
+  target item the current bench baseline shows passing is closed. Any other lane's issues are written
+  by a person.
 
 Each lane runs in a checkout of its own: `clearStaleCheckouts` clears every loop checkout of the
 repo it runs in, and two cycles in one repo would clear each other's. On the lab driver,

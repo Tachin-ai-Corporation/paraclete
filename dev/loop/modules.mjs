@@ -145,6 +145,22 @@ export function impactedTasks(paths, tasks = selectModelTasks()) {
   return tasks.map((t) => t.id).filter((id) => hit.has(id));
 }
 
+/**
+ * Which of `paths` reach the bench of `organ` (dev/harness2/bench.mjs): what a bench run executes or
+ * reads, which is anything the agent reads (isBehaviourPath) but another organ's files and another
+ * role's (generic's role and the skill index reach every organ's prompt). A change on main to one of
+ * these makes a measurement or a baseline on that bench stale.
+ *
+ * @param {string[]} paths
+ * @param {string} organ
+ * @param {object[]} modules  loadModules()'s result
+ * @returns {string[]}
+ */
+export function benchReach(paths, organ, modules) {
+  const away = (owner) => owner && ((owner.kind === 'organ' && owner.id !== `organ:${organ}`) || (owner.kind === 'role' && owner.id !== 'role:generic'));
+  return (paths || []).map(posix).filter((p) => isBehaviourPath(p) && !away(ownerOf(p, modules)));
+}
+
 /** The module an issue names (`<!-- loop-module: <id> -->`), or null. */
 export function issueModule(body) {
   const m = new RegExp(`<!--\\s*${MODULE_MARKER}:\\s*([a-z0-9:_-]+)\\s*-->`, 'i').exec(String(body || ''));

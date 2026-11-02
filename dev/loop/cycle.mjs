@@ -55,9 +55,9 @@ import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
 import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
-import { STUCK_LABEL, isCurrentBaseline, planIssue } from './planner.mjs';
+import { STUCK_LABEL, benchBaselineCurrent, isCurrentBaseline, planIssue, planLaneIssue } from './planner.mjs';
 import {
-  MEASURED_BASE_MARKER, baselineDue, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline,
+  MEASURED_BASE_MARKER, baselineDue, benchBaselinePath, failingTasks, issueTarget, readBaseline, summarizeBaseline, targetProblems, writeBaseline,
 } from './baseline.mjs';
 import { checkMain, loopPauseReason } from './sentinel.mjs';
 import { releaseIfDue } from './releaser.mjs';
@@ -165,6 +165,10 @@ export function benchCoverageProblems(evidence, organ) {
   }
   return problems;
 }
+
+/** How an organ's bench results are summarized and judged as a baseline (baseline.mjs). */
+const benchSuite = (organ) => ({ suite: `bench:${organ}`, version: BENCH_VERSION });
+const benchSummaryOptions = (organ) => ({ tasks: selectBenchItems({ organ }), ...benchSuite(organ) });
 
 /** The organ a lane's module is, when that organ has a bench: `organ:cerebellum` is cerebellum. */
 export function benchOrgan(lane) {
@@ -548,16 +552,21 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
  * @param {object} o  { evalOn, settings, log }
  * @returns {Promise<object>}
  */
-export async function runBaselineEval({ evalOn, settings, log = () => {} }) {
+export async function runBaselineEval({ evalOn, settings, organ = null, log = () => {} }) {
   const { trials, maxRollouts, confirmTrials = 0 } = settings.baseline;
-  const ran = await evalOn(['eval', '--real-model', '--trials', String(trials), '--max-rollouts', String(maxRollouts)]);
+  // An organ's bench baseline runs the bench's items; the model suite's, its tasks.
+  const items = organ ? selectBenchItems({ organ }) : null;
+  const run = organ ? ['bench', '--real-model', '--organ', organ] : ['eval', '--real-model'];
+  const cap = organ ? items.length * trials * ROLLOUT_RETRY.attempts : maxRollouts;
+  const ran = await evalOn([...run, '--trials', String(trials), '--max-rollouts', String(cap)]);
   const more = Math.max(0, confirmTrials - trials);
   if (!ran?.ok || !more) return ran;
-  const suspects = failingTasks(summarizeBaseline(ran)).map((t) => t.id);
+  const summary = organ ? summarizeBaseline(ran, benchSummaryOptions(organ)) : summarizeBaseline(ran);
+  const suspects = failingTasks(summary, organ ? benchSuite(organ) : undefined).map((t) => t.id);
   if (!suspects.length) return ran;
   log(`[INFO] loop: ${suspects.join(', ')} failed a check; running each ${more} more time(s) before planning from it`);
   const again = await evalOn([
-    'eval', '--real-model', '--task', suspects.join(','), '--trials', String(more), '--max-rollouts', String(more * suspects.length * ROLLOUT_RETRY.attempts),
+    ...run, organ ? '--item' : '--task', suspects.join(','), '--trials', String(more), '--max-rollouts', String(more * suspects.length * ROLLOUT_RETRY.attempts),
   ]);
   if (!again?.ok) return { ok: false, reason: `the failing tasks' extra runs: ${again?.reason || 'no result'}` };
   return {
@@ -570,13 +579,13 @@ export async function runBaselineEval({ evalOn, settings, log = () => {} }) {
 /**
  * A baseline: runBaselineEval on main's head, in a clone of its own, as defaultMeasure runs each side.
  */
-async function defaultBaseline({ repoRoot, head, settings, execGit, log }) {
+async function defaultBaseline({ repoRoot, head, settings, organ = null, execGit, log }) {
   let side = null;
   try {
     side = isolatedCheckout({ repoRoot, commit: head, execGit, prefix: 'paraclete-loop-baseline-' });
     const { runCli } = await import('../harness2/cli.mjs');
     const stderr = { write: (line) => log(String(line).trimEnd()) };
-    return await runBaselineEval({ evalOn: (args) => runCli(args, { repoRoot: side.root, stderr }), settings, log });
+    return await runBaselineEval({ evalOn: (args) => runCli(args, { repoRoot: side.root, stderr }), settings, organ, log });
   } catch (err) {
     return { ok: false, reason: err.message };
   } finally {
@@ -954,6 +963,41 @@ export async function runCycle({
     }
   }
 
+  // An organ's lane measures its own weak spots: main's head on the organ's bench, as often as the
+  // model suite's baseline and kept beside it (benchBaselinePath), so its planner can turn an item
+  // the organ fails into an issue. A bench runs in minutes, but the cycle still stops there.
+  const organ = benchOrgan(lane);
+  if (settings.baseline.enabled && organ) {
+    let head = null;
+    try {
+      execGit(['fetch', '--quiet', 'origin', 'main'], repoRoot);
+      head = execGit(['rev-parse', 'origin/main'], repoRoot);
+    } catch (err) {
+      log(`[WARN] could not read main's head for a bench baseline: ${err.message}`);
+    }
+    const file = benchBaselinePath(organ);
+    const kept = readBaseline({ repoRoot, file });
+    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours, version: BENCH_VERSION })) {
+      if (dryRun) {
+        log(`[INFO] loop: a dry run: main's head ${head.slice(0, 12)} would be measured on the ${organ}'s bench`);
+      } else {
+        log(`[INFO] loop: measuring main's head ${head.slice(0, 12)} on the ${organ}'s bench (a baseline)`);
+        const ran = await baseline({ repoRoot, head, settings, organ, execGit, log });
+        const summary = ran?.ok ? summarizeBaseline(ran, { commit: head, at: now.toISOString(), ...benchSummaryOptions(organ) }) : null;
+        const reason = !ran?.ok ? `main's head could not be measured on the ${organ}'s bench: ${ran?.reason || ran?.error || 'no result'}`
+          : !summary.measured ? 'some runs of the bench baseline were not real-model runs' : null;
+        writeBaseline({ repoRoot, kept, summary: reason ? null : summary, attempt: { at: now.toISOString(), commit: head, ok: !reason, reason }, file });
+        if (reason) return finish({ action: 'baseline-failed', reason, baseline: { commit: head, bench: organ } });
+        const failing = failingTasks(summary, benchSuite(organ)).map((t) => t.id);
+        return finish({
+          action: 'baselined',
+          reason: `measured main's head on the ${organ}'s bench (${summary.tasks.length} items); training items failing a check: ${failing.join(', ') || 'none'}`,
+          baseline: { commit: head, bench: organ, tasks: summary.tasks.length, failing },
+        });
+      }
+    }
+  }
+
   // The day's cap holds back new attempts, which spend model time. The revert and the release above keep
   // limits of their own (maxRevertsPerDay, release.minHoursBetween), so a spent day stops neither.
   const past = pastCycles(records, now, settings.retryAfterHours, lane);
@@ -993,9 +1037,11 @@ export async function runCycle({
   const resolved = [];
   const targeted = issues.filter((i) => issueTarget(i.body));
   if (targeted.length) {
-    const summary = readBaseline({ repoRoot }).latest;
-    if (isCurrentBaseline({ repoRoot, summary, execGit }).current) {
-      const failing = new Set(failingTasks(summary).map((t) => t.id));
+    // An organ's lane targets the items of its bench, so its baseline is the bench's.
+    const summary = readBaseline({ repoRoot, ...(organ ? { file: benchBaselinePath(organ) } : {}) }).latest;
+    const current = organ ? benchBaselineCurrent({ repoRoot, summary, organ, execGit }) : isCurrentBaseline({ repoRoot, summary, execGit });
+    if (current.current) {
+      const failing = new Set(failingTasks(summary, organ ? benchSuite(organ) : undefined).map((t) => t.id));
       const measuredIds = new Set((summary.tasks || []).filter((t) => t.measuredRuns > 0).map((t) => t.id));
       for (const i of targeted) {
         const target = issueTarget(i.body);
@@ -1019,10 +1065,14 @@ export async function runCycle({
   let planReason = null;
   // No issue waits: the planner opens one, from a task the baseline found failing or from the open
   // items, and this cycle takes it.
-  if (!issue && !issueNumber && !lane && (settings.planner.command || settings.baseline.enabled)) {
+  if (!issue && !issueNumber && (lane ? Boolean(organ) : (settings.planner.command || settings.baseline.enabled))) {
     let res;
     try {
-      res = await planIssue({ repoRoot, repo, settings, execGh, execGit, planner, dryRun, log });
+      // An organ's lane plans from its bench baseline, in code; the global loop from the model suite's
+      // baseline, then the open items.
+      res = organ
+        ? planLaneIssue({ repoRoot, repo, settings, execGh, execGit, organ, summary: readBaseline({ repoRoot, file: benchBaselinePath(organ) }).latest, dryRun, log })
+        : await planIssue({ repoRoot, repo, settings, execGh, execGit, planner, dryRun, log });
     } catch (err) {
       res = { issue: null, reason: `the planner broke: ${err.message}` };
     }

@@ -17,6 +17,9 @@
 //   issueBody(plan, item)    the issue it opens
 //   taskIssueBody(task, summary, key)  the issue a failing task opens
 //   planIssue(...)           all of it, within `planner.maxOpen` open loop issues
+//   planLaneIssue(...)       for an organ's lane: a training item of the organ's bench that main's head
+//                            fails in the latest bench baseline becomes an issue for that lane
+//                            (benchIssueBody), named for its module and targeting the item
 //
 // It never changes the referee (only issues are written), and a model's answer that fails a check
 // opens nothing: it is asked again, `planner.retries` times, with the problems named. Called by
@@ -31,7 +34,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MODEL_SUITE } from '../harness2/model-suite.mjs';
+import { BENCH_VERSION } from '../harness2/bench.mjs';
 import { TARGET_MARKER, baselineCurrent, failingTasks, readBaseline, taskPlanKey } from './baseline.mjs';
+import { MODULE_MARKER, benchReach, issueModule, loadModules } from './modules.mjs';
 import { runAgentCommand } from './command.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, loadLoopSettings } from './config.mjs';
 
@@ -297,6 +302,113 @@ function defaultExec(file) {
   return (args, cwd) => execFileSync(file, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }).trim();
 }
 
+/** Opens a `loop` issue: { number, title, body, url, createdAt }, or { error } when GitHub gives no number. */
+function openLoopIssue({ execGh, repoArgs, repoRoot, label, title, body }) {
+  const url = String(execGh(['issue', 'create', ...repoArgs, '--title', title, '--body', body, '--label', label], repoRoot)).trim().split('\n').pop();
+  const number = Number(/\/issues\/(\d+)/.exec(url)?.[1]);
+  return Number.isInteger(number) ? { number, title, body, url, createdAt: new Date().toISOString() } : { error: url };
+}
+
+/** The title of the issue a failing bench item opens. */
+export function benchIssueTitle(organ, task) {
+  return `The ${organ} passes its bench's ${task.id} checks`.slice(0, PLAN_LIMITS.titleMax);
+}
+
+/**
+ * The issue a training item of an organ's bench that main's head fails opens, for that organ's lane:
+ * the failing checks as the bench baseline measured them, where the fix belongs (the organ's module),
+ * its "Done when" points, and its plan, target and module markers. It quotes nothing of the item but
+ * its checks, whose names say what kind of mistake the organ made, so a change answers the kind, not
+ * the item.
+ *
+ * @param {string} organ
+ * @param {object} task     one of failingTasks(summary, { suite: 'bench:<organ>', ... })
+ * @param {object} summary  the bench baseline it comes from
+ * @param {string} key      its plan key
+ * @returns {string}
+ */
+export function benchIssueBody(organ, task, summary, key) {
+  const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim().slice(0, 300);
+  return [
+    `On main's head (\`${String(summary.commit || '').slice(0, 12)}\`), the ${organ} fails checks of its bench's training item \`${task.id}\`: ${task.measuredRuns} real-model run(s) in the bench baseline of ${String(summary.at || '').slice(0, 10)}, capability ${task.score}.`,
+    '',
+    ...task.failing.map((c) => `- \`${c.name}\` failed in ${c.failed} of ${c.runs} runs${c.detail ? `: ${oneLine(c.detail)}` : ''}`),
+    '',
+    `The bench asks the ${organ} directly (\`dev/harness2/bench.mjs\`, its items in \`dev/harness2/bench-items.mjs\`), which no loop change may touch. The fix is to the ${organ}'s own module (\`organ:${organ}\` in \`dev/loop/modules.json\`): its prompt, its code in \`agent/organs/${organ}/\` and its skills.`,
+    '',
+    '**Done when:**',
+    `- The change keeps to the ${organ}'s module, and nothing in \`dev/harness2/\` changes.`,
+    `- The change gives the ${organ} what it lacked to pass the failing checks above, in general terms that serve any similar case: nothing in it names this item, its files or its wording.`,
+    '',
+    `The lane measures the change on the ${organ}'s bench before it opens a pull request, and refuses it unless \`${task.id}\`'s capability rises above main's, with no item, no guard task and not the held-out items worse.`,
+    '',
+    'Planned by the self-improvement loop from a measured bench baseline (`dev/loop/baseline.mjs`).',
+    '',
+    `<!-- ${PLAN_MARKER}: ${key} -->`,
+    `<!-- ${TARGET_MARKER}: ${task.id} -->`,
+    `<!-- ${MODULE_MARKER}: organ:${organ} -->`,
+  ].join('\n');
+}
+
+/**
+ * Whether an organ's bench baseline still describes main: it measured main's head, or nothing a bench
+ * run reaches (modules.mjs benchReach) changed since, read through git in the checkout.
+ *
+ * @param {object} o  { repoRoot, summary, organ, execGit }
+ * @returns {{ current: boolean, reason: string|null }}
+ */
+export function benchBaselineCurrent({ repoRoot, summary, organ, execGit }) {
+  if (!summary?.commit) return { current: false, reason: 'there is no bench baseline' };
+  try {
+    const head = execGit(['rev-parse', 'origin/main'], repoRoot);
+    if (head === summary.commit) return { current: true, reason: null };
+    const lines = (args) => execGit(args, repoRoot).split(/\r?\n/).filter(Boolean);
+    const changed = lines(['diff', '--name-only', summary.commit, head]);
+    const reached = benchReach(changed, organ, loadModules({ files: [...lines(['ls-files']), ...changed] }));
+    if (!reached.length) return { current: true, reason: null };
+    return {
+      current: false,
+      reason: `what the ${organ}'s bench reaches changed since its baseline of ${summary.commit.slice(0, 12)} (${reached.slice(0, 3).join(', ')}${reached.length > 3 ? ', ...' : ''})`,
+    };
+  } catch (err) {
+    return { current: false, reason: `the bench baseline could not be compared with main's head: ${String(err.message).split('\n')[0]}` };
+  }
+}
+
+/**
+ * Plans one issue for an organ's lane, when fewer than `planner.maxOpen` of its issues are open: the
+ * worst training item of the organ's bench that fails a check in a bench baseline that still
+ * describes main, never one already planned. Written by code; no model is asked.
+ *
+ * @param {object} o  { repoRoot, repo, settings, execGh, execGit, organ, summary, dryRun, log }
+ * @returns {{ issue: object|null, reason: string|null, plan?: object }}
+ */
+export function planLaneIssue({
+  repoRoot = process.cwd(), repo, settings = loadLoopSettings({ repoRoot }), execGh = defaultExec('gh'), execGit = defaultExec('git'),
+  organ, summary, dryRun = false, log = () => {},
+}) {
+  const repoArgs = repo ? ['--repo', repo] : [];
+  const lane = `organ:${organ}`;
+  const list = (label, state) => JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', label, '--state', state,
+    '--json', 'number,title,body,url,createdAt', '--limit', '200'], repoRoot) || '[]');
+  const open = list(settings.label, 'open').filter((i) => issueModule(i.body) === lane);
+  if (open.length >= settings.planner.maxOpen) return { issue: null, reason: `${open.length} issue(s) for ${lane} are open, the planner's limit is ${settings.planner.maxOpen}` };
+  const planned = plannedKeys([...list(settings.label, 'all'), ...list(STUCK_LABEL, 'all')]);
+  const failing = failingTasks(summary, { suite: `bench:${organ}`, version: BENCH_VERSION })
+    .map((task) => ({ task, key: taskPlanKey(task, { prefix: `bench-${organ}`, version: BENCH_VERSION }) }))
+    .filter((m) => !planned.has(m.key));
+  if (!failing.length) return { issue: null, reason: `no training item of the ${organ}'s bench fails a check in its latest baseline, unplanned` };
+  const fresh = benchBaselineCurrent({ repoRoot, summary, organ, execGit });
+  if (!fresh.current) return { issue: null, reason: `not planning from the ${organ}'s bench baseline: ${fresh.reason}` };
+  const { task, key } = failing[0];
+  const plan = { key, target: task.id, title: benchIssueTitle(organ, task), body: benchIssueBody(organ, task, summary, key) };
+  if (dryRun) return { issue: null, reason: 'a dry run: nothing opened', plan };
+  const issue = openLoopIssue({ execGh, repoArgs, repoRoot, label: settings.label, title: plan.title, body: plan.body });
+  if (issue.error) return { issue: null, reason: `GitHub gave no issue number for the planned issue (${issue.error})` };
+  log(`[INFO] loop: planned #${issue.number} for ${lane} from its bench baseline: ${task.id} fails ${task.failing.length} check(s)`);
+  return { issue, reason: null, plan };
+}
+
 /**
  * Plans one issue when fewer than `planner.maxOpen` loop issues are open: reads the open items, leaves
  * out those already planned, asks the planner, checks its answer, and opens the issue (not in a dry run).
@@ -315,11 +427,7 @@ export async function planIssue({
   const open = list(settings.label, 'open');
   if (open.length >= settings.planner.maxOpen) return { issue: null, reason: `${open.length} loop issue(s) are open, the planner's limit is ${settings.planner.maxOpen}` };
   const planned = plannedKeys([...list(settings.label, 'all'), ...list(STUCK_LABEL, 'all')]);
-  const openIssue = (title, body) => {
-    const url = String(execGh(['issue', 'create', ...repoArgs, '--title', title, '--body', body, '--label', settings.label], repoRoot)).trim().split('\n').pop();
-    const number = Number(/\/issues\/(\d+)/.exec(url)?.[1]);
-    return Number.isInteger(number) ? { number, title, body, url, createdAt: new Date().toISOString() } : { error: url };
-  };
+  const openIssue = (title, body) => openLoopIssue({ execGh, repoArgs, repoRoot, label: settings.label, title, body });
 
   // The agent's measured weak spots first: a training task main's head fails, written by code, from a
   // baseline that still describes main.

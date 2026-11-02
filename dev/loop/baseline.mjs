@@ -6,6 +6,10 @@
 // cycle and the Loop guard (guard.mjs) then refuse a change unless its measurement shows that task's
 // capability rose, besides refusing any regression.
 //
+// The same summary, file and judgement serve an organ's bench (dev/harness2/bench.mjs), which that
+// organ's lane measures main's head on and plans from: summarizeBaseline and failingTasks take the
+// bench's suite and version, and its kept file is benchBaselinePath(organ).
+//
 // A held-out task stays a score here: none of its checks is named, so nothing the planner or the
 // proposer reads steers a change toward it, and the measurement's held-out regression check means
 // what it says.
@@ -30,6 +34,9 @@ import { MODEL_SUITE, MODEL_SUITE_VERSION } from '../harness2/model-suite.mjs';
 /** The kept baseline, relative to the checkout. */
 export const BASELINE_PATH = '.local/loop/baseline.json';
 
+/** The kept baseline of an organ's bench (dev/harness2/bench.mjs), which that organ's lane plans from. */
+export const benchBaselinePath = (organ) => `.local/loop/bench-${organ}.json`;
+
 /** The hidden marker an issue planned from a baseline carries: `<!-- loop-target: <task id> -->`. */
 export const TARGET_MARKER = 'loop-target';
 
@@ -50,7 +57,7 @@ const round = (n) => Number(n.toFixed(4));
  * @param {object} o       { commit, at, tasks } (tasks: the suite, for tests)
  * @returns {object}
  */
-export function summarizeBaseline(result, { commit, at, tasks = MODEL_SUITE } = {}) {
+export function summarizeBaseline(result, { commit, at, tasks = MODEL_SUITE, suite = 'model', version = MODEL_SUITE_VERSION } = {}) {
   const trajectories = (Array.isArray(result?.trajectories) ? result.trajectories : []).filter((t) => t?.taskId);
   const rows = new Map();
   for (const t of trajectories) {
@@ -84,7 +91,8 @@ export function summarizeBaseline(result, { commit, at, tasks = MODEL_SUITE } = 
     };
   }).sort((a, b) => a.id.localeCompare(b.id));
   return {
-    suiteVersion: MODEL_SUITE_VERSION,
+    suite,
+    suiteVersion: version,
     commit: commit || null,
     at: at || null,
     trials: result?.trials ?? null,
@@ -94,9 +102,9 @@ export function summarizeBaseline(result, { commit, at, tasks = MODEL_SUITE } = 
 }
 
 /** The kept file, { latest, attempt }, or an empty one. */
-export function readBaseline({ repoRoot = process.cwd(), readFile = (p) => fs.readFileSync(p, 'utf8') } = {}) {
+export function readBaseline({ repoRoot = process.cwd(), readFile = (p) => fs.readFileSync(p, 'utf8'), file = BASELINE_PATH } = {}) {
   try {
-    const kept = JSON.parse(readFile(path.join(repoRoot, BASELINE_PATH)));
+    const kept = JSON.parse(readFile(path.join(repoRoot, file)));
     return { latest: kept?.latest || null, attempt: kept?.attempt || null };
   } catch {
     return { latest: null, attempt: null };
@@ -104,8 +112,8 @@ export function readBaseline({ repoRoot = process.cwd(), readFile = (p) => fs.re
 }
 
 /** Keeps the latest summary (when this attempt made one) and this attempt: { at, commit, ok, reason }. */
-export function writeBaseline({ repoRoot = process.cwd(), kept, summary = null, attempt }) {
-  const file = path.join(repoRoot, BASELINE_PATH);
+export function writeBaseline({ repoRoot = process.cwd(), kept, summary = null, attempt, file: rel = BASELINE_PATH }) {
+  const file = path.join(repoRoot, rel);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify({ latest: summary || kept?.latest || null, attempt }, null, 2)}\n`);
 }
@@ -115,10 +123,10 @@ export function writeBaseline({ repoRoot = process.cwd(), kept, summary = null, 
  * this suite, and at most once in `everyHours`, counted from the last attempt, so a run that fails is
  * not retried every cycle.
  */
-export function baselineDue({ kept, head, now = new Date(), everyHours = 24 }) {
+export function baselineDue({ kept, head, now = new Date(), everyHours = 24, version = MODEL_SUITE_VERSION }) {
   const last = kept?.attempt || null;
   if (!last) return true;
-  if (last.commit === head && kept?.latest?.suiteVersion === MODEL_SUITE_VERSION) return false;
+  if (last.commit === head && kept?.latest?.suiteVersion === version) return false;
   return now.getTime() - Date.parse(last.at) >= everyHours * 3_600_000;
 }
 
@@ -127,8 +135,8 @@ export function baselineDue({ kept, head, now = new Date(), everyHours = 24 }) {
  * or more (a request that comes back wrong half the time is a weakness to fix), worst task first.
  * Nothing from a summary that was not all real-model runs, or of another version of the suite.
  */
-export function failingTasks(summary) {
-  if (!summary?.measured || summary.suiteVersion !== MODEL_SUITE_VERSION) return [];
+export function failingTasks(summary, { suite = 'model', version = MODEL_SUITE_VERSION } = {}) {
+  if (!summary?.measured || (summary.suite || 'model') !== suite || summary.suiteVersion !== version) return [];
   return (summary.tasks || [])
     .filter((t) => t.split === 'train' && t.measuredRuns > 0)
     .map((t) => ({ ...t, failing: (t.checks || []).filter((c) => c.runs > 0 && c.failed * 2 >= c.runs) }))
@@ -141,10 +149,10 @@ export function failingTasks(summary) {
  * so the same failure is planned once (a `loop-stuck` issue included), and a different set of failing
  * checks, after a fix of some, is planned anew.
  */
-export function taskPlanKey(task) {
+export function taskPlanKey(task, { prefix = 'model', version = MODEL_SUITE_VERSION } = {}) {
   const names = (task.failing || []).map((c) => c.name).sort().join('\n');
   const digest = createHash('sha256').update(names).digest('hex').slice(0, 8);
-  return `model-${task.id}-v${MODEL_SUITE_VERSION}-${digest}`;
+  return `${prefix}-${task.id}-v${version}-${digest}`;
 }
 
 /**
