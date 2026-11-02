@@ -38,8 +38,9 @@ never changes an instance; it reaches instances only through a release (see "Rel
    nothing on it: a loop merge there is reverted first (see "When a loop merge breaks main"). On a
    healthy main it releases main when that is due (see "Releases"). Then it settles the loop's open
    pull requests (reverts among them): it brings each up to date with `main` and waits for the merger
-   to merge or close it, looking every `merge.pollMinutes` (5) for at most `merge.waitMinutes` (150),
-   and stops (`waiting`) when one is still open then. One loop change is in flight at a time: a change
+   to merge or close it, looking every `merge.pollMinutes` (5) for at most `merge.waitMinutes` (150)
+   and bringing it up to date again at each look (another loop may merge meanwhile, and the merger
+   merges only a pull request that holds main's head), and stops (`waiting`) when one is still open then. One loop change is in flight at a time: a change
    measured while an earlier one waits would be measured against a `main` that merge moves, and the
    guard would refuse it (see "Merging"). Then it stops once today's attempts
    (`maxCyclesPerDay`, 4, counted from the cycle log) are spent: the cap holds back new attempts, which
@@ -104,7 +105,8 @@ never changes an instance; it reaches instances only through a release (see "Rel
 6. **Opens the pull request.** It commits under the next free version (newer than main, the tags and the
    open pull requests' titles), pushes the branch and opens the pull request, which resolves the issue
    and carries the proposer's summary, the tests' result, the review (each point and a
-   `paraclete-loop-review` block a merger can read) and any evidence. When the change is refused, it says
+   `paraclete-loop-review` block a merger can read) and any evidence. It then brings the pull request up
+   to date with `main` once, since an attempt takes hours and another loop may have merged meanwhile. When the change is refused, it says
    why in a comment on the issue instead, with the files it changed, the tests that failed and the points
    the reviewer found unmet.
    A measured change takes hours (three real-model runs of each of the model suite's 15 tasks on each

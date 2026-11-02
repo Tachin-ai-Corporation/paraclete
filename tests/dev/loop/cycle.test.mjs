@@ -624,17 +624,28 @@ test('runs not evaluated are judged over the whole side, not one task call: one 
   assert.equal(broken.reason, "main's head could not be measured: no model access", 'any other refusal still stops it');
 });
 
-test("the loop's open pull requests are brought up to date with main at the start of a cycle, never in a dry run", async (t) => {
+test("the loop's open pull requests are brought up to date with main at the start of a cycle and at each look while it waits, never in a dry run", async (t) => {
   const prs = [{ number: 5, headRefName: 'loop/7-earlier-try', title: 't' }, { number: 6, headRefName: 'claude/other', title: 'o' }];
   const r = repo(t);
   const c = cycle(t, r, { gh: fakeGh({ issues: [ISSUE], prs }) });
   await c.run();
   const updates = c.gh.calls.filter((a) => a[0] === 'api' && a.includes('PUT'));
-  assert.deepEqual(updates, [['api', '-X', 'PUT', 'repos/{owner}/{repo}/pulls/5/update-branch']], "only the loop's");
+  const looks = LOOP_DEFAULTS.merge.waitMinutes / LOOP_DEFAULTS.merge.pollMinutes;
+  assert.equal(updates.length, looks, 'once at the start, then at every look before the wait runs out');
+  assert.ok(updates.every((a) => a.join(' ') === 'api -X PUT repos/{owner}/{repo}/pulls/5/update-branch'), "only the loop's");
   const dry = cycle(t, repo(t), { gh: fakeGh({ issues: [ISSUE], prs }), dryRun: true });
   await dry.run();
   assert.equal(dry.gh.calls.some((a) => a.includes('PUT')), false);
   assert.equal(dry.gh.calls.some((a) => a[0] === 'pr' && a[1] === 'view'), false, 'nor waits for them');
+});
+
+test('a pull request the loop opens is brought up to date with main at once: its attempt took hours, and main may have moved', async (t) => {
+  const c = cycle(t, repo(t));
+  const res = await c.run();
+  assert.equal(res.action, 'opened', res.reason);
+  const created = c.gh.calls.findIndex((a) => a[0] === 'pr' && a[1] === 'create');
+  const updated = c.gh.calls.findIndex((a) => a.join(' ') === 'api -X PUT repos/{owner}/{repo}/pulls/99/update-branch');
+  assert.ok(created >= 0 && updated > created, 'right after it was opened');
 });
 
 test('one loop change in flight: a cycle waits for the merger to merge or close an open loop pull request before it measures anything', async (t) => {
