@@ -8,7 +8,7 @@ also consolidates memory, in the nightly upkeep.
 |---|---|
 | `memory.mjs` | The brain's half of memory: the working-memory and Deep Truths files, recall (gathering the candidates, asking the organ for the packet, one escalation for deeper history), the mission line, and the lessons after a mission |
 | `work-recall.mjs` | Recall of the agent's past work: the cues a request carries, the last week's digest, and matching past missions |
-| `core-memory-rank.mjs` | How Core Memory entries rank against a search, for recall and `core-memory-read` |
+| `core-memory-rank.mjs` | How Core Memory entries rank against a search and how recall selects specific multi-term query matches, for recall and `core-memory-read` |
 | `context-maintenance.mjs` | The lesson step after a mission that worked in a project or followed a process: what it asks the organ, and how its answer is checked |
 
 **Called by:** the brain service (`agent/services/brain/main.mjs` builds memory; `intake.mjs` reads

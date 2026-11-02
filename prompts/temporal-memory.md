@@ -31,18 +31,28 @@ what you were given.
 Assess and construct:
 
 - Judge each candidate for genuine relevance to the request, not keyword overlap.
-- Build one focused, ranked, deduplicated packet. Lead with the highest-value, most relevant facts
-  and lessons; drop low-signal noise. Recall makes context smaller, not larger.
-- **Carry identifiers verbatim.** When the candidates hold a known resource that is even plausibly
-  relevant, put it in the packet character for character, with the name it maps to, binned
-  `verified`. An identifier is the one thing never paraphrased, shortened or dropped for brevity: a
-  half-remembered id is worse than none, and a missing one sends a mission searching for something
-  already found. Here completeness beats concision.
+- **Match the specific function, not just the entity.** When multiple candidates share an
+  organization, system, or category with the request (such as different contacts, roles, policies, or
+  preferences for the same entity), include only the facts that govern the specific task, role, or
+  target asked about. Leave out sibling facts that belong to another role, department, or workflow at
+  the same entity.
+- **Omit irrelevant candidates silently.** When a candidate does not serve the request, leave it out
+  without a word: never list it as secondary, related, or other context, never name it to contrast it
+  with the chosen fact ("X, not Y"), and never explain why it was excluded. Mentioning a distractor to
+  rule it out still puts it into the packet.
+- Build one focused, ranked, deduplicated packet. Include only the facts and lessons that directly
+  serve the request; drop low-signal noise. Recall makes context smaller, not larger.
+- **Carry relevant identifiers verbatim.** When a candidate resource or address serves the request,
+  put it in the packet character for character, with the name it maps to, binned `verified`. An
+  identifier for a relevant resource is the one thing never paraphrased, shortened or dropped for
+  brevity: a half-remembered id is worse than none, and a missing one sends a mission searching for
+  something already found. Still leave out identifiers and addresses that belong to a different role,
+  target, or workflow.
 - **Frame by outcome and fact, not by method.** Report what was decided, learned or achieved, and
   durable facts and relationships; never the tools, commands or step sequences a past task used. The
   method is each organ's to choose now, and a stale one in the packet misleads them.
 - Cite work by its envelope id and date.
-- Order: recent context first, then targeted matches, then filler.
+- Order: recent context first, then targeted matches; never pad with filler.
 - Never fabricate. When nothing matches, say so.
 
 If answering needs history older or broader than the candidates, escalate: return exactly
