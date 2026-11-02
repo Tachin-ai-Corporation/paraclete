@@ -318,8 +318,10 @@ export function benchIssueTitle(organ, task) {
  * The issue a training item of an organ's bench that main's head fails opens, for that organ's lane:
  * the failing checks as the bench baseline measured them, where the fix belongs (the organ's module),
  * its "Done when" points, and its plan, target and module markers. It quotes nothing of the item but
- * its checks, whose names say what kind of mistake the organ made, so a change answers the kind, not
- * the item.
+ * its checks' names, which say what kind of mistake the organ made, so a change answers the kind, not
+ * the item. What a check saw is left out: it is the organ's own answer, which quotes the item's
+ * stored facts (the first such issue, #107, named the people of its item that way), and a proposer
+ * that reads them can fit the change to the item instead of the organ.
  *
  * @param {string} organ
  * @param {object} task     one of failingTasks(summary, { suite: 'bench:<organ>', ... })
@@ -328,11 +330,10 @@ export function benchIssueTitle(organ, task) {
  * @returns {string}
  */
 export function benchIssueBody(organ, task, summary, key) {
-  const oneLine = (text) => String(text).replace(/\s+/g, ' ').trim().slice(0, 300);
   return [
     `On main's head (\`${String(summary.commit || '').slice(0, 12)}\`), the ${organ} fails checks of its bench's training item \`${task.id}\`: ${task.measuredRuns} real-model run(s) in the bench baseline of ${String(summary.at || '').slice(0, 10)}, capability ${task.score}.`,
     '',
-    ...task.failing.map((c) => `- \`${c.name}\` failed in ${c.failed} of ${c.runs} runs${c.detail ? `: ${oneLine(c.detail)}` : ''}`),
+    ...task.failing.map((c) => `- \`${c.name}\` failed in ${c.failed} of ${c.runs} runs`),
     '',
     `The bench asks the ${organ} directly (\`dev/harness2/bench.mjs\`, its items in \`dev/harness2/bench-items.mjs\`), which no loop change may touch. The fix is to the ${organ}'s own module (\`organ:${organ}\` in \`dev/loop/modules.json\`): its prompt, its code in \`agent/organs/${organ}/\` and its skills.`,
     '',
