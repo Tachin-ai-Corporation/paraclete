@@ -53,7 +53,7 @@ import { BENCHES, BENCH_VERSION, selectBenchItems } from '../harness2/bench.mjs'
 import { pauseState } from '../harness2/pause.mjs';
 import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
-import { isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
+import { REFEREE_PATHS, isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
 import { STUCK_LABEL, benchBaselineCurrent, isCurrentBaseline, planIssue, planLaneIssue } from './planner.mjs';
 import {
@@ -577,6 +577,31 @@ export async function runBaselineEval({ evalOn, settings, organ = null, log = ()
 }
 
 /**
+ * Why this checkout's referee (REFEREE_PATHS: what judges a change, and the loop itself) is not the
+ * one main's head has, or null when it is, or when main cannot be read (the steps after say so).
+ *
+ * @param {object} o  { repoRoot, execGit, log }
+ * @returns {string|null}
+ */
+export function refereeLag({ repoRoot, execGit, log = () => {} }) {
+  let own;
+  let head;
+  try {
+    execGit(['fetch', '--quiet', 'origin', 'main'], repoRoot);
+    head = execGit(['rev-parse', 'origin/main'], repoRoot);
+    own = execGit(['rev-parse', 'HEAD'], repoRoot);
+  } catch (err) {
+    log(`[WARN] could not compare this checkout with main: ${err.message}`);
+    return null;
+  }
+  if (own === head) return null;
+  const changed = execGit(['diff', '--name-only', own, head], repoRoot).split(/\r?\n/).filter(Boolean)
+    .filter((p) => REFEREE_PATHS.some((re) => re.test(p)));
+  if (!changed.length) return null;
+  return `main's head ${head.slice(0, 12)} changed ${changed.length} referee file(s) since this checkout's ${own.slice(0, 12)} (${changed.slice(0, 3).join(', ')}${changed.length > 3 ? ', ...' : ''}): a cycle measures with its own checkout's referee, so it measures nothing until the checkout reaches main`;
+}
+
+/**
  * A baseline: runBaselineEval on main's head, in a clone of its own, as defaultMeasure runs each side.
  */
 async function defaultBaseline({ repoRoot, head, settings, organ = null, execGit, log }) {
@@ -943,6 +968,16 @@ export async function runCycle({
       reason: `${named} still ${open.length === 1 ? 'waits' : 'wait'} to be merged or closed after ${settings.merge.waitMinutes} minutes: a change measured now would be measured against a main ${open.length === 1 ? 'its' : 'their'} merge moves`,
     });
   }
+
+  // A cycle measures with its own checkout's referee: a baseline and a measured attempt both import
+  // this checkout's dev/harness2. One whose referee is not main's would measure main's head on tasks,
+  // items or checks main no longer has, and keep the result as main's (2026-11-03: a cycle that started
+  // minutes after the model suite's version 5 merged baselined main on version 4's retired tasks). So
+  // it measures nothing until its checkout reaches main: the follow-main timer moves the harness
+  // checkout once no harness runs, and a lane's unit moves its clone before each cycle. A loop change
+  // never touches the referee (pathRefusal), so the loop's own merges never stop a cycle here.
+  const lag = refereeLag({ repoRoot, execGit, log });
+  if (lag) return finish({ action: 'waiting', reason: lag });
 
   // The agent's own measured weak spots: main's head on the model suite, at most once a day and only
   // after main moved, so the planner can turn a task it fails into an issue. A cycle that measures
