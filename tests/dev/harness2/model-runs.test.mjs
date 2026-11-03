@@ -3,7 +3,8 @@
 // repo's packages and removed without reaching through the link; the product gateway started from a
 // side's checkout sends that side's own prompt to the model; token telemetry, the spend cap and the
 // rollout estimate; and a whole real-model rollout, with its gateway faked, that seeds the motor's
-// workspace, checks it, counts its tokens and marks the run measured.
+// workspace, checks it, counts its tokens, reads what the mission did from its own records and marks
+// the run measured; its runner runs a mission again once a retry is due, and stops at its time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -16,8 +17,11 @@ import {
   estimateRollouts, loadSideProduct, modelAccess, startModelGateway, usageFromLog,
 } from '../../../dev/harness2/model-runs.mjs';
 import { selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
-import { runInProcessBrainRollout, snapshotCandidateConfig, startInProcessFixtureGateway } from '../../../dev/harness2/live-runner.mjs';
+import {
+  missionTasks, runInProcessBrainRollout, snapshotCandidateConfig, startInProcessFixtureGateway, toolRecordsFrom,
+} from '../../../dev/harness2/live-runner.mjs';
 import { startTier1Substrate } from '../../../dev/harness2/substrate.mjs';
+import { extractTrajectory } from '../../../dev/harness2/trajectory.mjs';
 import { fakeGoogle, geminiText } from '../../agent/gateway/fakes.mjs';
 import { loadContracts } from '../../../config/contracts.mjs';
 
@@ -206,6 +210,108 @@ test("a real-model rollout runs from the side's checkout, seeds and checks the m
   assert.ok(realModel.meter.summary().tokens > 0, "the brain's telemetry was counted");
   assert.ok(rollout.usageRecords.length > 0);
   assert.match(rollout.evalCritique.improvementPrescription, /ended with \d+\/\d+ checks passed/);
+  // What the mission did is read from its own records: the spine the brain kept on it, and its task
+  // envelopes with their tool calls. Before, every real-model run recorded none.
+  assert.equal(rollout.envelope.status, 'completed');
+  assert.ok(rollout.envelope.checkpoint_spine.length > 0, "the mission's spine");
+  assert.ok(rollout.tasks.every((x) => /^w/.test(x.id)), "the mission's own tasks");
+  assert.ok(rollout.tasks.some((x) => x.checkpoint_n === 1 && x.tool_records.length > 0), "its checkpoint's task, with the tool it called");
+  const trajectory = extractTrajectory(rollout);
+  assert.deepEqual([trajectory.missionCompleted, trajectory.checkpointCount > 0, trajectory.totalToolCalls > 0], [true, true, true]);
+});
+
+test("a task's tool calls are read from its tool log, and a mission's tasks from the envelopes under its checkpoints", () => {
+  const log = [
+    'Totals written.',
+    '',
+    '---',
+    '[TOOL EXECUTION LOG]',
+    '[TOOL] readFile({"path":"README.md"}) → # Fiscal calendar',
+    '[TOOL] runCommand({"command":"node totals.mjs"}) → {"error":"ERROR: command exited 1"}',
+    '[TOOL] writeFile({"path":"periods.json","content":"{\\"a\\": 1}"}) → wrote 9 bytes',
+  ].join('\n');
+  assert.deepEqual(toolRecordsFrom(log), [{ tool: 'readFile' }, { tool: 'shell', error: true }, { tool: 'writeFile' }]);
+  assert.deepEqual(toolRecordsFrom('No tools were used.'), []);
+  const docs = [
+    { id: 'm1', type: 'M', status: 'complete' },
+    { id: 'c1', type: 'C', parent_id: 'm1', source_meta: { checkpoint: 1 } },
+    { id: 'c2', type: 'C', parent_id: 'm1', source_meta: { checkpoint: 2 } },
+    { id: 't2', type: 'T', parent_id: 'c2', status: 'failed', instruction: 'Write it', created_at: '2027-01-01T10:02:00Z', output: '' },
+    { id: 't1', type: 'T', parent_id: 'c1', status: 'complete', instruction: 'Read it', created_at: '2027-01-01T10:01:00Z', output: log },
+    { id: 'tx', type: 'T', parent_id: 'c-of-another-mission', status: 'complete' },
+  ];
+  assert.deepEqual(missionTasks(docs, 'm1').map((x) => [x.id, x.index, x.checkpoint_n, x.goal, x.status, x.tool_records.length]), [
+    ['t1', 0, 1, 'Read it', 'completed', 3],
+    ['t2', 1, 2, 'Write it', 'failed', 0],
+  ]);
+  const trajectory = extractTrajectory({ envelope: { id: 'm1', status: 'completed', _replan_count: 2 }, tasks: missionTasks(docs, 'm1') });
+  assert.deepEqual([trajectory.totalToolCalls, trajectory.errorToolCalls, trajectory.shellCalls, trajectory.replanCount], [3, 1, 1, 2]);
+});
+
+/** A real-model context whose model is the scripted gateway, whose brain's runner `wrapTick` wraps, and whose every side is this checkout. */
+function wrappedRunnerContext(task, wrapTick, timeoutMs = 60_000) {
+  return createModelRunContext({
+    repoRoot: REPO,
+    access: { project: 'your-gcp-project', getAccessToken: async () => 'rollout-token' },
+    sides: { forPatches: () => ({ root: REPO, key: 'k' }), prepareRole: (side, role) => ({ role, launchers: 0, problem: null }), cleanupAll() {} },
+    loadProduct: async (root) => {
+      const real = await loadSideProduct(root);
+      return {
+        ...real,
+        buildBrain: (...args) => {
+          const brain = real.buildBrain(...args);
+          const tick = brain.parts.runner.tick;
+          brain.parts.runner.tick = wrapTick(tick);
+          return brain;
+        },
+      };
+    },
+    startGateway: async (o) => startInProcessFixtureGateway({
+      task, fixture: null, workspaceDir: o.dataRoot, configSnapshot: snapshotCandidateConfig(o.sideRoot, o.role), usageRecords: [],
+    }),
+    timeoutMs,
+  });
+}
+
+test('a real-model rollout runs its mission again once a retry is due, as an instance does, until no mission is left to run', async (t) => {
+  const task = selectModelTasks({ role: 'finance-analyst', split: 'train' })[0];
+  const ticks = [];
+  // The first pass ends as a mission that hit an error does (it stays to run, its retry not yet due),
+  // the second finds nothing ready; then the brain's own runner runs it.
+  const realModel = wrappedRunnerContext(task, (tick) => async () => {
+    ticks.push(ticks.length + 1);
+    if (ticks.length === 1) return 'the-mission-erred';
+    if (ticks.length === 2) return null;
+    return tick();
+  });
+  const substrate = await startTier1Substrate();
+  t.after(() => substrate.close());
+  const sleeps = [];
+  const rollout = await runInProcessBrainRollout(task, {
+    firestoreUrl: substrate.firestoreUrl, gcsUrl: substrate.gcsUrl, firestore: substrate.firestore, gcs: substrate.gcs,
+  }, { repoRoot: REPO, realModel, sleep: async (ms) => { sleeps.push(ms); } });
+  assert.equal(rollout.envelope.status, 'completed', 'one pass would have left the mission queued');
+  assert.deepEqual(sleeps, [3000], 'it waited once, while no mission was ready');
+  assert.equal(ticks.length, 4, 'and stopped once the mission had ended and nothing was left to run');
+  assert.equal(rollout.timedOut, undefined);
+});
+
+test('a real-model rollout past its time stops ticking, and says it timed out', async (t) => {
+  const task = selectModelTasks({ role: 'finance-analyst', split: 'train' })[0];
+  let ticks = 0;
+  // A mission that is never ready: the rollout waits for it until its time is up.
+  const realModel = wrappedRunnerContext(task, () => async () => { ticks += 1; return null; }, 300);
+  const substrate = await startTier1Substrate();
+  t.after(() => substrate.close());
+  const rollout = await runInProcessBrainRollout(task, {
+    firestoreUrl: substrate.firestoreUrl, gcsUrl: substrate.gcsUrl, firestore: substrate.firestore, gcs: substrate.gcs,
+  }, { repoRoot: REPO, realModel, sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))) });
+  assert.equal(rollout.timedOut, true);
+  assert.notEqual(rollout.envelope.status, 'completed');
+  const at = ticks;
+  assert.ok(at > 1, 'it kept looking for the mission while there was time');
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(ticks, at, 'nothing ticks once the rollout has ended');
 });
 
 /** A side root whose product modules are stubs that say which side they came from. */

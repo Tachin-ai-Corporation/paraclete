@@ -458,6 +458,7 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
   const taskDir = realModel ? dataPaths({ data_root: workspaceDir }).workspace : workspaceDir;
   fs.mkdirSync(taskDir, { recursive: true });
   const usageRecords = [];
+  const brainErrors = [];
 
   if (modelTask) {
     task.seed(taskDir);
@@ -541,13 +542,17 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       gateway_token_file: path.join(workspaceDir, 'no-token-file'),
     };
 
-    // A real-model rollout counts its tokens from the brain's own telemetry lines.
+    // A real-model rollout counts its tokens from the brain's own telemetry lines, and keeps its last
+    // few errors: what stopped a mission is otherwise lost with the rollout.
     const log = realModel
       ? (level, message) => {
           const rec = usageFromLog(message);
           if (rec) {
             usageRecords.push(rec);
             realModel.meter.addTokens(rec.totalTokenCount);
+          } else if (level === 'ERROR') {
+            brainErrors.push(String(message).replace(/\s+/g, ' ').slice(0, 240));
+            if (brainErrors.length > BRAIN_ERRORS_KEPT) brainErrors.shift();
           }
         }
       : () => {};
@@ -621,9 +626,30 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
 
     await brain.tickIntake();
     if (realModel) {
-      // A mission past its time is cut off: its gateway stops before the workspace is checked, so no
-      // turn still writes while the checks run, and the run says it timed out.
-      timedOut = (await runWithin(brain.parts.runner.tick(), realModel.timeoutMs)) === 'timeout';
+      // The runner runs as an instance's does (agent/services/brain/main.mjs start): the next mission
+      // while one can run, a mission that hit an error again once its retry is due, until none is left
+      // to run (the runner fails a mission that keeps erring). One tick had run a mission only to its
+      // first error, and the rollout was checked with the mission still active: 5 of the model suite's
+      // 14 version 5 calibration runs (2026-11-03). A mission past its time is cut off: nothing ticks
+      // again, its gateway stops before the workspace is checked, so no turn still writes while the
+      // checks run, and the run says it timed out.
+      let stopped = false;
+      const sleep = opts.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+      const runMissions = async () => {
+        while (!stopped) {
+          if (await brain.parts.runner.tick()) continue;
+          const open = (await db.query('', COLLECTIONS.work, [], { noOrderBy: true, limit: ROLLOUT_WORK_LIMIT }))
+            .filter((d) => d.type === 'M' && OPEN_MISSION.includes(d.status));
+          if (!open.length || stopped) return;
+          await sleep(MISSION_POLL_MS);
+        }
+      };
+      const running = runMissions();
+      timedOut = (await runWithin(running, realModel.timeoutMs)) === 'timeout';
+      stopped = true;
+      // Past its time the loop is no longer awaited: a turn still in flight fails once the gateway and
+      // the Firestore stop, and that failure belongs to no one.
+      running.catch(() => {});
       if (timedOut) {
         await runWithin(gateway.stop(), GATEWAY_STOP_GRACE_MS);
         gateway = null;
@@ -657,9 +683,9 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       ...(artifactVerification ? { artifactVerification } : {}),
     };
 
-    // A real-model rollout's Firestore holds only its own mission (and that mission's checkpoints and
-    // tasks); the scripted path finds its mission by its instruction.
-    const workDocs = await db.query('', COLLECTIONS.work, [], { noOrderBy: true, limit: 50 });
+    // A real-model rollout's Firestore holds only its own mission, with its checkpoints (C) and tasks
+    // (T) beside it in the work collection; the scripted path finds its mission by its instruction.
+    const workDocs = await db.query('', COLLECTIONS.work, [], { noOrderBy: true, limit: realModel ? ROLLOUT_WORK_LIMIT : 50 });
     const missions = realModel ? workDocs.filter((d) => d.type === 'M') : workDocs;
     const rawEnvelope = missions.find((d) => String(d.instruction || '').includes(taskInstruction.slice(0, 20))) ||
       missions[0] || {
@@ -668,30 +694,36 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
         checkpoint_spine: [],
       };
 
-    // A real-model run keeps what the mission did; the scripted path writes its expected clauses in.
+    // A real-model run keeps what the mission did: the spine the brain keeps on it (`_cp_spine`, each
+    // checkpoint's outcome and status) and its own tasks. The scripted path writes its expected
+    // clauses in.
     const isDone = (status) => ['completed', 'complete', 'done', 'passed'].includes(status);
-    const rawSpine =
-      Array.isArray(rawEnvelope.checkpoint_spine) && rawEnvelope.checkpoint_spine.length > 0
+    const nonEmpty = (s) => Array.isArray(s) && s.length > 0;
+    const rawSpine = realModel
+      ? [rawEnvelope._cp_spine, rawEnvelope.checkpoint_spine].find(nonEmpty) || []
+      : nonEmpty(rawEnvelope.checkpoint_spine)
         ? rawEnvelope.checkpoint_spine
-        : realModel
-          ? []
-          : (task.expectedClauses || ['Complete task']).map((clause, idx) => ({
-              index: idx + 1,
-              instruction: clause,
-              status: 'completed',
-            }));
+        : (task.expectedClauses || ['Complete task']).map((clause, idx) => ({
+            index: idx + 1,
+            instruction: clause,
+            status: 'completed',
+          }));
 
     const normalizedSpine = rawSpine.map((cp, idx) => ({
       ...cp,
       n: cp.n ?? cp.index ?? idx + 1,
-      goal: cp.goal || cp.instruction || (task.expectedClauses || [])[idx] || '',
+      goal: cp.goal || cp.instruction || cp.outcome || (task.expectedClauses || [])[idx] || '',
       status: realModel
         ? (isDone(cp.status) ? 'done' : cp.status || 'failed')
         : fixtureVerification.passed && (cp.status === 'completed' || cp.status === 'done' || cp.status === 'passed')
           ? 'done'
           : 'failed',
       replan_count: cp.replan_count ?? cp.replan_attempts ?? 0,
-      result_summary: `${cp.summary || cp.result_summary || ''} | ${fixtureVerification.summary} | ${(task.expectedClauses || []).join('; ')}`,
+      // A checkpoint with a summary counts as verified (trajectory.mjs), so a real-model run's carries
+      // only the mission's own.
+      result_summary: realModel
+        ? (cp.summary || cp.result_summary || null)
+        : `${cp.summary || cp.result_summary || ''} | ${fixtureVerification.summary} | ${(task.expectedClauses || []).join('; ')}`,
     }));
 
     const envelope = {
@@ -706,18 +738,16 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       checkpoint_spine: normalizedSpine,
     };
 
-    const tasks = normalizedSpine.map((cp, idx) => ({
-      id: `${task.id}-task-${idx + 1}`,
-      index: idx,
-      checkpoint_n: cp.n,
-      goal: cp.goal,
-      status: realModel
-        ? (cp.status === 'done' ? 'completed' : 'failed')
-        : fixtureVerification.passed ? 'completed' : 'failed',
-      tool_records: realModel
-        ? []
-        : fixtureVerification.toolRecords || [{ tool: 'shell', exitCode: fixtureVerification.passed ? 0 : 1 }],
-    }));
+    const tasks = realModel
+      ? missionTasks(workDocs, rawEnvelope.id)
+      : normalizedSpine.map((cp, idx) => ({
+          id: `${task.id}-task-${idx + 1}`,
+          index: idx,
+          checkpoint_n: cp.n,
+          goal: cp.goal,
+          status: fixtureVerification.passed ? 'completed' : 'failed',
+          tool_records: fixtureVerification.toolRecords || [{ tool: 'shell', exitCode: fixtureVerification.passed ? 0 : 1 }],
+        }));
 
     const judgePacket = buildJudgePacket({
       task,
@@ -770,6 +800,7 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
       measured: Boolean(realModel) && !launcherProblem,
       ...(launcherProblem ? { launcherProblem } : {}),
       ...(timedOut ? { timedOut: true } : {}),
+      ...(brainErrors.length ? { brainErrors } : {}),
     };
   } finally {
     if (gateway) await runWithin(gateway.stop(), GATEWAY_STOP_GRACE_MS);
@@ -809,6 +840,53 @@ function writeRolloutInstance({ workspaceDir, surfaceRoot, role, firestoreHost, 
 }
 
 /** Waits for `promise`, at most `ms`; resolves 'timeout' when the time runs out first. */
+/** A real-model rollout's mission is still to run while it is in one of these. */
+const OPEN_MISSION = Object.freeze(['active', 'queued']);
+/** How often a real-model rollout looks again for a mission to run, as an instance's runner polls. */
+const MISSION_POLL_MS = 3_000;
+/** At most this many work documents are read back from a real-model rollout's Firestore. */
+const ROLLOUT_WORK_LIMIT = 500;
+/** The brain's error lines a real-model rollout keeps, the newest last. */
+const BRAIN_ERRORS_KEPT = 5;
+
+/**
+ * The tool calls in a task's output: one record per `[TOOL] name(args) → result` line of its tool
+ * log (agent/context/tool-record.mjs buildToolLog), an error where the result is a tool's error
+ * object, and a shell call where the tool runs a command. Pure.
+ *
+ * @param {string} output
+ * @returns {Array<{ tool: string, error?: true }>}
+ */
+export function toolRecordsFrom(output) {
+  const records = [];
+  for (const [, name, result] of String(output || '').matchAll(/^\[TOOL\] ([\w.-]+)\(.*\) → (.*)$/gm)) {
+    records.push({ tool: name === 'runCommand' ? 'shell' : name, ...(result.startsWith('{"error"') ? { error: true } : {}) });
+  }
+  return records;
+}
+
+/**
+ * A mission's tasks, from the task (T) envelopes under its checkpoint (C) envelopes in the work
+ * collection, in the order they ran: each one's checkpoint number, instruction, status and tool calls.
+ * Pure.
+ *
+ * @param {object[]} workDocs  the rollout's work documents
+ * @param {string} missionId
+ * @returns {object[]} tasks as trajectory.mjs reads them
+ */
+export function missionTasks(workDocs, missionId) {
+  const byStart = (a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''));
+  const checkpoints = new Map((workDocs || []).filter((d) => d.type === 'C' && d.parent_id === missionId).map((c) => [c.id, c]));
+  return (workDocs || []).filter((d) => d.type === 'T' && checkpoints.has(d.parent_id)).sort(byStart).map((t, index) => ({
+    id: t.id,
+    index,
+    checkpoint_n: checkpoints.get(t.parent_id).source_meta?.checkpoint ?? null,
+    goal: t.instruction || t.title || '',
+    status: t.status === 'complete' ? 'completed' : t.status || 'unknown',
+    tool_records: toolRecordsFrom(t.output),
+  }));
+}
+
 async function runWithin(promise, ms) {
   let timer;
   const timeout = new Promise((resolve) => {
