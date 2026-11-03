@@ -187,7 +187,8 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
         dataRoot,
         db,
         project: realModel.access.project,
-        accessToken: await realModel.access.getAccessToken(),
+        // None on the VM, whose own credentials the model clients refresh (model-runs.mjs modelAccess).
+        accessToken: await (realModel.access.gatewayToken || realModel.access.getAccessToken)(),
         product,
       });
       const client = ports.createGatewayClient({

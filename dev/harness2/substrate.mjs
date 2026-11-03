@@ -359,6 +359,10 @@ export async function runTier1Evaluation(opts = {}) {
         scripted: Boolean(rollout?.scripted),
         measured: Boolean(rollout?.measured),
         ...(task.split ? { split: task.split } : {}),
+        // A real-model mission cut off at its time, and the brain's last errors: why a mission ended
+        // where it did.
+        ...(rollout?.timedOut ? { timedOut: true } : {}),
+        ...(Array.isArray(rollout?.brainErrors) && rollout.brainErrors.length ? { brainErrors: rollout.brainErrors } : {}),
         ...(typeof rollout?.checkScore === 'number' ? { checkScore: rollout.checkScore } : {}),
         ...(typeof rollout?.checkScore === 'number' && Array.isArray(rollout?.fixtureVerification?.checks)
           ? {
