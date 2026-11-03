@@ -510,7 +510,8 @@ export async function runInProcessBrainRollout(task, substrateCtx, opts = {}) {
         dataRoot: workspaceDir,
         db,
         project: realModel.access.project,
-        accessToken: await realModel.access.getAccessToken(),
+        // None on the VM, whose own credentials the model clients refresh (model-runs.mjs modelAccess).
+        accessToken: await (realModel.access.gatewayToken || realModel.access.getAccessToken)(),
         product,
         // The agent's own commands read this rollout's instance record (its Firestore, its data root),
         // never the instance the harness runs on.

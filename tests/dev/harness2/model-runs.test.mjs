@@ -83,6 +83,16 @@ test('the spend cap stops before the rollout or the tokens that would pass it', 
   assert.equal(estimateRollouts({ tasks: 2, trials: 3, candidates: 5, baselines: 2, calibration: true }), 2 * 3 * 8);
 });
 
+test("a rollout's gateway gets no fixed token on the VM, whose own credentials refresh, and the fixed one off it", async () => {
+  const env = { GOOGLE_CLOUD_PROJECT: 'your-gcp-project' };
+  const onVm = modelAccess({ env, vmToken: async () => 'metadata-token' });
+  assert.equal(await onVm.gatewayToken(), null, 'a metadata token may have minutes left: the model clients fetch their own');
+  const offVm = modelAccess({ env: { ...env, VERTEX_ACCESS_TOKEN: 'developer-token' }, vmToken: async () => { throw new Error('no metadata server'); } });
+  assert.equal(await offVm.gatewayToken(), 'developer-token');
+  const given = modelAccess({ env, getAccessToken: async () => 'given-token', vmToken: async () => 'metadata-token' });
+  assert.equal(await given.gatewayToken(), 'given-token', 'a token source the caller names is the gateway\'s too');
+});
+
 test('model access: the project from the environment or the instance, else a clear refusal', () => {
   assert.equal(modelAccess({ env: { GOOGLE_CLOUD_PROJECT: 'your-gcp-project' }, projectFromInstance: () => null }).project, 'your-gcp-project');
   assert.equal(modelAccess({ env: {}, projectFromInstance: () => 'your-gcp-project' }).project, 'your-gcp-project');
