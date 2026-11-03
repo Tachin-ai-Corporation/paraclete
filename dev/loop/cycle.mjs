@@ -991,7 +991,10 @@ export async function runCycle({
       log(`[WARN] could not read main's head for a baseline: ${err.message}`);
     }
     const kept = readBaseline({ repoRoot });
-    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours })) {
+    // A baseline measured before a change to what measures the agent no longer says how main does: it
+    // is measured again at once, as one of another suite version is. Any other change waits out the day.
+    const stale = Boolean(head && kept.latest) && Boolean(isCurrentBaseline({ repoRoot, summary: kept.latest, execGit }).measuring);
+    if (head && baselineDue({ kept, head, now, everyHours: settings.baseline.everyHours, stale })) {
       if (dryRun) {
         log(`[INFO] loop: a dry run: main's head ${head.slice(0, 12)} would be measured on the model suite`);
       } else {
