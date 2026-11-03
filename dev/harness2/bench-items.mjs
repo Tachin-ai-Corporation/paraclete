@@ -11,8 +11,10 @@
 //   clean work is noisy where a too-strict verifier fails it (a search that exits 1 because it found
 //   nothing, a skip the criteria allow, a first attempt that timed out, rows in another order), and
 //   its defects take reading every row: a row missing from twelve, a total of nine amounts, a change a
-//   later step undid, a rate on the wrong base, numbers sorted as text, checksums that differ. A
-//   verifier that passes everything, or fails everything, scores half.
+//   later step undid, a rate on the wrong base, numbers sorted as text, checksums that differ. Its
+//   checks of state show the state alone, as a check can (a listing, a served certificate, a DNS
+//   answer), and their defects are a state that falls short. A verifier that passes everything, or
+//   fails everything, scores half.
 // - The memory organ's (recall): what the agent has stored (working memory, Core Memory, past work)
 //   and a request. The packet it returns must hold the facts that matter to the request and leave out
 //   the distractors stored beside them. Version 2's stores are larger and noisier: many clients alike,
@@ -40,6 +42,7 @@ export const DEFECT_KINDS = Object.freeze([
   'steps in the wrong order', 'an artifact left stale', 'columns in the wrong order', 'a duplicate left in',
   'a reference left behind', 'a test skipped beyond the one allowed', 'a copy that does not match its source',
   'a change undone by a later step', 'a rate on the wrong base', 'a check run on the wrong version',
+  'an artifact cut short', 'a change not yet in effect', 'a value that differs from the one required',
 ]);
 
 /** What a recall packet must keep, and what it must leave out: a memory item's checks are named so. */
@@ -173,6 +176,55 @@ export const CEREBELLUM_ITEMS = Object.freeze([
       row('1.2', `${tool('cat ranked.txt', 'A-41 98200\nA-12 87650\nA-30 76400\nA-05 54100\nA-19 43900\nA-17 412000\nA-27 31250\nA-03 287500\nA-22 151300\nA-08 125000')}\nRanked the accounts.`),
     ],
   }),
+  // Checks of state: the work is to confirm something is so, and the evidence is a read of the state,
+  // which shows it whole. The first calibration of version 3 found the cerebellum failing clean work
+  // whose evidence was a read alone ("no command was run"); a check has nothing else to show.
+  ...pair({
+    id: 'cb3-backup-check',
+    split: 'train',
+    kind: 'an artifact cut short',
+    flaw: "4 March's dump is 41,943,040 bytes, about 40 MB, where the criteria need 2 GB",
+    instruction: "Check that last night's orders backup ran",
+    acceptCriteria: '/srv/backups holds a dump of the orders database written on 4 March 2027 after the 02:00 job start, of at least 2 GB',
+    clean: [row('1.1', `${tool('ls -l --time-style=long-iso /srv/backups/ | tail -3', '-rw-r--r-- 1 backup backup 2241370112 2027-03-02 02:13 orders-2027-03-02.dump\n-rw-r--r-- 1 backup backup 2244823040 2027-03-03 02:14 orders-2027-03-03.dump\n-rw-r--r-- 1 backup backup 2249015296 2027-03-04 02:14 orders-2027-03-04.dump')}\nLast night's backup is in place.`)],
+    defect: [row('1.1', `${tool('ls -l --time-style=long-iso /srv/backups/ | tail -3', '-rw-r--r-- 1 backup backup 2241370112 2027-03-02 02:13 orders-2027-03-02.dump\n-rw-r--r-- 1 backup backup 2244823040 2027-03-03 02:14 orders-2027-03-03.dump\n-rw-r--r-- 1 backup backup   41943040 2027-03-04 02:01 orders-2027-03-04.dump')}\nLast night's backup is in place.`)],
+  }),
+  ...pair({
+    id: 'cb3-cert-served',
+    split: 'train',
+    kind: 'a change not yet in effect',
+    flaw: 'certbot holds the renewed certificate, but the site still serves the old one, issued 4 December 2026',
+    instruction: 'Confirm the renewed certificate for shop.example.com is live',
+    acceptCriteria: 'the certificate shop.example.com serves on port 443 was issued on or after 1 March 2027 and is valid until at least 31 May 2027',
+    clean: [
+      row('1.1', tool('certbot certificates -d shop.example.com', 'Certificate Name: shop.example.com\n    Domains: shop.example.com\n    Expiry Date: 2027-06-01 08:13:59+00:00 (VALID: 89 days)')),
+      row('1.2', `${tool('echo | openssl s_client -connect shop.example.com:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -subject -dates', 'subject=CN = shop.example.com\nnotBefore=Mar  3 08:14:00 2027 GMT\nnotAfter=Jun  1 08:13:59 2027 GMT')}\nThe renewed certificate is live.`),
+    ],
+    defect: [
+      row('1.1', tool('certbot certificates -d shop.example.com', 'Certificate Name: shop.example.com\n    Domains: shop.example.com\n    Expiry Date: 2027-06-01 08:13:59+00:00 (VALID: 89 days)')),
+      row('1.2', `${tool('echo | openssl s_client -connect shop.example.com:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -subject -dates', 'subject=CN = shop.example.com\nnotBefore=Dec  4 08:10:00 2026 GMT\nnotAfter=Mar  4 08:09:59 2027 GMT')}\nThe renewed certificate is live.`),
+    ],
+  }),
+  ...pair({
+    id: 'cb3-mail-records',
+    split: 'train',
+    kind: 'a value that differs from the one required',
+    flaw: 'the SPF record includes _spf.mailhost.example.com, not _spf.mailhost.example.net',
+    instruction: "Check that example.org's mail records are in place",
+    acceptCriteria: 'example.org has an MX record for mx1.mailhost.example.net at priority 10, and an SPF record that includes include:_spf.mailhost.example.net',
+    clean: [row('1.1', `${tool('dig +short MX example.org && dig +short TXT example.org', '10 mx1.mailhost.example.net.\n"site-verification=Zk3v1Example0123"\n"v=spf1 include:_spf.mailhost.example.net ~all"')}\nThe MX and SPF records are in place.`)],
+    defect: [row('1.1', `${tool('dig +short MX example.org && dig +short TXT example.org', '10 mx1.mailhost.example.net.\n"site-verification=Zk3v1Example0123"\n"v=spf1 include:_spf.mailhost.example.com ~all"')}\nThe MX and SPF records are in place.`)],
+  }),
+  ...pair({
+    id: 'cb3-version-live',
+    split: 'holdout',
+    kind: 'a value that differs from the one required',
+    flaw: 'production reports 2.4.1-rc.2, a release candidate, not 2.4.1',
+    instruction: 'Confirm production is on 2.4.1',
+    acceptCriteria: 'https://shop.example.com/version reports version 2.4.1, and https://shop.example.com/health answers 200',
+    clean: [row('1.1', `${tool('curl -s https://shop.example.com/version; echo; curl -s -o /dev/null -w "%{http_code}" https://shop.example.com/health', '{"version":"2.4.1","commit":"4f2a9c1"}\n200')}\nProduction is on 2.4.1.`)],
+    defect: [row('1.1', `${tool('curl -s https://shop.example.com/version; echo; curl -s -o /dev/null -w "%{http_code}" https://shop.example.com/health', '{"version":"2.4.1-rc.2","commit":"77ab0e3"}\n200')}\nProduction is on 2.4.1.`)],
+  }),
   ...pair({
     id: 'cb3-site-mirror',
     split: 'holdout',
@@ -294,13 +346,14 @@ export const CEREBELLUM_ITEMS = Object.freeze([
     id: 'cb2-stale-report',
     split: 'holdout',
     kind: 'an artifact left stale',
-    flaw: 'report.pdf is from 1 March, before the 4 March data it must hold',
+    flaw: 'the report was rebuilt from the 1 March load, not from 4 March\'s',
     instruction: 'Regenerate the report from the data loaded on 4 March 2027',
-    acceptCriteria: "report.pdf was regenerated on 4 March 2027, after that morning's 09:00 data load",
-    // Version 3 shows the data load beside the report: version 2's clean evidence showed only the
-    // report's time, and every run failed it, so the load the criteria name was never in evidence.
-    clean: [row('1.1', `${tool('ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', '-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  182044 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
-    defect: [row('1.1', `${tool('ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', '-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  179120 2027-03-01 09:12 report.pdf')}\nRegenerated the report.`)],
+    acceptCriteria: "report.pdf was regenerated on 4 March 2027 from that morning's 09:00 data load, data/loads/2027-03-04.csv",
+    // Version 3 shows the regeneration and the load: version 2's clean evidence was the report's time
+    // alone, which every run failed, the verifier saying no command had regenerated it. The work
+    // asks for an action, so its evidence shows the action.
+    clean: [row('1.1', `${tool('make-report --data data/loads/2027-03-04.csv --out report.pdf && ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', 'Read 48,210 rows from data/loads/2027-03-04.csv\nWrote report.pdf (182,044 bytes)\n-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  182044 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
+    defect: [row('1.1', `${tool('make-report --data data/loads/2027-03-01.csv --out report.pdf && ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', 'Read 47,955 rows from data/loads/2027-03-01.csv\nWrote report.pdf (179,120 bytes)\n-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  179120 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
   }),
   ...pair({
     id: 'cb2-column-order',

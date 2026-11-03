@@ -59,7 +59,7 @@ test('the items are well formed: unique ids, both splits, and the cerebellum\'s 
   for (const id of RETIRED_BENCH_ITEMS) assert.ok(Object.values(BENCHES).flat().some((i) => i.id === id), `${id} is defined`);
   assert.ok(selectBenchItems({ organ: 'cerebellum' }).every((i) => !RETIRED_BENCH_ITEMS.includes(i.id)));
   assert.deepEqual(selectBenchItems({ organ: 'cerebellum', ids: ['cb-regions-csv-defect'] }).map((i) => i.id), ['cb-regions-csv-defect']);
-  assert.deepEqual([selectBenchItems({ organ: 'cerebellum' }).length, selectBenchItems({ organ: 'temporal-memory' }).length], [28, 12]);
+  assert.deepEqual([selectBenchItems({ organ: 'cerebellum' }).length, selectBenchItems({ organ: 'temporal-memory' }).length], [36, 12]);
   for (const organ of Object.keys(BENCHES)) {
     const active = selectBenchItems({ organ });
     assert.ok(active.some((i) => i.split === 'train') && active.some((i) => i.split === 'holdout'), `${organ}: both splits still run`);
@@ -110,8 +110,29 @@ test("version 3's cerebellum pairs hold the facts their flaws name: one differen
   assert.equal(berlin.format(new Date('2027-03-30T14:00:00Z')), '16:00');
   assert.match(out('cb3-summer-time-call-clean'), /16:00 Berlin time \(14:00 UTC\)/);
   assert.equal(new Date('2027-03-30T12:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', timeZone: 'UTC' }), 'Tuesday');
-  // The stale report's clean side shows the load it must follow, and a report written after it.
-  assert.match(out('cb2-stale-report-clean'), /2027-03-04 09:00 data\/loads\/2027-03-04\.csv[\s\S]*2027-03-04 10:31 report\.pdf/);
+  // The stale report's clean side regenerates it from 4 March's load, after that load; the defect's
+  // from 1 March's.
+  assert.match(out('cb2-stale-report-clean'), /--data data\/loads\/2027-03-04\.csv[\s\S]*2027-03-04 09:00 data\/loads\/2027-03-04\.csv[\s\S]*2027-03-04 10:31 report\.pdf/);
+  assert.match(out('cb2-stale-report-defect'), /Read [\d,]+ rows from data\/loads\/2027-03-01\.csv/);
+  // The checks of state. The clean dump is 4 March's and over 2 GB; the defect's is 4 March's and far
+  // under it.
+  const dump = (id) => out(id).split('\n').map((l) => l.match(/ (\d+) (2027-03-04) (\d\d:\d\d) orders-2027-03-04\.dump$/)).find(Boolean);
+  assert.ok(Number(dump('cb3-backup-check-clean')[1]) >= 2e9 && dump('cb3-backup-check-clean')[3] > '02:00');
+  assert.ok(Number(dump('cb3-backup-check-defect')[1]) < 2e8 && dump('cb3-backup-check-defect')[3] > '02:00');
+  // The certificate served on the clean side was issued on or after 1 March and lasts past 31 May; the
+  // defect's was issued before 1 March; both sides' certbot rows agree.
+  const served = (id) => ['notBefore', 'notAfter'].map((k) => Date.parse(`${cell(out(id, 1), new RegExp(`${k}=(.+)`)).replace(/ GMT$/, '')} UTC`));
+  const [cleanFrom, cleanTo] = served('cb3-cert-served-clean');
+  assert.ok(cleanFrom >= Date.parse('2027-03-01T00:00:00Z') && cleanTo >= Date.parse('2027-05-31T23:59:59Z'));
+  assert.ok(served('cb3-cert-served-defect')[0] < Date.parse('2027-03-01T00:00:00Z'));
+  assert.equal(out('cb3-cert-served-clean'), out('cb3-cert-served-defect'));
+  // The clean SPF record includes the host the criteria name; the defect's names another domain.
+  const spf = (id) => cell(out(id), /"(v=spf1[^"]*)"/).split(' ');
+  assert.ok(spf('cb3-mail-records-clean').includes('include:_spf.mailhost.example.net'));
+  assert.ok(!spf('cb3-mail-records-defect').includes('include:_spf.mailhost.example.net'));
+  // The clean version is the release itself; the defect's only starts with it.
+  const version = (id) => JSON.parse(cell(out(id), /→ (\{.*\})/)).version;
+  assert.deepEqual([version('cb3-version-live-clean'), version('cb3-version-live-defect')], ['2.4.1', '2.4.1-rc.2']);
 });
 
 test('a verdict passes its check only when it is the expected one, given decisively', () => {
