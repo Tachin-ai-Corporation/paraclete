@@ -21,17 +21,23 @@ import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.
 import { CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS } from './bench-items.mjs';
 
 /** The items' version: a bench's results compare only with results of the same version. */
-export const BENCH_VERSION = 2;
+export const BENCH_VERSION = 3;
 
 /**
  * Items a version retired: defined, and run only when named. Version 2 retired version 1's
  * cerebellum pairs and memory items that every run of the first bench baseline judged right
- * (2026-11-02), keeping two pairs and two items as the floor a change must not break.
+ * (2026-11-02), keeping two pairs and two items as the floor a change must not break. Version 3
+ * retired, the same way, what both lanes' version 2 baselines (main at ca57f5b, 2026-11-02) judged
+ * right in every run: every training pair and item but two of each, and three held-out pairs, for
+ * harder ones of its own.
  */
 export const RETIRED_BENCH_ITEMS = Object.freeze([
   ...['cb-regions-csv', 'cb-invite-date', 'cb-backup-exit', 'cb-summary-path', 'cb-five-incidents', 'cb-invoice-total',
     'cb-config-untouched', 'cb-word-limit', 'cb-sorted-contacts'].flatMap((id) => [`${id}-clean`, `${id}-defect`]),
   'mem-client-format', 'mem-deploy-window', 'mem-board-folder', 'mem-copy-review', 'mem-release-freeze', 'mem-key-rotation', 'mem-vendor-renewal',
+  ...['cb2-report-sections', 'cb2-march-export', 'cb2-leap-year-test', 'cb2-timeout-unit', 'cb2-deploy-target', 'cb2-backup-first',
+    'cb2-column-order', 'cb2-no-duplicates', 'cb-meeting-zone'].flatMap((id) => [`${id}-clean`, `${id}-defect`]),
+  'mem2-carrier-among-many', 'mem2-two-facts', 'mem2-moved-office', 'mem-legacy-readonly',
 ]);
 
 /** The benches, by the organ each judges. */
@@ -93,7 +99,9 @@ export async function loadBenchPorts(sideRoot, organ, { importModule = (url) => 
  * The checks of a verification: the verdict the item expects, given decisively. A clean item passes
  * when the milestone passes, with a caveat or without; a defective one fails only on a verdict of
  * not met that is not inconclusive (a verifier that never answered caught nothing). The check is named
- * for the kind of work it judges, never for the item's own flaw (bench-items.mjs says why).
+ * for the kind of work it judges, never for the item's own flaw (bench-items.mjs says why). A wrong
+ * verdict's detail carries the verifier's own reason, for whoever reads the run: a lane's issue
+ * quotes a check's name, never its detail (dev/loop/planner.mjs benchIssueBody).
  *
  * @returns {Array<{ name: string, ok: boolean, detail?: string }>}
  */
@@ -101,7 +109,8 @@ export function verificationChecks(item, result) {
   const got = result?.inconclusive ? 'no verdict' : result?.passed ? 'pass' : 'fail';
   const ok = item.expect === 'pass' ? got === 'pass' : got === 'fail';
   const name = item.expect === 'pass' ? 'the verdict on work that meets its criteria' : `the verdict on work with ${item.kind}`;
-  return [{ name, ok, ...(ok ? {} : { detail: `got ${got}` }) }];
+  const reason = String(result?.summary || result?.caveats?.join(' ') || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+  return [{ name, ok, ...(ok ? {} : { detail: `got ${got}${reason ? `: ${reason}` : ''}` }) }];
 }
 
 /**

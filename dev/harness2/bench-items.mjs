@@ -7,12 +7,20 @@
 //   a defect a careful verifier must catch. Version 2's defects are the quiet ones: a part missing
 //   while the prose lists it, a range a day short, a total cut where it should be rounded, a test
 //   removed while the count still looks whole, a value in the wrong unit, a deploy to the wrong place,
-//   steps in the wrong order, a stale artifact, columns out of order, a duplicate left in. A verifier
-//   that passes everything, or fails everything, scores half.
+//   steps in the wrong order, a stale artifact, columns out of order, a duplicate left in. Version 3's
+//   clean work is noisy where a too-strict verifier fails it (a search that exits 1 because it found
+//   nothing, a skip the criteria allow, a first attempt that timed out, rows in another order), and
+//   its defects take reading every row: a row missing from twelve, a total of nine amounts, a change a
+//   later step undid, a rate on the wrong base, numbers sorted as text, checksums that differ. Its
+//   checks of state show the state alone, as a check can (a listing, a served certificate, a DNS
+//   answer), and their defects are a state that falls short. A verifier that passes everything, or
+//   fails everything, scores half.
 // - The memory organ's (recall): what the agent has stored (working memory, Core Memory, past work)
 //   and a request. The packet it returns must hold the facts that matter to the request and leave out
 //   the distractors stored beside them. Version 2's stores are larger and noisier: many clients alike,
-//   requests that need two facts, facts that changed.
+//   requests that need two facts, facts that changed. Version 3's need three facts, tell apart people
+//   of one name and contacts of one client, weigh a working-memory note against Core Memory, join past
+//   work with a policy, and ask for the deeper history on a training item too.
 //
 // A check is named for the kind of mistake it catches, from the vocabularies below, never for a fact
 // of its item: a lane's planned issue quotes a failing check by its name (dev/loop/planner.mjs), and a
@@ -32,11 +40,15 @@ export const DEFECT_KINDS = Object.freeze([
   'a required part missing', 'a range one day short', 'a total cut where it should be rounded',
   'a test removed while the count looks whole', 'a value in the wrong unit', 'a deploy to the wrong place',
   'steps in the wrong order', 'an artifact left stale', 'columns in the wrong order', 'a duplicate left in',
+  'a reference left behind', 'a test skipped beyond the one allowed', 'a copy that does not match its source',
+  'a change undone by a later step', 'a rate on the wrong base', 'a check run on the wrong version',
+  'an artifact cut short', 'a change not yet in effect', 'a value that differs from the one required',
 ]);
 
 /** What a recall packet must keep, and what it must leave out: a memory item's checks are named so. */
 export const RECALL_KEEPS = Object.freeze([
   'keeps the fact the request turns on', 'keeps the other fact the request needs', 'keeps the newer of two facts that disagree',
+  'keeps a condition the request must meet',
 ]);
 export const RECALL_LEAVES = Object.freeze([
   'leaves out a fact about the same subject for another purpose', 'leaves out a fact about another subject',
@@ -53,8 +65,197 @@ function pair({ id, split, kind, flaw, instruction, acceptCriteria, clean, defec
 
 const row = (step, result, agent = 'motor') => ({ step, agent, result });
 
+const SHORTLIST = 'A-03 287500\nA-05 54100\nA-08 125000\nA-12 87650\nA-17 412000\nA-19 43900\nA-22 151300\nA-27 31250\nA-30 76400\nA-41 98200';
+const STORES = Array.from({ length: 12 }, (_, i) => `S-${String(i + 1).padStart(2, '0')}`).join('\n');
+const STORE_TOTALS = ['S-07,18204.10', 'S-02,9120.00', 'S-11,22410.55', 'S-01,15002.30', 'S-09,7310.80', 'S-05,11980.00',
+  'S-12,6402.15', 'S-03,13377.40', 'S-10,8890.25', 'S-06,19544.60', 'S-04,10211.70', 'S-08,12045.95'];
+const EXPENSES = 'date,item,amount\n2027-03-02,train to Leeds,120.00\n2027-03-02,hotel dinner,84.50\n2027-03-03,hotel,310.25\n'
+  + '2027-03-03,taxi,47.20\n2027-03-04,parking,15.75\n2027-03-08,conference ticket,600.00\n2027-03-09,team lunch,92.10\n'
+  + '2027-03-11,printing,33.30\n2027-03-15,flight to Dublin,210.40';
+const UPLOAD_TIMEOUT = row('1.1', `${tool('gcloud storage cp archive.tar.gz gs://example-backups/2027-03/', 'ERROR: (gcloud.storage.cp) HTTPSConnectionPool: Read timed out. (read timeout=60)\n[exit 1]')}\nThe upload timed out; trying again.`);
+const upload = (remoteMd5) => row('1.2', `${tool('gcloud storage cp archive.tar.gz gs://example-backups/2027-03/ && md5sum archive.tar.gz && gcloud storage hash gs://example-backups/2027-03/archive.tar.gz --hex',
+  `Copying file://archive.tar.gz to gs://example-backups/2027-03/archive.tar.gz\n  Completed files 1/1 | 1.2GiB/1.2GiB\n9e107d9d372bb6826bd81d3542a419d6  archive.tar.gz\nhash_md5: ${remoteMd5}\nurl: gs://example-backups/2027-03/archive.tar.gz`)}\nUploaded the archive on the second try; its checksum matches.`);
+
 export const CEREBELLUM_ITEMS = Object.freeze([
-  // Version 2.
+  // Version 3.
+  ...pair({
+    id: 'cb3-no-old-imports',
+    split: 'train',
+    kind: 'a reference left behind',
+    flaw: 'src/jobs/nightly.mjs still imports the old logger',
+    instruction: 'Move every module off the old logger',
+    acceptCriteria: 'no file under src/ imports lib/log-old.mjs any more, and the test suite still passes',
+    clean: [row('1.1', `${tool('grep -rn "lib/log-old" src/; echo "grep exit $?"; npm test 2>&1 | tail -3', 'grep exit 1\nℹ tests 64\nℹ pass 64\nℹ fail 0')}\nMoved the last three modules to lib/log.mjs.`)],
+    defect: [row('1.1', `${tool('grep -rn "lib/log-old" src/; echo "grep exit $?"; npm test 2>&1 | tail -3', "src/jobs/nightly.mjs:3:import log from '../lib/log-old.mjs';\ngrep exit 0\nℹ tests 64\nℹ pass 64\nℹ fail 0")}\nMoved the last three modules to lib/log.mjs.`)],
+  }),
+  ...pair({
+    id: 'cb3-allowed-skip',
+    split: 'train',
+    kind: 'a test skipped beyond the one allowed',
+    flaw: 'a checkout test is skipped as well as the network test the criteria allow',
+    instruction: 'Fix the checkout tests',
+    acceptCriteria: "npm test has no failing test; the network suite's one test may stay skipped, and no other test is skipped",
+    clean: [row('1.1', `${tool('npm test 2>&1 | tail -8', '(node:4121) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n﹣ network suite reaches the mock server # SKIP needs network\nℹ tests 58\nℹ suites 9\nℹ pass 57\nℹ fail 0\nℹ skipped 1\nℹ duration_ms 2210')}\nFixed the checkout tests; only the network test is skipped.`)],
+    defect: [row('1.1', `${tool('npm test 2>&1 | tail -9', '(node:4121) ExperimentalWarning: VM Modules is an experimental feature and might change at any time\n﹣ network suite reaches the mock server # SKIP needs network\n﹣ checkout applies the spring discount # SKIP\nℹ tests 58\nℹ suites 9\nℹ pass 56\nℹ fail 0\nℹ skipped 2\nℹ duration_ms 2190')}\nFixed the checkout tests; only the network test is skipped.`)],
+  }),
+  ...pair({
+    id: 'cb3-upload-checksum',
+    split: 'train',
+    kind: 'a copy that does not match its source',
+    flaw: "the uploaded object's MD5 ends a41f02, the local file's a419d6",
+    instruction: "Upload the month's archive to the backup bucket",
+    acceptCriteria: 'gs://example-backups/2027-03/archive.tar.gz exists and is the same file as the local archive.tar.gz: the same MD5',
+    clean: [UPLOAD_TIMEOUT, upload('9e107d9d372bb6826bd81d3542a419d6')],
+    defect: [UPLOAD_TIMEOUT, upload('9e107d9d372bb6826bd81d3542a41f02')],
+  }),
+  ...pair({
+    id: 'cb3-store-rows',
+    split: 'train',
+    kind: 'a row missing',
+    flaw: 'store S-09 has no row',
+    instruction: "Total each store's March sales",
+    acceptCriteria: 'totals.csv has one row for each of the twelve stores in stores.txt, in any order, each with its March total',
+    clean: [row('1.1', tool('cat stores.txt', STORES)), row('1.2', `${tool('cat totals.csv', `store,total\n${STORE_TOTALS.join('\n')}`)}\nWrote a total for every store.`)],
+    defect: [row('1.1', tool('cat stores.txt', STORES)), row('1.2', `${tool('cat totals.csv', `store,total\n${STORE_TOTALS.filter((s) => !s.startsWith('S-09')).join('\n')}`)}\nWrote a total for every store.`)],
+  }),
+  ...pair({
+    id: 'cb3-expense-sum',
+    split: 'train',
+    kind: 'a wrong total',
+    flaw: 'the nine amounts sum to 1513.50; 1466.30 leaves out the 47.20 taxi',
+    instruction: "Total March's expense claim",
+    acceptCriteria: 'total.txt holds the sum of all nine amounts in expenses.csv, to the cent',
+    clean: [row('1.1', tool('cat expenses.csv', EXPENSES)), row('1.2', `${tool('cat total.txt', '1513.50')}\nThe claim's total is in total.txt.`)],
+    defect: [row('1.1', tool('cat expenses.csv', EXPENSES)), row('1.2', `${tool('cat total.txt', '1466.30')}\nThe claim's total is in total.txt.`)],
+  }),
+  ...pair({
+    id: 'cb3-undone-later',
+    split: 'train',
+    kind: 'a change undone by a later step',
+    flaw: 'the build regenerated config/app.json from its template, putting maxUploadMb back to 10',
+    instruction: 'Raise the upload limit to 50 MB and rebuild the app',
+    acceptCriteria: 'when the checkpoint ends, config/app.json sets maxUploadMb to 50, and the build succeeded',
+    clean: [
+      row('1.1', `${tool('grep -n maxUploadMb config/app.json', '7:  "maxUploadMb": 50,')}\nSet the upload limit to 50 MB.`),
+      row('1.2', `${tool('npm run build && grep -n maxUploadMb config/app.json', '> app@3.2.0 build\n> node scripts/build.mjs\nBuilt dist/ in 4.1s\n7:  "maxUploadMb": 50,')}\nRebuilt the app.`),
+    ],
+    defect: [
+      row('1.1', `${tool('grep -n maxUploadMb config/app.json', '7:  "maxUploadMb": 50,')}\nSet the upload limit to 50 MB.`),
+      row('1.2', `${tool('npm run build && grep -n maxUploadMb config/app.json', '> app@3.2.0 build\n> node scripts/build.mjs\nconfig/app.json regenerated from config/app.template.json\nBuilt dist/ in 4.3s\n7:  "maxUploadMb": 10,')}\nRebuilt the app.`),
+    ],
+  }),
+  ...pair({
+    id: 'cb3-churn-base',
+    split: 'train',
+    kind: 'a rate on the wrong base',
+    flaw: '3.5% divides the 45 lost by the 1,285 customers at the end of March; by the 1,250 at its start it is 3.6%',
+    instruction: "Report March's churn",
+    acceptCriteria: "summary.md gives March's churn rate: the customers lost in March divided by the customers at the start of March, as a percentage to one decimal place",
+    clean: [
+      row('1.1', tool('cat metrics/march.json', '{ "customers_start": 1250, "customers_lost": 45, "customers_gained": 80, "customers_end": 1285 }')),
+      row('1.2', `${tool('cat summary.md', '# March\n\nWe began March with 1,250 customers and ended it with 1,285. Churn: 3.6% (45 customers lost).')}\nWrote the churn summary.`),
+    ],
+    defect: [
+      row('1.1', tool('cat metrics/march.json', '{ "customers_start": 1250, "customers_lost": 45, "customers_gained": 80, "customers_end": 1285 }')),
+      row('1.2', `${tool('cat summary.md', '# March\n\nWe began March with 1,250 customers and ended it with 1,285. Churn: 3.5% (45 customers lost).')}\nWrote the churn summary.`),
+    ],
+  }),
+  ...pair({
+    id: 'cb3-top-balances',
+    split: 'train',
+    kind: 'an order broken',
+    flaw: 'the balances are sorted as text, so 98200 comes first and 412000 sixth',
+    instruction: 'Rank the shortlisted accounts by balance',
+    acceptCriteria: 'ranked.txt lists the ten accounts of shortlist.txt by balance, largest first',
+    clean: [
+      row('1.1', tool('cat shortlist.txt', SHORTLIST)),
+      row('1.2', `${tool('cat ranked.txt', 'A-17 412000\nA-03 287500\nA-22 151300\nA-08 125000\nA-41 98200\nA-12 87650\nA-30 76400\nA-05 54100\nA-19 43900\nA-27 31250')}\nRanked the accounts.`),
+    ],
+    defect: [
+      row('1.1', tool('cat shortlist.txt', SHORTLIST)),
+      row('1.2', `${tool('cat ranked.txt', 'A-41 98200\nA-12 87650\nA-30 76400\nA-05 54100\nA-19 43900\nA-17 412000\nA-27 31250\nA-03 287500\nA-22 151300\nA-08 125000')}\nRanked the accounts.`),
+    ],
+  }),
+  // Checks of state: the work is to confirm something is so, and the evidence is a read of the state,
+  // which shows it whole. The first calibration of version 3 found the cerebellum failing clean work
+  // whose evidence was a read alone ("no command was run"); a check has nothing else to show.
+  ...pair({
+    id: 'cb3-backup-check',
+    split: 'train',
+    kind: 'an artifact cut short',
+    flaw: "4 March's dump is 41,943,040 bytes, about 40 MB, where the criteria need 2 GB",
+    instruction: "Check that last night's orders backup ran",
+    acceptCriteria: '/srv/backups holds a dump of the orders database written on 4 March 2027 after the 02:00 job start, of at least 2 GB',
+    clean: [row('1.1', `${tool('ls -l --time-style=long-iso /srv/backups/ | tail -3', '-rw-r--r-- 1 backup backup 2241370112 2027-03-02 02:13 orders-2027-03-02.dump\n-rw-r--r-- 1 backup backup 2244823040 2027-03-03 02:14 orders-2027-03-03.dump\n-rw-r--r-- 1 backup backup 2249015296 2027-03-04 02:14 orders-2027-03-04.dump')}\nLast night's backup is in place.`)],
+    defect: [row('1.1', `${tool('ls -l --time-style=long-iso /srv/backups/ | tail -3', '-rw-r--r-- 1 backup backup 2241370112 2027-03-02 02:13 orders-2027-03-02.dump\n-rw-r--r-- 1 backup backup 2244823040 2027-03-03 02:14 orders-2027-03-03.dump\n-rw-r--r-- 1 backup backup   41943040 2027-03-04 02:01 orders-2027-03-04.dump')}\nLast night's backup is in place.`)],
+  }),
+  ...pair({
+    id: 'cb3-cert-served',
+    split: 'train',
+    kind: 'a change not yet in effect',
+    flaw: 'certbot holds the renewed certificate, but the site still serves the old one, issued 4 December 2026',
+    instruction: 'Confirm the renewed certificate for shop.example.com is live',
+    acceptCriteria: 'the certificate shop.example.com serves on port 443 was issued on or after 1 March 2027 and is valid until at least 31 May 2027',
+    clean: [
+      row('1.1', tool('certbot certificates -d shop.example.com', 'Certificate Name: shop.example.com\n    Domains: shop.example.com\n    Expiry Date: 2027-06-01 08:13:59+00:00 (VALID: 89 days)')),
+      row('1.2', `${tool('echo | openssl s_client -connect shop.example.com:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -subject -dates', 'subject=CN = shop.example.com\nnotBefore=Mar  3 08:14:00 2027 GMT\nnotAfter=Jun  1 08:13:59 2027 GMT')}\nThe renewed certificate is live.`),
+    ],
+    defect: [
+      row('1.1', tool('certbot certificates -d shop.example.com', 'Certificate Name: shop.example.com\n    Domains: shop.example.com\n    Expiry Date: 2027-06-01 08:13:59+00:00 (VALID: 89 days)')),
+      row('1.2', `${tool('echo | openssl s_client -connect shop.example.com:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -subject -dates', 'subject=CN = shop.example.com\nnotBefore=Dec  4 08:10:00 2026 GMT\nnotAfter=Mar  4 08:09:59 2027 GMT')}\nThe renewed certificate is live.`),
+    ],
+  }),
+  ...pair({
+    id: 'cb3-mail-records',
+    split: 'train',
+    kind: 'a value that differs from the one required',
+    flaw: 'the SPF record includes _spf.mailhost.example.com, not _spf.mailhost.example.net',
+    instruction: "Check that example.org's mail records are in place",
+    acceptCriteria: 'example.org has an MX record for mx1.mailhost.example.net at priority 10, and an SPF record that includes include:_spf.mailhost.example.net',
+    clean: [row('1.1', `${tool('dig +short MX example.org && dig +short TXT example.org', '10 mx1.mailhost.example.net.\n"site-verification=Zk3v1Example0123"\n"v=spf1 include:_spf.mailhost.example.net ~all"')}\nThe MX and SPF records are in place.`)],
+    defect: [row('1.1', `${tool('dig +short MX example.org && dig +short TXT example.org', '10 mx1.mailhost.example.net.\n"site-verification=Zk3v1Example0123"\n"v=spf1 include:_spf.mailhost.example.com ~all"')}\nThe MX and SPF records are in place.`)],
+  }),
+  ...pair({
+    id: 'cb3-version-live',
+    split: 'holdout',
+    kind: 'a value that differs from the one required',
+    flaw: 'production reports 2.4.1-rc.2, a release candidate, not 2.4.1',
+    instruction: 'Confirm production is on 2.4.1',
+    acceptCriteria: 'https://shop.example.com/version reports version 2.4.1, and https://shop.example.com/health answers 200',
+    clean: [row('1.1', `${tool('curl -s https://shop.example.com/version; echo; curl -s -o /dev/null -w "%{http_code}" https://shop.example.com/health', '{"version":"2.4.1","commit":"4f2a9c1"}\n200')}\nProduction is on 2.4.1.`)],
+    defect: [row('1.1', `${tool('curl -s https://shop.example.com/version; echo; curl -s -o /dev/null -w "%{http_code}" https://shop.example.com/health', '{"version":"2.4.1-rc.2","commit":"77ab0e3"}\n200')}\nProduction is on 2.4.1.`)],
+  }),
+  ...pair({
+    id: 'cb3-site-mirror',
+    split: 'holdout',
+    kind: 'a copy that does not match its source',
+    flaw: 'pricing.html is in site/ but not in /srv/www',
+    instruction: 'Publish the site to the web root',
+    acceptCriteria: '/srv/www holds exactly the files of site/, with the same content',
+    clean: [row('1.1', `${tool('rsync -a --delete site/ /srv/www/; diff -rq site/ /srv/www/; echo "diff exit $?"', 'diff exit 0')}\nPublished the site.`)],
+    defect: [row('1.1', `${tool('rsync -a --delete site/ /srv/www/; diff -rq site/ /srv/www/; echo "diff exit $?"', 'rsync: [sender] send_files failed to open "site/pricing.html": Permission denied (13)\nrsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1338) [sender=3.2.7]\nOnly in site/: pricing.html\ndiff exit 1')}\nPublished the site.`)],
+  }),
+  ...pair({
+    id: 'cb3-tested-commit',
+    split: 'holdout',
+    kind: 'a check run on the wrong version',
+    flaw: 'the tests ran at 9b1e7d0, not at the fix 4f2a9c1',
+    instruction: 'Run the test suite on the rounding fix',
+    acceptCriteria: 'the full test suite passes at commit 4f2a9c1, the rounding fix',
+    clean: [row('1.1', `${tool('git log --oneline -1 && npm test 2>&1 | tail -3', '4f2a9c1 (HEAD -> fix/rounding) Round invoice totals half-up\nℹ tests 212\nℹ pass 212\nℹ fail 0')}\nThe suite passes on the fix.`)],
+    defect: [row('1.1', `${tool('git log --oneline -1 && npm test 2>&1 | tail -3', '9b1e7d0 (HEAD -> main) Bump the date library\nℹ tests 212\nℹ pass 212\nℹ fail 0')}\nThe suite passes on the fix.`)],
+  }),
+  ...pair({
+    id: 'cb3-summer-time-call',
+    split: 'holdout',
+    kind: 'a time in the wrong zone',
+    flaw: 'Berlin is on summer time (UTC+2) from 28 March 2027, so 16:00 there on 30 March is 14:00 UTC, not 15:00',
+    instruction: 'Send the Berlin team the time of the launch call',
+    acceptCriteria: 'the message gives the call as 16:00 Berlin time on Tuesday 30 March 2027, with its UTC time right',
+    clean: [row('1.1', `${tool('cat message.txt', 'The launch call is on Tuesday 30 March 2027 at 16:00 Berlin time (14:00 UTC).')}\nWrote the message.`)],
+    defect: [row('1.1', `${tool('cat message.txt', 'The launch call is on Tuesday 30 March 2027 at 16:00 Berlin time (15:00 UTC).')}\nWrote the message.`)],
+  }),
+  // Version 2's: version 3 retired all but cb2-rounded-total, cb-tests-pass and cb2-stale-report.
   ...pair({
     id: 'cb2-report-sections',
     split: 'train',
@@ -145,11 +346,14 @@ export const CEREBELLUM_ITEMS = Object.freeze([
     id: 'cb2-stale-report',
     split: 'holdout',
     kind: 'an artifact left stale',
-    flaw: 'report.pdf is from 1 March, before the 4 March data it must hold',
+    flaw: 'the report was rebuilt from the 1 March load, not from 4 March\'s',
     instruction: 'Regenerate the report from the data loaded on 4 March 2027',
-    acceptCriteria: "report.pdf was regenerated on 4 March 2027, after that morning's 09:00 data load",
-    clean: [row('1.1', `${tool('ls -l --time-style=long-iso report.pdf', '-rw-r--r-- 1 agent agent 182044 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
-    defect: [row('1.1', `${tool('ls -l --time-style=long-iso report.pdf', '-rw-r--r-- 1 agent agent 179120 2027-03-01 09:12 report.pdf')}\nRegenerated the report.`)],
+    acceptCriteria: "report.pdf was regenerated on 4 March 2027 from that morning's 09:00 data load, data/loads/2027-03-04.csv",
+    // Version 3 shows the regeneration and the load: version 2's clean evidence was the report's time
+    // alone, which every run failed, the verifier saying no command had regenerated it. The work
+    // asks for an action, so its evidence shows the action.
+    clean: [row('1.1', `${tool('make-report --data data/loads/2027-03-04.csv --out report.pdf && ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', 'Read 48,210 rows from data/loads/2027-03-04.csv\nWrote report.pdf (182,044 bytes)\n-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  182044 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
+    defect: [row('1.1', `${tool('make-report --data data/loads/2027-03-01.csv --out report.pdf && ls -l --time-style=long-iso data/loads/2027-03-04.csv report.pdf', 'Read 47,955 rows from data/loads/2027-03-01.csv\nWrote report.pdf (179,120 bytes)\n-rw-r--r-- 1 agent agent 5120330 2027-03-04 09:00 data/loads/2027-03-04.csv\n-rw-r--r-- 1 agent agent  179120 2027-03-04 10:31 report.pdf')}\nRegenerated the report.`)],
   }),
   ...pair({
     id: 'cb2-column-order',
@@ -292,7 +496,7 @@ const work = (id, title, output, { daysAgo = 3, status = 'complete', instruction
   id, type: 'M', status, title, instruction, output, daysAgo,
 });
 
-const [TURNS, OTHER, NEWER] = RECALL_KEEPS;
+const [TURNS, OTHER, NEWER, CONDITION] = RECALL_KEEPS;
 const [SAME_SUBJECT, OTHER_SUBJECT, OTHER_WORK] = RECALL_LEAVES;
 
 /** Clients alike, each with a carrier and a contact: the noise a request about one of them recalls past. */
@@ -306,7 +510,125 @@ const CLIENT_NOISE = [
 ];
 
 export const MEMORY_ITEMS = Object.freeze([
-  // Version 2.
+  // Version 3.
+  {
+    id: 'mem3-client-contacts',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: 'Get Acme to approve the purchase order for 20 more licences',
+    workingMemory: '',
+    coreMemory: [
+      fact('mem-acme-po', "Tomas in Acme's procurement team approves every purchase order Acme receives", { category: 'people', tags: ['acme', 'procurement', 'purchase order'] }),
+      fact('mem-acme-invoices', "Ines handles Acme's invoices and payment reminders", { category: 'people', tags: ['acme', 'billing', 'invoice'] }),
+      fact('mem-acme-counsel', "Priya, Acme's legal counsel, signs their contracts and NDAs", { category: 'people', tags: ['acme', 'legal', 'contract'] }),
+      fact('mem-acme-eng', "Raj leads Acme's engineering team and answers API and integration questions", { category: 'people', tags: ['acme', 'engineering', 'api'] }),
+      fact('mem-acme-ceo', "Mara is Acme's CEO; she joins only the annual review", { category: 'people', tags: ['acme', 'executive'] }),
+      fact('mem-licence-price', 'Licences cost 30 EUR a seat a month on the standard plan', { category: 'facts', tags: ['licences', 'pricing'] }),
+    ],
+    work: [],
+    must: [{ name: TURNS, re: /tomas/i }],
+    mustNot: [{ name: SAME_SUBJECT, re: /\b(priya|raj|mara)\b/i }],
+  },
+  {
+    id: 'mem3-restore-runbook',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: "Restore the orders database from last night's snapshot, the way we did it last time",
+    // The restore is 95 days old, past the 30 days a targeted recall searches: the organ must ask for
+    // the deeper history, as mem-cert-history's must, here on a training item. A deep item's
+    // `deepCues` are the cues the tests' fair organ escalates with (bench.test.mjs).
+    deep: true,
+    deepCues: ['restore', 'orders', 'snapshot'],
+    workingMemory: '',
+    coreMemory: [],
+    work: [
+      work('w-restore-orders', 'Restore the orders database from the nightly snapshot', 'Put the shop in maintenance mode, then restored the orders database with pg-restore-snapshot --pitr from the orders-nightly-snapshots bucket; it took 40 minutes.', { daysAgo: 95 }),
+      work('w-restore-search', 'Restore the search index', 'Rebuilt the search index from the catalogue with reindex --full.', { daysAgo: 5 }),
+      work('w-backup-crm', 'Back up the CRM database', 'Backed up the CRM database to the crm-weekly bucket with pg_dump.', { daysAgo: 3 }),
+    ],
+    must: [{ name: TURNS, re: /pg-restore-snapshot/i }, { name: CONDITION, re: /maintenance mode/i }],
+    mustNot: [{ name: OTHER_WORK, re: /reindex|crm-weekly/i }],
+  },
+  {
+    id: 'mem3-offsite-venue',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: 'Book a venue in Lisbon for the team offsite in May, for the 12 of us',
+    workingMemory: '',
+    coreMemory: [
+      fact('mem-venue-booking', 'Wen books every offsite venue, through the company TravelDesk account', { category: 'people', tags: ['offsite', 'venue', 'booking'] }),
+      fact('mem-offsite-cap', 'Team offsites are capped at 150 EUR a person a night, venue and rooms together', { category: 'policies', tags: ['offsite', 'budget', 'venue'] }),
+      fact('mem-offsite-access', 'Offsite venues must be step-free: two of the team use wheelchairs', { category: 'preferences', tags: ['offsite', 'venue', 'access'] }),
+      fact('mem-lisbon-client', 'Our Lisbon client Fabrikam prefers meetings in the morning', { category: 'preferences', tags: ['lisbon', 'fabrikam', 'meetings'] }),
+      fact('mem-berlin-office', 'The Berlin office seats 30 people', { category: 'facts', tags: ['berlin', 'office'] }),
+    ],
+    work: [],
+    must: [{ name: TURNS, re: /\bwen\b|traveldesk/i }, { name: OTHER, re: /\b150\b/ }, { name: CONDITION, re: /step-free|wheelchair/i }],
+    mustNot: [{ name: OTHER_SUBJECT, re: /fabrikam/i }],
+  },
+  {
+    id: 'mem3-same-name',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: 'Email Lena at Globex about the late delivery of order G-881',
+    workingMemory: '',
+    coreMemory: [
+      fact('mem-globex-lena', "Lena Ortiz is Globex's purchasing contact (lena.ortiz@example.com)", { category: 'people', tags: ['globex', 'purchasing', 'orders'] }),
+      fact('mem-hooli-lena', 'Lena Park runs procurement at Hooli (lena.park@example.com)', { category: 'people', tags: ['hooli', 'procurement', 'orders'] }),
+      fact('mem-globex-ships', 'Globex ships only with Contoso Logistics', { category: 'preferences', tags: ['globex', 'shipping', 'delivery'] }),
+      fact('mem-hooli-dock', "Hooli's warehouse takes deliveries from 08:00 to 14:00", { category: 'facts', tags: ['hooli', 'deliveries'] }),
+    ],
+    work: [],
+    must: [{ name: TURNS, re: /ortiz/i }],
+    mustNot: [{ name: OTHER_SUBJECT, re: /lena park|lena\.park/i }],
+  },
+  {
+    id: 'mem3-payroll-rerun',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: "Rerun last week's payroll export for the Lisbon team",
+    workingMemory: '',
+    coreMemory: [
+      fact('mem-payroll-encrypt', 'Payroll exports are encrypted with the finance key before they leave the VPC', { category: 'policies', tags: ['payroll', 'export', 'security'] }),
+    ],
+    work: [
+      work('w-payroll-pt', 'Export the Lisbon payroll', 'Exported the Lisbon payroll with payroll-export --entity PT-02 --period 2027-02; the file went to the finance-pt bucket.', { daysAgo: 6 }),
+      work('w-payroll-de', 'Export the Berlin payroll', 'Exported the Berlin payroll with payroll-export --entity DE-01 --period 2027-02; the file went to the finance-de bucket.', { daysAgo: 6 }),
+      work('w-close-expenses', 'Close the February expense reports', 'Closed 41 expense reports for February.', { daysAgo: 4 }),
+    ],
+    must: [{ name: TURNS, re: /PT-02/ }, { name: CONDITION, re: /encrypt/i }],
+    mustNot: [{ name: OTHER_WORK, re: /DE-01/ }],
+  },
+  {
+    id: 'mem3-note-over-core',
+    organ: 'temporal-memory',
+    split: 'train',
+    query: "Book the shipment of Initech's spare parts with their carrier",
+    workingMemory: '- 2027-03-02: Initech has moved all its shipping from Northwind Freight to Tailspin Cargo, from this month.\n- 2027-03-01: the Q1 board deck is in the board decks folder.',
+    coreMemory: [
+      fact('mem-initech-ships', 'Initech ships only with Northwind Freight', { category: 'preferences', tags: ['initech', 'shipping', 'carrier'], importance: 0.9, daysAgo: 220 }),
+      ...CLIENT_NOISE,
+    ],
+    work: [],
+    must: [{ name: NEWER, re: /tailspin/i }],
+    mustNot: [{ name: OTHER_SUBJECT, re: /contoso|litware|fabrikam/i }],
+  },
+  {
+    id: 'mem3-two-addresses',
+    organ: 'temporal-memory',
+    split: 'holdout',
+    query: 'Ship the replacement parts to Globex',
+    workingMemory: '',
+    coreMemory: [
+      fact('mem-globex-accounts', "Globex's invoices go to its accounts office at 2 Quay Street, Perth", { category: 'facts', tags: ['globex', 'invoice', 'address'] }),
+      fact('mem-globex-warehouse', 'Globex takes deliveries at its warehouse, 77 Dock Road, Perth', { category: 'facts', tags: ['globex', 'deliveries', 'address', 'shipping'] }),
+      fact('mem-umbrella-address', "Umbrella Corp's office is at 5 Kirk Lane, Dundee", { category: 'facts', tags: ['umbrella', 'address'] }),
+    ],
+    work: [],
+    must: [{ name: TURNS, re: /dock road/i }],
+    mustNot: [{ name: SAME_SUBJECT, re: /quay street/i }],
+  },
+  // Version 2's: version 3 retired all but mem2-rotation-due, mem-billing-contact and the held-out items.
   {
     id: 'mem2-carrier-among-many',
     organ: 'temporal-memory',
@@ -434,6 +756,7 @@ export const MEMORY_ITEMS = Object.freeze([
     // The renewal is 120 days old, past the 30 days a targeted recall searches: the organ must ask
     // for the deeper history (its escalation) to find it.
     deep: true,
+    deepCues: ['certificate', 'api.example.com'],
     workingMemory: '',
     coreMemory: [],
     work: [
