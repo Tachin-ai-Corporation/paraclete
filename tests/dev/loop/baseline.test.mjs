@@ -131,4 +131,9 @@ test("a baseline describes main while main is its commit, or nothing the agent r
   assert.match(current('b'.repeat(40), ['prompts/cortex.md', 'skills/drive/SKILL.md', 'roles/generic/README.md', 'agent/work/x.mjs']).reason,
     /^what the agent reads changed since the baseline of aaaaaaaaaaaa \(prompts\/cortex\.md, skills\/drive\/SKILL\.md, roles\/generic\/README\.md, \.\.\.\)$/);
   assert.equal(baselineCurrent({ summary: null, head: 'b', isBehaviourPath }).current, false);
+  // A change to what measures the agent: not current, and marked so, which makes the baseline due again.
+  assert.deepEqual(current('b'.repeat(40), ['docs/guide.md', 'dev/harness2/live-runner.mjs']), {
+    current: false, measuring: true, reason: 'what measures the agent changed since the baseline of aaaaaaaaaaaa (dev/harness2/live-runner.mjs)',
+  });
+  assert.equal(current('b'.repeat(40), ['dev/loop/cycle.mjs']).current, true, "the loop's own code measures nothing");
 });

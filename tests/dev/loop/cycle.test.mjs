@@ -516,6 +516,34 @@ test("a cycle measures nothing while main's head has a referee its checkout lack
   assert.deepEqual(asked, [git(r.work, 'rev-parse', 'origin/main')], "main's head is measured though this checkout is behind it");
 });
 
+test('a baseline is measured again at once when what measures the agent changed since it, and any other change waits out the day', async (t) => {
+  const settings = { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } };
+  const trajectories = [1, 2].map((trial) => ({ taskId: 'se-fix-failing-test', split: 'train', trial, measured: true, checkScore: 1, checks: [{ name: 'tests pass', ok: true }] }));
+  const r = repo(t);
+  const other = path.join(path.dirname(r.work), 'other');
+  git(path.dirname(r.work), 'clone', '--quiet', r.origin, other);
+  const land = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(other, rel)), { recursive: true });
+    fs.writeFileSync(path.join(other, rel), text);
+    git(other, 'add', '.');
+    git(other, 'commit', '--quiet', '-m', `change ${rel}`);
+    git(other, 'push', '--quiet', 'origin', 'main');
+    git(r.work, 'pull', '--quiet', '--ff-only', 'origin', 'main');
+  };
+  const asked = [];
+  const baseline = async (o) => { asked.push(o.head); return { ok: true, trials: 2, trajectories }; };
+  const quiet = () => fakeGh({ issues: [] });
+  assert.equal((await cycle(t, r, { settings, gh: quiet(), baseline }).run()).action, 'baselined');
+  land('docs/guide.md', '# Guide\n\nMore.\n');
+  const docs = await cycle(t, r, { settings, gh: quiet(), baseline }).run();
+  assert.notEqual(docs.action, 'baselined', 'a docs change waits out the day');
+  land('dev/harness2/live-runner.mjs', '// a fix to how a rollout runs\n');
+  const harness = await cycle(t, r, { settings, gh: quiet(), baseline }).run();
+  assert.equal(harness.action, 'baselined', harness.reason);
+  assert.equal(asked.length, 2);
+  assert.equal(asked[1], git(r.work, 'rev-parse', 'origin/main'));
+});
+
 test('an issue planned from a failing task is closed, not attempted, once a current baseline shows the task passing', async (t) => {
   const targeted = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- The prompt says so.\n\n<!-- loop-target: t-train -->' };
   const keep = (r, failed) => {

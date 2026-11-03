@@ -35,7 +35,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MODEL_SUITE } from '../harness2/model-suite.mjs';
 import { BENCH_VERSION } from '../harness2/bench.mjs';
-import { TARGET_MARKER, baselineCurrent, failingTasks, readBaseline, taskPlanKey } from './baseline.mjs';
+import { TARGET_MARKER, baselineCurrent, failingTasks, measuresAgent, readBaseline, taskPlanKey } from './baseline.mjs';
 import { MODULE_MARKER, benchReach, issueModule, loadModules } from './modules.mjs';
 import { runAgentCommand } from './command.mjs';
 import { LOOP_DEFAULTS, isBehaviourPath, loadLoopSettings } from './config.mjs';
@@ -353,7 +353,8 @@ export function benchIssueBody(organ, task, summary, key) {
 
 /**
  * Whether an organ's bench baseline still describes main: it measured main's head, or nothing a bench
- * run reaches (modules.mjs benchReach) changed since, read through git in the checkout.
+ * run reaches (modules.mjs benchReach) changed since, nor what measures the agent (`measuring`, which
+ * makes the baseline due again at once), read through git in the checkout.
  *
  * @param {object} o  { repoRoot, summary, organ, execGit }
  * @returns {{ current: boolean, reason: string|null }}
@@ -365,6 +366,14 @@ export function benchBaselineCurrent({ repoRoot, summary, organ, execGit }) {
     if (head === summary.commit) return { current: true, reason: null };
     const lines = (args) => execGit(args, repoRoot).split(/\r?\n/).filter(Boolean);
     const changed = lines(['diff', '--name-only', summary.commit, head]);
+    const measuring = changed.filter((p) => measuresAgent(p));
+    if (measuring.length) {
+      return {
+        current: false,
+        measuring: true,
+        reason: `what measures the agent changed since the ${organ}'s bench baseline of ${summary.commit.slice(0, 12)} (${measuring.slice(0, 3).join(', ')}${measuring.length > 3 ? ', ...' : ''})`,
+      };
+    }
     const reached = benchReach(changed, organ, loadModules({ files: [...lines(['ls-files']), ...changed] }));
     if (!reached.length) return { current: true, reason: null };
     return {

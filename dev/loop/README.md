@@ -221,7 +221,10 @@ within `baseline.maxRollouts` (40). A training task that failed a check then run
 of them, and two of the first three tasks the loop targeted were such chance failures, each costing a
 measurement of hours. It does so at most once in `baseline.everyHours` (24), only when main
 moved since the last, and the cycle stops there, since a baseline takes hours. A new version of the
-suite is measured on the next new head at once, since a baseline of another version plans nothing. `baseline.mjs` keeps the
+suite is measured on the next new head at once, since a baseline of another version plans nothing, and so
+is main after a change to what measures the agent (`dev/harness2/`, `measuresAgent` in `baseline.mjs`):
+a baseline the harness measured before it does not say how main does as it is measured now, and the
+planner and an organ's lane plan nothing from it (a bench baseline the same). `baseline.mjs` keeps the
 summary in `.local/loop/baseline.json`: per task its capability, and for a training task each check with
 how many runs failed it. A held-out task stays a score, so none of its checks reaches an issue or the
 proposer, and the measurement's held-out check means what it says.

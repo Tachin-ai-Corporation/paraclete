@@ -159,16 +159,33 @@ export function taskPlanKey(task, { prefix = 'model', version = MODEL_SUITE_VERS
 }
 
 /**
- * Whether a baseline still describes main: it measured main's head, or nothing the agent reads changed
+ * Whether a path is part of what measures the agent: the harness that runs a suite or a bench and
+ * checks it (dev/harness2/). A baseline it measured before a change to it does not say how main does
+ * as it is measured now: on 2026-11-03 a harness fix ended missions cut short by a single runner tick
+ * and an expired token, which the baseline before it counted as failures.
+ */
+export const measuresAgent = (p) => /^dev\/harness2\//.test(String(p || '').replace(/\\/g, '/'));
+
+/**
+ * Whether a baseline still describes main: it measured main's head, or neither what measures the agent
+ * (`measuring`, which makes the baseline due again at once: cycle.mjs) nor what the agent reads changed
  * since (`changed`: the paths that differ between the two commits). A failure it saw may already be
  * fixed on main otherwise, so nothing is planned from it until the next baseline. Pure.
  *
  * @param {object} o  { summary, head, changed, isBehaviourPath }
- * @returns {{ current: boolean, reason: string|null }}
+ * @returns {{ current: boolean, measuring?: true, reason: string|null }}
  */
 export function baselineCurrent({ summary, head, changed = [], isBehaviourPath }) {
   if (!summary?.commit || !head) return { current: false, reason: "the baseline's commit or main's head is unknown" };
   if (summary.commit === head) return { current: true, reason: null };
+  const measuring = changed.filter((p) => measuresAgent(p));
+  if (measuring.length) {
+    return {
+      current: false,
+      measuring: true,
+      reason: `what measures the agent changed since the baseline of ${summary.commit.slice(0, 12)} (${measuring.slice(0, 3).join(', ')}${measuring.length > 3 ? ', ...' : ''})`,
+    };
+  }
   const behaviour = changed.filter((p) => isBehaviourPath(p));
   if (!behaviour.length) return { current: true, reason: null };
   return {
