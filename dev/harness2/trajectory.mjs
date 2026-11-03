@@ -111,6 +111,9 @@ export function extractTrajectory({
     };
   });
 
+  // The brain counts a mission's re-plans on the mission (`_replan_count`), not on its checkpoints.
+  replanCount = Math.max(replanCount, Number(envelope._replan_count) || 0);
+
   let totalToolCalls = 0;
   let errorToolCalls = 0;
   let shellCalls = 0;

@@ -34,6 +34,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { dataPaths, loadInstance } from '../../config/instance.mjs';
 import { writeLaunchers } from '../../install/vm/launchers.mjs';
+import { getAccessToken as getVmAccessToken } from '../../agent/auth/metadata-token.mjs';
 import { resolveVertexAccessToken } from './judge.mjs';
 import { classifySurfacePath } from './surface.mjs';
 
@@ -60,18 +61,35 @@ function instanceProject() {
  * instance.json; the token from the metadata server, else `gcloud auth print-access-token`. A token is
  * fetched for each rollout, so a long run outlives any one token.
  *
+ * A rollout's gateway takes `gatewayToken()`'s: none on the VM, where the model clients use the VM's
+ * own credentials and refresh them (agent/gateway/model-clients.mjs: a fixed token is "for running off
+ * the VM. Leave unset on the VM"). A token the metadata server hands out may have minutes left, and a
+ * gateway given one failed every organ turn from its expiry on ("invalid authentication credentials",
+ * 2026-11-03). Off the VM it is the fixed token, which `gcloud` gives for an hour, past a rollout's time.
+ *
  * @param {object} [o]
  * @param {object} [o.env]
  * @param {Function} [o.projectFromInstance]  () => string|null
- * @param {Function} [o.getAccessToken]       () => Promise<string>
- * @returns {{ project: string, getAccessToken: () => Promise<string> }}
+ * @param {Function} [o.getAccessToken]       () => Promise<string>; the gateway's too, when given
+ * @param {Function} [o.vmToken]              () => Promise<string>, which throws off the VM
+ * @returns {{ project: string, getAccessToken: () => Promise<string>, gatewayToken: () => Promise<string|null> }}
  */
-export function modelAccess({ env = process.env, projectFromInstance = instanceProject, getAccessToken } = {}) {
+export function modelAccess({ env = process.env, projectFromInstance = instanceProject, getAccessToken, vmToken = getVmAccessToken } = {}) {
   const project = env.GOOGLE_CLOUD_PROJECT || env.GCLOUD_PROJECT || projectFromInstance();
   if (!project) {
     throw new Error('a real-model run needs a Google Cloud project: set GOOGLE_CLOUD_PROJECT, or run on an instance VM');
   }
-  return { project, getAccessToken: getAccessToken || (() => resolveVertexAccessToken()) };
+  const token = getAccessToken || (() => resolveVertexAccessToken());
+  const gatewayToken = getAccessToken || (async () => {
+    if (env.VERTEX_ACCESS_TOKEN) return env.VERTEX_ACCESS_TOKEN;
+    try {
+      await vmToken();
+      return null;
+    } catch {
+      return token();
+    }
+  });
+  return { project, getAccessToken: token, gatewayToken };
 }
 
 /**
