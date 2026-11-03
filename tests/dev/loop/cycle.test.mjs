@@ -486,6 +486,36 @@ test("with baselines on, a cycle measures main's head once a day, keeps the summ
   assert.equal(dry.action, 'ready', 'a dry run measures nothing and goes on');
 });
 
+test("a cycle measures nothing while main's head has a referee its checkout lacks, and main's other changes never stop it", async (t) => {
+  const settings = { baseline: { ...LOOP_DEFAULTS.baseline, enabled: true } };
+  const r = repo(t);
+  const other = path.join(path.dirname(r.work), 'other');
+  git(path.dirname(r.work), 'clone', '--quiet', r.origin, other);
+  const land = (rel, text) => {
+    fs.mkdirSync(path.dirname(path.join(other, rel)), { recursive: true });
+    fs.writeFileSync(path.join(other, rel), text);
+    git(other, 'add', '.');
+    git(other, 'commit', '--quiet', '-m', `change ${rel}`);
+    git(other, 'push', '--quiet', 'origin', 'main');
+  };
+  // A new suite version lands on main after this checkout last moved.
+  land('dev/harness2/model-suite.mjs', 'export const MODEL_SUITE_VERSION = 9;\n');
+  const own = git(r.work, 'rev-parse', 'HEAD');
+  for (const dryRun of [true, false]) {
+    const lagging = await cycle(t, r, { settings, dryRun, baseline: async () => { throw new Error('measured with an old referee'); } }).run();
+    assert.equal(lagging.action, 'waiting', lagging.reason);
+    assert.match(lagging.reason, new RegExp(`changed 1 referee file\\(s\\) since this checkout's ${own.slice(0, 12)} \\(dev/harness2/model-suite\\.mjs\\)`));
+  }
+  // The checkout reaches main; then only the product moves on main: the cycle goes on and measures.
+  git(r.work, 'pull', '--quiet', '--ff-only', 'origin', 'main');
+  land('agent/work/thing.mjs', 'export const thing = 2;\n');
+  land('docs/guide.md', '# Guide\n\nMore.\n');
+  const asked = [];
+  const moved = await cycle(t, r, { settings, baseline: async (o) => { asked.push(o.head); return { ok: true, trials: 2, trajectories: [] }; } }).run();
+  assert.notEqual(moved.action, 'waiting', moved.reason);
+  assert.deepEqual(asked, [git(r.work, 'rev-parse', 'origin/main')], "main's head is measured though this checkout is behind it");
+});
+
 test('an issue planned from a failing task is closed, not attempted, once a current baseline shows the task passing', async (t) => {
   const targeted = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- The prompt says so.\n\n<!-- loop-target: t-train -->' };
   const keep = (r, failed) => {

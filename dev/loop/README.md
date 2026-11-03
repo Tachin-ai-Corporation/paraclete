@@ -42,7 +42,12 @@ never changes an instance; it reaches instances only through a release (see "Rel
    and bringing it up to date again at each look (another loop may merge meanwhile, and the merger
    merges only a pull request that holds main's head), and stops (`waiting`) when one is still open then. One loop change is in flight at a time: a change
    measured while an earlier one waits would be measured against a `main` that merge moves, and the
-   guard would refuse it (see "Merging"). Then it stops once today's attempts
+   guard would refuse it (see "Merging"). It also stops (`waiting`) while main's head has a referee
+   file (`REFEREE_PATHS` in `config.mjs`) its own checkout lacks: a baseline and a measured attempt
+   both import the checkout's `dev/harness2`, so a checkout a referee merge left behind would measure
+   main on tasks or items main no longer has. The follow-main timer moves the harness checkout once no
+   harness runs, and a lane's unit moves its clone before each cycle; a loop change never touches the
+   referee, so the loop's own merges never stop a cycle here. Then it stops once today's attempts
    (`maxCyclesPerDay`, 4, counted from the cycle log) are spent: the cap holds back new attempts, which
    spend model time, never a revert or a release, which keep limits of their own.
 2. **Picks** the oldest open issue labelled `loop`. It skips an issue that already has an open pull
