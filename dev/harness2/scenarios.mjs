@@ -14,8 +14,11 @@
 //
 // A run ends `passed`, `failed` (an `ask` step failed: the agent did not know what it was told) or
 // `void` (a `teach` step failed, or a step could not be judged, so the run tested nothing). When an
-// `ask` step with `recall: true` fails, `harvest` (scenario-harvest.mjs) reads the canary's memory
-// and, when the forgotten values are in it, writes a memory bench item from it.
+// `ask` step that names a `harvest` fails, `harvest` is called with it: for `recall`, scenario-harvest.mjs
+// reads the canary's memory and, when the forgotten values are in it, writes a memory bench item; for
+// `verification`, verification-harvest.mjs reads the mission and, when a checkpoint passed the wrong
+// work, writes a cerebellum bench item. Several batteries may share one state file: a call sends and
+// waits for its own battery's runs only.
 //
 // It judges and records; it changes nothing on the canary beyond the messages it sends, and it never
 // reads or answers anything the agent asks back (a step that needs a person fails). Called by
@@ -135,18 +138,19 @@ export function startDueRuns({ state, scenarios, now }) {
 }
 
 /** The steps due now, oldest first: each running run's next step whose time has come. Pure. */
-export function dueSteps({ state, now }) {
+export function dueSteps({ state, now, scenarioIds = null }) {
   return state.runs
-    .filter((r) => r.status === 'running')
+    .filter((r) => r.status === 'running' && (!scenarioIds || scenarioIds.has(r.scenario)))
     .map((r) => ({ run: r, step: nextStep(r) }))
     .filter(({ step }) => step && ms(step.dueAt) <= now)
     .sort((a, b) => ms(a.step.dueAt) - ms(b.step.dueAt))
     .map(({ run, step }) => ({ runId: run.id, stepId: step.id }));
 }
 
-/** When the next step of any running run falls due (ms), or null. Pure. */
-export function nextDueAt(state) {
-  const times = state.runs.filter((r) => r.status === 'running').map(nextStep).filter(Boolean).map((s) => ms(s.dueAt));
+/** When the next step of any running run (of `scenarioIds`' scenarios, when given) falls due (ms), or null. Pure. */
+export function nextDueAt(state, scenarioIds = null) {
+  const times = state.runs.filter((r) => r.status === 'running' && (!scenarioIds || scenarioIds.has(r.scenario)))
+    .map(nextStep).filter(Boolean).map((s) => ms(s.dueAt));
   return times.length ? Math.min(...times) : null;
 }
 
@@ -156,9 +160,10 @@ export function stepRequest(scenario, run, stepId) {
   if (!def) throw new Error(`${scenario.id} has no step ${stepId}`);
   return {
     kind: def.kind,
-    recall: Boolean(def.recall),
+    harvest: def.harvest || null,
     text: def.text(run.values),
     expect: def.kind === 'ask' ? def.expect(run.values) : [],
+    ...(def.verify ? { verify: { kind: def.verify.kind, flaw: def.verify.flaw(run.values) } } : {}),
   };
 }
 
@@ -292,13 +297,13 @@ export function smokeAsk({ main = null, readVerdict = null, waitSeconds = 900, d
 
 /**
  * One call of the runner: start the runs that are due, send the steps that are due, harvest a failed
- * recall, and wait for a step due within `waitMinutes`.
+ * step that names a harvest, and wait for a step due within `waitMinutes`.
  *
  * @param {object} o
  * @param {object} o.state       from readScenarioState
  * @param {Function} o.save      (state) => void, called after every change
  * @param {Function} o.ask       async (request) => outcome; smokeAsk() on the canary
- * @param {Function} [o.harvest] async ({run, stepId, request, outcome}) => a harvest record, for a failed recall
+ * @param {Function} [o.harvest] async ({run, stepId, request, outcome}) => a harvest record, for a failed step whose request.harvest names one
  * @returns {Promise<object>} what ran, what was harvested, each scenario's record, and when the next step is due
  */
 export async function runScenarios({
@@ -307,10 +312,13 @@ export async function runScenarios({
 }) {
   if (!scenarios) return { ok: false, reason: `there is no battery ${battery}; name one of ${Object.keys(BATTERIES).join(', ')}` };
   const byId = new Map(scenarios.map((s) => [s.id, s]));
+  // Only this battery's runs are sent and waited for: another battery may share the state file.
+  const own = new Set(byId.keys());
   const begun = startDueRuns({ state, scenarios, now: now() });
   if (dryRun) {
-    const due = dueSteps({ state: begun.state, now: now() });
-    return { ok: true, dryRun: true, battery, wouldStart: begun.started, wouldSend: due, nextDueAt: nextDueAt(begun.state) && iso(nextDueAt(begun.state)) };
+    const due = dueSteps({ state: begun.state, now: now(), scenarioIds: own });
+    const next = nextDueAt(begun.state, own);
+    return { ok: true, dryRun: true, battery, wouldStart: begun.started, wouldSend: due, nextDueAt: next === null ? null : iso(next) };
   }
   let current = begun.state;
   if (begun.started.length) {
@@ -320,7 +328,7 @@ export async function runScenarios({
   const ran = [];
   const harvested = [];
   for (;;) {
-    for (const { runId, stepId } of dueSteps({ state: current, now: now() })) {
+    for (const { runId, stepId } of dueSteps({ state: current, now: now(), scenarioIds: own })) {
       const run = current.runs.find((r) => r.id === runId);
       const scenario = byId.get(run.scenario);
       if (!scenario) continue;
@@ -338,7 +346,7 @@ export async function runScenarios({
       const step = after.steps.find((s) => s.id === stepId);
       ran.push({ run: runId, step: stepId, status: step.status, reason: step.reason, mission: step.mission });
       log(`[INFO] scenarios: ${runId} ${stepId}: ${step.status}${step.reason ? ` (${step.reason})` : ''}`);
-      if (step.status === 'failed' && request.recall && harvest) {
+      if (step.status === 'failed' && request.harvest && harvest) {
         let record;
         try {
           record = await harvest({ run: after, stepId, request, outcome });
@@ -351,12 +359,12 @@ export async function runScenarios({
         log(`[INFO] scenarios: ${runId}: ${record.diagnosis}${record.item ? `, bench item ${record.item}` : ''}`);
       }
     }
-    const next = nextDueAt(current);
+    const next = nextDueAt(current, own);
     if (next === null || next - now() > waitMinutes * MINUTE) break;
     await sleep(Math.max(0, next - now()));
   }
   current = pruneRuns(current);
   save(current);
-  const next = nextDueAt(current);
+  const next = nextDueAt(current, own);
   return { ok: true, battery, started: begun.started, ran, harvested, summary: summarize(current, scenarios), nextDueAt: next === null ? null : iso(next) };
 }

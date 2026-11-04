@@ -16,13 +16,15 @@
 //   lesson or consolidation lost it). No bench item: recall cannot be asked for what is not there.
 //
 // A harvested item enters the bench only through a reviewed pull request, as any referee change does:
-// this file writes candidates and changes no bench. Called by scenarios.mjs, through
+// this file writes candidates and changes no bench. A reviewer admits one by moving it into
+// harvested-items/ (harvested-items.mjs, whose README says what to check). Called by scenarios.mjs, through
 // `node dev/harness2/cli.mjs scenarios`.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { COLLECTIONS } from '../../agent/storage/collections.mjs';
 import { READINESS_DOC, VM_PATHS } from '../dev-env.mjs';
+import { BENCH_VERSION } from './bench.mjs';
 
 export const HARVEST_DIR = '.local/canary/harvested';
 const WORKING_MEMORY = `${VM_PATHS.dataRoot}/memory/MEMORY.md`;
@@ -125,8 +127,21 @@ export function diagnose(located) {
 const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 
 /**
- * The memory bench item a stored miss becomes: the question, the memory captured, and a check for each
- * value. Regexes are kept as sources, as JSON holds them. Pure.
+ * A bench item's checks from a step's values: one a name, as the bench requires (a lane's issue
+ * quotes a failing check by its name). Values that share a name become one check that needs them all.
+ * Pure.
+ */
+export function checksByName(expect) {
+  return [...new Set(expect.map((e) => e.name))].map((name) => {
+    const sources = expect.filter((e) => e.name === name).map((e) => e.source);
+    return { name, source: sources.length === 1 ? sources[0] : `^${sources.map((s) => `(?=[\\s\\S]*?(?:${s}))`).join('')}` };
+  });
+}
+
+/**
+ * The memory bench item a stored miss becomes: the question, the memory captured, and its checks.
+ * Regexes are kept as sources, as JSON holds them. `bench` is the version the item would enter the
+ * bench at, the next one: harvested-items.mjs refuses it until BENCH_VERSION is raised to it. Pure.
  */
 export function recallItem({ run, stepId, request, capture, at, mission = null, scrubbing = {} }) {
   const s = (text) => scrub(text, scrubbing);
@@ -138,6 +153,7 @@ export function recallItem({ run, stepId, request, capture, at, mission = null, 
     id: `memh-${run.id}`,
     organ: 'temporal-memory',
     split: 'train',
+    bench: BENCH_VERSION + 1,
     harvested: { from: 'canary', run: run.id, scenario: run.scenario, step: stepId, at: new Date(at).toISOString(), commit: capture.commit, mission },
     query: s(request.text),
     workingMemory: s(capture.workingMemory),
@@ -159,7 +175,7 @@ export function recallItem({ run, stepId, request, capture, at, mission = null, 
       output: s(clip(w.output, OUTPUT_KEPT)),
       daysAgo: daysAgo(w.created_at),
     })),
-    must: request.expect.map((e) => ({ name: e.name, source: e.source })),
+    must: checksByName(request.expect),
     mustNot: [],
   };
 }

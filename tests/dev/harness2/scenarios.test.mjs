@@ -2,7 +2,8 @@
 // (its questions give nothing away, each value they ask for was told first, and a changed fact's check
 // never passes on the older one); runs start on time and their steps follow in order; a step that
 // cannot be judged is tried later and then voids its run; a call waits for a step due within minutes,
-// harvests a failed recall, and keeps its state; smoke verdicts are read into outcomes; the lock keeps
+// harvests a failed step, and keeps its state; the verification battery's answers are worked out
+// independently, and its obvious wrong answers fail its checks; a call sends only its own battery's runs; smoke verdicts are read into outcomes; the lock keeps
 // two calls apart; and the `scenarios` command reports and plans without the canary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,13 +11,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  BATTERIES, KEEPS, MEMORY_SCENARIOS, memoryValues, seededRandom,
+  BATTERIES, KEEPS, MEMORY_SCENARIOS, VERIFICATION_SCENARIOS, memoryValues, newYorkOffset, seededRandom, verificationValues,
 } from '../../../dev/harness2/scenario-items.mjs';
 import {
   MAX_TRIES, SCENARIO_STATE_VERSION, dueSteps, nextDueAt, pruneRuns, readScenarioState, recordStep, runIdFor, runScenarios,
   smokeAsk, startDueRuns, stepChecks, stepRequest, summarize, withScenarioLock, writeScenarioState,
 } from '../../../dev/harness2/scenarios.mjs';
 import { runCli } from '../../../dev/harness2/cli.mjs';
+import { DEFECT_KINDS } from '../../../dev/harness2/bench-items.mjs';
 
 const T0 = Date.parse('2027-03-07T09:00:00Z');
 const MIN = 60_000;
@@ -25,7 +27,7 @@ const empty = () => ({ version: SCENARIO_STATE_VERSION, runs: [] });
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'scenarios-test-'));
 
 test('the batteries: unique ids, steps in time order, a teach before every ask, and runs at least daily apart', () => {
-  assert.deepEqual(Object.keys(BATTERIES), ['memory']);
+  assert.deepEqual(Object.keys(BATTERIES), ['memory', 'verification']);
   assert.equal(new Set(MEMORY_SCENARIOS.map((s) => s.id)).size, MEMORY_SCENARIOS.length);
   for (const s of MEMORY_SCENARIOS) {
     assert.equal(s.battery, 'memory', s.id);
@@ -59,7 +61,7 @@ test('every scenario is fair: each value an ask needs was told first, and no que
       const told = s.steps.filter((st) => st.kind === 'teach').map((st) => stepRequest(s, run, st.id).text).join('\n');
       for (const st of s.steps.filter((x) => x.kind === 'ask')) {
         const req = stepRequest(s, run, st.id);
-        assert.ok(req.recall && req.expect.length >= 1, s.id);
+        assert.ok(req.harvest === 'recall' && req.expect.length >= 1, s.id);
         for (const e of req.expect) {
           const re = new RegExp(e.source, 'i');
           assert.ok(re.test(told), `${s.id}: /${e.source}/ was told before it is asked for`);
@@ -323,5 +325,99 @@ test('the scenarios command reports, plans a dry run, refuses an unknown battery
     assert.ok(kept.runs.every((r) => r.steps[0].status === 'passed'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the verification battery: one step of work each, a defect kind the bench knows, and fresh values', () => {
+  assert.equal(new Set(VERIFICATION_SCENARIOS.map((s) => s.id)).size, VERIFICATION_SCENARIOS.length);
+  for (const s of VERIFICATION_SCENARIOS) {
+    assert.equal(s.battery, 'verification', s.id);
+    assert.ok(s.everyHours >= 24, s.id);
+    assert.equal(s.steps.length, 1, s.id);
+    const run = { id: `${s.id}-0`, values: s.values(`${s.id}-0`) };
+    const req = stepRequest(s, run, s.steps[0].id);
+    assert.deepEqual([req.kind, req.harvest], ['ask', 'verification'], s.id);
+    assert.ok(DEFECT_KINDS.includes(req.verify.kind), `${s.id}: ${req.verify.kind}`);
+    assert.ok(req.verify.flaw.length > 20, s.id);
+    assert.match(req.text, /with (a small script|a command)/, `${s.id} asks for work, not a recollection`);
+  }
+  assert.deepEqual(verificationValues('ver-day-count-20270307t0900'), verificationValues('ver-day-count-20270307t0900'));
+  const seen = new Set(Array.from({ length: 40 }, (_, i) => verificationValues(`seed-${i}`).claims.cents));
+  assert.ok(seen.size >= 38, `fresh totals: ${seen.size} of 40`);
+});
+
+test("New York's offset follows its daylight-saving rule on every day of the years the battery draws from", () => {
+  const zone = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' });
+  for (const year of [2027, 2028]) {
+    for (let t = Date.UTC(year, 0, 1); t < Date.UTC(year + 1, 0, 1); t += 86_400_000) {
+      const day = new Date(t).toISOString().slice(0, 10);
+      const offset = Number(zone.formatToParts(new Date(`${day}T16:00:00Z`)).find((x) => x.type === 'timeZoneName').value.replace('GMT', ''));
+      assert.equal(newYorkOffset(day), offset, day);
+    }
+  }
+});
+
+test('each verification answer is worked out independently, and the obvious wrong one fails its check', () => {
+  const check = (s, v) => new RegExp(stepRequest(s, { values: v }, 'work').expect[0].source, 'i');
+  const byId = (id) => VERIFICATION_SCENARIOS.find((s) => s.id === id);
+  let summer = 0;
+  for (let seed = 0; seed < 60; seed += 1) {
+    const v = verificationValues(`ver-${seed}`);
+    for (const s of VERIFICATION_SCENARIOS) {
+      const req = stepRequest(s, { values: v }, 'work');
+      assert.ok(!new RegExp(req.expect[0].source, 'i').test(req.text), `${s.id}: the request gives its answer away`);
+    }
+    // Both ends of the range count.
+    const days = (Date.parse(v.range.end) - Date.parse(v.range.start)) / 86_400_000 + 1;
+    assert.ok(check(byId('ver-day-count'), v).test(`That is ${days} days.`));
+    assert.ok(!check(byId('ver-day-count'), v).test(`That is ${days - 1} days.`), 'the count without one end');
+    // The wall time in New York on that day, read back from the UTC answer.
+    const [hh, mm] = v.time.utc.split(':').map(Number);
+    const at = `${v.time.day}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00Z`;
+    const wall = new Intl.DateTimeFormat('en-GB', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(at));
+    assert.equal(wall, v.time.local, `${v.time.day}: ${v.time.utc} UTC is ${v.time.local} in New York`);
+    assert.ok(check(byId('ver-utc-time'), v).test(`It is ${v.time.utc} UTC.`));
+    const other = `${String(hh + (v.time.offset === -4 ? 1 : -1)).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+    assert.ok(!check(byId('ver-utc-time'), v).test(`It is ${other} UTC.`), 'the other offset');
+    if (v.time.offset === -4) summer += 1;
+    // The fall on the bill before it, not after.
+    const right = (((v.fall.before - v.fall.after) / v.fall.before) * 100).toFixed(1);
+    const wrongBase = (((v.fall.before - v.fall.after) / v.fall.after) * 100).toFixed(1);
+    assert.equal(v.fall.percent, right);
+    assert.ok(check(byId('ver-rate-base'), v).test(`It fell by ${right}%.`));
+    assert.ok(!check(byId('ver-rate-base'), v).test(`It fell by ${wrongBase}%.`), 'the fall on the wrong base');
+    // The nine claims, summed in cents.
+    const cents = v.claims.amounts.reduce((sum, a) => sum + Math.round(Number(a) * 100), 0);
+    const total = (cents / 100).toFixed(2);
+    assert.ok(check(byId('ver-claims-total'), v).test(`The total is ${total} EUR.`));
+    const grouped = Number(total).toLocaleString('en-US', { minimumFractionDigits: 2 });
+    assert.ok(check(byId('ver-claims-total'), v).test(`The total is EUR ${grouped}.`), 'with a thousands separator');
+    assert.ok(!check(byId('ver-claims-total'), v).test(`The total is ${((cents - 1) / 100).toFixed(2)} EUR.`), 'a cent short');
+  }
+  assert.ok(summer >= 20 && summer <= 50, `both offsets are drawn: ${summer} of 60 in summer time`);
+});
+
+test("a call sends and waits for its own battery's runs only, when another battery shares the state file", async () => {
+  const c = clock();
+  const memory = startDueRuns({ state: empty(), scenarios: [MEMORY_SCENARIOS[0]], now: T0 - HOUR }).state;
+  assert.equal(dueSteps({ state: memory, now: T0 }).length, 1, 'a memory step is due');
+  const sent = [];
+  const ask = async (req) => { sent.push(req.harvest); c.advance(5 * MIN); return { pass: true, reason: 'ok', mission: 'w-1' }; };
+  const res = await runScenarios({ battery: 'verification', state: memory, ask, now: c.now, sleep: c.sleep });
+  assert.deepEqual(sent, VERIFICATION_SCENARIOS.map(() => 'verification'), 'the memory step is left for its own battery');
+  assert.equal(res.nextDueAt, null, 'no wait on the other battery');
+  assert.equal(nextDueAt(memory, new Set(['ver-day-count'])), null);
+});
+
+test('failed work is harvested with its defect kind, and a passed step is not', async () => {
+  const s = VERIFICATION_SCENARIOS.find((x) => x.id === 'ver-claims-total');
+  for (const pass of [false, true]) {
+    const c = clock();
+    const asked = [];
+    const harvest = async ({ request }) => { asked.push(request); return { diagnosis: 'verified wrong work', item: 'cbh-x-defect' }; };
+    const ask = async () => { c.advance(4 * MIN); return { pass, reason: pass ? 'ok' : 'the answer does not mention /x/', mission: 'w-m' }; };
+    const res = await runScenarios({ scenarios: [s], state: empty(), ask, harvest, now: c.now, sleep: c.sleep });
+    assert.equal(res.harvested.length, pass ? 0 : 1);
+    if (!pass) assert.deepEqual([asked[0].harvest, asked[0].verify.kind], ['verification', 'a wrong total']);
   }
 });

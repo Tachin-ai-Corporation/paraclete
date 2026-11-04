@@ -5,12 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { MEMORY_SCENARIOS } from '../../../dev/harness2/scenario-items.mjs';
+import { KEEPS, MEMORY_SCENARIOS } from '../../../dev/harness2/scenario-items.mjs';
 import { startDueRuns, recordStep, stepRequest } from '../../../dev/harness2/scenarios.mjs';
 import {
   HARVEST_DIR, captureMemory, diagnose, harvester, locateValues, readDenylist, recallItem, scrub,
 } from '../../../dev/harness2/scenario-harvest.mjs';
-import { recallChecks, seedMemoryItem } from '../../../dev/harness2/bench.mjs';
+import { BENCH_VERSION, recallChecks, seedMemoryItem } from '../../../dev/harness2/bench.mjs';
 
 const T0 = Date.parse('2027-03-07T09:00:00Z');
 const MIN = 60_000;
@@ -93,6 +93,7 @@ test('a stored miss becomes a bench item the memory bench can seed and check', a
   assert.equal(item.id, `memh-${run.id}`);
   assert.equal(item.organ, 'temporal-memory');
   assert.equal(item.split, 'train');
+  assert.equal(item.bench, BENCH_VERSION + 1, 'it enters at the next bench version');
   assert.deepEqual(item.harvested, { from: 'canary', run: run.id, scenario: 'mem-across-threads', step: 'ask', at: new Date(at).toISOString(), commit: 'abc123', mission: 'w-ask' });
   assert.equal(item.query, request.text);
   assert.ok(!JSON.stringify(item).includes('lab-proj'), 'scrubbed');
@@ -107,9 +108,13 @@ test('a stored miss becomes a bench item the memory bench can seed and check', a
   // The bench's own item, as bench-items.mjs writes one: regexes, not sources.
   const benchItem = { ...item, must: item.must.map((m) => ({ name: m.name, re: new RegExp(m.source, 'i') })), mustNot: [] };
   const v = run.values;
+  // One check a name, as the bench requires: the on-call engineer and the freeze day share theirs.
+  assert.deepEqual(item.must.map((m) => m.name), [KEEPS.turns, KEEPS.other]);
   const good = `Staging database ${v.database}; on call ${v.person.first} ${v.person.last}; frozen ${v.weekday}s.`;
   assert.ok(recallChecks(benchItem, good).every((c) => c.ok));
-  assert.deepEqual(recallChecks(benchItem, `On call: ${v.person.last}.`).map((c) => c.ok), [true, false, true, false]);
+  assert.deepEqual(recallChecks(benchItem, `On call: ${v.person.last}.`).map((c) => c.ok), [true, false, false]);
+  assert.deepEqual(recallChecks(benchItem, `Frozen on ${v.weekday}s.\n${v.database} is staging; ${v.person.last} is on call.`).map((c) => c.ok), [true, true, true],
+    'in any order, across lines');
   const writes = [];
   await seedMemoryItem(benchItem, { db: { write: async (p, d) => { writes.push([p, d]); } }, collections: { coreMemory: 'core_memory', work: 'work' }, now: at });
   assert.deepEqual(writes.map(([p]) => p), ['core_memory/cm-1', 'core_memory/cm-2', 'work/w-teach', 'work/w-old']);

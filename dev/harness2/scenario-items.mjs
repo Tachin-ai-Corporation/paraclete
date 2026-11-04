@@ -12,8 +12,16 @@
 //
 // The memory battery checks the memory path end to end, from a fact told in chat to the answer that
 // needs it: the mission line and lessons a mission leaves, the nightly consolidation into Core
-// Memory, and recall. A failed `ask` with `recall: true` is what scenario-harvest.mjs turns into a
-// memory bench item. This file holds definitions only: scenarios.mjs runs them, and the tests in
+// Memory, and recall. A failed `ask` with `harvest: 'recall'` is what scenario-harvest.mjs turns into
+// a memory bench item.
+//
+// The verification battery asks for work whose obvious method gets the answer wrong, and whose right
+// answer code knows: the work must run as a mission, with checkpoints the cerebellum (the organ that
+// verifies each checkpoint against its acceptance criteria) judges. A failed step with
+// `harvest: 'verification'` is what verification-harvest.mjs turns into a cerebellum bench item,
+// named for the step's `verify.kind`, when a checkpoint passed the wrong work.
+//
+// This file holds definitions only: scenarios.mjs runs them, and the tests in
 // tests/dev/harness2/scenarios.test.mjs check that every scenario's requests and checks fit its values.
 
 const HOUR = 60;
@@ -89,7 +97,7 @@ export const KEEPS = Object.freeze({
 });
 
 const teach = (id, at, text) => ({ id, kind: 'teach', at, text });
-const ask = (id, at, text, expect) => ({ id, kind: 'ask', at, recall: true, text, expect });
+const ask = (id, at, text, expect) => ({ id, kind: 'ask', at, harvest: 'recall', text, expect });
 
 export const MEMORY_SCENARIOS = Object.freeze([
   {
@@ -175,5 +183,137 @@ export const MEMORY_SCENARIOS = Object.freeze([
   },
 ]);
 
+const pad = (n) => String(n).padStart(2, '0');
+const isoDay = (t) => new Date(t).toISOString().slice(0, 10);
+const DAY_MS = 86_400_000;
+
+/** The Sunday a month's `nth` Sunday falls on (1-based), as a UTC day number. Pure. */
+function nthSunday(year, month, nth) {
+  const first = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  return Date.UTC(year, month - 1, 1 + ((7 - first) % 7) + (nth - 1) * 7);
+}
+
+/**
+ * New York's offset from UTC in hours on a day, at a time of day well clear of 02:00: daylight saving
+ * time (UTC-4) from the second Sunday of March to the first Sunday of November, standard (UTC-5)
+ * otherwise. Pure.
+ */
+export function newYorkOffset(day) {
+  const t = Date.parse(`${day}T12:00:00Z`);
+  const year = new Date(t).getUTCFullYear();
+  return t >= nthSunday(year, 3, 2) && t < nthSunday(year, 11, 1) ? -4 : -5;
+}
+
+/** A total in cents as the answer writes it, a thousands separator optional. */
+const moneyRe = (cents) => {
+  const whole = String(Math.floor(cents / 100));
+  const grouped = whole.length > 3 ? `${whole.slice(0, -3)}[,\\s]?${whole.slice(-3)}` : whole;
+  return `(^|[^0-9.,])${grouped}\\.${pad(cents % 100)}([^0-9]|$)`;
+};
+/** A count on its own: not part of a longer number, nor a day or month inside a date. */
+const countRe = (n) => `(?<![0-9])(?<![0-9]-)${n}(?![0-9])(?!-[0-9])`;
+/** A decimal on its own, not part of a longer number. */
+const decimalRe = (text) => `(^|[^0-9.])${escape(text)}([^0-9]|$)`;
+const timeRe = (hhmm) => `(^|[^0-9])${hhmm}([^0-9]|$)`;
+
+/**
+ * The values one run of any verification scenario uses: a made-up service, and for each scenario the
+ * inputs its request gives and the answer its work must reach. The inputs are drawn where the obvious
+ * method goes wrong: a range whose ends both count, a New York time near or across a daylight-saving
+ * change, a fall whose rate is easy to take on the wrong base, and nine amounts to the cent.
+ */
+export function verificationValues(seed) {
+  const rnd = seededRandom(seed);
+  const pick = (list) => list[Math.floor(rnd() * list.length)];
+  const number = (lo, hi) => lo + Math.floor(rnd() * (hi - lo + 1));
+  const service = `${pick(ADJECTIVES)} ${pick(NOUNS)}`;
+
+  const start = Date.UTC(2027, number(0, 9), number(1, 28));
+  const span = number(25, 70);
+  const range = { start: isoDay(start), end: isoDay(start + span * DAY_MS), days: span + 1 };
+
+  // Most windows fall in the weeks either side of a change, where an offset from memory is wrong.
+  const window = pick([[Date.UTC(2027, 2, 14), 26], [Date.UTC(2027, 9, 18), 19], [Date.UTC(2027, 10, 8), 30], [Date.UTC(2027, 1, 15), 26]]);
+  const day = isoDay(window[0] + number(0, window[1] - 1) * DAY_MS);
+  const [hour, minute] = [number(7, 11), pick([0, 15, 30, 45])];
+  const offset = newYorkOffset(day);
+  const utc = `${pad(hour - offset)}:${pad(minute)}`;
+  const time = { day, local: `${pad(hour)}:${pad(minute)}`, offset, utc };
+
+  // A fall whose rate rounds clear of a half, so one decimal place has one right answer.
+  let fall;
+  do {
+    const before = number(1200, 4800);
+    const after = Math.round(before * (1 - (15 + rnd() * 20) / 100));
+    const tenths = ((before - after) / before) * 1000;
+    fall = { before, after, tenths, percent: (Math.round(tenths) / 10).toFixed(1) };
+  } while (Math.abs((fall.tenths % 1) - 0.5) < 0.1 || fall.percent.endsWith('.0'));
+
+  const amounts = Array.from({ length: 9 }, () => number(1200, 48099));
+  const claims = { amounts: amounts.map((c) => `${Math.floor(c / 100)}.${pad(c % 100)}`), cents: amounts.reduce((a, b) => a + b, 0) };
+
+  return { service, range, time, fall: { before: fall.before, after: fall.after, percent: fall.percent }, claims };
+}
+
+/** The verification battery's checks are named for what the answer must get right. */
+const RIGHT = 'names the right answer';
+/** A step of work: its answer must name `expect`, and a wrong one is harvested as a defect of `kind`. */
+const work = (id, at, text, expect, verify) => ({ id, kind: 'ask', at, harvest: 'verification', text, expect, verify });
+
+export const VERIFICATION_SCENARIOS = Object.freeze([
+  {
+    id: 'ver-day-count',
+    battery: 'verification',
+    about: 'a count of days whose first and last day both count',
+    everyHours: 24,
+    values: verificationValues,
+    steps: [
+      work('work', 0, (v) => `The ${v.service} support rota runs from ${v.range.start} to ${v.range.end}, and the first and the last day `
+        + 'are both rota days. Work out with a small script in your workspace how many rota days that is, and reply with the number.',
+      (v) => [{ name: RIGHT, source: countRe(v.range.days) }],
+      { kind: 'a range one day short', flaw: (v) => `the count leaves out one end of the range: from ${v.range.start} to ${v.range.end}, both included, is ${v.range.days} days` }),
+    ],
+  },
+  {
+    id: 'ver-utc-time',
+    battery: 'verification',
+    about: 'a New York time converted to UTC on a date near a daylight-saving change',
+    everyHours: 24,
+    values: verificationValues,
+    steps: [
+      work('work', 0, (v) => `The ${v.service} maintenance window opens at ${v.time.local} New York time on ${v.time.day}. `
+        + 'Convert that to UTC with a command in your workspace, and reply with the UTC time as HH:MM.',
+      (v) => [{ name: RIGHT, source: timeRe(v.time.utc) }],
+      { kind: 'a time in the wrong zone', flaw: (v) => `the time is converted with the wrong offset: New York is at UTC${v.time.offset} on ${v.time.day}, so ${v.time.local} there is ${v.time.utc} UTC` }),
+    ],
+  },
+  {
+    id: 'ver-rate-base',
+    battery: 'verification',
+    about: 'a percentage fall, taken on the amount before it',
+    everyHours: 24,
+    values: verificationValues,
+    steps: [
+      work('work', 0, (v) => `The ${v.service} service's monthly cloud bill went from ${v.fall.before} EUR to ${v.fall.after} EUR. `
+        + 'Work out with a command by what percentage it fell, to one decimal place, and reply with the percentage.',
+      (v) => [{ name: RIGHT, source: decimalRe(v.fall.percent) }],
+      { kind: 'a rate on the wrong base', flaw: (v) => `the fall is not taken on the bill before it: (${v.fall.before} - ${v.fall.after}) / ${v.fall.before} is ${v.fall.percent}%` }),
+    ],
+  },
+  {
+    id: 'ver-claims-total',
+    battery: 'verification',
+    about: 'nine amounts totalled to the cent',
+    everyHours: 24,
+    values: verificationValues,
+    steps: [
+      work('work', 0, (v) => `Here are the ${v.service} team's nine expense claims for March, in EUR: ${v.claims.amounts.join(', ')}. `
+        + 'Total them with a command in your workspace, and reply with the total in EUR, to the cent.',
+      (v) => [{ name: RIGHT, source: moneyRe(v.claims.cents) }],
+      { kind: 'a wrong total', flaw: (v) => `the total is not the sum of the nine claims, ${Math.floor(v.claims.cents / 100)}.${pad(v.claims.cents % 100)} EUR` }),
+    ],
+  },
+]);
+
 /** Every battery by name. */
-export const BATTERIES = Object.freeze({ memory: MEMORY_SCENARIOS });
+export const BATTERIES = Object.freeze({ memory: MEMORY_SCENARIOS, verification: VERIFICATION_SCENARIOS });
