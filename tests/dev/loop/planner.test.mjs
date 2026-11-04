@@ -214,6 +214,9 @@ test('nothing is planned from a baseline of an older head when what the agent re
 test('nothing is planned past the open limit, with every item planned, on a skip, a refused answer, or in a dry run', async () => {
   const two = [{ body: '' }, { body: '' }];
   assert.match((await plan(fakeGh({ open: two }))).reason, /2 loop issue\(s\) are open, the planner's limit is 2/);
+  const lanes = [{ body: '<!-- loop-module: organ:cerebellum -->' }, { body: '<!-- loop-module: organ:temporal-memory -->' }, { body: '' }];
+  assert.equal((await plan(fakeGh({ open: lanes }))).issue.title, 'The dashboard imports the agent constants it copies',
+    "a lane's issues count against the lane's limit, not the global loop's");
   const everyKey = ITEMS.map((i) => ({ body: `<!-- loop-plan: ${i.key} -->` }));
   assert.match((await plan(fakeGh({ all: everyKey.slice(0, 2), stuck: everyKey.slice(2) }))).reason, /every item of docs\/plan\/OPEN_ITEMS\.md has been planned/, 'stuck issues count as planned');
   assert.match((await plan(fakeGh(), { output: '{"skip": "each needs a person"}' })).reason, /found no item to plan: each needs a person/);

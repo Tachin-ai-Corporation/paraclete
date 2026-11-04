@@ -257,7 +257,8 @@ there, so its task messages name none and the motor works where its task is seed
 
 ## The planner
 
-When no `loop` issue waits, fewer than `planner.maxOpen` (2) are open, and the baseline has no failing
+When no `loop` issue waits, fewer than `planner.maxOpen` (2) of the global loop's are open (a lane's
+issues count against the lane's own limit), and the baseline has no failing
 training task left to plan (see above), a cycle runs the planner
 (`planner.mjs`, the command named by `planner` in your local settings, set like the reviewer's and
 read-only the same way). It is offered every item of `docs/plan/OPEN_ITEMS.md` not yet planned, picks
