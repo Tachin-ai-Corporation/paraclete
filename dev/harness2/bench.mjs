@@ -2,7 +2,8 @@
 // A bench calls one organ directly, through one side's real gateway and that side's own organ code, on
 // the items of bench-items.mjs, and scores each answer by code: the cerebellum's verdict on a
 // checkpoint (does it pass the clean work and fail the defective), the memory organ's recall packet
-// (does it hold what matters and leave out what does not). An item takes one organ turn or two, where
+// (does it hold what matters and leave out what does not), the prefrontal's Brief (are its risks,
+// premise, parts and unknowns the ones its rules give). An item takes one organ turn or two, where
 // a model-suite task takes a whole mission, so a lane learns in minutes whether its organ got better.
 //
 // Each item runs as one rollout of runTier1Evaluation (substrate.mjs), so a bench run is capped,
@@ -17,10 +18,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { loadContracts } from '../../config/contracts.mjs';
+import { createVertexText } from '../../agent/providers/vertex-text.mjs';
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
-import { CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS } from './bench-items.mjs';
+import { BRIEF_CHECKS, CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS, PREFRONTAL_ITEMS } from './bench-items.mjs';
 
-/** The items' version: a bench's results compare only with results of the same version. */
+/**
+ * The items' version: a bench's results compare only with results of the same version. The
+ * prefrontal's bench arrived within version 3: it had no results to compare, and a new version would
+ * have made the other two benches measure again for nothing.
+ */
 export const BENCH_VERSION = 3;
 
 /**
@@ -41,7 +47,7 @@ export const RETIRED_BENCH_ITEMS = Object.freeze([
 ]);
 
 /** The benches, by the organ each judges. */
-export const BENCHES = Object.freeze({ cerebellum: CEREBELLUM_ITEMS, 'temporal-memory': MEMORY_ITEMS });
+export const BENCHES = Object.freeze({ cerebellum: CEREBELLUM_ITEMS, 'temporal-memory': MEMORY_ITEMS, prefrontal: PREFRONTAL_ITEMS });
 
 /**
  * The side's code a bench calls, beside the product loadSideProduct imports (model-runs.mjs): the
@@ -52,9 +58,26 @@ export const BENCH_PORTS = Object.freeze({
   client: Object.freeze({ path: 'agent/services/brain/gateway-client.mjs', exports: Object.freeze(['createGatewayClient']) }),
   cerebellum: Object.freeze({ path: 'agent/organs/cerebellum/verify.mjs', exports: Object.freeze(['verifyMilestone']) }),
   'temporal-memory': Object.freeze({ path: 'agent/organs/temporal-memory/memory.mjs', exports: Object.freeze(['createMemory']) }),
+  // The brain asks the prefrontal for the Brief with this request; the gateway puts the side's
+  // prompts/prefrontal.md before it, and the capability map is built from the side's skills.
+  prefrontal: Object.freeze({ path: 'agent/services/brain/prompt-assembly.mjs', exports: Object.freeze(['analyzeRequest', 'capabilityMap', 'readSkills']) }),
 });
 
 const BENCH_PROJECT = 'paraclete-bench';
+
+/**
+ * How a Brief's reply is read: an instance's schema check (agent/providers/vertex-text.mjs) on its
+ * deterministic path, which parses the reply as JSON. An instance would ask a utility model to
+ * restructure a reply that does not fit the schema; the bench keeps the reply as parsed, and one that
+ * is no JSON at all fails the Brief's first check.
+ */
+const briefParser = createVertexText({
+  projectId: BENCH_PROJECT,
+  getAccessToken: async () => 'test-token',
+  fetch: async () => { throw new Error('the bench reads a Brief without a utility model'); },
+  logger: () => {},
+});
+const briefSchema = (raw, mode) => briefParser.enforceSchema(raw, mode);
 
 /**
  * The items of one organ's bench, by split or by id; a retired item only by its id.
@@ -129,6 +152,48 @@ export function recallChecks(item, recalled) {
   ];
 }
 
+const RISK_RANK = Object.freeze({ none: 0, mutating: 1, destructive_or_public: 2 });
+
+/**
+ * The checks of a Brief: it is well formed, and it keeps each rule its item tests (bench-items.mjs
+ * PREFRONTAL_ITEMS). A part's risk outside the three tiers counts as no risk given, so a Brief whose
+ * parts give none fails any risk check.
+ *
+ * @returns {Array<{ name: string, ok: boolean, detail?: string }>}
+ */
+export function briefChecks(item, brief) {
+  const want = item.brief;
+  const parts = Array.isArray(brief?.parts) && !brief.error ? brief.parts.filter((p) => p && typeof p === 'object') : null;
+  if (!parts) return [{ name: BRIEF_CHECKS.wellFormed, ok: false, detail: brief?.error ? `the analysis failed: ${brief.error}` : 'no parts array' }];
+  const checks = [{ name: BRIEF_CHECKS.wellFormed, ok: true }];
+  const check = (name, ok, detail) => checks.push({ name, ok, ...(ok ? {} : { detail }) });
+  const riskiest = parts.reduce((top, p) => (RISK_RANK[p.risk] > (RISK_RANK[top] ?? -1) ? p.risk : top), null);
+  const risks = parts.map((p) => String(p.risk ?? 'none given')).join(', ') || 'no parts';
+  if (want.risk) check(BRIEF_CHECKS.risk[want.risk], riskiest === want.risk, `the parts' risks: ${risks}`);
+  if (want.riskAtMost) check(BRIEF_CHECKS.noGate, parts.length > 0 && parts.every((p) => RISK_RANK[p.risk] <= RISK_RANK[want.riskAtMost]), `the parts' risks: ${risks}`);
+  if (want.premise) {
+    const flawed = brief.premise === 'flawed';
+    check(BRIEF_CHECKS.premise[want.premise], want.premise === 'flawed' ? flawed : !flawed,
+      `premise ${brief.premise || 'not given'}${brief.premise_note ? `: ${String(brief.premise_note).slice(0, 200)}` : ''}`);
+  }
+  if (want.maxParts) check(BRIEF_CHECKS.onePart, parts.length >= 1 && parts.length <= want.maxParts, `${parts.length} parts`);
+  if (want.minParts) check(BRIEF_CHECKS.parts, parts.length >= want.minParts, `${parts.length} part(s)`);
+  if (want.dependsOn) {
+    const ids = new Set(parts.map((p) => String(p.id)));
+    const linked = parts.some((p) => (Array.isArray(p.depends_on) ? p.depends_on : []).some((d) => ids.has(String(d)) && String(d) !== String(p.id)));
+    check(BRIEF_CHECKS.dependsOn, linked, 'no part depends on another part of the Brief');
+  }
+  const named = parts.flatMap((p) => (Array.isArray(p.unknowns) ? p.unknowns : []).map(String).filter((u) => u.trim()));
+  if (want.unknowns === true) check(BRIEF_CHECKS.unknown, named.length > 0, 'no part names an unknown');
+  if (want.unknowns === false) check(BRIEF_CHECKS.noUnknown, named.length === 0, `unknowns: ${named.join('; ').slice(0, 200)}`);
+  if (want.noTool) {
+    const text = JSON.stringify(parts);
+    const hit = text.match(want.noTool);
+    check(BRIEF_CHECKS.byOutcome, !hit, `a part names ${hit?.[0]}`);
+  }
+  return checks;
+}
+
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
@@ -166,10 +231,11 @@ const tokensOf = (usage) => Number(usage?.total_tokens ?? usage?.totalTokenCount
  * @param {object} o.ports     loadBenchPorts()'s result
  * @param {object} o.realModel createModelRunContext()'s result
  * @param {Function} [o.callAgent]  a fake organ, in tests: no gateway is started
+ * @param {Function} [o.askJson]    a fake structured turn (the prefrontal's), in tests: likewise
  * @param {Function} [o.clock]
  * @param {Function} [o.log]
  */
-export async function runBenchItem(item, { sideRoot, product, ports, realModel, callAgent = null, clock = Date.now, log = () => {} }) {
+export async function runBenchItem(item, { sideRoot, product, ports, realModel, callAgent = null, askJson = null, clock = Date.now, log = () => {} }) {
   realModel.meter.startRollout();
   const firestore = await startFirestoreFake({ projectId: BENCH_PROJECT });
   const dataRoot = fs.mkdtempSync(path.join(os.tmpdir(), `paraclete-bench-${item.id}-`));
@@ -179,7 +245,8 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
     const now = clock();
     if (item.organ === 'temporal-memory') await seedMemoryItem(item, { db, collections: product.COLLECTIONS, now });
     let ask = callAgent;
-    if (!ask) {
+    let askStructured = askJson;
+    if (!ask && !askStructured) {
       gateway = await realModel.startGateway({
         sideRoot,
         role: 'generic',
@@ -195,6 +262,7 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
         url: gateway.url, token: gateway.token, onUsage: (_mission, _organ, usage) => realModel.meter.addTokens(tokensOf(usage)),
       });
       ask = client.callAgent;
+      askStructured = client.askJson;
     }
     let checks;
     if (item.organ === 'cerebellum') {
@@ -210,6 +278,17 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
         log,
       });
       checks = verificationChecks(item, result);
+    } else if (item.organ === 'prefrontal') {
+      const skills = ports.readSkills([path.join(sideRoot, 'skills'), path.join(sideRoot, 'roles', 'generic', 'skills')]);
+      const req = ports.analyzeRequest({
+        envelope: { instruction: item.instruction, context_summary: item.context },
+        memory: item.recalled ? { recalled: item.recalled } : {},
+        capabilityMap: ports.capabilityMap(skills),
+      });
+      const analyzed = await askStructured({
+        organ: 'prefrontal', mode: 'analyze', system: req.system, user: req.user, enforceSchema: briefSchema, missionId: `bench-${item.id}`,
+      });
+      checks = briefChecks(item, analyzed);
     } else {
       const memory = ports.createMemory({
         db,

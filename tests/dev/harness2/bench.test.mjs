@@ -8,9 +8,9 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  BENCHES, BENCH_PORTS, BENCH_VERSION, RETIRED_BENCH_ITEMS, loadBenchPorts, recallChecks, runBenchItem, selectBenchItems, verificationChecks,
+  BENCHES, BENCH_PORTS, BENCH_VERSION, RETIRED_BENCH_ITEMS, briefChecks, loadBenchPorts, recallChecks, runBenchItem, selectBenchItems, verificationChecks,
 } from '../../../dev/harness2/bench.mjs';
-import { DEFECT_KINDS, RECALL_KEEPS, RECALL_LEAVES } from '../../../dev/harness2/bench-items.mjs';
+import { BRIEF_CHECKS, DEFECT_KINDS, RECALL_KEEPS, RECALL_LEAVES } from '../../../dev/harness2/bench-items.mjs';
 import { runCli } from '../../../dev/harness2/cli.mjs';
 import { createModelRunContext, loadSideProduct } from '../../../dev/harness2/model-runs.mjs';
 import { verdict } from '../../agent/services/brain/fake-gateway.mjs';
@@ -59,7 +59,7 @@ test('the items are well formed: unique ids, both splits, and the cerebellum\'s 
   for (const id of RETIRED_BENCH_ITEMS) assert.ok(Object.values(BENCHES).flat().some((i) => i.id === id), `${id} is defined`);
   assert.ok(selectBenchItems({ organ: 'cerebellum' }).every((i) => !RETIRED_BENCH_ITEMS.includes(i.id)));
   assert.deepEqual(selectBenchItems({ organ: 'cerebellum', ids: ['cb-regions-csv-defect'] }).map((i) => i.id), ['cb-regions-csv-defect']);
-  assert.deepEqual([selectBenchItems({ organ: 'cerebellum' }).length, selectBenchItems({ organ: 'temporal-memory' }).length], [36, 12]);
+  assert.deepEqual(['cerebellum', 'temporal-memory', 'prefrontal'].map((organ) => selectBenchItems({ organ }).length), [36, 12, 28]);
   for (const organ of Object.keys(BENCHES)) {
     const active = selectBenchItems({ organ });
     assert.ok(active.some((i) => i.split === 'train') && active.some((i) => i.split === 'holdout'), `${organ}: both splits still run`);
@@ -195,7 +195,8 @@ test("the cerebellum's bench: a verifier that passes everything scores half, and
 });
 
 test("a bench's ports come from the side's root, and a side without them cannot be benched", async () => {
-  assert.deepEqual(Object.keys(BENCH_PORTS).sort(), ['cerebellum', 'client', 'temporal-memory']);
+  assert.deepEqual(Object.keys(BENCH_PORTS).sort(), ['cerebellum', 'client', 'prefrontal', 'temporal-memory']);
+  assert.deepEqual(Object.keys(await loadBenchPorts(REPO, 'prefrontal')).sort(), ['analyzeRequest', 'capabilityMap', 'createGatewayClient', 'readSkills']);
   const ports = await loadBenchPorts(REPO, 'cerebellum');
   assert.deepEqual(Object.keys(ports).sort(), ['createGatewayClient', 'verifyMilestone']);
   await assert.rejects(loadBenchPorts(REPO, 'cortex'), /there is no bench for the organ cortex/);
@@ -223,5 +224,88 @@ test('the bench command runs an organ\'s items as measured runs, and refuses wit
   const noModel = await runCli(['bench', '--organ', 'cerebellum'], { repoRoot: REPO, stderr: quiet });
   assert.deepEqual([noModel.ok, noModel.reason], [false, 'a bench asks the real model: pass --real-model']);
   const noOrgan = await runCli(['bench', '--real-model', '--organ', 'cortex'], { repoRoot: REPO, createModelRunContext: context, stderr: quiet });
-  assert.match(noOrgan.reason, /there is no bench for cortex; name one with --organ: cerebellum, temporal-memory/);
+  assert.match(noOrgan.reason, /there is no bench for cortex; name one with --organ: cerebellum, temporal-memory, prefrontal/);
+});
+
+// A Brief that keeps every rule a prefrontal item tests, or breaks every one of them.
+const RISKS = ['none', 'mutating', 'destructive_or_public'];
+function briefFor(item, { keep }) {
+  const want = item.brief;
+  const count = keep ? (want.minParts || (want.dependsOn ? 2 : 1)) : (want.maxParts ? 3 : 1);
+  const risk = keep
+    ? (want.risk || want.riskAtMost || 'mutating')
+    : (want.risk ? RISKS.find((r) => r !== want.risk && r !== 'mutating') : 'destructive_or_public');
+  const parts = Array.from({ length: count }, (_, i) => ({
+    id: `p${i + 1}`,
+    summary: keep ? `outcome ${i + 1} is reached` : 'run gsutil cp, values.append and dig to do it',
+    risk: i === 0 || !keep ? risk : 'none',
+    depends_on: keep && want.dependsOn && i > 0 ? ['p1'] : [],
+    unknowns: (want.unknowns === true) === keep && i === 0 ? ['what the agent has no access to'] : [],
+  }));
+  const premise = keep ? (want.premise || 'sound') : (want.premise === 'flawed' ? 'sound' : 'flawed');
+  return { objective: item.instruction, parts, premise };
+}
+
+test("every prefrontal item tests a rule its Brief can keep or break, and its checks are named for the rule", () => {
+  const names = [BRIEF_CHECKS.wellFormed, ...Object.values(BRIEF_CHECKS.risk), BRIEF_CHECKS.noGate, ...Object.values(BRIEF_CHECKS.premise),
+    BRIEF_CHECKS.onePart, BRIEF_CHECKS.parts, BRIEF_CHECKS.dependsOn, BRIEF_CHECKS.unknown, BRIEF_CHECKS.noUnknown, BRIEF_CHECKS.byOutcome];
+  for (const item of BENCHES.prefrontal) {
+    assert.ok(item.instruction && Object.keys(item.brief).length > 0, item.id);
+    const kept = briefChecks(item, briefFor(item, { keep: true }));
+    assert.ok(kept.length >= 2 && kept.every((c) => c.ok), `${item.id}: ${JSON.stringify(kept.filter((c) => !c.ok))}`);
+    const broken = briefChecks(item, briefFor(item, { keep: false }));
+    assert.ok(broken.slice(1).every((c) => !c.ok), `${item.id} catches every broken rule: ${JSON.stringify(broken.filter((c) => c.ok))}`);
+    assert.ok(kept.every((c) => names.includes(c.name)), item.id);
+    assert.equal(new Set(kept.map((c) => c.name)).size, kept.length, `${item.id}: one check a name`);
+    if (item.brief.noTool) assert.equal(item.brief.noTool.test(`${item.instruction} ${item.context}`), false, `${item.id}: the request itself names no tool`);
+  }
+  // Both kinds of premise item, and risk items on both sides of the gate, are in each split.
+  for (const split of ['train', 'holdout']) {
+    const items = BENCHES.prefrontal.filter((i) => i.split === split);
+    assert.ok(items.some((i) => i.brief.premise === 'flawed') && items.some((i) => i.brief.premise === 'sound'), split);
+    assert.ok(items.some((i) => i.brief.risk === 'destructive_or_public') && items.some((i) => i.brief.riskAtMost || i.brief.risk === 'mutating'), split);
+  }
+  assert.deepEqual(briefChecks(BENCHES.prefrontal[0], { error: 'parse_failed' }), [{ name: BRIEF_CHECKS.wellFormed, ok: false, detail: 'the analysis failed: parse_failed' }]);
+  assert.equal(briefChecks(BENCHES.prefrontal[0], { parts: [{ id: 'p1', summary: 's', risk: 'high' }] })[1].ok, false, 'a risk outside the tiers is none given');
+});
+
+test("the prefrontal's bench asks the side's own analyze request, with its capability map and what the agent recalled", async () => {
+  const product = await loadSideProduct(REPO);
+  const ports = await loadBenchPorts(REPO, 'prefrontal');
+  const item = BENCHES.prefrontal.find((i) => i.recalled && i.brief.premise === 'sound');
+  const asked = [];
+  const askJson = async (req) => { asked.push(req); return briefFor(item, { keep: true }); };
+  const res = await runBenchItem(item, { sideRoot: REPO, product, ports, realModel: meterOnly, askJson });
+  assert.deepEqual([res.measured, res.checkScore], [true, 1]);
+  assert.deepEqual([asked[0].organ, asked[0].mode, typeof asked[0].enforceSchema], ['prefrontal', 'analyze', 'function']);
+  const user = JSON.parse(asked[0].user.slice(asked[0].user.indexOf('{')));
+  assert.deepEqual([user.mode, user.instruction, user.context_summary, user.memory.recalled], ['analyze', item.instruction, item.context, item.recalled]);
+  assert.ok(asked[0].system.some((s) => s.includes('[CAPABILITY MAP') && s.includes('Checkpoint Plan Structuring')), 'the map lists the side\'s skills');
+  // The reply is read as an instance reads it: JSON, possibly fenced.
+  const fenced = await asked[0].enforceSchema(`\`\`\`json\n${JSON.stringify(briefFor(item, { keep: true }))}\n\`\`\``, 'analyze');
+  assert.equal(fenced.parts.length, 1);
+
+  // A planner that gates everything, splits nothing, and never names an unknown scores in between.
+  let total = 0;
+  for (const each of BENCHES.prefrontal) {
+    const gateAll = async () => ({ objective: each.instruction, parts: [{ id: 'p1', summary: 'do it', risk: 'destructive_or_public', depends_on: [], unknowns: [] }], premise: 'sound' });
+    total += (await runBenchItem(each, { sideRoot: REPO, product, ports, realModel: meterOnly, askJson: gateAll })).checkScore;
+  }
+  const mean = total / BENCHES.prefrontal.length;
+  assert.ok(mean > 0.3 && mean < 0.8, `a careless planner scores ${mean}`);
+});
+
+test('the bench command runs the prefrontal\'s items with a scripted Brief', async () => {
+  const context = () => createModelRunContext({
+    repoRoot: REPO,
+    access: { project: 'your-gcp-project', getAccessToken: async () => 'token' },
+    sides: { forPatches: () => ({ root: REPO, key: 'k' }), prepareRole: (s, role) => ({ role }), cleanupAll() {} },
+    startGateway: async () => { throw new Error('no gateway in a test'); },
+  });
+  const item = BENCHES.prefrontal.find((i) => i.id === 'pf-staging-wipe');
+  const res = await runCli(['bench', '--real-model', '--organ', 'prefrontal', '--item', item.id], {
+    repoRoot: REPO, createModelRunContext: context, benchAskJson: async () => briefFor(item, { keep: true }), stderr: quiet,
+  });
+  assert.equal(res.ok, true, res.reason);
+  assert.deepEqual(res.trajectories.map((t) => [t.taskId, t.measured, t.checkScore]), [['pf-staging-wipe', true, 1]]);
 });

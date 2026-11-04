@@ -21,6 +21,14 @@
 //   requests that need two facts, facts that changed. Version 3's need three facts, tell apart people
 //   of one name and contacts of one client, weigh a working-memory note against Core Memory, join past
 //   work with a policy, and ask for the deeper history on a training item too.
+// - The prefrontal's (planning), added in version 3: a request and what the agent knows about it. The
+//   Brief its analysis returns is checked where prompts/prefrontal.md sets a rule a careful planner
+//   keeps and a careless one breaks: risk by reversibility, not by how drastic the words sound (a
+//   section deleted from a document and a wiped staging channel are reversible; a message to a client,
+//   a revoked access, a payment and a merged public change are not); a premise flawed only when the
+//   evidence shows a false belief, never because earlier attempts failed; one part for one outcome and
+//   a part each for separate ones; an unknown where the agent lacks an access or a person's decision,
+//   and none where nothing blocks; and parts named by outcome, never by a tool.
 //
 // A check is named for the kind of mistake it catches, from the vocabularies below, never for a fact
 // of its item: a lane's planned issue quotes a failing check by its name (dev/loop/planner.mjs), and a
@@ -861,6 +869,193 @@ export const MEMORY_ITEMS = Object.freeze([
     must: [{ name: TURNS, re: /lena|vendor review/i }],
     mustNot: [{ name: SAME_SUBJECT, re: /excel|workbook/i }],
   },
+]);
+
+/**
+ * What a prefrontal item expects of its Brief, by the rule it tests: a check is named for the rule
+ * (bench.mjs briefChecks), never for the item's request.
+ */
+export const BRIEF_CHECKS = Object.freeze({
+  wellFormed: 'the Brief is well formed',
+  risk: Object.freeze({
+    none: 'the risk of read-only work',
+    mutating: 'the risk of a reversible change',
+    destructive_or_public: 'the risk of an irreversible or public action',
+  }),
+  noGate: 'no approval gate on work that publishes nothing',
+  premise: Object.freeze({ flawed: 'the premise of a request whose frame is false', sound: 'the premise of a request with a hard history' }),
+  onePart: 'one part for one outcome',
+  parts: 'a part for each separate outcome',
+  dependsOn: 'a dependency where one outcome needs another',
+  unknown: 'an unknown named for what the agent lacks',
+  noUnknown: 'no unknown where nothing blocks',
+  byOutcome: 'parts named by outcome, never by tool',
+});
+
+/**
+ * A prefrontal item. `brief` says what the Brief must show: `risk` the riskiest part's tier exactly,
+ * `riskAtMost` no part above it, `premise`, `maxParts`/`minParts`, `dependsOn` (some part depends on
+ * another), `unknowns` (true: some part names one; false: none does), `noTool` (a pattern no part's
+ * text may match: the tools the context mentions).
+ */
+const brief = (id, split, { instruction, context = '', recalled = '', ...expect }) => ({
+  id, organ: 'prefrontal', split, instruction, context, recalled, brief: expect,
+});
+const TODAY = 'Today is 2027-03-07.';
+
+export const PREFRONTAL_ITEMS = Object.freeze([
+  // Risk by reversibility: drastic words on reversible work, mild words on irreversible work.
+  brief('pf-doc-section-delete', 'train', {
+    instruction: "Delete the 'Legacy pricing' section from the sales playbook document and renumber the headings after it.",
+    context: 'The sales playbook is a shared document in the team drive, with version history kept.',
+    risk: 'mutating', maxParts: 1,
+  }),
+  brief('pf-staging-wipe', 'train', {
+    instruction: "Wipe the marketing site's preview channel and redeploy it from the main branch, so the team can review the new pricing page before Friday.",
+    context: 'The preview channel is a staging URL only the team can see. The live site is a separate channel and must not change.',
+    risk: 'mutating',
+  }),
+  brief('pf-client-send', 'train', {
+    instruction: "Send the signed renewal quote to Globex's procurement contact.",
+    context: "The signed quote is a PDF in the Sales/Quotes folder. Globex's procurement contact is in the CRM.",
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-draft-reply', 'train', {
+    instruction: "Draft a reply to the vendor's complaint email for me to look over. Don't send anything.",
+    context: 'The complaint arrived yesterday in the shared support inbox. Drafts are kept in that inbox.',
+    riskAtMost: 'mutating',
+  }),
+  brief('pf-access-revoke', 'train', {
+    instruction: "Remove the departed contractor's access to the finance shared drive.",
+    context: "The contractor's last day was Friday. The drive's sharing settings still list them as an editor.",
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-bucket-purge', 'train', {
+    instruction: "Permanently delete last year's exports from the archive bucket so they stop costing storage.",
+    context: 'The archive bucket keeps no versions of deleted objects.',
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-ticket-themes', 'train', {
+    instruction: "Tell me the three most common themes in last week's support tickets.",
+    context: 'The tickets are in the helpdesk, which the agent can read.',
+    risk: 'none', maxParts: 1,
+  }),
+  brief('pf-invoice-pay', 'holdout', {
+    instruction: 'Pay the March hosting invoice from the operations account.',
+    context: 'The invoice is in the Finance/Invoices folder. The operations account pays suppliers by bank transfer.',
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-folder-archive', 'holdout', {
+    instruction: "Move last quarter's project files into an Archive subfolder and rename the project folder to 'Atlas (2026)'.",
+    context: 'The project folder is in the shared drive, with version history kept.',
+    riskAtMost: 'mutating', unknowns: false,
+  }),
+  brief('pf-public-merge', 'holdout', {
+    instruction: 'Merge the approved dependency-update pull request into the main branch of our public repository.',
+    context: 'The pull request has one approval and its checks passed. The repository is public and deploys docs from main.',
+    risk: 'destructive_or_public',
+  }),
+
+  // The premise: flawed only for a false belief the evidence shows; a hard history is not one.
+  brief('pf-rollback-premise', 'train', {
+    instruction: "Roll back yesterday's deploy that broke checkout.",
+    context: `${TODAY} Deploy log: the last deploy went out on 2027-03-01, six days ago. Checkout errors began this morning at 09:12, the minute the payment provider made its new API version the default (its status page says so).`,
+    premise: 'flawed',
+  }),
+  brief('pf-rollback-history', 'train', {
+    instruction: "Roll back yesterday's deploy that broke checkout.",
+    context: `${TODAY} Deploy log: deploy d-482 went out yesterday at 17:40. Checkout errors began at 17:43.`,
+    recalled: 'Past work: two attempts yesterday to roll back d-482 failed. The pipeline refused the first (the release lock was held); the second timed out after 10 minutes.',
+    premise: 'sound',
+  }),
+  brief('pf-address-premise', 'train', {
+    instruction: "Put Globex's new office address on next month's invoice.",
+    context: "Globex's account record: 'Move to 14 Harbour St cancelled on 2027-02-10; Globex stays at 3 Mill Lane.' No newer address is on file.",
+    premise: 'flawed',
+  }),
+  brief('pf-flaky-history', 'train', {
+    instruction: 'Make the flaky upload test pass reliably.',
+    context: 'CI history: the upload test failed 9 of its last 40 runs, every time with a timeout.',
+    recalled: 'Past work: this test was declared fixed four times in the last month; each fix lasted a few days.',
+    premise: 'sound', riskAtMost: 'mutating',
+  }),
+  brief('pf-address-history', 'holdout', {
+    instruction: "Put Globex's new office address on next month's invoice.",
+    context: "Globex's account record: moved to 14 Harbour St on 2027-02-01, confirmed by their finance team's email.",
+    recalled: 'Past work: two tries to change an invoice address in the billing tool failed; it rejected the postcode format both times.',
+    premise: 'sound',
+  }),
+  brief('pf-leak-premise', 'holdout', {
+    instruction: 'Fix the memory leak in the report worker.',
+    context: "This morning's profile of the report worker: resident memory stays flat at about 210 MB over six hours of runs, while CPU sits at 100% through the PDF render, 9 of the 11 minutes a report takes.",
+    premise: 'flawed',
+  }),
+
+  // Parts and their handshakes.
+  brief('pf-typo', 'train', {
+    instruction: "Correct the typo 'recieve' in the second heading of the onboarding guide.",
+    context: 'The onboarding guide is a shared document.',
+    maxParts: 1, riskAtMost: 'mutating', unknowns: false,
+  }),
+  brief('pf-two-errands', 'train', {
+    instruction: "Book a meeting room for Thursday's planning session, and change next week's on-call rota so Sam covers Tuesday.",
+    context: 'Rooms are booked in the office calendar; the on-call rota is a shared spreadsheet.',
+    minParts: 2, riskAtMost: 'mutating',
+  }),
+  brief('pf-summary-then-send', 'train', {
+    instruction: "Combine this month's figures from the three regional sales sheets into one summary, then email it to the board.",
+    context: 'The regional sheets are in the Sales folder. The board is reached at board@example.com.',
+    minParts: 2, dependsOn: true, risk: 'destructive_or_public',
+  }),
+  brief('pf-redline', 'holdout', {
+    instruction: "Apply the reviewer's redline comments to the travel policy draft, then remove the redline section at the end.",
+    context: 'The draft is a shared document; the redline section lists eleven comments.',
+    maxParts: 1, riskAtMost: 'mutating',
+  }),
+  brief('pf-report-then-post', 'holdout', {
+    instruction: "Write the incident report for Tuesday's outage from the timeline document, then post it on our public status page.",
+    context: 'The timeline document is in the Incidents folder. The status page is public.',
+    minParts: 2, dependsOn: true, risk: 'destructive_or_public',
+  }),
+
+  // Unknowns: what the agent lacks, named; none invented where nothing blocks.
+  brief('pf-domain-login', 'train', {
+    instruction: 'Renew our company domain for another year before it lapses on the 20th.',
+    context: "The domain is registered under the founder's personal registrar account. The agent has no login there and no payment method on that account.",
+    unknowns: true,
+  }),
+  brief('pf-venue-choice', 'train', {
+    instruction: 'Book the venue for the team offsite.',
+    context: 'Two venues fit the dates and the budget: the Old Mill and Harbour House. The team lead said they will choose between the two this week; nothing is chosen yet.',
+    unknowns: true,
+  }),
+  brief('pf-clear-line', 'train', {
+    instruction: "Add the line 'The office is closed on 2027-04-18.' at the top of the team handbook document.",
+    context: 'The team handbook is a shared document the agent can edit.',
+    unknowns: false, maxParts: 1, risk: 'mutating',
+  }),
+  brief('pf-signing-authority', 'holdout', {
+    instruction: "Sign the vendor's NDA on the company's behalf in their e-signature portal.",
+    context: "Only the CEO may sign for the company, and the portal account is the CEO's.",
+    unknowns: true,
+  }),
+
+  // Parts name outcomes, never the tool that reaches them.
+  brief('pf-copy-exports', 'train', {
+    instruction: 'Copy the March exports into the archive bucket.',
+    context: 'The exports are under gs://example-exports/2027-03/ and the archive bucket is gs://example-archive/.',
+    noTool: /\b(gsutil|gcloud|rsync|curl|aws)\b|\bcp\s+-r\b|storage cp/i, riskAtMost: 'mutating',
+  }),
+  brief('pf-sheet-row', 'train', {
+    instruction: 'Add a row for the new hire, Dana Ruiz, starting on 2027-04-01, to the staff list spreadsheet.',
+    context: 'The staff list is a Google Sheet in the HR folder.',
+    noTool: /sheets api|batchupdate|values\.(append|update)|gspread|append_?row|\bapi\b/i, maxParts: 1,
+  }),
+  brief('pf-docs-dns', 'holdout', {
+    instruction: 'Point the docs subdomain at the new hosting provider.',
+    context: "The provider's target is docs.hosting.example.net. The domain's DNS is managed in the registrar's console, and the docs subdomain serves the live documentation.",
+    noTool: /\b(dig|nslookup|gcloud|curl|record-sets|rrdatas)\b/i, risk: 'destructive_or_public',
+  }),
 ]);
 
 export { DAY_MS };
