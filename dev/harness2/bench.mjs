@@ -20,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { loadContracts } from '../../config/contracts.mjs';
 import { createVertexText } from '../../agent/providers/vertex-text.mjs';
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
-import { BRIEF_CHECKS, CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS, PREFRONTAL_ITEMS } from './bench-items.mjs';
+import { BRIEF_CHECKS, CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS, PLAN_CHECKS, PREFRONTAL_ITEMS } from './bench-items.mjs';
 
 /**
  * The items' version: a bench's results compare only with results of the same version. The
@@ -58,26 +58,30 @@ export const BENCH_PORTS = Object.freeze({
   client: Object.freeze({ path: 'agent/services/brain/gateway-client.mjs', exports: Object.freeze(['createGatewayClient']) }),
   cerebellum: Object.freeze({ path: 'agent/organs/cerebellum/verify.mjs', exports: Object.freeze(['verifyMilestone']) }),
   'temporal-memory': Object.freeze({ path: 'agent/organs/temporal-memory/memory.mjs', exports: Object.freeze(['createMemory']) }),
-  // The brain asks the prefrontal for the Brief with this request; the gateway puts the side's
-  // prompts/prefrontal.md before it, and the capability map is built from the side's skills.
-  prefrontal: Object.freeze({ path: 'agent/services/brain/prompt-assembly.mjs', exports: Object.freeze(['analyzeRequest', 'capabilityMap', 'readSkills']) }),
+  // The brain asks the prefrontal for the Brief and for a plan with these requests; the gateway puts
+  // the side's prompts/prefrontal.md before them, the capability map is built from the side's skills,
+  // and a plan is read with the organ's own extractor.
+  prefrontal: Object.freeze([
+    Object.freeze({ path: 'agent/services/brain/prompt-assembly.mjs', exports: Object.freeze(['analyzeRequest', 'planInstruction', 'capabilityMap', 'readSkills']) }),
+    Object.freeze({ path: 'agent/work/plan-utils.mjs', exports: Object.freeze(['extractCheckpoints']) }),
+  ]),
 });
 
 const BENCH_PROJECT = 'paraclete-bench';
 
 /**
- * How a Brief's reply is read: an instance's schema check (agent/providers/vertex-text.mjs) on its
- * deterministic path, which parses the reply as JSON. An instance would ask a utility model to
- * restructure a reply that does not fit the schema; the bench keeps the reply as parsed, and one that
- * is no JSON at all fails the Brief's first check.
+ * How a structured reply (a Brief, a plan) is read: an instance's schema check
+ * (agent/providers/vertex-text.mjs) on its deterministic path, which parses the reply as JSON. An
+ * instance would ask a utility model to restructure a reply that does not fit the schema; the bench
+ * keeps the reply as parsed, and one that is no JSON at all fails the item's first check.
  */
-const briefParser = createVertexText({
+const replyParser = createVertexText({
   projectId: BENCH_PROJECT,
   getAccessToken: async () => 'test-token',
-  fetch: async () => { throw new Error('the bench reads a Brief without a utility model'); },
+  fetch: async () => { throw new Error('the bench reads a reply without a utility model'); },
   logger: () => {},
 });
-const briefSchema = (raw, mode) => briefParser.enforceSchema(raw, mode);
+const readReply = (raw, mode) => replyParser.enforceSchema(raw, mode);
 
 /**
  * The items of one organ's bench, by split or by id; a retired item only by its id.
@@ -106,7 +110,7 @@ export function selectBenchItems({ organ, split, ids } = {}) {
 export async function loadBenchPorts(sideRoot, organ, { importModule = (url) => import(url) } = {}) {
   if (!BENCH_PORTS[organ]) throw new Error(`there is no bench for the organ ${organ}`);
   const ports = {};
-  for (const { path: rel, exports } of [BENCH_PORTS.client, BENCH_PORTS[organ]]) {
+  for (const { path: rel, exports } of [BENCH_PORTS.client, ...[BENCH_PORTS[organ]].flat()]) {
     const file = path.join(sideRoot, rel);
     if (!fs.existsSync(file)) throw new Error(`the side at ${sideRoot} has no ${rel}`);
     const mod = await importModule(pathToFileURL(file).href);
@@ -194,6 +198,95 @@ export function briefChecks(item, brief) {
   return checks;
 }
 
+const TASK_AGENTS = Object.freeze(['motor', 'temporal-research', 'temporal-memory']);
+// What only the motor can do, and what nothing in a plan may do for a person (the mouth sends): a verb
+// that opens a clause or follows "and", so a purpose ("to add to the notes") or a refusal ("do not
+// send it") is not read as the step.
+const CLAUSE = String.raw`(?:^|[.;:]\s*|\band (?:then )?)`;
+const WRITES = new RegExp(`${CLAUSE}(save|write|create|upload|deploy|modify|edit|add|put|store|update)\\b`, 'i');
+const SENDS = new RegExp(`${CLAUSE}(send|deliver|forward|notify|e-?mail|post it to|share it with)\\b`, 'i');
+const REPORTS = /\b(report|send|share|return|provide|give|reply)\b[^.]*\b(link|url|address)\b/i;
+const BACK_REFERENCE = /\b(previous|prior|earlier|above|first) (task|step)\b|\bfrom step \d|\b(identified|found|located) (above|earlier|before|in (the )?(previous|prior|earlier|first) (task|step))\b/i;
+const PLACEHOLDER = /placeholder|\bTBD\b|to be filled|\[[A-Z _-]{3,}\]|\{\{[^}]*\}\}|<[a-z][a-z _-]{2,}>/i;
+const ORGAN_NAMES = /\b(motor|cortex|prefrontal|cerebellum|temporal-memory|temporal-research)\b/i;
+const CLONE = /\bclone\b|\bcheck ?out (the )?(main|master|repository|repo|branch)\b/i;
+const MISSION_END = /\b(is|are|was|been|gets?) merged\b|\bmerged (in)?to (the )?main\b|\b(is|are|lands?|landed) on (the )?main\b/i;
+const ID_SHAPE = /\b[A-Za-z0-9_-]{25,}\b/g;
+
+/**
+ * The checks of a plan: it is well formed, and it keeps each rule of skills/plan-structuring its item
+ * tests (bench-items.mjs plan items). A check reads the plan as the brain runs it: its checkpoints'
+ * criteria and its tasks' agents, step types and text, in order.
+ *
+ * @param {object} item
+ * @param {object[]|null} checkpoints  extractCheckpoints' result
+ * @param {string} [failure]  why there is no plan, when there is none
+ * @returns {Array<{ name: string, ok: boolean, detail?: string }>}
+ */
+export function planChecks(item, checkpoints, failure = '') {
+  const want = item.plan;
+  if (!Array.isArray(checkpoints) || !checkpoints.length) return [{ name: PLAN_CHECKS.wellFormed, ok: false, detail: failure || 'no checkpoints' }];
+  const checks = [{ name: PLAN_CHECKS.wellFormed, ok: true }];
+  const check = (name, ok, detail) => checks.push({ name, ok, ...(ok ? {} : { detail: String(detail).slice(0, 240) }) });
+  const tasks = checkpoints.flatMap((cp) => cp.tasks || []);
+  const text = (t) => String(t.task || '');
+  const criteria = checkpoints.map((cp) => String(cp.accept_criteria || '')).join(' | ');
+  const first = (pred) => tasks.find(pred);
+  if (want.agents) {
+    const bad = first((t) => !TASK_AGENTS.includes(t.agent) || (t.agent !== 'motor' && WRITES.test(text(t))));
+    check(PLAN_CHECKS.agents, !bad, bad && `${bad.agent}: ${text(bad)}`);
+  }
+  if (want.outbound) {
+    const bad = first((t) => t.agent === 'motor' && t.step_type !== 'approval_gate' && SENDS.test(text(t)));
+    check(PLAN_CHECKS.outbound, !bad, bad && text(bad));
+  }
+  if (want.gateBefore) {
+    const step = tasks.findIndex((t) => t.step_type !== 'approval_gate' && want.gateBefore.test(text(t)));
+    const gate = tasks.findIndex((t) => t.step_type === 'approval_gate');
+    check(PLAN_CHECKS.gate, step >= 0 && gate >= 0 && gate < step,
+      step < 0 ? 'no task takes the step' : gate < 0 ? 'no approval gate' : 'the gate comes after the step');
+  }
+  if (want.oneCheckpoint) check(PLAN_CHECKS.oneCheckpoint, checkpoints.length === 1, `${checkpoints.length} checkpoints`);
+  if (want.noReport) {
+    const last = checkpoints.at(-1);
+    const reportsOnly = checkpoints.length > 1 && REPORTS.test(String(last.instruction || '')) && (last.tasks || []).every((t) => REPORTS.test(text(t)) || SENDS.test(text(t)));
+    check(PLAN_CHECKS.noReport, !reportsOnly, `the last checkpoint: ${last.instruction}`);
+  }
+  if (want.maxTasks) check(PLAN_CHECKS.fewTasks, tasks.length <= want.maxTasks, `${tasks.length} tasks`);
+  if (want.ids) {
+    const all = tasks.map(text).join('\n');
+    const known = new Set(item.resources.map((r) => r.id));
+    const unknown = (all.match(ID_SHAPE) || []).filter((id) => !known.has(id) && /\d/.test(id) && /[A-Z]/.test(id));
+    const missing = want.ids.need.filter((id) => !all.includes(id));
+    const wrong = want.ids.avoid.filter((id) => all.includes(id));
+    check(PLAN_CHECKS.ids, !unknown.length && !missing.length && !wrong.length,
+      unknown.length ? `an id not among the known resources: ${unknown[0]}` : missing.length ? 'the id the task needs is not copied' : 'the id of another resource is used');
+  }
+  if (want.noBackReference) {
+    const bad = first((t) => BACK_REFERENCE.test(text(t)));
+    check(PLAN_CHECKS.noBackReference, !bad, bad && text(bad));
+  }
+  if (want.noPlaceholder) {
+    const bad = first((t) => PLACEHOLDER.test(text(t)));
+    check(PLAN_CHECKS.noPlaceholder, !bad, bad && text(bad));
+  }
+  if (want.criteriaOnArtifact) check(PLAN_CHECKS.criteriaOnArtifact, !ORGAN_NAMES.test(criteria), criteria);
+  if (want.noClone) {
+    const bad = first((t) => CLONE.test(text(t)));
+    check(PLAN_CHECKS.noClone, !bad, bad && text(bad));
+  }
+  if (want.reachable) check(PLAN_CHECKS.reachable, !MISSION_END.test(criteria), criteria);
+  return checks;
+}
+
+/** The Known Resources block the brain puts in a plan request (checkpoint-plan.mjs), for an item's resources. */
+function knownResources(resources) {
+  if (!resources.length) return '';
+  return `## Known Resources (already resolved — do NOT search for these again)\n${resources.map((r) => `- ${r.kind}: "${r.name}" = ${r.id}`).join('\n')}\n`
+    + 'Every id above was read back from a tool result. When a task needs one of these resources, COPY the id from this block character for character. '
+    + 'Never retype one from memory or from an earlier task, and never invent one: if a resource you need is not listed, name it and let the executing organ resolve it.';
+}
+
 const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
@@ -278,6 +371,25 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
         log,
       });
       checks = verificationChecks(item, result);
+    } else if (item.organ === 'prefrontal' && item.mode === 'plan') {
+      // As the brain asks when the cortex gives a goal and leaves the plan to the prefrontal
+      // (checkpoint-plan.mjs): the side's plan-structuring skill, its capability map, the known
+      // resources' block, and the organ's own extractor. The brain's id repair is not the organ's.
+      const skillsRoot = path.join(sideRoot, 'skills');
+      const skills = ports.readSkills([skillsRoot, path.join(sideRoot, 'roles', 'generic', 'skills')]);
+      const skillFile = path.join(skillsRoot, 'plan-structuring', 'SKILL.md');
+      const res = await ask('prefrontal', {
+        instruction: ports.planInstruction({
+          goal: item.goal,
+          skillDoc: fs.existsSync(skillFile) ? fs.readFileSync(skillFile, 'utf8') : '',
+          capabilityMap: ports.capabilityMap(skills),
+          idRule: knownResources(item.resources),
+          constraints: item.constraints,
+        }),
+        _missionId: `bench-${item.id}`,
+      });
+      const checkpoints = res?.success && res.output ? ports.extractCheckpoints(await readReply(res.output, 'plan') || {}) : null;
+      checks = planChecks(item, checkpoints, res?.success ? 'no checkpoints in the plan' : `the plan request failed: ${res?.error || 'no answer'}`);
     } else if (item.organ === 'prefrontal') {
       const skills = ports.readSkills([path.join(sideRoot, 'skills'), path.join(sideRoot, 'roles', 'generic', 'skills')]);
       const req = ports.analyzeRequest({
@@ -286,7 +398,7 @@ export async function runBenchItem(item, { sideRoot, product, ports, realModel, 
         capabilityMap: ports.capabilityMap(skills),
       });
       const analyzed = await askStructured({
-        organ: 'prefrontal', mode: 'analyze', system: req.system, user: req.user, enforceSchema: briefSchema, missionId: `bench-${item.id}`,
+        organ: 'prefrontal', mode: 'analyze', system: req.system, user: req.user, enforceSchema: readReply, missionId: `bench-${item.id}`,
       });
       checks = briefChecks(item, analyzed);
     } else {
