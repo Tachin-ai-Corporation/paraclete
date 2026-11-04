@@ -28,7 +28,12 @@
 //   a revoked access, a payment and a merged public change are not); a premise flawed only when the
 //   evidence shows a false belief, never because earlier attempts failed; one part for one outcome and
 //   a part each for separate ones; an unknown where the agent lacks an access or a person's decision,
-//   and none where nothing blocks; and parts named by outcome, never by a tool.
+//   and none where nothing blocks; and parts named by outcome, never by a tool. Its plan items give it a
+//   goal (and the known resources the brain would list) and check the plan against the rules of
+//   skills/plan-structuring: each task on an organ that can do it, nothing aimed at a person as a
+//   motor task, an approval gate before what cannot be undone, one checkpoint and no trailing report
+//   for small work, ids copied character for character and never split from the task that finds
+//   them, no placeholders, and criteria about the artifact that the mission can meet before it ends.
 //
 // A check is named for the kind of mistake it catches, from the vocabularies below, never for a fact
 // of its item: a lane's planned issue quotes a failing check by its name (dev/loop/planner.mjs), and a

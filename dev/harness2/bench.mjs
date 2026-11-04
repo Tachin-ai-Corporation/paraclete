@@ -204,7 +204,7 @@ const TASK_AGENTS = Object.freeze(['motor', 'temporal-research', 'temporal-memor
 // send it") is not read as the step.
 const CLAUSE = String.raw`(?:^|[.;:]\s*|\band (?:then )?)`;
 const WRITES = new RegExp(`${CLAUSE}(save|write|create|upload|deploy|modify|edit|add|put|store|update)\\b`, 'i');
-const SENDS = new RegExp(`${CLAUSE}(send|deliver|forward|notify|e-?mail|post it to|share it with)\\b`, 'i');
+const SENDS = new RegExp(`${CLAUSE}(send|deliver|forward|notify|post it to|share it with)\\b|\\be-?mail (it|them|this|the [\\w-]+( [\\w-]+)?) to\\b`, 'i');
 const REPORTS = /\b(report|send|share|return|provide|give|reply)\b[^.]*\b(link|url|address)\b/i;
 const BACK_REFERENCE = /\b(previous|prior|earlier|above|first) (task|step)\b|\bfrom step \d|\b(identified|found|located) (above|earlier|before|in (the )?(previous|prior|earlier|first) (task|step))\b/i;
 const PLACEHOLDER = /placeholder|\bTBD\b|to be filled|\[[A-Z _-]{3,}\]|\{\{[^}]*\}\}|<[a-z][a-z _-]{2,}>/i;
@@ -227,9 +227,14 @@ export function planChecks(item, checkpoints, failure = '') {
   const want = item.plan;
   if (!Array.isArray(checkpoints) || !checkpoints.length) return [{ name: PLAN_CHECKS.wellFormed, ok: false, detail: failure || 'no checkpoints' }];
   const checks = [{ name: PLAN_CHECKS.wellFormed, ok: true }];
-  const check = (name, ok, detail) => checks.push({ name, ok, ...(ok ? {} : { detail: String(detail).slice(0, 240) }) });
+  const check = (name, ok, detail) => checks.push({ name, ok, ...(ok ? {} : { detail: String(detail).slice(0, 400) }) });
   const tasks = checkpoints.flatMap((cp) => cp.tasks || []);
   const text = (t) => String(t.task || '');
+  // A detail shows the text around what broke the rule, for whoever reads the run.
+  const around = (re, s) => {
+    const at = s.search(re);
+    return at < 0 ? s : `${at > 80 ? '…' : ''}${s.slice(Math.max(0, at - 80), at + 150)}`;
+  };
   const criteria = checkpoints.map((cp) => String(cp.accept_criteria || '')).join(' | ');
   const first = (pred) => tasks.find(pred);
   if (want.agents) {
@@ -238,13 +243,16 @@ export function planChecks(item, checkpoints, failure = '') {
   }
   if (want.outbound) {
     const bad = first((t) => t.agent === 'motor' && t.step_type !== 'approval_gate' && SENDS.test(text(t)));
-    check(PLAN_CHECKS.outbound, !bad, bad && text(bad));
+    check(PLAN_CHECKS.outbound, !bad, bad && around(SENDS, text(bad)));
   }
   if (want.gateBefore) {
-    const step = tasks.findIndex((t) => t.step_type !== 'approval_gate' && want.gateBefore.test(text(t)));
+    // The step is the task that takes it, not one that names it as a purpose ("ready to publish").
+    const takes = new RegExp(`${CLAUSE}(?:${want.gateBefore.source})`, 'i');
+    const step = tasks.findIndex((t) => t.step_type !== 'approval_gate' && takes.test(text(t)));
     const gate = tasks.findIndex((t) => t.step_type === 'approval_gate');
+    const order = tasks.map((t) => `${t.step_type === 'approval_gate' ? 'GATE' : t.agent}: ${text(t).slice(0, 60)}`).join(' / ');
     check(PLAN_CHECKS.gate, step >= 0 && gate >= 0 && gate < step,
-      step < 0 ? 'no task takes the step' : gate < 0 ? 'no approval gate' : 'the gate comes after the step');
+      `${step < 0 ? 'no task takes the step' : gate < 0 ? 'no approval gate' : 'the gate comes after the step'}; the tasks: ${order}`);
   }
   if (want.oneCheckpoint) check(PLAN_CHECKS.oneCheckpoint, checkpoints.length === 1, `${checkpoints.length} checkpoints`);
   if (want.noReport) {

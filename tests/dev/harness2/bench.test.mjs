@@ -359,6 +359,22 @@ test('every prefrontal plan item tests rules a plan can keep or break, and its c
     { agent: 'motor', task: 'Add the recalled terms to the Globex account notes document' },
   ] }];
   assert.ok(planChecks(recall, purpose).every((c) => c.ok));
+  // "Email" as a noun is not a send, and a task that writes something "ready to publish" is not the
+  // publishing step: the gate before the task that publishes keeps the rule.
+  const quote = plans.find((i) => i.id === 'pfp-quote-send');
+  const filled = [{ instruction: 'The quote is filled', accept_criteria: 'The quote holds this year\'s figures', tasks: [
+    { agent: 'motor', task: "Find last year's quote across shared files and email records, and fill in the renewal quote from it" },
+  ] }];
+  assert.ok(planChecks(quote, filled).every((c) => c.ok));
+  const status = plans.find((i) => i.id === 'pfp-status-publish');
+  const gated = [{ instruction: 'The report is public', accept_criteria: 'The status page shows the report', tasks: [
+    { agent: 'motor', task: 'Write the incident report from the timeline, ready to publish on the status page' },
+    { agent: 'motor', step_type: 'approval_gate', task: 'Approve the report before it goes public' },
+    { agent: 'motor', task: 'Publish the approved report on the status page' },
+  ] }];
+  assert.ok(planChecks(status, gated).every((c) => c.ok));
+  const late = [{ ...gated[0], tasks: [gated[0].tasks[0], gated[0].tasks[2], gated[0].tasks[1]] }];
+  assert.match(planChecks(status, late)[1].detail, /^the gate comes after the step; the tasks: motor: Write .* \/ motor: Publish .* \/ GATE: Approve/);
 });
 
 test("a prefrontal plan item asks as the brain does: the side's skill, its capability map and the known resources", async () => {
