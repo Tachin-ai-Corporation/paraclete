@@ -58,7 +58,7 @@ export function judgedCriteria(checkpoint) {
  * @param {string} o.missionId
  */
 export async function captureMission({ db, missionId, collections = COLLECTIONS }) {
-  const children = (parent) => db.query('', collections.work, [{ field: 'parent_id', op: 'EQUAL', value: parent }], { noOrderBy: true, limit: READ_LIMIT, strict: true });
+  const children = (parent) => db.query('', collections.work, [{ field: 'parent_id', op: 'EQUAL', value: { stringValue: parent } }], { noOrderBy: true, limit: READ_LIMIT, strict: true });
   const mission = await db.read(`${collections.work}/${missionId}`, { strict: true });
   const checkpoints = [];
   for (const cp of (await children(missionId)).filter((d) => d.type === 'C').sort(byCreated)) {

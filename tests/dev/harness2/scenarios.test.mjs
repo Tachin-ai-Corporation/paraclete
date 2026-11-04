@@ -421,3 +421,51 @@ test('failed work is harvested with its defect kind, and a passed step is not', 
     if (!pass) assert.deepEqual([asked[0].harvest, asked[0].verify.kind], ['verification', 'a wrong total']);
   }
 });
+
+test("the traps a script falls into: each answer worked out independently, and the tool's wrong answer fails its check", () => {
+  const byId = (id) => VERIFICATION_SCENARIOS.find((s) => s.id === id);
+  const check = (s, v) => new RegExp(stepRequest(s, { values: v }, 'work').expect[0].source, 'i');
+  const zone = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', timeZoneName: 'shortOffset' });
+  const offsetAt = (t) => Number(zone.formatToParts(new Date(t)).find((x) => x.type === 'timeZoneName').value.replace('GMT', '')) || 0;
+  /** The instant of a New York wall time, found from Intl's offset. */
+  const instant = (day, hhmm) => {
+    const wall = Date.parse(`${day}T${hhmm}:00Z`);
+    let t = wall + 5 * 3_600_000;
+    for (let i = 0; i < 3; i += 1) t = wall - offsetAt(t) * 3_600_000;
+    return t;
+  };
+  let spring = 0;
+  for (let seed = 0; seed < 60; seed += 1) {
+    const v = verificationValues(`trap-${seed}`);
+    // The overnight import: its length from the instants it started and ended.
+    const ran = (instant(v.overnight.to, v.overnight.end) - instant(v.overnight.from, v.overnight.start)) / 60_000;
+    const [h, m] = [Math.floor(ran / 60), ran % 60];
+    assert.deepEqual([v.overnight.hours, v.overnight.minutes], [h, m], `${v.overnight.from} ${v.overnight.start} to ${v.overnight.to} ${v.overnight.end}`);
+    const duration = check(byId('ver-overnight-duration'), v);
+    assert.ok(duration.test(`It ran ${h}:${String(m).padStart(2, '0')}.`) && duration.test(`It ran ${h} hours and ${m} minutes.`));
+    const wall = ran + (v.overnight.from.slice(5, 7) === '03' ? 60 : -60);
+    if (wall > ran) spring += 1;
+    assert.ok(!duration.test(`It ran ${Math.floor(wall / 60)}:${String(wall % 60).padStart(2, '0')}.`), "Python's same-zone subtraction, an hour out");
+    // The invoices: halves up, in cents; Python's round() takes even-euro halves down.
+    const cents = v.invoices.amounts.map((a) => Math.round(Number(a) * 100));
+    assert.equal(cents.filter((c) => c % 100 === 50 && Math.floor(c / 100) % 2 === 0).length, 4, 'four halves on an even euro');
+    const halfUp = cents.reduce((sum, c) => sum + Math.floor(c / 100) + (c % 100 >= 50 ? 1 : 0), 0);
+    assert.equal(v.invoices.total, halfUp);
+    const halfEven = cents.reduce((sum, c) => sum + Math.floor(c / 100) + (c % 100 > 50 || (c % 100 === 50 && Math.floor(c / 100) % 2 === 1) ? 1 : 0), 0);
+    const total = check(byId('ver-half-up-total'), v);
+    assert.ok(total.test(`The total is ${halfUp} EUR.`) && total.test(`EUR ${halfUp.toLocaleString('en-US')}.00`));
+    assert.ok(!total.test(`The total is ${halfEven} EUR.`), "Python's round(), halves to even");
+    // The working days: counted day by day, both ends in, the two holidays out.
+    const days = [];
+    for (const d = new Date(`${v.working.first}T00:00:00Z`); d <= new Date(`${v.working.last}T00:00:00Z`); d.setUTCDate(d.getUTCDate() + 1)) {
+      const iso = d.toISOString().slice(0, 10);
+      if (d.getUTCDay() % 6 !== 0 && !v.working.holidays.includes(iso)) days.push(iso);
+    }
+    assert.equal(v.working.days, days.length);
+    assert.deepEqual([days[0], days.at(-1)], [v.working.first, v.working.last], 'both ends are working days');
+    const workdays = check(byId('ver-working-days'), v);
+    assert.ok(workdays.test(`There are ${days.length} working days.`));
+    assert.ok(!workdays.test(`There are ${days.length - 1} working days.`), "numpy's busday_count, which leaves the end out");
+  }
+  assert.ok(spring >= 15 && spring <= 45, `both changes are drawn: ${spring} of 60 in spring`);
+});

@@ -47,7 +47,8 @@ const fakeDb = (docs) => ({
     assert.equal(collection, 'work');
     const [{ field, op, value }] = filters;
     assert.deepEqual([field, op], ['parent_id', 'EQUAL']);
-    return docs.filter((d) => d.parent_id === value);
+    assert.deepEqual(Object.keys(value), ['stringValue'], 'the filter value is encoded, as Firestore takes it');
+    return docs.filter((d) => d.parent_id === value.stringValue);
   },
   read: async (p) => (p === 'agent/instance' ? { commit: 'c0ffee' } : docs.find((d) => `work/${d.id}` === p) || null),
 });
