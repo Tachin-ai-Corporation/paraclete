@@ -947,7 +947,7 @@ export const PREFRONTAL_ITEMS = Object.freeze([
   }),
   brief('pf-folder-archive', 'holdout', {
     instruction: "Move last quarter's project files into an Archive subfolder and rename the project folder to 'Atlas (2026)'.",
-    context: 'The project folder is in the shared drive, with version history kept.',
+    context: "The project folder is in the shared drive, which the agent manages, with version history kept. Last quarter's files are the ones dated 2026-10-01 to 2026-12-31.",
     riskAtMost: 'mutating', unknowns: false,
   }),
   brief('pf-public-merge', 'holdout', {
@@ -994,7 +994,7 @@ export const PREFRONTAL_ITEMS = Object.freeze([
   // Parts and their handshakes.
   brief('pf-typo', 'train', {
     instruction: "Correct the typo 'recieve' in the second heading of the onboarding guide.",
-    context: 'The onboarding guide is a shared document.',
+    context: 'The onboarding guide is a shared document the agent edits often.',
     maxParts: 1, riskAtMost: 'mutating', unknowns: false,
   }),
   brief('pf-two-errands', 'train', {
