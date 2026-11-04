@@ -1,7 +1,8 @@
 // tests/repo/structure.test.mjs: the layout explains itself. Every top-level directory, agent package
-// and role has a README.md, and every skill has a SKILL.md. The root and agent/ READMEs map exactly the
-// directories that exist. The guidance files point to DEVELOPING.md. The install manifest names only
-// repo paths that exist, for every role, and nothing developer-only.
+// and role has a README.md, every skill has a SKILL.md, and every module the agent runs opens with a
+// whole header comment. The root and agent/ READMEs map exactly the directories that exist. The
+// guidance files point to DEVELOPING.md. The install manifest names only repo paths that exist, for
+// every role, and nothing developer-only.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { repoFiles, readRepoFile } from './repo-files.mjs';
@@ -55,6 +56,31 @@ test('every skill has a SKILL.md', () => {
   ];
   const missing = skills.filter((dir) => !files.includes(`${dir}/SKILL.md`));
   assert.deepEqual(missing, []);
+});
+
+/**
+ * The last line of a module's opening comment, and the line after the comment, or null when the
+ * module opens with no comment.
+ */
+function openingComment(text) {
+  const lines = text.split('\n');
+  let i = lines[0]?.startsWith('#!') ? 1 : 0;
+  const block = [];
+  for (; i < lines.length && lines[i].startsWith('//'); i += 1) block.push(lines[i].replace(/^\/\/\s?/, '').trim());
+  if (!block.length) return null;
+  return { last: block.filter(Boolean).pop() || '', after: lines[i] ?? '' };
+}
+
+test('every module the agent runs opens with a whole header comment: it ends a sentence, and a blank line follows', () => {
+  // DEVELOPING.md section 5: each file's header says what it does, what it does not do, and who calls
+  // it. An edit that splices code into the header leaves it cut mid-sentence, with code right below.
+  const modules = files.filter((f) => /^(agent|roles|skills|migrations)\//.test(f) && f.endsWith('.mjs'));
+  assert.ok(modules.length > 100, `${modules.length} modules`);
+  const broken = modules.filter((f) => {
+    const header = openingComment(readRepoFile(f));
+    return !header || !/[.:)`'"]$/.test(header.last) || header.after.trim() !== '';
+  });
+  assert.deepEqual(broken, []);
 });
 
 test('the root README map lists exactly the top-level directories', () => {
