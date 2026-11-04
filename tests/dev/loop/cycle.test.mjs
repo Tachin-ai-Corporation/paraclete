@@ -25,8 +25,8 @@ import {
 import { buildPromotionEvidence } from '../../../dev/harness2/evidence.mjs';
 import { failingTasks, summarizeBaseline } from '../../../dev/loop/baseline.mjs';
 import { CYCLE_LOG, readCycleRecords } from '../../../dev/harness2/health.mjs';
-import { MODEL_SUITE_VERSION, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
-import { BENCH_VERSION, selectBenchItems } from '../../../dev/harness2/bench.mjs';
+import { MODEL_SUITE_VERSION, RETIRED_TASKS, selectModelTasks } from '../../../dev/harness2/model-suite.mjs';
+import { BENCHES, BENCH_VERSION, RETIRED_BENCH_ITEMS, selectBenchItems } from '../../../dev/harness2/bench.mjs';
 
 const NOW = new Date('2027-01-21T12:00:00Z');
 const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.email=t@example.com', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -126,6 +126,7 @@ function cycle(t, r, o = {}) {
       release: o.release,
       baseline: o.baseline,
       ...(o.clock ? { clock: o.clock } : {}),
+      ...(o.activeTargets ? { activeTargets: o.activeTargets } : {}),
       sleep: o.sleep || (async () => {}),
       measure: o.measure || (async () => { throw new Error('measured a change that does not touch behaviour'); }),
       issueNumber: o.issueNumber ?? null, retry: Boolean(o.retry), lane: o.lane ?? null, dryRun: Boolean(o.dryRun), log: () => {},
@@ -438,12 +439,13 @@ test('a baseline runs every training task that failed a check again before the p
 test("an issue planned from a failing task is refused unless the measurement shows that task improved", async (t) => {
   const behaviour = writes({ 'prompts/cortex.md': '# Cortex\n\nRun the tests before you say they pass.\n' });
   const targeted = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- The prompt says so.\n\n<!-- loop-target: t-train -->' };
-  const run = (r, o) => cycle(t, r, { gh: fakeGh({ issues: [targeted] }), proposer: behaviour, ...o }).run();
+  const activeTargets = () => ['t-train'];
+  const run = (r, o) => cycle(t, r, { gh: fakeGh({ issues: [targeted] }), proposer: behaviour, activeTargets, ...o }).run();
   const same = await run(repo(t), { measure: async () => ({ measured: true, evidence: evidence([0.8, 0.8, 0.8]) }) });
   assert.deepEqual([same.action, same.reason], ['unimproved', 'the target task t-train did not improve: capability 0.8 -> 0.8']);
   const better = await run(repo(t), { measure: async () => ({ measured: true, evidence: evidence([0.9, 0.9, 0.9]) }) });
   assert.equal(better.action, 'opened', better.reason);
-  const docs = await cycle(t, repo(t), { gh: fakeGh({ issues: [targeted] }) }).run();
+  const docs = await cycle(t, repo(t), { gh: fakeGh({ issues: [targeted] }), activeTargets }).run();
   assert.deepEqual([docs.action, docs.reason], ['unimproved', 'it changes nothing the agent reads, so it cannot improve the target task t-train']);
 });
 
@@ -555,11 +557,12 @@ test('an issue planned from a failing task is closed, not attempted, once a curr
       attempt: { at: NOW.toISOString(), commit: head, ok: true, reason: null },
     }));
   };
+  const activeTargets = () => ['t-train'];
   const r = repo(t);
   keep(r, 0);
   const gh = fakeGh({ issues: [targeted] });
   let proposed = false;
-  const res = await cycle(t, r, { gh, proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
+  const res = await cycle(t, r, { gh, activeTargets, proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
   assert.equal(res.action, 'no-work');
   assert.equal(proposed, false, 'it is not attempted');
   const close = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'close');
@@ -569,10 +572,40 @@ test('an issue planned from a failing task is closed, not attempted, once a curr
   const r2 = repo(t);
   keep(r2, 2);
   const gh2 = fakeGh({ issues: [targeted] });
-  const still = await cycle(t, r2, { gh: gh2, proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nCheck the output.\n' }),
+  const still = await cycle(t, r2, { gh: gh2, activeTargets, proposer: writes({ 'prompts/cortex.md': '# Cortex\n\nCheck the output.\n' }),
     measure: async () => ({ measured: true, evidence: evidence([0.9, 0.9, 0.9]) }) }).run();
   assert.equal(still.action, 'opened', 'a task still failing is attempted');
   assert.equal(gh2.calls.some((a) => a[0] === 'issue' && a[1] === 'close'), false);
+});
+
+test('an issue whose target the suite or the bench retired is closed as not planned, with no baseline, not given up', async (t) => {
+  const retired = { ...ISSUE, body: 'It fails.\n\n**Done when:**\n- It passes.\n\n<!-- loop-target: devops-plan-order -->' };
+  assert.ok(RETIRED_TASKS.includes('devops-plan-order'));
+  const r = repo(t);
+  const log = path.join(r.work, CYCLE_LOG);
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  for (let i = 0; i < LOOP_DEFAULTS.maxAttempts; i += 1) {
+    fs.appendFileSync(log, `${JSON.stringify({ command: 'loop', at: new Date(NOW.getTime() - (48 + i) * 3_600_000).toISOString(), loop: { issue: 7, action: 'no-change' } })}\n`);
+  }
+  const gh = fakeGh({ issues: [retired] });
+  let proposed = false;
+  const res = await cycle(t, r, { gh, proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
+  assert.equal(res.action, 'no-work', res.reason);
+  assert.equal(proposed, false, 'it is not attempted');
+  const close = gh.calls.find((a) => a[0] === 'issue' && a[1] === 'close');
+  assert.deepEqual(close.slice(0, 5), ['issue', 'close', '7', '--reason', 'not planned']);
+  assert.match(close[close.indexOf('--comment') + 1], /`devops-plan-order` is not in the model suite it measures any more/);
+  assert.equal(gh.calls.some((a) => a[0] === 'issue' && a[1] === 'edit'), false, 'not labelled stuck as well');
+
+  // A lane's issue names a bench item; one its bench retired is closed the same way.
+  const item = BENCHES.cerebellum.map((i) => i.id).find((id) => RETIRED_BENCH_ITEMS.includes(id));
+  const laneIssue = { ...ISSUE, number: 9, body: `It fails.\n\n**Done when:**\n- It passes.\n\n<!-- loop-target: ${item} -->\n<!-- loop-module: organ:cerebellum -->` };
+  const laneGh = fakeGh({ issues: [laneIssue] });
+  await cycle(t, repo(t), { gh: laneGh, lane: 'organ:cerebellum', proposer: async () => { proposed = true; return { ok: true, summary: '' }; } }).run();
+  assert.equal(proposed, false);
+  const laneClose = laneGh.calls.find((a) => a[0] === 'issue' && a[1] === 'close');
+  assert.deepEqual(laneClose.slice(0, 5), ['issue', 'close', '9', '--reason', 'not planned']);
+  assert.match(laneClose[laneClose.indexOf('--comment') + 1], new RegExp(`\`${item}\` is not in the cerebellum's bench`));
 });
 
 test('a measured change names the commit of main it was measured against, for the Loop guard', async (t) => {
