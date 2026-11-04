@@ -163,7 +163,7 @@ export function stepRequest(scenario, run, stepId) {
     harvest: def.harvest || null,
     text: def.text(run.values),
     expect: def.kind === 'ask' ? def.expect(run.values) : [],
-    ...(def.verify ? { verify: { kind: def.verify.kind, flaw: def.verify.flaw(run.values) } } : {}),
+    ...(def.verify ? { verify: { kind: def.verify.kind, flaw: def.verify.flaw(run.values), answerInRows: def.verify.answerInRows !== false } } : {}),
   };
 }
 

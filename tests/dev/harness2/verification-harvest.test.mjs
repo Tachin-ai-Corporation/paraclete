@@ -74,6 +74,10 @@ test('a checkpoint that passed work lacking the right value is the cerebellum\'s
   const caught = missionDocs({ second: 'failed', answer: right - 1 }).map((d) => (d.id === 'w-c1' ? { ...d, status: 'failed' } : d));
   assert.equal(diagnoseMission(await capture(caught), request.expect).diagnosis, 'caught');
   assert.equal(diagnoseMission(await capture([{ id: 'w-m', type: 'M' }]), request.expect).diagnosis, 'no checkpoint');
+  // When the answer's words are in the evidence of wrong work too (a failed fetch's own error), rows
+  // that hold them prove nothing, and the last checkpoint that passed is the miss.
+  const fetched = diagnoseMission(await capture(missionDocs({ answer: right })), request.expect, { answerInRows: false });
+  assert.deepEqual([fetched.diagnosis, fetched.checkpoint.n], ['verified wrong work', 2]);
 });
 
 test('the miss becomes a defective cerebellum item the bench can run, scrubbed, once the version is raised', async () => {

@@ -85,18 +85,23 @@ export async function captureMission({ db, missionId, collections = COLLECTIONS 
  * What a wrong answer says about verification, from the mission's checkpoints, and the checkpoint
  * that passed the wrong work when one did. A passed checkpoint whose rows hold every value the answer
  * had to name did the work right, and the answer went wrong after it. When none does, the work that
- * reached the answer was wrong, and the last checkpoint that passed it is the miss. Pure.
+ * reached the answer was wrong, and the last checkpoint that passed it is the miss. A scenario whose
+ * answer's words also appear in the evidence of wrong work (`answerInRows: false`: a fetch's own error
+ * says it failed while the work reports success) skips that test, and its last passed checkpoint is
+ * the miss. Pure.
  *
  * @param {object} capture captureMission's result
  * @param {Array<{source: string}>} expect the values the answer had to name
+ * @param {object} [o]
+ * @param {boolean} [o.answerInRows] whether rows that hold the answer show the work was right
  * @returns {{diagnosis: string, checkpoint?: object}}
  */
-export function diagnoseMission(capture, expect) {
+export function diagnoseMission(capture, expect, { answerInRows = true } = {}) {
   if (!capture.checkpoints.length) return { diagnosis: 'no checkpoint' };
   const passed = capture.checkpoints.filter((c) => c.status === 'complete');
   if (!passed.length) return { diagnosis: 'caught' };
   const holds = (c) => expect.every((e) => new RegExp(e.source, 'i').test(c.rows.map((r) => r.result).join('\n')));
-  if (passed.some(holds)) return { diagnosis: 'right work, wrong answer' };
+  if (answerInRows && passed.some(holds)) return { diagnosis: 'right work, wrong answer' };
   return { diagnosis: 'verified wrong work', checkpoint: passed[passed.length - 1] };
 }
 
@@ -138,7 +143,7 @@ export function verificationHarvester({ capture, repoRoot = process.cwd(), dir =
   return async ({ run, stepId, request, outcome }) => {
     if (!outcome.mission) return { diagnosis: 'not captured', reason: 'the step named no mission' };
     const captured = await capture({ missionId: outcome.mission });
-    const { diagnosis, checkpoint } = diagnoseMission(captured, request.expect);
+    const { diagnosis, checkpoint } = diagnoseMission(captured, request.expect, { answerInRows: request.verify?.answerInRows !== false });
     const checkpoints = captured.checkpoints.map((c) => ({ n: c.n, status: c.status }));
     if (!checkpoint) return { diagnosis, checkpoints };
     const step = run.steps.find((st) => st.id === stepId);
