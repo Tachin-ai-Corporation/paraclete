@@ -161,7 +161,8 @@ count toward the day's cycles. Exit codes: 0 for any outcome (opened, refused, n
   failing training item into one, in code (`planner.mjs` `planLaneIssue`): named for the organ's module,
   targeting the item, quoting only its checks, never planned twice, and only from a bench baseline that
   still describes main (`benchBaselineCurrent`: nothing a bench run reaches changed since). An issue whose
-  target item the current bench baseline shows passing is closed. Any other lane's issues are written
+  target item the current bench baseline shows passing is closed, and one whose item the bench retired
+  is closed as not planned. Any other lane's issues are written
   by a person.
 
 Each lane runs in a checkout of its own: `clearStaleCheckouts` clears every loop checkout of the
@@ -246,7 +247,9 @@ task, the suite's version and the failing checks) is planned once, and only from
 describes main: one of main's head, or of a commit since which nothing the agent reads changed. Otherwise
 the failure may be fixed already, and the planner plans from the open items until the next baseline.
 An open issue planned from a failing task is closed, not attempted, once such a baseline shows its task
-passing on main: a change merged meanwhile resolved it.
+passing on main: a change merged meanwhile resolved it. One whose task the active suite no longer holds
+(a new version retired it) is closed as not planned at once, with no baseline: no measurement can show
+it improved, and attempting it again only keeps the loop from planning new work.
 
 The benchmark's own setup is the referee's, never the agent's: a rollout's brain is built with no
 mission tree (`deps.missionDir: null`, in `dev/harness2/live-runner.mjs`), since nothing creates one

@@ -858,6 +858,7 @@ export async function runCycle({
   sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
   runTests = defaultRunTests,
   measure = defaultMeasure,
+  activeTargets = (organ) => (organ ? selectBenchItems({ organ }) : selectModelTasks()).map((t) => t.id),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
   const repoArgs = repo ? ['--repo', repo] : [];
@@ -1069,8 +1070,24 @@ export async function runCycle({
   const openPrs = JSON.parse(execGh(['pr', 'list', ...repoArgs, '--state', 'open', '--json', 'number,headRefName,title', '--limit', '200'], repoRoot) || '[]');
   const busy = (n) => openPrs.some((p) => branchOwner(p.headRefName, settings.branchPrefix)?.issue === n);
   const waiting = (n) => !past.recentlyFailed.has(n) || (retry && n === issueNumber);
+  // An issue planned from a task or bench item the loop no longer measures (one a new suite or bench
+  // version retired) can never show its target improved: it is closed as not planned, not attempted.
+  const resolved = [];
+  const measured = new Set(activeTargets(organ));
+  for (const i of issues.filter((i) => issueTarget(i.body) && !measured.has(issueTarget(i.body)))) {
+    const target = issueTarget(i.body);
+    resolved.push(i.number);
+    log(`[INFO] loop: #${i.number}'s target ${target} is not in the ${organ ? `${organ}'s bench` : 'model suite'} any more: closing it`);
+    if (dryRun) continue;
+    try {
+      execGh(['issue', 'close', String(i.number), ...repoArgs, '--reason', 'not planned', '--comment',
+        `The self-improvement loop closed this: \`${target}\` is not in the ${organ ? `${organ}'s bench` : 'model suite'} it measures any more (retired, or removed), so no measurement can show it improved.`], repoRoot);
+    } catch (err) {
+      log(`[WARN] could not close #${i.number}: ${err.message}`);
+    }
+  }
   // An issue refused maxAttempts times is given up: what the loop cannot do stops holding it.
-  const stuck = issues.filter((i) => (past.attempts.get(i.number) || 0) >= settings.maxAttempts);
+  const stuck = issues.filter((i) => !resolved.includes(i.number) && (past.attempts.get(i.number) || 0) >= settings.maxAttempts);
   for (const s of stuck) {
     log(`[INFO] loop: giving up #${s.number} after ${past.attempts.get(s.number)} refused attempts`);
     if (dryRun) continue;
@@ -1089,8 +1106,7 @@ export async function runCycle({
   }
   // An issue planned from a failing task is resolved once a baseline that still describes main shows
   // that task passing there (a change merged meanwhile fixed it): it is closed, not attempted again.
-  const resolved = [];
-  const targeted = issues.filter((i) => issueTarget(i.body));
+  const targeted = issues.filter((i) => issueTarget(i.body) && !resolved.includes(i.number));
   if (targeted.length) {
     // An organ's lane targets the items of its bench, so its baseline is the bench's.
     const summary = readBaseline({ repoRoot, ...(organ ? { file: benchBaselinePath(organ) } : {}) }).latest;
