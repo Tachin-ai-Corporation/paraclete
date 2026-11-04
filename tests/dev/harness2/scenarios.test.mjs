@@ -1,0 +1,327 @@
+// Tests for dev/harness2/scenarios.mjs and its batteries, scenario-items.mjs: every scenario is fair
+// (its questions give nothing away, each value they ask for was told first, and a changed fact's check
+// never passes on the older one); runs start on time and their steps follow in order; a step that
+// cannot be judged is tried later and then voids its run; a call waits for a step due within minutes,
+// harvests a failed recall, and keeps its state; smoke verdicts are read into outcomes; the lock keeps
+// two calls apart; and the `scenarios` command reports and plans without the canary.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {
+  BATTERIES, KEEPS, MEMORY_SCENARIOS, memoryValues, seededRandom,
+} from '../../../dev/harness2/scenario-items.mjs';
+import {
+  MAX_TRIES, SCENARIO_STATE_VERSION, dueSteps, nextDueAt, pruneRuns, readScenarioState, recordStep, runIdFor, runScenarios,
+  smokeAsk, startDueRuns, stepChecks, stepRequest, summarize, withScenarioLock, writeScenarioState,
+} from '../../../dev/harness2/scenarios.mjs';
+import { runCli } from '../../../dev/harness2/cli.mjs';
+
+const T0 = Date.parse('2027-03-07T09:00:00Z');
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const empty = () => ({ version: SCENARIO_STATE_VERSION, runs: [] });
+const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'scenarios-test-'));
+
+test('the batteries: unique ids, steps in time order, a teach before every ask, and runs at least daily apart', () => {
+  assert.deepEqual(Object.keys(BATTERIES), ['memory']);
+  assert.equal(new Set(MEMORY_SCENARIOS.map((s) => s.id)).size, MEMORY_SCENARIOS.length);
+  for (const s of MEMORY_SCENARIOS) {
+    assert.equal(s.battery, 'memory', s.id);
+    assert.ok(s.everyHours >= 24, s.id);
+    assert.equal(s.steps[0].kind, 'teach', `${s.id} starts by telling the agent something`);
+    assert.ok(s.steps.some((st) => st.kind === 'ask'), `${s.id} asks something`);
+    const at = s.steps.map((st) => st.at);
+    assert.deepEqual(at, [...at].sort((a, b) => a - b), `${s.id}: steps in time order`);
+    assert.equal(new Set(s.steps.map((st) => st.id)).size, s.steps.length, `${s.id}: unique step ids`);
+  }
+});
+
+test('a run\'s values follow from its seed, and differ between runs', () => {
+  assert.deepEqual(memoryValues('mem-week-20270307t0900'), memoryValues('mem-week-20270307t0900'));
+  const seen = new Set(Array.from({ length: 40 }, (_, i) => memoryValues(`seed-${i}`).database));
+  assert.ok(seen.size >= 38, `fresh databases: ${seen.size} of 40`);
+  const rnd = seededRandom('x');
+  const draws = Array.from({ length: 100 }, rnd);
+  assert.ok(draws.every((d) => d >= 0 && d < 1));
+  for (let i = 0; i < 200; i += 1) {
+    const v = memoryValues(`people-${i}`);
+    assert.notEqual(v.person.first, v.other.first);
+    assert.notEqual(v.person.last, v.other.last);
+  }
+});
+
+test('every scenario is fair: each value an ask needs was told first, and no question gives its answer away', () => {
+  for (const s of MEMORY_SCENARIOS) {
+    for (let seed = 0; seed < 25; seed += 1) {
+      const run = { id: `${s.id}-${seed}`, values: s.values(`${s.id}-${seed}`) };
+      const told = s.steps.filter((st) => st.kind === 'teach').map((st) => stepRequest(s, run, st.id).text).join('\n');
+      for (const st of s.steps.filter((x) => x.kind === 'ask')) {
+        const req = stepRequest(s, run, st.id);
+        assert.ok(req.recall && req.expect.length >= 1, s.id);
+        for (const e of req.expect) {
+          const re = new RegExp(e.source, 'i');
+          assert.ok(re.test(told), `${s.id}: /${e.source}/ was told before it is asked for`);
+          assert.ok(!re.test(req.text), `${s.id}: the question itself answers /${e.source}/`);
+          assert.ok(Object.values(KEEPS).includes(e.name), `${s.id}: ${e.name}`);
+        }
+      }
+    }
+  }
+});
+
+test('a changed fact is checked on the newer value, which the older one never satisfies', () => {
+  const s = MEMORY_SCENARIOS.find((x) => x.id === 'mem-changed-fact');
+  for (let seed = 0; seed < 50; seed += 1) {
+    const run = { id: `c-${seed}`, values: s.values(`c-${seed}`) };
+    const [check] = stepRequest(s, run, 'ask').expect;
+    assert.equal(check.name, KEEPS.newer);
+    const { person, other } = run.values;
+    assert.ok(!new RegExp(check.source, 'i').test(`${person.first} ${person.last} owns it`), 'the older owner fails the check');
+    assert.ok(new RegExp(check.source, 'i').test(`${other.first} ${other.last} owns it`), 'the newer owner passes it');
+  }
+});
+
+test('a number is matched on its own, not inside a longer one', () => {
+  const s = MEMORY_SCENARIOS.find((x) => x.id === 'mem-week');
+  const run = { id: 'w', values: { ...s.values('w'), days: 30 } };
+  const [days] = stepRequest(s, run, 'ask').expect;
+  assert.ok(new RegExp(days.source, 'i').test('kept for 30 days'));
+  assert.ok(!new RegExp(days.source, 'i').test('kept for 300 days'));
+  assert.ok(!new RegExp(days.source, 'i').test('kept for 130 days'));
+});
+
+test('runs start for every scenario, not again within their interval, and again once it is up', () => {
+  const first = startDueRuns({ state: empty(), scenarios: MEMORY_SCENARIOS, now: T0 });
+  assert.equal(first.started.length, MEMORY_SCENARIOS.length);
+  const run = first.state.runs.find((r) => r.scenario === 'mem-across-threads');
+  assert.equal(run.id, runIdFor(MEMORY_SCENARIOS[0], T0));
+  assert.equal(run.id, 'mem-across-threads-20270307t0900');
+  assert.equal(run.status, 'running');
+  assert.deepEqual(run.steps.map((s) => [s.id, s.dueAt]), [['teach', '2027-03-07T09:00:00.000Z'], ['ask', '2027-03-07T09:10:00.000Z']]);
+  assert.deepEqual(run.values, memoryValues(run.id));
+
+  const soon = startDueRuns({ state: first.state, scenarios: MEMORY_SCENARIOS, now: T0 + 23 * HOUR });
+  assert.deepEqual(soon.started, []);
+  const daily = startDueRuns({ state: first.state, scenarios: MEMORY_SCENARIOS, now: T0 + 23 * HOUR + 50 * MIN });
+  assert.deepEqual(daily.started.map((id) => id.replace(/-\d{8}t\d{4}$/, '')).sort(),
+    MEMORY_SCENARIOS.filter((s) => s.everyHours === 24).map((s) => s.id).sort(), 'the slack lets an hourly timer start daily runs on time; the weekly one waits');
+});
+
+test('steps go in order: an ask waits for its teach, then for its time', () => {
+  let { state } = startDueRuns({ state: empty(), scenarios: [MEMORY_SCENARIOS[0]], now: T0 });
+  const runId = state.runs[0].id;
+  assert.deepEqual(dueSteps({ state, now: T0 }), [{ runId, stepId: 'teach' }]);
+  assert.deepEqual(dueSteps({ state, now: T0 + 20 * MIN }), [{ runId, stepId: 'teach' }], 'the ask waits for the teach');
+  const teach = stepRequest(MEMORY_SCENARIOS[0], state.runs[0], 'teach');
+  state = recordStep({ state, runId, stepId: 'teach', request: teach, outcome: { pass: true, reason: 'the mission completed', mission: 'w-1' }, now: T0 + 2 * MIN });
+  assert.deepEqual(dueSteps({ state, now: T0 + 10 * MIN }), [], 'the ten minutes count from when the teach ended');
+  assert.equal(nextDueAt(state), T0 + 12 * MIN);
+  assert.deepEqual(dueSteps({ state, now: T0 + 12 * MIN }), [{ runId, stepId: 'ask' }]);
+  const ask = stepRequest(MEMORY_SCENARIOS[0], state.runs[0], 'ask');
+  state = recordStep({ state, runId, stepId: 'ask', request: ask, outcome: { pass: true, reason: 'ok', mission: 'w-2' }, now: T0 + 12 * MIN });
+  const run = state.runs[0];
+  assert.equal(run.status, 'passed');
+  assert.equal(run.endedAt, new Date(T0 + 12 * MIN).toISOString());
+  assert.ok(run.steps[1].checks.every((c) => c.ok));
+  assert.equal(nextDueAt(state), null);
+});
+
+test('a failed teach voids its run; a failed ask fails it, naming the values the answer missed', () => {
+  const s = MEMORY_SCENARIOS[0];
+  const begun = startDueRuns({ state: empty(), scenarios: [s], now: T0 }).state;
+  const runId = begun.runs[0].id;
+  const teach = stepRequest(s, begun.runs[0], 'teach');
+  const voided = recordStep({ state: begun, runId, stepId: 'teach', request: teach, outcome: { pass: false, reason: 'the mission stopped as needs_input' }, now: T0 });
+  assert.equal(voided.runs[0].status, 'void');
+  assert.equal(nextDueAt(voided), null);
+
+  let state = recordStep({ state: begun, runId, stepId: 'teach', request: teach, outcome: { pass: true, reason: 'ok' }, now: T0 });
+  const ask = stepRequest(s, state.runs[0], 'ask');
+  const [db, person] = ask.expect;
+  const reason = `the answer does not mention /${db.source}/, /${person.source}/`;
+  state = recordStep({ state, runId, stepId: 'ask', request: ask, outcome: { pass: false, reason, mission: 'w-9' }, now: T0 + 11 * MIN });
+  assert.equal(state.runs[0].status, 'failed');
+  assert.deepEqual(state.runs[0].steps[1].checks.map((c) => c.ok), [false, false, true]);
+  assert.deepEqual(stepChecks(ask, { pass: false, reason: 'the mission ended failed' }).map((c) => c.ok), [false, false, false],
+    'a mission that did not end well fails every check');
+  const [row] = summarize(state, [s]);
+  assert.equal(row.failed, 1);
+  assert.equal(row.lastFailure.step, 'ask');
+  assert.equal(row.lastFailure.mission, 'w-9');
+});
+
+test('a step that could not be judged is tried again later, and voids its run after the last try', () => {
+  const s = MEMORY_SCENARIOS[0];
+  let state = startDueRuns({ state: empty(), scenarios: [s], now: T0 }).state;
+  const runId = state.runs[0].id;
+  const teach = stepRequest(s, state.runs[0], 'teach');
+  for (let i = 1; i < MAX_TRIES; i += 1) {
+    state = recordStep({ state, runId, stepId: 'teach', request: teach, outcome: { pass: false, notEvaluated: true, reason: 'no result within 900 s' }, now: T0 + i * HOUR });
+    const step = state.runs[0].steps[0];
+    assert.equal(step.status, 'pending');
+    assert.equal(step.tries, i);
+    assert.equal(step.dueAt, new Date(T0 + i * HOUR + 30 * MIN).toISOString(), 'tried again half an hour later, not at once');
+  }
+  state = recordStep({ state, runId, stepId: 'teach', request: teach, outcome: { pass: false, notEvaluated: true, reason: 'no result' }, now: T0 + 9 * HOUR });
+  assert.equal(state.runs[0].steps[0].status, 'not-evaluated');
+  assert.equal(state.runs[0].status, 'void');
+});
+
+test('old finished runs are dropped past the number kept; running ones never are', () => {
+  const runs = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, scenario: 'a', status: i === 0 ? 'running' : 'passed', startedAt: new Date(T0 - i * HOUR).toISOString(), steps: [] }));
+  const kept = pruneRuns({ version: 1, runs }, 2).runs.map((r) => r.id);
+  assert.deepEqual(kept, ['r0', 'r1', 'r2']);
+});
+
+/** A clock the fake sleep moves. */
+function clock(start = T0) {
+  let t = start;
+  return { now: () => t, sleep: async (d) => { t += d; }, advance: (d) => { t += d; } };
+}
+
+test('a call sends the due steps, waits for an ask due within minutes, and stops at one due tomorrow', async () => {
+  const c = clock();
+  const sent = [];
+  const saved = [];
+  const ask = async (req) => {
+    sent.push({ at: c.now(), kind: req.kind, text: req.text });
+    c.advance(2 * MIN);
+    return { pass: true, reason: 'the mission completed and its result was delivered', mission: `w-${sent.length}` };
+  };
+  const scenarios = MEMORY_SCENARIOS.filter((s) => ['mem-across-threads', 'mem-next-day'].includes(s.id));
+  const res = await runScenarios({ scenarios, state: empty(), save: (s) => saved.push(s), ask, now: c.now, sleep: c.sleep });
+  assert.equal(res.ok, true);
+  assert.deepEqual(sent.map((s) => s.kind), ['teach', 'teach', 'ask']);
+  assert.equal(sent[2].at, T0 + 12 * MIN, 'the ask went ten minutes after its teach ended');
+  assert.equal(res.ran.length, 3);
+  const [across, nextDay] = res.summary;
+  assert.equal(across.passed, 1);
+  assert.equal(nextDay.running, 1);
+  assert.equal(res.nextDueAt, new Date(T0 + 4 * MIN + 26 * HOUR).toISOString(), 'the next-day ask is due 26 h after its teach ended');
+  assert.ok(saved.length >= 3, 'the state is saved after every step');
+  assert.deepEqual(saved.at(-1).runs.map((r) => r.status).sort(), ['passed', 'running']);
+});
+
+test('a failed recall is harvested, and a harvest that throws is recorded, not fatal', async () => {
+  const s = MEMORY_SCENARIOS.find((x) => x.id === 'mem-across-threads');
+  for (const harvest of [
+    async ({ run, stepId, request }) => ({ diagnosis: 'stored', item: `memh-${run.id}`, step: stepId, values: request.expect.length }),
+    async () => { throw new Error('Firestore said no'); },
+  ]) {
+    const c = clock();
+    const ask = async (req) => {
+      c.advance(MIN);
+      return req.kind === 'teach'
+        ? { pass: true, reason: 'ok', mission: 'w-teach' }
+        : { pass: false, reason: `the answer does not mention /${req.expect[0].source}/`, mission: 'w-ask' };
+    };
+    let last = null;
+    const res = await runScenarios({ scenarios: [s], state: empty(), save: (st) => { last = st; }, ask, harvest, now: c.now, sleep: c.sleep });
+    assert.equal(res.harvested.length, 1);
+    assert.equal(last.runs[0].status, 'failed');
+    assert.ok(last.runs[0].harvest.diagnosis, 'the harvest record is kept with the run');
+    if (res.harvested[0].item) assert.equal(res.harvested[0].item, `memh-${last.runs[0].id}`);
+    else assert.deepEqual(res.harvested[0], { run: last.runs[0].id, diagnosis: 'not captured', reason: 'Firestore said no' });
+  }
+});
+
+test('a step that throws is not evaluated; a dry run sends nothing', async () => {
+  const c = clock();
+  const s = MEMORY_SCENARIOS[0];
+  const res = await runScenarios({ scenarios: [s], state: empty(), ask: async () => { throw new Error('IAP tunnel failed'); }, now: c.now, sleep: c.sleep });
+  assert.equal(res.ran[0].status, 'pending');
+  assert.match(res.ran[0].reason, /could not be sent: IAP tunnel failed/);
+  let asked = 0;
+  const dry = await runScenarios({ scenarios: MEMORY_SCENARIOS, state: empty(), ask: async () => { asked += 1; }, dryRun: true, now: c.now });
+  assert.equal(asked, 0);
+  assert.equal(dry.wouldStart.length, MEMORY_SCENARIOS.length);
+  assert.equal(dry.wouldSend.length, MEMORY_SCENARIOS.length);
+  assert.ok(dry.wouldSend.every((d) => d.stepId === 'teach'));
+});
+
+test('smoke verdicts become outcomes: a pass, a miss, a timeout and no verdict at all', async () => {
+  const cases = [
+    { out: 'PASS: role software-engineer, your request: the mission completed and its result was delivered.\nThe mission: node dev/query.mjs work --doc w-1\n', want: { pass: true, notEvaluated: false, mission: 'w-1' } },
+    { out: 'FAIL: role software-engineer, your request: the answer does not mention /x-stg-1/.\nThe mission: node dev/query.mjs work --doc w-2\n', want: { pass: false, notEvaluated: false, mission: 'w-2' } },
+    { out: 'FAIL: role software-engineer, your request: no result within 900 s (w-3 is active).\nThe mission: node dev/query.mjs work --doc w-3\n', want: { pass: false, notEvaluated: true, mission: 'w-3' } },
+    { out: '', err: 'dev/smoke: could not read /etc/paraclete/instance.json on the VM (exit 255).', want: { pass: false, notEvaluated: true } },
+  ];
+  const { readSmokeVerdict } = await import('../../../dev/smoke.mjs');
+  for (const c of cases) {
+    let args = null;
+    const main = async (argv, deps) => {
+      args = argv;
+      deps.stdout.write(c.out);
+      if (c.err) deps.stderr.write(c.err);
+      return c.out.startsWith('PASS') ? 0 : 1;
+    };
+    const got = await smokeAsk({ main, readVerdict: readSmokeVerdict, waitSeconds: 600 })({ text: 'hello', expect: [{ name: 'n', source: 'x-stg-1' }] });
+    for (const [k, v] of Object.entries(c.want)) assert.equal(got[k], v, `${k} for ${c.out || c.err}`);
+    assert.deepEqual(args, ['--request', 'hello', '--expect', 'x-stg-1', '--wait', '600']);
+    if (c.err) assert.match(got.reason, /instance\.json/);
+  }
+});
+
+test('the state file round-trips, refuses another version, and the lock keeps two calls apart', async () => {
+  const dir = tmpDir();
+  try {
+    const file = '.local/canary/scenarios.json';
+    assert.deepEqual(readScenarioState({ repoRoot: dir, file }), empty());
+    const state = startDueRuns({ state: empty(), scenarios: MEMORY_SCENARIOS, now: T0 }).state;
+    writeScenarioState({ repoRoot: dir, file, state });
+    assert.deepEqual(readScenarioState({ repoRoot: dir, file }), state);
+    fs.writeFileSync(path.join(dir, file), JSON.stringify({ version: 99, runs: [] }));
+    assert.throws(() => readScenarioState({ repoRoot: dir, file }), /version 99/);
+
+    let inner = null;
+    const outer = await withScenarioLock({ repoRoot: dir, file }, async () => {
+      inner = await withScenarioLock({ repoRoot: dir, file }, async () => ({ ok: true }));
+      return { ok: true };
+    });
+    assert.equal(outer.ok, true);
+    assert.equal(inner.ok, false);
+    assert.match(inner.reason, /holds .*scenarios\.json\.lock/);
+    assert.ok(!fs.existsSync(path.join(dir, `${file}.lock`)), 'released');
+    fs.writeFileSync(path.join(dir, `${file}.lock`), '1 long ago\n');
+    const later = await withScenarioLock({ repoRoot: dir, file, now: () => Date.now() + 4 * HOUR }, async () => ({ ok: true }));
+    assert.equal(later.ok, true, 'a lock a killed call left is taken over');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the scenarios command reports, plans a dry run, refuses an unknown battery, and runs with what it is given', async () => {
+  const dir = tmpDir();
+  try {
+    const quiet = { write() {} };
+    const status = await runCli(['scenarios', '--status'], { repoRoot: dir, stderr: quiet });
+    assert.equal(status.ok, true);
+    assert.deepEqual(status.summary.map((r) => r.id), MEMORY_SCENARIOS.map((s) => s.id));
+    assert.equal(status.nextDueAt, null);
+
+    const unknown = await runCli(['scenarios', '--battery', 'tarot'], { repoRoot: dir, stderr: quiet });
+    assert.equal(unknown.ok, false);
+    assert.match(unknown.reason, /no battery tarot/);
+
+    const dry = await runCli(['scenarios', '--dry-run'], { repoRoot: dir, stderr: quiet, scenarioContext: {} });
+    assert.equal(dry.dryRun, true);
+    assert.equal(dry.wouldSend.length, MEMORY_SCENARIOS.length);
+    assert.ok(!fs.existsSync(path.join(dir, '.local/canary/scenarios.json')), 'a dry run writes no state');
+
+    const c = clock();
+    const sent = [];
+    const res = await runCli(['scenarios', '--wait-minutes', '0'], {
+      repoRoot: dir, stderr: quiet, scenarioContext: {}, now: c.now, sleep: c.sleep,
+      scenarioAsk: async (req) => { sent.push(req.kind); return { pass: true, reason: 'ok', mission: `w-${sent.length}` }; },
+    });
+    assert.equal(res.ok, true);
+    assert.deepEqual(sent, MEMORY_SCENARIOS.map(() => 'teach'), 'with no wait, only the steps due now');
+    const kept = readScenarioState({ repoRoot: dir });
+    assert.equal(kept.runs.length, MEMORY_SCENARIOS.length);
+    assert.ok(kept.runs.every((r) => r.steps[0].status === 'passed'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
