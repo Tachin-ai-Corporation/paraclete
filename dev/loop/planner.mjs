@@ -420,8 +420,10 @@ export function planLaneIssue({
 }
 
 /**
- * Plans one issue when fewer than `planner.maxOpen` loop issues are open: reads the open items, leaves
- * out those already planned, asks the planner, checks its answer, and opens the issue (not in a dry run).
+ * Plans one issue when fewer than `planner.maxOpen` of the global loop's issues are open (a lane's
+ * issues, which name its module, count against the lane's own limit in planLaneIssue, not this one):
+ * reads the open items, leaves out those already planned, asks the planner, checks its answer, and
+ * opens the issue (not in a dry run).
  *
  * @param {object} o  { repoRoot, repo, settings, execGh, execGit, planner, readFile, baseline, dryRun, log }
  *                    (baseline: () => the latest baseline summary, for tests)
@@ -434,7 +436,7 @@ export async function planIssue({
   const repoArgs = repo ? ['--repo', repo] : [];
   const list = (label, state) => JSON.parse(execGh(['issue', 'list', ...repoArgs, '--label', label, '--state', state,
     '--json', 'number,title,body,url,createdAt', '--limit', '200'], repoRoot) || '[]');
-  const open = list(settings.label, 'open');
+  const open = list(settings.label, 'open').filter((i) => !issueModule(i.body));
   if (open.length >= settings.planner.maxOpen) return { issue: null, reason: `${open.length} loop issue(s) are open, the planner's limit is ${settings.planner.maxOpen}` };
   const planned = plannedKeys([...list(settings.label, 'all'), ...list(STUCK_LABEL, 'all')]);
   const openIssue = (title, body) => openLoopIssue({ execGh, repoArgs, repoRoot, label: settings.label, title, body });
