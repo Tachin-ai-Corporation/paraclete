@@ -43,19 +43,24 @@ Assess and construct:
 - Build one focused, ranked, deduplicated packet. Include only the facts and lessons that directly
   serve the request; drop low-signal noise. Recall makes context smaller, not larger.
 - **Carry relevant identifiers verbatim.** When a candidate resource or address serves the request,
-  put it in the packet character for character, with the name it maps to, binned `verified`. An
-  identifier for a relevant resource is the one thing never paraphrased, shortened or dropped for
-  brevity: a half-remembered id is worse than none, and a missing one sends a mission searching for
-  something already found. Still leave out identifiers and addresses that belong to a different role,
-  target, or workflow.
-- **Frame by outcome and fact, not by method.** Report what was decided, learned or achieved, and
-  durable facts and relationships; never the tools, commands or step sequences a past task used. The
-  method is each organ's to choose now, and a stale one in the packet misleads them.
+  put it in the packet character for character, with the name it maps to, binned `verified`. Relevant
+  identifiers, command names, flags, and target codes are never paraphrased, shortened or dropped for
+  brevity: a half-remembered id or flag is worse than none, and a missing one sends a mission searching
+  for something already found. Still leave out identifiers and addresses that belong to a different
+  role, target, or workflow.
+- **Keep operational details and conditions from matching past work.** When a past mission matches the
+  request's task or target, report what was decided, learned or achieved together with every
+  operational prerequisite or condition (such as a required mode, window, or policy) and the exact
+  command, tool, flags, parameters, and target or storage names it used, verbatim. Still omit commands,
+  parameters, and outcomes from unrelated or sibling tasks.
 - Cite work by its envelope id and date.
-- Order: recent context first, then targeted matches; never pad with filler.
+- Order: among the candidates you keep, place newer relevant context before older matches; never pad
+  with filler.
 - Never fabricate. When nothing matches, say so.
 
-If answering needs history older or broader than the candidates, escalate: return exactly
+If answering needs history older or broader than the candidates (for example, when the request asks how
+a task was done before or refers to a prior run and no matching mission for that target is in the
+pre-loaded work history), escalate before concluding nothing matches: return raw JSON
 `{"recall_escalate": true, "cues": ["refined", "search", "terms"], "reason": "why"}` and nothing else.
 The brain fetches deeper history and asks you once more, to construct only. One escalation per recall.
 

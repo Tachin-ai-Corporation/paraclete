@@ -57,7 +57,8 @@ export function parseResourceFact(fact) {
  */
 export function parseEscalation(text) {
   try {
-    const parsed = JSON.parse(String(text || '').trim());
+    const raw = String(text || '').trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/i, '$1').trim();
+    const parsed = JSON.parse(raw);
     if (parsed && parsed.recall_escalate === true) {
       return { cues: Array.isArray(parsed.cues) ? parsed.cues.filter((c) => typeof c === 'string' && c) : [], reason: String(parsed.reason || '') };
     }
@@ -234,7 +235,7 @@ export function createMemory({
         instruction: scope === 'deep'
           ? `Construct a focused recall package for:\n${enriched}${preloaded}`
           : `Recall all relevant context for:\n${enriched}\n\nIf answering requires work history older or broader than the candidates below, emit exactly {"recall_escalate": true, "cues": [...], "reason": "..."} and nothing else.${preloaded}`,
-        accept_criteria: 'Return only the memory context that directly serves the request (silently omitting unrelated or sibling candidates without naming them), "No relevant context found", or an escalation object',
+        accept_criteria: 'Return only the memory context that directly serves the request (keeping exact commands, parameters, and operational conditions from matching work while silently omitting unrelated or sibling candidates without naming them), "No relevant context found", or an escalation object',
       });
       if (!first?.success || !first.output) {
         log('INFO', 'recall: no context');
@@ -243,14 +244,31 @@ export function createMemory({
       const firstText = toStr(first.output);
 
       const escalation = scope === 'deep' ? null : parseEscalation(firstText);
-      if (escalation) {
-        log('INFO', `recall: escalation requested (${escalation.reason}), cues [${escalation.cues.join(', ')}]`);
-        const deepCues = escalation.cues.length ? escalation.cues : cues;
+      const needsDeepFallback = !escalation && scope !== 'deep' && workHits === 0 && cues.length > 0
+        && /^(?:[-*]\s*)?no relevant\b/i.test(firstText.trim());
+      if (escalation || needsDeepFallback) {
+        const escCues = escalation?.cues || [];
+        if (escalation) {
+          log('INFO', `recall: escalation requested (${escalation.reason}), cues [${escCues.join(', ')}]`);
+        }
+        const deepCues = escCues.length ? escCues : cues;
         let deep = [];
         try {
-          deep = await searchWork({ firestoreQuery, cues: deepCues, sinceDays: 180, limit: 12, now });
+          const primary = await searchWork({ firestoreQuery, cues: deepCues, sinceDays: 180, limit: 12, now });
+          const fallback = escCues.length && cues.length
+            ? await searchWork({ firestoreQuery, cues, sinceDays: 180, limit: 12, now })
+            : [];
+          const byId = new Map();
+          for (const h of [...primary, ...fallback]) {
+            const prev = byId.get(h.id);
+            if (!prev || h.score > prev.score) byId.set(h.id, h);
+          }
+          deep = [...byId.values()].sort((a, b) => b.score - a.score).slice(0, 12);
         } catch (e) {
           log('WARN', `recall: the deep work search failed: ${e.message}`);
+        }
+        if (needsDeepFallback && deep.length === 0) {
+          return { recalled: firstText.substring(0, RECALLED_MAX_CHARS) };
         }
         // The second pass constructs only, from the candidates plus whatever the deeper search found.
         // It runs even when that search found nothing: the escalation is a request, not a packet, and
@@ -260,7 +278,7 @@ export function createMemory({
           : '## Deep Work History (180d)\nNo older work matched.';
         const second = await callAgent('temporal-memory', {
           instruction: `Construct a focused recall package (no further escalation) for:\n${enriched}\n\n${PRELOADED_START}\n${candidates}\n\n${deepBlock}\n${PRELOADED_END}`,
-          accept_criteria: 'Return only the memory context that directly serves the request (silently omitting unrelated or sibling candidates without naming them), or "No relevant context found"',
+          accept_criteria: 'Return only the memory context that directly serves the request (keeping exact commands, parameters, and operational conditions from matching work while silently omitting unrelated or sibling candidates without naming them), or "No relevant context found"',
         });
         if (second?.success && second.output && !parseEscalation(toStr(second.output))) {
           return { recalled: toStr(second.output).substring(0, RECALLED_MAX_CHARS) };

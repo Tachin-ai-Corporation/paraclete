@@ -32,6 +32,15 @@ export function extractCues(text) {
   return [...cues].slice(0, MAX_CUES);
 }
 
+/** Whether `blob` (already lowercased) matches `cue`: as a substring, or with every content token present. */
+export function cueMatches(blob, cue) {
+  const lc = String(cue || '').toLowerCase().trim();
+  if (!lc) return false;
+  if (blob.includes(lc)) return true;
+  const parts = lc.split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+  return parts.length > 1 && parts.every((p) => blob.includes(p));
+}
+
 /**
  * How relevant an envelope is to the cues: term score x (0.6 + 0.4 x recency) x status weight x
  * type weight. Recency halves every 30 days.
@@ -44,7 +53,7 @@ export function extractCues(text) {
 export function scoreRelevance(envelope, cues, now = Date.now()) {
   if (!cues || cues.length === 0) return 0;
   const blob = `${envelope.title || ''} ${envelope.instruction || ''} ${envelope.output || ''}`.toLowerCase();
-  const termScore = cues.filter((c) => blob.includes(c)).length / cues.length;
+  const termScore = cues.filter((c) => cueMatches(blob, c)).length / cues.length;
 
   const created = envelope.created_at ? new Date(envelope.created_at).getTime() : now;
   const ageDays = Math.max(0, (now - created) / DAY_MS);
@@ -101,7 +110,7 @@ export async function searchWork({
       created_at: d.created_at,
       completed_at: d.completed_at,
       score,
-      matched_cues: cues.filter((c) => blob.includes(c)),
+      matched_cues: cues.filter((c) => cueMatches(blob, c)),
     });
   }
   hits.sort((a, b) => b.score - a.score);

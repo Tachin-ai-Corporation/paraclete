@@ -41,14 +41,16 @@ skill (`work-log-read --mission <id>`), not something recall pre-loads.
 1. Understand what facts the request needs.
 2. Judge each candidate: genuinely relevant, or only a keyword match?
 3. Merge the relevant items into one focused packet, citing work by envelope id and date.
-4. Or escalate: if answering needs work history older or broader than the candidates, return exactly
-   this and nothing else:
+4. Or escalate: if answering needs work history older or broader than the candidates (for example, when
+   the request asks how a task was done before or refers to a prior run and no matching mission for
+   that target is in the pre-loaded work history), return raw JSON and nothing else:
 
    ```json
    {"recall_escalate": true, "cues": ["refined", "search", "terms"], "reason": "Need older deployment history"}
    ```
 
-   Never guess or fabricate instead; the brain fetches deeper history and asks again.
+   Never guess, fabricate, or return "No relevant context found" before escalating for older work; the
+   brain fetches deeper history and asks again.
 
 ### Second pass, after an escalation: construct only
 
@@ -59,9 +61,15 @@ escalation.
 
 - **Identifiers travel verbatim when relevant.** When a candidate resource or address serves the
   request, carry it into the packet character for character, with the name it maps to, binned
-  `verified`. An id for a relevant resource is never paraphrased, shortened or dropped for brevity: a
-  half-remembered id is worse than none, and a missing one costs a search the agent already did. Still
-  leave out identifiers and addresses that belong to a different role, target, or workflow.
+  `verified`. Relevant identifiers, command names, flags, and target codes are never paraphrased,
+  shortened or dropped for brevity: a half-remembered id or flag is worse than none, and a missing one
+  costs a search the agent already did. Still leave out identifiers and addresses that belong to a
+  different role, target, or workflow.
+- **Keep operational details and conditions from matching past work.** When a past mission matches the
+  request's task or target, carry over its operational prerequisites and conditions (such as a required
+  mode, window, or policy) together with the exact command, tool, flags, parameters, and target or
+  storage names it used, verbatim. Still omit commands, parameters, and outcomes from unrelated or
+  sibling tasks.
 - **Surface what is relevant, not everything.** Recall makes context smaller, not larger. When
   multiple candidates share an organization, system, or category with the request (such as different
   contacts, roles, policies, or preferences for the same entity), include only the facts that govern
@@ -81,7 +89,8 @@ escalation.
 - **Cite work** by envelope id and date.
 - **Stay in your lane.** No web search (temporal-research's job), no outside systems (the motor's).
 - **One escalation per recall.** The brain enforces it.
-- **Order:** recent context, then targeted matches; never pad with filler.
+- **Order:** among the candidates you keep, place newer relevant context before older matches; never
+  pad with filler.
 - **Structure the packet** in clear sections: Working memory, Core Memory, Work history, Known
   resources.
 
