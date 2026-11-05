@@ -90,7 +90,7 @@ Subcommands:
                                    (paraclete-h2-canary in the canary's project) unless --agent names another VM.
                                    No smoke test is wired to a VM from the command line yet, so on its own it fails and
                                    says so; check the canary with node dev/smoke.mjs from the driver's checkout
-  scenarios [--battery memory|verification] [--status] [--dry-run] [--wait-minutes <n>] [--state <path>]
+  scenarios [--battery memory|verification|all] [--status] [--dry-run] [--wait-minutes <n>] [--state <path>]
                                    Drive the instance .local/instance.env names (the lab's canary, from the driver) through a
                                    battery's scenarios over days (scenarios.mjs): start the runs that are due, send the steps
                                    that are due, and write a bench item from each recall it gets wrong and each piece of
@@ -598,8 +598,9 @@ async function runCliCommand(argv, deps) {
     // .local/instance.env names: on the driver, the lab's canary.
     const repoRoot = deps.repoRoot || process.cwd();
     const battery = typeof flags.battery === 'string' ? flags.battery : 'memory';
-    const scenarios = BATTERIES[battery];
-    if (!scenarios) return { ok: false, reason: `there is no battery ${battery}; name one of ${Object.keys(BATTERIES).join(', ')}` };
+    // `all` sends every battery's steps in one call, one at a time: the lab's timer (scenario-timer.mjs).
+    const scenarios = battery === 'all' ? Object.values(BATTERIES).flat() : Object.hasOwn(BATTERIES, battery) ? BATTERIES[battery] : null;
+    if (!scenarios) return { ok: false, reason: `there is no battery ${battery}; name one of ${Object.keys(BATTERIES).join(', ')}, or all` };
     const file = typeof flags.state === 'string' ? flags.state : SCENARIO_STATE_PATH;
     if (flags.status) {
       const state = readScenarioState({ repoRoot, file });

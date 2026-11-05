@@ -306,6 +306,14 @@ test('the scenarios command reports, plans a dry run, refuses an unknown battery
     const unknown = await runCli(['scenarios', '--battery', 'tarot'], { repoRoot: dir, stderr: quiet });
     assert.equal(unknown.ok, false);
     assert.match(unknown.reason, /no battery tarot/);
+    const inherited = await runCli(['scenarios', '--battery', 'constructor'], { repoRoot: dir, stderr: quiet });
+    assert.match(inherited.reason, /no battery constructor/);
+
+    const all = await runCli(['scenarios', '--battery', 'all', '--dry-run'], { repoRoot: dir, stderr: quiet, scenarioContext: {} });
+    const every = [...MEMORY_SCENARIOS, ...VERIFICATION_SCENARIOS];
+    assert.equal(all.wouldStart.length, every.length);
+    assert.ok(every.every((s) => all.wouldStart.some((id) => id.startsWith(`${s.id}-`))), 'every battery starts');
+    assert.equal(all.wouldSend.length, every.length);
 
     const dry = await runCli(['scenarios', '--dry-run'], { repoRoot: dir, stderr: quiet, scenarioContext: {} });
     assert.equal(dry.dryRun, true);
