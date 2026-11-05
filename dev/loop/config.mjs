@@ -10,6 +10,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/**
+ * The longest one cycle may run, in hours: the driver's units stop it then (timer.mjs). A measurement
+ * that would run past it stops early and refuses its change (cycle.mjs measureSides), so a cycle ends
+ * with a record and a comment instead of being killed without either.
+ */
+export const CYCLE_LIMIT_HOURS = 20;
+
 /** The loop's defaults. A cycle takes one issue; a day takes at most `maxCyclesPerDay` cycles. */
 export const LOOP_DEFAULTS = Object.freeze({
   /** The label on the issues the loop works on. */

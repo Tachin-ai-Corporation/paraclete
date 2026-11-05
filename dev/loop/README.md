@@ -114,9 +114,13 @@ never changes an instance; it reaches instances only through a release (see "Rel
    to date with `main` once, since an attempt takes hours and another loop may have merged meanwhile. When the change is refused, it says
    why in a comment on the issue instead, with the files it changed, the tests that failed and the points
    the reviewer found unmet.
-   A measured change takes hours (three real-model runs of each of the model suite's 15 tasks on each
-   side, about 8 minutes a run), so the timer's unit allows a cycle 20 hours; a long cycle only delays the
-   next. A cycle starts by removing the checkouts a killed one left registered.
+   A measured change takes hours (three real-model runs of each model suite task it reaches on each
+   side, about 13 minutes a run), so the timer's unit allows a cycle `CYCLE_LIMIT_HOURS` (20,
+   `config.mjs`); a long cycle only delays the next. A measurement that would run past that limit, at
+   the pace of its runs so far, stops before its next task and refuses the change as `unmeasured`,
+   saying so on the issue, rather than be killed with nothing kept. A cycle starts by removing the
+   checkouts a killed one left registered, and records the issue that one was on as `stopped`, which
+   waits `retryAfterHours` and counts toward `maxAttempts` as a refusal does.
 7. **Records** the cycle in `.local/harness2/cycles.jsonl`, with the failing tests of a refused one. The health check
    (`node dev/harness2/cli.mjs health`) counts loop cycles apart from the harness's own, and raises
    `loop-idle` when the loop's last 3 cycles, the newest within a day, all found no work.
