@@ -1,6 +1,7 @@
 // dev/harness2/bench.mjs: the organ benches, tier 1 of the measurement in docs/plan/MODULAR_LOOPS.md.
 // A bench calls one organ directly, through one side's real gateway and that side's own organ code, on
-// the items of bench-items.mjs, and scores each answer by code: the cerebellum's verdict on a
+// the items of bench-items.mjs and those harvested from the canary (harvested-items.mjs), and scores
+// each answer by code: the cerebellum's verdict on a
 // checkpoint (does it pass the clean work and fail the defective), the memory organ's recall packet
 // (does it hold what matters and leave out what does not). An item takes one organ turn or two, where
 // a model-suite task takes a whole mission, so a lane learns in minutes whether its organ got better.
@@ -19,6 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { loadContracts } from '../../config/contracts.mjs';
 import { start as startFirestoreFake } from '../../tests/fakes/firestore-server.mjs';
 import { CEREBELLUM_ITEMS, DAY_MS, MEMORY_ITEMS } from './bench-items.mjs';
+import { loadHarvestedItems } from './harvested-items.mjs';
 
 /** The items' version: a bench's results compare only with results of the same version. */
 export const BENCH_VERSION = 3;
@@ -40,8 +42,15 @@ export const RETIRED_BENCH_ITEMS = Object.freeze([
   'mem2-carrier-among-many', 'mem2-two-facts', 'mem2-moved-office', 'mem-legacy-readonly',
 ]);
 
-/** The benches, by the organ each judges. */
-export const BENCHES = Object.freeze({ cerebellum: CEREBELLUM_ITEMS, 'temporal-memory': MEMORY_ITEMS });
+/**
+ * The benches, by the organ each judges: bench-items.mjs's items, then the ones harvested from the
+ * canary and admitted by review (harvested-items.mjs), which enter only with this version raised.
+ */
+const HARVESTED = loadHarvestedItems({ version: BENCH_VERSION });
+export const BENCHES = Object.freeze({
+  cerebellum: Object.freeze([...CEREBELLUM_ITEMS, ...HARVESTED.cerebellum]),
+  'temporal-memory': Object.freeze([...MEMORY_ITEMS, ...HARVESTED['temporal-memory']]),
+});
 
 /**
  * The side's code a bench calls, beside the product loadSideProduct imports (model-runs.mjs): the
