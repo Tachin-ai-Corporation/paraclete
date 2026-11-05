@@ -349,9 +349,17 @@ phase 2's first two organs are done.
   - #96: each side runs its own product code.
   - #97: runs survive infrastructure errors, and the sides take turns task by task.
   - #98: a failing task is confirmed before it is targeted, evidence must cover what it measures, and all of `dev/harness2/` is the referee.
-  - Its exit test on the lab driver is still to run.
+  - Its exit test on the lab driver: a candidate whose brain throws scored 0 against main's 1.0 (2026-11-01, at 3d16e61).
+  - #116 (2026-11-03) fixed three more faults in real-model rollouts:
+    - the brain's runner ran once, so a mission ended at its first error;
+    - a rollout's credentials could expire mid-mission;
+    - trajectories read neither the checkpoint spine nor the tasks.
+
+    Results from before it undercount missions that hit an error or ran long. #117 measures a baseline again at once after any change to `dev/harness2/`.
 - **Phase 1:** the registry, the ownership test (`tests/dev/loop/modules.test.mjs`), the lane rule in the cycle and the guard, and measurement scoped to the tasks a change reaches (a role's files reach only that role's tasks). The capability tags on tasks wait for phase 3, where benches and organ tasks give them something to select: until then every organ's change reaches every task.
-- **Phase 2, the pilot organs:** `agent/organs/` holds each organ's own code; no organ imports another, and only `services/` (and `cli/`, for an organ's own commands) imports one. The cerebellum (`agent/organs/cerebellum/`: its checkpoint verification and verdict reading, which the brain service hands the executor) and the memory organ (`agent/organs/temporal-memory/`: recall, past-work recall, Core Memory's ranking and the lesson step) are moved. Their prompts stay in `prompts/` until every organ has a directory; the parts still in shared files (the verdict tools, the answer check, the memory fence) are named in each organ's README.
+- **Phase 2, the pilot organs:** `agent/organs/` holds each organ's own code; no organ imports another, and only `services/` (and `cli/`, for an organ's own commands) imports one. The cerebellum (`agent/organs/cerebellum/`: its checkpoint verification and verdict reading, which the brain service hands the executor) and the memory organ (`agent/organs/temporal-memory/`: recall, past-work recall, Core Memory's ranking and the lesson step) are moved. Their prompts stay in `prompts/` until every organ has a directory; the parts still in shared files (the verdict tools, the answer check, the memory fence) are named in each organ's README. The prefrontal, motor, cortex and temporal-research are not moved yet; the registry owns their files where they are.
+- **Phase 3, benches:** `dev/harness2/bench.mjs` runs a bench for the cerebellum and the memory organ (#102), made harder in versions 2 (#109) and 3 (#114) as baselines passed their items. A cerebellum bench takes about 25 minutes and a memory bench about 7. The prefrontal's bench is added within version 3: its Brief (risk, premise, parts, unknowns) and its plans (against the plan-structuring skill's rules). The model suite has a task for every role (versions 4 and 5, #90 and #113). Tasks that span several missions, and the exit test (a 5-point change told from noise within an hour), are still to do.
+- **Phase 4, two lanes:** the lane runner, planner and driver units are in (#103 to #106, #111, #112, #115), and both pilot lanes have run on the lab since 2026-11-02. The memory lane merged a measured gain on its own (#110: one item from 0.67 to 1.0). The cerebellum lane has found no failing training item in any bench version, so it has had no work.
 
 **Throughput, roughly:**
 

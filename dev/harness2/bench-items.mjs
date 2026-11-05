@@ -21,6 +21,19 @@
 //   requests that need two facts, facts that changed. Version 3's need three facts, tell apart people
 //   of one name and contacts of one client, weigh a working-memory note against Core Memory, join past
 //   work with a policy, and ask for the deeper history on a training item too.
+// - The prefrontal's (planning), added in version 3: a request and what the agent knows about it. The
+//   Brief its analysis returns is checked where prompts/prefrontal.md sets a rule a careful planner
+//   keeps and a careless one breaks: risk by reversibility, not by how drastic the words sound (a
+//   section deleted from a document and a wiped staging channel are reversible; a message to a client,
+//   a revoked access, a payment and a merged public change are not); a premise flawed only when the
+//   evidence shows a false belief, never because earlier attempts failed; one part for one outcome and
+//   a part each for separate ones; an unknown where the agent lacks an access or a person's decision,
+//   and none where nothing blocks; and parts named by outcome, never by a tool. Its plan items give it a
+//   goal (and the known resources the brain would list) and check the plan against the rules of
+//   skills/plan-structuring: each task on an organ that can do it, nothing aimed at a person as a
+//   motor task, an approval gate before what cannot be undone, one checkpoint and no trailing report
+//   for small work, ids copied character for character and never split from the task that finds
+//   them, no placeholders, and criteria about the artifact that the mission can meet before it ends.
 //
 // A check is named for the kind of mistake it catches, from the vocabularies below, never for a fact
 // of its item: a lane's planned issue quotes a failing check by its name (dev/loop/planner.mjs), and a
@@ -861,6 +874,309 @@ export const MEMORY_ITEMS = Object.freeze([
     must: [{ name: TURNS, re: /lena|vendor review/i }],
     mustNot: [{ name: SAME_SUBJECT, re: /excel|workbook/i }],
   },
+]);
+
+/**
+ * What a prefrontal item expects of its Brief, by the rule it tests: a check is named for the rule
+ * (bench.mjs briefChecks), never for the item's request.
+ */
+export const BRIEF_CHECKS = Object.freeze({
+  wellFormed: 'the Brief is well formed',
+  risk: Object.freeze({
+    none: 'the risk of read-only work',
+    mutating: 'the risk of a reversible change',
+    destructive_or_public: 'the risk of an irreversible or public action',
+  }),
+  noGate: 'no approval gate on work that publishes nothing',
+  premise: Object.freeze({ flawed: 'the premise of a request whose frame is false', sound: 'the premise of a request with a hard history' }),
+  onePart: 'one part for one outcome',
+  parts: 'a part for each separate outcome',
+  dependsOn: 'a dependency where one outcome needs another',
+  unknown: 'an unknown named for what the agent lacks',
+  noUnknown: 'no unknown where nothing blocks',
+  byOutcome: 'parts named by outcome, never by tool',
+});
+
+/**
+ * A prefrontal item. `brief` says what the Brief must show: `risk` the riskiest part's tier exactly,
+ * `riskAtMost` no part above it, `premise`, `maxParts`/`minParts`, `dependsOn` (some part depends on
+ * another), `unknowns` (true: some part names one; false: none does), `noTool` (a pattern no part's
+ * text may match: the tools the context mentions).
+ */
+const brief = (id, split, { instruction, context = '', recalled = '', ...expect }) => ({
+  id, organ: 'prefrontal', mode: 'analyze', split, instruction, context, recalled, brief: expect,
+});
+
+/** What a prefrontal plan item expects of its plan, by the rule of skills/plan-structuring it tests. */
+export const PLAN_CHECKS = Object.freeze({
+  wellFormed: 'the plan is well formed',
+  agents: 'every task goes to an organ that can do it',
+  outbound: 'nothing aimed at a person is a motor task',
+  gate: 'an approval gate before the step that cannot be undone',
+  oneCheckpoint: 'one checkpoint for work with no phase gate',
+  noReport: 'no checkpoint that only reports a result',
+  fewTasks: 'few tasks for small work',
+  ids: 'ids copied from the known resources, character for character',
+  noBackReference: 'no task that hangs on what an earlier task found',
+  noPlaceholder: 'no placeholder in a task',
+  criteriaOnArtifact: 'criteria about the artifact, never an organ',
+  noClone: 'no task to fetch the working tree the brain already has',
+  reachable: 'criteria the mission can meet before it ends',
+});
+
+/**
+ * A prefrontal plan item: a goal (and the known resources the brain would list), planned as the brain
+ * asks (prompt-assembly.mjs planInstruction). `plan` names the rules its checks test (bench.mjs
+ * planChecks): `agents`, `outbound`, `gateBefore` (a pattern for the step a gate must precede),
+ * `oneCheckpoint`, `noReport`, `maxTasks`, `ids` ({ need: ids the plan must copy, avoid: ids it must
+ * not use }), `noBackReference`, `noPlaceholder`, `criteriaOnArtifact`, `noClone`, `reachable`.
+ */
+const plan = (id, split, { goal, resources = [], constraints = '', ...expect }) => ({
+  id, organ: 'prefrontal', mode: 'plan', split, goal, resources, constraints, plan: expect,
+});
+// Drive-shaped ids; each pair differs only near its end, as ids of one folder often do.
+const FIXED_FEE_ID = '1Fq7Lk2mZpW9xT4rYbN8cVd3HsJ0aEuGo';
+const HOURLY_ID = '1Fq7Lk2mZpW9xT4rYbN8cVd3HsJ0aEuQi';
+const IN_PROGRESS_ID = '1Rz5Tm8vBq2NcW6yXk3JpLd9FgH4sAeUo';
+const STAFF_2027_ID = '1Hw3Np6qXc9VbM2tLz8RkYd5GjF7sAeKa';
+const STAFF_2026_ID = '1Hw3Np6qXc9VbM2tLz8RkYd5GjF7sAeKe';
+const TODAY = 'Today is 2027-03-07.';
+
+export const PREFRONTAL_ITEMS = Object.freeze([
+  // Risk by reversibility: drastic words on reversible work, mild words on irreversible work.
+  brief('pf-doc-section-delete', 'train', {
+    instruction: "Delete the 'Legacy pricing' section from the sales playbook document and renumber the headings after it.",
+    context: 'The sales playbook is a shared document in the team drive, with version history kept.',
+    risk: 'mutating', maxParts: 1,
+  }),
+  brief('pf-staging-wipe', 'train', {
+    instruction: "Wipe the marketing site's preview channel and redeploy it from the main branch, so the team can review the new pricing page before Friday.",
+    context: 'The preview channel is a staging URL only the team can see. The live site is a separate channel and must not change.',
+    risk: 'mutating',
+  }),
+  brief('pf-client-send', 'train', {
+    instruction: "Send the signed renewal quote to Globex's procurement contact.",
+    context: "The signed quote is a PDF in the Sales/Quotes folder. Globex's procurement contact is in the CRM.",
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-draft-reply', 'train', {
+    instruction: "Draft a reply to the vendor's complaint email for me to look over. Don't send anything.",
+    context: 'The complaint arrived yesterday in the shared support inbox. Drafts are kept in that inbox.',
+    riskAtMost: 'mutating',
+  }),
+  brief('pf-access-revoke', 'train', {
+    instruction: "Remove the departed contractor's access to the finance shared drive.",
+    context: "The contractor's last day was Friday. The drive's sharing settings still list them as an editor.",
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-bucket-purge', 'train', {
+    instruction: "Permanently delete last year's exports from the archive bucket so they stop costing storage.",
+    context: 'The archive bucket keeps no versions of deleted objects.',
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-ticket-themes', 'train', {
+    instruction: "Tell me the three most common themes in last week's support tickets.",
+    context: 'The tickets are in the helpdesk, which the agent can read.',
+    risk: 'none', maxParts: 1,
+  }),
+  brief('pf-invoice-pay', 'holdout', {
+    instruction: 'Pay the March hosting invoice from the operations account.',
+    context: 'The invoice is in the Finance/Invoices folder. The operations account pays suppliers by bank transfer.',
+    risk: 'destructive_or_public',
+  }),
+  brief('pf-folder-archive', 'holdout', {
+    instruction: "Move last quarter's project files into an Archive subfolder and rename the project folder to 'Atlas (2026)'.",
+    context: "The project folder is in the shared drive, which the agent manages, with version history kept. Last quarter's files are the ones dated 2026-10-01 to 2026-12-31.",
+    riskAtMost: 'mutating', unknowns: false,
+  }),
+  brief('pf-public-merge', 'holdout', {
+    instruction: 'Merge the approved dependency-update pull request into the main branch of our public repository.',
+    context: 'The pull request has one approval and its checks passed. The repository is public and deploys docs from main.',
+    risk: 'destructive_or_public',
+  }),
+
+  // The premise: flawed only for a false belief the evidence shows; a hard history is not one.
+  brief('pf-rollback-premise', 'train', {
+    instruction: "Roll back yesterday's deploy that broke checkout.",
+    context: `${TODAY} Deploy log: the last deploy went out on 2027-03-01, six days ago. Checkout errors began this morning at 09:12, the minute the payment provider made its new API version the default (its status page says so).`,
+    premise: 'flawed',
+  }),
+  brief('pf-rollback-history', 'train', {
+    instruction: "Roll back yesterday's deploy that broke checkout.",
+    context: `${TODAY} Deploy log: deploy d-482 went out yesterday at 17:40. Checkout errors began at 17:43.`,
+    recalled: 'Past work: two attempts yesterday to roll back d-482 failed. The pipeline refused the first (the release lock was held); the second timed out after 10 minutes.',
+    premise: 'sound',
+  }),
+  brief('pf-address-premise', 'train', {
+    instruction: "Put Globex's new office address on next month's invoice.",
+    context: "Globex's account record: 'Move to 14 Harbour St cancelled on 2027-02-10; Globex stays at 3 Mill Lane.' No newer address is on file.",
+    premise: 'flawed',
+  }),
+  brief('pf-flaky-history', 'train', {
+    instruction: 'Make the flaky upload test pass reliably.',
+    context: 'CI history: the upload test failed 9 of its last 40 runs, every time with a timeout.',
+    recalled: 'Past work: this test was declared fixed four times in the last month; each fix lasted a few days.',
+    premise: 'sound', riskAtMost: 'mutating',
+  }),
+  brief('pf-address-history', 'holdout', {
+    instruction: "Put Globex's new office address on next month's invoice.",
+    context: "Globex's account record: moved to 14 Harbour St on 2027-02-01, confirmed by their finance team's email.",
+    recalled: 'Past work: two tries to change an invoice address in the billing tool failed; it rejected the postcode format both times.',
+    premise: 'sound',
+  }),
+  brief('pf-leak-premise', 'holdout', {
+    instruction: 'Fix the memory leak in the report worker.',
+    context: "This morning's profile of the report worker: resident memory stays flat at about 210 MB over six hours of runs, while CPU sits at 100% through the PDF render, 9 of the 11 minutes a report takes.",
+    premise: 'flawed',
+  }),
+
+  // Parts and their handshakes.
+  brief('pf-typo', 'train', {
+    instruction: "Correct the typo 'recieve' in the second heading of the onboarding guide.",
+    context: 'The onboarding guide is a shared document the agent edits often.',
+    maxParts: 1, riskAtMost: 'mutating', unknowns: false,
+  }),
+  brief('pf-two-errands', 'train', {
+    instruction: "Book a meeting room for Thursday's planning session, and change next week's on-call rota so Sam covers Tuesday.",
+    context: 'Rooms are booked in the office calendar; the on-call rota is a shared spreadsheet.',
+    minParts: 2, riskAtMost: 'mutating',
+  }),
+  brief('pf-summary-then-send', 'train', {
+    instruction: "Combine this month's figures from the three regional sales sheets into one summary, then email it to the board.",
+    context: 'The regional sheets are in the Sales folder. The board is reached at board@example.com.',
+    minParts: 2, dependsOn: true, risk: 'destructive_or_public',
+  }),
+  brief('pf-redline', 'holdout', {
+    instruction: "Apply the reviewer's redline comments to the travel policy draft, then remove the redline section at the end.",
+    context: 'The draft is a shared document; the redline section lists eleven comments.',
+    maxParts: 1, riskAtMost: 'mutating',
+  }),
+  brief('pf-report-then-post', 'holdout', {
+    instruction: "Write the incident report for Tuesday's outage from the timeline document, then post it on our public status page.",
+    context: 'The timeline document is in the Incidents folder. The status page is public.',
+    minParts: 2, dependsOn: true, risk: 'destructive_or_public',
+  }),
+
+  // Unknowns: what the agent lacks, named; none invented where nothing blocks.
+  brief('pf-domain-login', 'train', {
+    instruction: 'Renew our company domain for another year before it lapses on the 20th.',
+    context: "The domain is registered under the founder's personal registrar account. The agent has no login there and no payment method on that account.",
+    unknowns: true,
+  }),
+  brief('pf-venue-choice', 'train', {
+    instruction: 'Book the venue for the team offsite.',
+    context: 'Two venues fit the dates and the budget: the Old Mill and Harbour House. The team lead said they will choose between the two this week; nothing is chosen yet.',
+    unknowns: true,
+  }),
+  brief('pf-clear-line', 'train', {
+    instruction: "Add the line 'The office is closed on 2027-04-18.' at the top of the team handbook document.",
+    context: 'The team handbook is a shared document the agent can edit.',
+    unknowns: false, maxParts: 1, risk: 'mutating',
+  }),
+  brief('pf-signing-authority', 'holdout', {
+    instruction: "Sign the vendor's NDA on the company's behalf in their e-signature portal.",
+    context: "Only the CEO may sign for the company, and the portal account is the CEO's.",
+    unknowns: true,
+  }),
+
+  // Parts name outcomes, never the tool that reaches them.
+  brief('pf-copy-exports', 'train', {
+    instruction: 'Copy the March exports into the archive bucket.',
+    context: 'The exports are under gs://example-exports/2027-03/ and the archive bucket is gs://example-archive/.',
+    noTool: /\b(gsutil|gcloud|rsync|curl|aws)\b|\bcp\s+-r\b|storage cp/i, riskAtMost: 'mutating',
+  }),
+  brief('pf-sheet-row', 'train', {
+    instruction: 'Add a row for the new hire, Dana Ruiz, starting on 2027-04-01, to the staff list spreadsheet.',
+    context: 'The staff list is a Google Sheet in the HR folder.',
+    noTool: /sheets api|batchupdate|values\.(append|update)|gspread|append_?row|\bapi\b/i, maxParts: 1,
+  }),
+  brief('pf-docs-dns', 'holdout', {
+    instruction: 'Point the docs subdomain at the new hosting provider.',
+    context: "The provider's target is docs.hosting.example.net. The domain's DNS is managed in the registrar's console, and the docs subdomain serves the live documentation.",
+    noTool: /\b(dig|nslookup|gcloud|curl|record-sets|rrdatas)\b/i, risk: 'destructive_or_public',
+  }),
+
+  // Plans: the organ each task needs, what never goes out through the motor, the gate before what
+  // cannot be undone.
+  plan('pfp-research-save', 'train', {
+    goal: 'Find the list prices of the three largest EU cloud regions for an 8-vCPU machine, and save a comparison table in the Research folder.',
+    agents: true,
+  }),
+  plan('pfp-recall-write', 'train', {
+    goal: 'Recall what we agreed with Globex about their renewal terms, and add it to the Globex account notes document.',
+    agents: true,
+  }),
+  plan('pfp-board-update', 'train', {
+    goal: 'Prepare the March board update from the sales summary document, and send it to the board.',
+    outbound: true, criteriaOnArtifact: true,
+  }),
+  plan('pfp-status-publish', 'train', {
+    goal: "Write the incident report for Tuesday's outage from the timeline document, and publish it on our public status page.",
+    gateBefore: /\b(publish|post)/i,
+  }),
+  plan('pfp-recall-research', 'holdout', {
+    goal: "Recall our last two vendor reviews and look up each vendor's current pricing on the web, then put both in a short brief in the Vendors folder.",
+    agents: true,
+  }),
+  plan('pfp-changelog-publish', 'holdout', {
+    goal: 'Turn the changes merged since v3.2 into release notes, and publish them on the public changelog page.',
+    gateBefore: /\b(publish|post)/i,
+  }),
+  plan('pfp-quote-send', 'holdout', {
+    goal: "Fill in Globex's renewal quote from last year's quote, and send it to their procurement contact.",
+    outbound: true, noPlaceholder: true,
+  }),
+
+  // The simplest plan: one checkpoint, no trailing report, few tasks.
+  plan('pfp-footer-preview', 'train', {
+    goal: "Change the pricing page's footer text to 'Prices exclude VAT' and give me a preview link.",
+    oneCheckpoint: true, noReport: true, maxTasks: 3,
+  }),
+  plan('pfp-deck-link', 'train', {
+    goal: 'Build a five-slide deck of the Q1 results in the Reports folder, and send me the link.',
+    noReport: true, outbound: true,
+  }),
+  plan('pfp-typo-preview', 'holdout', {
+    goal: "Fix the typo 'recieve' on the contact page, and redeploy the preview channel.",
+    oneCheckpoint: true, maxTasks: 3,
+  }),
+
+  // Identifiers: copied from the known resources, never split from the task that finds them.
+  plan('pfp-template-copies', 'train', {
+    goal: 'Make a copy of the fixed-fee master template for each of Acme and Globex in the In Progress folder.',
+    resources: [
+      { kind: 'document', name: 'Fixed-fee master template', id: FIXED_FEE_ID },
+      { kind: 'document', name: 'Hourly master template', id: HOURLY_ID },
+      { kind: 'folder', name: 'In Progress', id: IN_PROGRESS_ID },
+    ],
+    ids: { need: [FIXED_FEE_ID], avoid: [HOURLY_ID] }, noBackReference: true,
+  }),
+  plan('pfp-nda-vendors', 'train', {
+    goal: 'Find the newest signed NDA template in the Legal folder, and create an NDA from it for each of the three new vendors: Initech, Hooli and Vandelay.',
+    noBackReference: true, maxTasks: 3,
+  }),
+  plan('pfp-welcome-draft', 'train', {
+    goal: "Write a draft welcome email for the new hire, whose name and start date are in the HR onboarding sheet. Don't send it.",
+    noPlaceholder: true, outbound: true,
+  }),
+  plan('pfp-staff-row', 'holdout', {
+    goal: 'Add Dana Ruiz, starting on 2027-04-01, to the 2027 staff list.',
+    resources: [
+      { kind: 'spreadsheet', name: 'Staff list 2027', id: STAFF_2027_ID },
+      { kind: 'spreadsheet', name: 'Staff list 2026', id: STAFF_2026_ID },
+    ],
+    ids: { need: [STAFF_2027_ID], avoid: [STAFF_2026_ID] }, maxTasks: 2,
+  }),
+
+  // Criteria an outside verifier can check, from inside the mission.
+  plan('pfp-fix-test', 'train', {
+    goal: 'Fix the failing date-parsing test in the invoicing repository.',
+    noClone: true, criteriaOnArtifact: true,
+  }),
+  plan('pfp-pr-criteria', 'train', {
+    goal: 'Add input validation to the signup form handler, and open a pull request for review.',
+    reachable: true, criteriaOnArtifact: true, noClone: true,
+  }),
 ]);
 
 export { DAY_MS };
