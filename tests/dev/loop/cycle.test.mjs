@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
+import { CYCLE_LIMIT_HOURS, LOOP_DEFAULTS } from '../../../dev/loop/config.mjs';
 import {
   benchCoverageProblems, benchOrgan, branchFor, branchOwner, clearStaleCheckouts, coverageProblems, isolatedCheckout, laneSlug, main, measureBench, measureSides,
   parseNameStatus, refusalComment, regressionProblems,
@@ -372,6 +372,7 @@ test("a change to the agent's behaviour is measured, and refused when unmeasured
   assert.deepEqual(seen[0].changedPaths, ['agent/work/thing.mjs', 'tests/agent/thing-two.test.mjs']);
   assert.equal(seen[0].base, git(r.work, 'rev-parse', 'origin/main'), 'measured against the head it branched from');
   assert.equal(seen[0].head, 'v2027.01.21.1.1: The guide explains the loop', 'the candidate is committed before it is measured');
+  assert.equal(seen[0].deadline, NOW.getTime() + (CYCLE_LIMIT_HOURS * 60 - 30) * 60_000, "it must end half an hour before the cycle's limit, counted from the cycle's start");
 
   const r2 = repo(t);
   const unmeasured = await cycle(t, r2, { proposer: behaviour, measure: async () => ({ measured: false, reason: 'no Google Cloud project' }) }).run();
@@ -676,6 +677,57 @@ test("a measurement takes turns between the sides task by task, runs a target ta
     ['baseline', 'a', '3'], ['candidate', 'a', '3'], ['candidate', 'b', '3'], ['baseline', 'b', '3'], ['baseline', 'b', '3'], ['candidate', 'b', '3'],
   ], 'no target: every task 3 times a side, then the re-runs of b');
   assert.match(regressionProblems(worse.evidence).join(' | '), /task b got worse: capability 1 -> 0\.1667 \(6 and 6 runs\)/);
+});
+
+test("a measurement that would run past the cycle's limit stops before the task that would, and says how long the rest would take", async () => {
+  const settings = { ...LOOP_DEFAULTS, measure: { ...LOOP_DEFAULTS.measure } };
+  const issue = { number: 8, title: 't', body: '' };
+  const MIN = 60_000;
+  // Every call runs its three runs in 40 minutes, so a run takes about 13 of them.
+  const timed = () => {
+    let t = 0;
+    const calls = [];
+    return {
+      calls,
+      clock: () => t,
+      evalOn: async (side, args) => {
+        t += 40 * MIN;
+        calls.push([side, args[args.indexOf('--task') + 1]]);
+        return { ok: true, trajectories: taskRuns({ [args[args.indexOf('--task') + 1]]: [1, 1, 1] }) };
+      },
+    };
+  };
+
+  const short = timed();
+  const stopped = await measureSides({ evalOn: short.evalOn, clock: short.clock, issue, changedPaths: [], settings, taskIds: ['a', 'b', 'c'], deadline: 200 * MIN });
+  assert.equal(stopped.measured, false);
+  assert.deepEqual(short.calls, [['baseline', 'a'], ['candidate', 'a']], 'the first task runs; the next would end past the deadline');
+  assert.equal(stopped.reason, `it would not finish within the ${CYCLE_LIMIT_HOURS} hours a cycle may run: 6 of its runs took 1.3 h, so the 12 left need about 2.7 h more`);
+
+  const roomy = timed();
+  const whole = await measureSides({ evalOn: roomy.evalOn, clock: roomy.clock, issue, changedPaths: [], settings, taskIds: ['a', 'b', 'c'], deadline: 240 * MIN });
+  assert.equal(whole.measured, true, 'a measurement that ends by its deadline runs whole');
+  assert.equal(roomy.calls.length, 6);
+
+  const none = timed();
+  const all = await measureSides({ evalOn: none.evalOn, clock: none.clock, issue, changedPaths: [], settings, taskIds: ['a', 'b', 'c'] });
+  assert.equal(all.measured, true, 'no deadline, no stop');
+
+  const lateStart = timed();
+  const already = await measureSides({ evalOn: lateStart.evalOn, clock: () => 10 * MIN, issue, changedPaths: [], settings, taskIds: ['a'], deadline: 5 * MIN });
+  assert.deepEqual([already.measured, lateStart.calls.length], [false, 0]);
+  assert.match(already.reason, /no time left to measure it/);
+
+  // A task that looks worse is run again only when its re-runs end by the deadline too.
+  let t = 0;
+  const worseOn = async (side, args) => {
+    t += 40 * MIN;
+    const task = args[args.indexOf('--task') + 1];
+    return { ok: true, trajectories: taskRuns({ [task]: side === 'candidate' && task === 'b' ? [1, 1, 0] : [1, 1, 1] }) };
+  };
+  const rechecked = await measureSides({ evalOn: worseOn, clock: () => t, issue, changedPaths: [], settings, taskIds: ['a', 'b'], deadline: 200 * MIN });
+  assert.equal(rechecked.measured, false);
+  assert.match(rechecked.reason, /^b looked worse, and its re-runs would not finish within the 20 hours a cycle may run: 12 of its runs took 2\.7 h, so the 6 left need about 1\.3 h more$/);
 });
 
 test('a measurement that would pass its cap, or whose side cannot be run, measures nothing and says which side', async () => {
@@ -1004,7 +1056,7 @@ test('a measured side is a clone of its own at its commit: nothing run in it rea
   assert.equal(git(r.work, 'worktree', 'list'), before, "a worktree made from it is not the repo's");
 });
 
-test("a killed cycle's checkouts are cleared before the next one, its branch freed; nothing else is touched", async (t) => {
+test("a killed cycle's checkouts are cleared before the next one, its issue recorded as stopped and its branch freed; nothing else is touched", async (t) => {
   const r = repo(t);
   fs.mkdirSync(path.join(r.work, 'agent', 'node_modules', 'pkg'), { recursive: true });
   fs.writeFileSync(path.join(r.work, 'agent', 'node_modules', 'pkg', 'index.js'), 'kept\n');
@@ -1015,12 +1067,32 @@ test("a killed cycle's checkouts are cleared before the next one, its branch fre
   git(r.work, 'worktree', 'add', '--quiet', '--detach', mine, 'HEAD');
   t.after(() => fs.rmSync(mine, { recursive: true, force: true }));
 
-  const res = await cycle(t, r).run();
-  assert.equal(res.action, 'opened', `the branch the killed cycle held is free again: ${res.reason}`);
+  const c = cycle(t, r);
+  const res = await c.run();
+  assert.equal(res.action, 'no-work', `the killed cycle's issue waits, as a refused one does: ${res.reason}`);
   assert.equal(fs.existsSync(left), false);
   assert.equal(fs.readFileSync(path.join(r.work, 'agent', 'node_modules', 'pkg', 'index.js'), 'utf8'), 'kept\n', 'removed through its link, never into the packages');
   assert.match(git(r.work, 'worktree', 'list'), new RegExp(path.basename(mine)), 'a checkout not named as a cycle\'s is left');
   assert.deepEqual(clearStaleCheckouts({ repoRoot: r.work, execGit: (args, cwd) => git(cwd, ...args) }), [], 'nothing left to clear');
+  const [stopped] = readCycleRecords({ repoRoot: r.work });
+  assert.deepEqual([stopped.loop.action, stopped.loop.issue, stopped.loop.branch, stopped.ok], ['stopped', 7, 'loop/7-the-guide-explains-the-loop', false]);
+  const note = c.gh.calls.find((a) => a[0] === 'issue' && a[1] === 'comment' && a[2] === '7');
+  assert.match(note[note.indexOf('--body') + 1], /^The self-improvement loop tried this and stopped \(stopped\): a cycle working on it was stopped before it finished \(by its unit's 20-hour limit, or a restart of the driver\), so nothing it did was kept/);
+
+  const again = await cycle(t, r, { issueNumber: 7, retry: true }).run();
+  assert.equal(again.action, 'opened', `the branch the killed cycle held is free again: ${again.reason}`);
+});
+
+test("a killed cycle in another lane, or on a branch that is no loop's, records nothing", async (t) => {
+  const r = repo(t);
+  const lanes = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-loop-'));
+  git(r.work, 'worktree', 'add', '--quiet', '-B', 'loop/m/organ-cerebellum/7-the-guide-explains-the-loop', lanes, 'HEAD');
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'paraclete-loop-'));
+  git(r.work, 'worktree', 'add', '--quiet', '-B', 'someone/7-else', other, 'HEAD');
+  const res = await cycle(t, r).run();
+  assert.equal(res.action, 'opened', res.reason);
+  assert.deepEqual(readCycleRecords({ repoRoot: r.work }).map((c) => c.loop.action), ['opened']);
+  assert.equal([lanes, other].some((d) => fs.existsSync(d)), false, 'both cleared all the same');
 });
 
 test('the pieces: name-status, slugs, and what counts as worse', () => {

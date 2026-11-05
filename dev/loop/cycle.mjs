@@ -26,11 +26,13 @@
 //      reviewer model (reviewer.mjs) finds it meets every point the issue says it is done when; a change
 //      to the agent's behaviour must also be measured on both sides with real-model runs
 //      (dev/harness2 `eval --real-model`) and must not make any task worse, and one for an issue planned
-//      from a failing task must make that task score higher;
+//      from a failing task must make that task score higher; a measurement that would not finish within
+//      the cycle's limit (config.mjs CYCLE_LIMIT_HOURS) stops early and refuses the change;
 //   6. commit it under the next free version, push the branch and open the pull request, with the
 //      tests' result and any evidence; or, when refused, say why on the issue, naming the files it
 //      changed and the tests that failed, which the next attempt reads;
-//   7. record the cycle in .local/harness2/cycles.jsonl, which the health check reads.
+//   7. record the cycle in .local/harness2/cycles.jsonl, which the health check reads. A cycle killed
+//      mid-way records nothing: the next one, finding its checkout, records its issue as `stopped`.
 //
 // It never merges or changes an instance. Run by hand or by the driver's timer (timer.mjs):
 //
@@ -53,7 +55,7 @@ import { BENCHES, BENCH_VERSION, selectBenchItems } from '../harness2/bench.mjs'
 import { pauseState } from '../harness2/pause.mjs';
 import { ROLLOUT_RETRY } from '../harness2/substrate.mjs';
 import { nextPromotionVersion } from '../harness2/promote.mjs';
-import { REFEREE_PATHS, isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
+import { CYCLE_LIMIT_HOURS, REFEREE_PATHS, isBehaviourPath, loadLoopSettings, pathRefusal, testRefusal } from './config.mjs';
 import { impactedTasks, issueModule, loadModules, moduleProblems } from './modules.mjs';
 import { STUCK_LABEL, benchBaselineCurrent, isCurrentBaseline, planIssue, planLaneIssue } from './planner.mjs';
 import {
@@ -66,11 +68,12 @@ import { buildBrief, buildRepairBrief, createCommandProposer } from './proposer.
 import { buildReviewBrief, createCommandReviewer, doneWhen, formatReviewMarkdown, judgeReview } from './reviewer.mjs';
 import { failingTests, failureLines, REPORT_LIMITS, withoutRoots } from './test-report.mjs';
 
-/** Outcomes after a proposer ran: they count toward the day's cycles. */
-const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved', 'ready', 'opened']);
+/** Outcomes after a proposer ran: they count toward the day's cycles. `stopped` is a cycle its unit's
+ * limit, or a restart, stopped mid-way, recorded by the next one. */
+const ATTEMPTED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved', 'stopped', 'ready', 'opened']);
 
 /** Outcomes that leave an issue alone until `retryAfterHours` have passed. */
-const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved']);
+const FAILED = new Set(['proposer-failed', 'no-change', 'refused-paths', 'untested', 'tests-failed', 'unreviewed', 'rejected', 'unmeasured', 'regressed', 'unimproved', 'stopped']);
 
 /** Packages a checkout borrows from the repo, never part of a change. */
 const LINKED_PACKAGES = Object.freeze(['agent/node_modules', 'dashboard/node_modules']);
@@ -88,6 +91,12 @@ const TRUSTED_BOTS = new Set(['github-actions', 'github-actions[bot]']);
 const NOTE_LIMITS = Object.freeze({ count: 5, chars: 4000 });
 
 const HOUR_MS = 3_600_000;
+
+/** What a cycle keeps of its limit for what follows its measurement: the commit, the push and the pull
+ * request take minutes. */
+const AFTER_MEASURE_MS = 30 * 60_000;
+
+const hoursOf = (ms) => `${(ms / HOUR_MS).toFixed(1)} h`;
 
 function defaultExec(file) {
   return (args, cwd) => execFileSync(file, args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -381,10 +390,15 @@ export function refusalComment({ action, reason, changes, tests, review, retryAf
  * evaluated is left out, and the share of those is judged over the whole side, not one task's call:
  * one call holds only a few runs, so one bad run would be past the share there.
  *
- * @param {object} o  { evalOn, issue, changedPaths, settings, taskIds, log }
+ * With a `deadline` (the cycle's limit, CYCLE_LIMIT_HOURS, less what follows the measurement), it
+ * stops before a task, or before the re-runs, whose runs would end past it at the pace of the runs so
+ * far, and measures nothing: the unit would kill the cycle at its limit, and a killed cycle keeps
+ * nothing of hours of runs, nor says why on the issue.
+ *
+ * @param {object} o  { evalOn, issue, changedPaths, settings, taskIds, deadline, clock, log }
  * @returns {Promise<{ measured: boolean, evidence?: object, reason: string|null }>}
  */
-export async function measureSides({ evalOn, issue, changedPaths, settings, taskIds = impactedTasks(changedPaths), log = () => {} }) {
+export async function measureSides({ evalOn, issue, changedPaths, settings, taskIds = impactedTasks(changedPaths), deadline = null, clock = Date.now, log = () => {} }) {
   if (!taskIds.length) return { measured: false, reason: 'no model-suite task runs what it changes (a role without tasks of its own)' };
   const target = issueTarget(issue.body);
   const runsOf = (id) => (id === target ? Math.max(settings.measure.trials, settings.measure.targetTrials || 0) : settings.measure.trials);
@@ -398,9 +412,23 @@ export async function measureSides({ evalOn, issue, changedPaths, settings, task
   const runs = { baseline: [], candidate: [] };
   const skipped = { baseline: [], candidate: [] };
   const cannot = (side, why) => (side === 'baseline' ? `main's head could not be measured: ${why}` : `the change could not be measured: ${why}`);
+  const started = clock();
+  let ran = 0;
+  const late = (left) => {
+    if (deadline === null) return null;
+    const at = clock();
+    const need = ran ? ((at - started) / ran) * left : 0;
+    if (at + need <= deadline) return null;
+    return ran
+      ? `it would not finish within the ${CYCLE_LIMIT_HOURS} hours a cycle may run: ${ran} of its runs took ${hoursOf(at - started)}, so the ${left} left need about ${hoursOf(need)} more`
+      : `the cycle had no time left to measure it within the ${CYCLE_LIMIT_HOURS} hours a cycle may run`;
+  };
   for (const [i, id] of taskIds.entries()) {
+    const stop = late(2 * planned - ran);
+    if (stop) return { measured: false, reason: stop };
     for (const side of i % 2 === 0 ? ['baseline', 'candidate'] : ['candidate', 'baseline']) {
       const res = await evalTask(side, [id], runsOf(id));
+      ran += runsOf(id);
       // A call too few of whose runs ran is still kept: the side as a whole is judged below.
       if (!res.ok && !res.incomplete) return { measured: false, reason: cannot(side, res.reason || 'no result') };
       runs[side].push(...(res.trajectories || []));
@@ -427,6 +455,8 @@ export async function measureSides({ evalOn, issue, changedPaths, settings, task
   const confirm = Math.max(0, (settings.measure.confirmTrials || 0) - settings.measure.trials);
   const recheck = confirm ? worseTasks(evidence).filter((id) => runsOf(id) < settings.measure.confirmTrials) : [];
   if (recheck.length) {
+    const stop = late(2 * confirm * recheck.length);
+    if (stop) return { measured: false, reason: `${recheck.join(', ')} looked worse, and its re-runs ${stop.replace(/^it /, '')}` };
     log(`[INFO] loop: ${recheck.join(', ')} looked worse; running each ${confirm} more time(s) on both sides`);
     const moreBase = await evalTask('baseline', recheck, confirm);
     if (!moreBase.ok) return { measured: false, reason: `main's head could not be measured again on ${recheck.join(', ')}: ${moreBase.reason || 'no result'}` };
@@ -516,7 +546,7 @@ export async function measureBench({ evalOn, issue, organ, changedPaths, setting
  * noise can be told; a task that looks worse runs `measure.confirmTrials` times on each side before the
  * change is judged on it (extra runs also weigh in the suite's mean).
  */
-async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, lane = null, execGit, log }) {
+async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, issue, settings, lane = null, deadline = null, execGit, log }) {
   const sides = [];
   try {
     // Both sides are measured in clones of their own, never in worktrees of this repo: a measured run
@@ -533,7 +563,7 @@ async function defaultMeasure({ repoRoot, base, candidateRoot, changedPaths, iss
     const organ = benchOrgan(lane);
     return organ
       ? await measureBench({ evalOn, issue, organ, changedPaths, settings, log })
-      : await measureSides({ evalOn, issue, changedPaths, settings, log });
+      : await measureSides({ evalOn, issue, changedPaths, settings, deadline, log });
   } catch (err) {
     return { measured: false, reason: err.message };
   } finally {
@@ -624,6 +654,8 @@ const CHECKOUT_PREFIXES = Object.freeze(['paraclete-loop-', 'paraclete-h2-side-'
 /**
  * Removes the repo's registered worktrees a killed cycle left behind (temporary checkouts named with
  * CHECKOUT_PREFIXES), links first, and prunes. Any error leaves the rest as it was.
+ *
+ * @returns {{ root: string, branch: string|null }[]} what it removed, with the branch each held
  */
 export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
   let listing = '';
@@ -632,9 +664,14 @@ export function clearStaleCheckouts({ repoRoot, execGit, log = () => {} }) {
   } catch {
     return [];
   }
-  const stale = listing.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length).trim())
-    .filter((p) => CHECKOUT_PREFIXES.some((prefix) => path.basename(p).startsWith(prefix)));
-  for (const root of stale) {
+  // One block a worktree: `worktree <path>`, `HEAD <sha>`, and `branch refs/heads/<name>` or `detached`.
+  const stale = listing.split(/\r?\n\r?\n/).map((block) => {
+    const lines = block.split(/\r?\n/);
+    const root = lines.find((l) => l.startsWith('worktree '))?.slice('worktree '.length).trim();
+    const ref = lines.find((l) => l.startsWith('branch '))?.slice('branch '.length).trim();
+    return { root, branch: ref ? ref.replace(/^refs\/heads\//, '') : null };
+  }).filter((w) => w.root && CHECKOUT_PREFIXES.some((prefix) => path.basename(w.root).startsWith(prefix)));
+  for (const { root } of stale) {
     log(`[INFO] loop: removing ${root}, left by a cycle that did not finish`);
     const links = LINKED_PACKAGES.map((rel) => path.join(root, rel)).filter((l) => {
       try {
@@ -865,43 +902,47 @@ export async function runCycle({
   const records = readCycleRecords({ repoRoot });
   let result = { action: 'no-work', reason: null, issue: null, branch: null, pullRequest: null };
   let base = null;
+  /** Appends one cycle's record to the cycle log, and returns it. */
+  const record = (r) => {
+    const entry = {
+      ...cycleRecord({
+        command: 'loop',
+        flags: { 'real-model': Boolean(r.measurement?.measured), unit: r.issue ? `#${r.issue}` : null },
+        commit: base,
+        // When the cycle ended, never before it started: a measured cycle runs for hours, and the
+        // retry wait and the day's count are reckoned from its record.
+        now: new Date(Math.max(clock(), now.getTime())),
+        result: {
+          ok: !FAILED.has(r.action) && !['capped', 'baseline-failed'].includes(r.action),
+          paused: r.action === 'paused',
+          reason: r.reason,
+          readiness: r.measurement?.evidence ? { evidence: r.measurement.evidence } : null,
+          pullRequest: r.pullRequest ? { prUrl: r.pullRequest } : null,
+        },
+      }),
+      loop: {
+        ...(lane ? { lane } : {}),
+        issue: r.issue, action: r.action, branch: r.branch, changed: (r.changes || []).map((c) => c.path),
+        tests: r.tests?.ok ?? null, repairs: r.repairs ?? 0, reviewed: r.review ? Boolean(r.review.ok) : null,
+        ...(r.planned ? { planned: true } : {}),
+        ...(r.released ? { released: r.released } : {}),
+        ...(r.baseline ? { baseline: r.baseline } : {}),
+        behaviour: r.behaviour ?? null, measured: r.measurement?.measured ?? null, dryRun,
+        ...(r.tests?.failures?.length
+          ? { failures: r.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
+          : {}),
+      },
+    };
+    try {
+      appendCycleRecord(entry, { repoRoot });
+    } catch (err) {
+      log(`[WARN] could not record the cycle: ${err.message}`);
+    }
+    return entry;
+  };
   const finish = (fields) => {
     result = { ...result, ...fields };
-    {
-      try {
-        appendCycleRecord({
-          ...cycleRecord({
-            command: 'loop',
-            flags: { 'real-model': Boolean(result.measurement?.measured), unit: result.issue ? `#${result.issue}` : null },
-            commit: base,
-            // When the cycle ended, never before it started: a measured cycle runs for hours, and the
-            // retry wait and the day's count are reckoned from its record.
-            now: new Date(Math.max(clock(), now.getTime())),
-            result: {
-              ok: !FAILED.has(result.action) && !['capped', 'baseline-failed'].includes(result.action),
-              paused: result.action === 'paused',
-              reason: result.reason,
-              readiness: result.measurement?.evidence ? { evidence: result.measurement.evidence } : null,
-              pullRequest: result.pullRequest ? { prUrl: result.pullRequest } : null,
-            },
-          }),
-          loop: {
-            ...(lane ? { lane } : {}),
-            issue: result.issue, action: result.action, branch: result.branch, changed: (result.changes || []).map((c) => c.path),
-            tests: result.tests?.ok ?? null, repairs: result.repairs ?? 0, reviewed: result.review ? Boolean(result.review.ok) : null,
-            ...(result.planned ? { planned: true } : {}),
-            ...(result.released ? { released: result.released } : {}),
-            ...(result.baseline ? { baseline: result.baseline } : {}),
-            behaviour: result.behaviour ?? null, measured: result.measurement?.measured ?? null, dryRun,
-            ...(result.tests?.failures?.length
-              ? { failures: result.tests.failures.slice(0, REPORT_LIMITS.failures).map(({ file, line, name }) => ({ file, line, name })) }
-              : {}),
-          },
-        }, { repoRoot });
-      } catch (err) {
-        log(`[WARN] could not record the cycle: ${err.message}`);
-      }
-    }
+    record(result);
     return result;
   };
 
@@ -926,8 +967,25 @@ export async function runCycle({
   }
 
   // What a cycle killed mid-way (by its unit's timeout, say) left: its checkouts, still registered, one
-  // holding its branch, which would stop the next cycle on that issue. No other cycle runs now.
-  clearStaleCheckouts({ repoRoot, execGit, log });
+  // holding its branch, which would stop the next cycle on that issue. No other cycle runs now. A
+  // killed cycle recorded nothing, so its issue is recorded here as tried and stopped: it waits
+  // `retryAfterHours`, as a refused attempt does, rather than being taken at once to be killed again,
+  // and an issue whose cycles are always stopped is given up after `maxAttempts`.
+  for (const { branch } of clearStaleCheckouts({ repoRoot, execGit, log })) {
+    const owner = branchOwner(branch, settings.branchPrefix);
+    if (!owner || owner.lane !== (lane ? laneSlug(lane) : '')) continue;
+    const reason = `a cycle working on it was stopped before it finished (by its unit's ${CYCLE_LIMIT_HOURS}-hour limit, or a restart of the driver), so nothing it did was kept`;
+    log(`[INFO] loop: #${owner.issue}: ${reason}`);
+    records.push(record({ action: 'stopped', reason, issue: owner.issue, branch }));
+    if (!dryRun) {
+      try {
+        execGh(['issue', 'comment', String(owner.issue), ...repoArgs, '--body',
+          refusalComment({ action: 'stopped', reason, retryAfterHours: settings.retryAfterHours })], repoRoot);
+      } catch (err) {
+        log(`[WARN] could not comment on #${owner.issue}: ${err.message}`);
+      }
+    }
+  }
 
   // A loop merge that broke main is reverted first, and nothing new is built on a broken main.
   // The global cycle opens the revert; a lane only reads main's state, so two cycles never revert one
@@ -1269,6 +1327,7 @@ export async function runCycle({
     if (behaviour) {
       measurement = await measure({
         repoRoot, base, candidateRoot: worktree, changedPaths: changes.map((c) => c.path), issue, settings, lane, execGit, log,
+        deadline: now.getTime() + CYCLE_LIMIT_HOURS * HOUR_MS - AFTER_MEASURE_MS,
       });
       if (!measurement.measured) return refuse('unmeasured', `it changes the agent's behaviour and could not be measured: ${measurement.reason}`, { changes, tests, behaviour, measurement });
       const organ = benchOrgan(lane);

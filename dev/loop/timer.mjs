@@ -9,6 +9,7 @@
 //   node dev/loop/timer.mjs [--lane <module> [--lanes-root <dir>]] [--interval-hours <h>] [--checkout <dir>] [--user <name>] [--repo <owner/name>]
 
 import { pathToFileURL } from 'node:url';
+import { CYCLE_LIMIT_HOURS } from './config.mjs';
 
 export const LOOP_UNIT = 'paraclete-loop-cycle';
 
@@ -43,9 +44,10 @@ export function loopUnits({ intervalHours = 6, checkout = '/var/lib/paraclete/ha
     `WorkingDirectory=${checkout}`,
     `ExecStart=/usr/bin/node dev/loop/cycle.mjs${repo ? ` --repo ${repo}` : ''}`,
     // A change to what the agent reads is measured on both sides, three real-model runs of each model
-    // suite task (45 a side, and more for a target or a task that looks worse), about 8 minutes each; a
-    // cycle never runs twice at once, so a long one only delays the next.
-    'TimeoutStartSec=20h',
+    // suite task it reaches (up to 45 a side, and more for a target or a task that looks worse), about
+    // 13 minutes each; a cycle never runs twice at once, so a long one only delays the next. A
+    // measurement that would run past this limit stops before it (cycle.mjs measureSides).
+    `TimeoutStartSec=${CYCLE_LIMIT_HOURS}h`,
     'Nice=10',
     '',
   ].join('\n');
@@ -128,7 +130,7 @@ export function laneUnits({ lane, intervalHours = 6, lanesRoot = LANES_ROOT, che
     `ExecStartPre=/usr/bin/git -C ${lanesRoot}/%i pull --ff-only --quiet origin main`,
     // The absolute path tells a lane's cycle from the global one, which the follow-main timer waits for.
     `ExecStart=/usr/bin/node ${lanesRoot}/%i/dev/loop/cycle.mjs --lane %i${repo ? ` --repo ${repo}` : ''}`,
-    'TimeoutStartSec=20h',
+    `TimeoutStartSec=${CYCLE_LIMIT_HOURS}h`,
     'Nice=10',
     '',
   ].join('\n');

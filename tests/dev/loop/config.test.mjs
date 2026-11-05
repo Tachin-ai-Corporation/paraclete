@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { LOOP_DEFAULTS, isBehaviourPath, isCodePath, loadLoopSettings, pathRefusal, testRefusal } from '../../../dev/loop/config.mjs';
+import { CYCLE_LIMIT_HOURS, LOOP_DEFAULTS, isBehaviourPath, isCodePath, loadLoopSettings, pathRefusal, testRefusal } from '../../../dev/loop/config.mjs';
 import { LANE_UNIT, LOOP_UNIT, laneUnits, loopUnits, main as timerMain } from '../../../dev/loop/timer.mjs';
 
 test('the referee and secrets are refused; existing tests may only be added to', () => {
@@ -71,7 +71,8 @@ test('the timer units: one cycle as the checkout owner, every few hours, install
   assert.match(u.service, /^WorkingDirectory=\/var\/lib\/paraclete\/harness2-repo$/m);
   assert.match(u.service, /^ExecStart=\/usr\/bin\/node dev\/loop\/cycle\.mjs --repo your-org\/paraclete$/m);
   assert.match(u.timer, /^OnUnitActiveSec=6h$/m);
-  assert.match(u.service, /^TimeoutStartSec=20h$/m, 'a measured change takes hours on each side');
+  assert.match(u.service, new RegExp(`^TimeoutStartSec=${CYCLE_LIMIT_HOURS}h$`, 'm'), 'the limit a measurement stops before (cycle.mjs measureSides)');
+  assert.equal(CYCLE_LIMIT_HOURS, 20, 'a measured change takes hours on each side');
   assert.ok(u.install.some((l) => l.includes(`enable --now ${LOOP_UNIT}.timer`)));
   assert.ok(u.uninstall.some((l) => l.includes(`disable --now ${LOOP_UNIT}.timer`)));
   assert.throws(() => loopUnits({ intervalHours: 0 }), /whole number from 1 to 24/);
