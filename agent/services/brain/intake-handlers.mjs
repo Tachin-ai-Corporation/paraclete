@@ -11,12 +11,10 @@ import { mergeSharedFiles, sharedFilesBlock, uploadIdOf } from '../../files/shar
 import { COLLECTIONS } from '../../storage/collections.mjs';
 import { firestoreEncode, StoreConflict } from '../../storage/firestore.mjs';
 import { toStr } from '../../providers/to-str.mjs';
-import { addressMeta } from './envelope-store.mjs';
+import { addressMeta, CANCELLABLE_STATUSES } from './envelope-store.mjs';
 
 /** Statuses in which a mission waits for a person, and an answer resumes it. */
 const AWAITING_PERSON = ['needs_input', 'blocked'];
-/** Statuses a cancel can stop. */
-const CANCELLABLE = ['active', 'pending', 'queued', 'waiting', 'needs_input', 'blocked', 'awaiting_approval', 'planned'];
 const STATUS_QUERY = /\b(?:status|progress|how.{0,10}going|where.{0,10}at|what.{0,10}happening|any.{0,10}update|how.{0,10}coming)\b/i;
 
 /**
@@ -96,7 +94,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
     return [toStr(intake.text), filesBlock(intake.attachments, missionId)].filter(Boolean).join('\n\n');
   }
 
-  async function ack(mission, intake, text, key) {
+  async function ack(mission, intake, text, key, { saveParent = true } = {}) {
     if (!text) return;
     await store.createCT(mission, {
       checkpointTitle: 'Acknowledge receipt',
@@ -107,7 +105,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       deliveryAddress: addressFor({ source_meta: intake.source_meta, source_channel: intake.source }),
       ctKey: key,
     });
-    await store.save(mission);
+    if (saveParent) await store.patch(mission.id, { children: mission.children, updated_at: mission.updated_at });
   }
 
   /**
@@ -141,7 +139,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       parent_id: null,
       status: 'queued',
       intent: decision.intent || 'decide',
-      title: await generateTitle(instruction.length > 100 ? instruction : (stripChatFraming(intake.text) || instruction), 'mission'),
+      title: '',
       instruction,
       accept_criteria: toStr(decision.accept_criteria) || null,
       context_summary: context || null,
@@ -169,10 +167,16 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       // Not delivered until the mission ends: completion sets it pending.
       delivery_status: 'internal',
     };
+    const [title] = await Promise.all([
+      generateTitle(instruction.length > 100 ? instruction : (stripChatFraming(intake.text) || instruction), 'mission'),
+      ack(mission, intake, ackText, `ack-${id}`, { saveParent: false }),
+    ]);
+    mission.title = title;
     await store.save(mission);
-    await store.writeHistory(id, null, 'queued', 'brain', `Created from intake ${intake.id}${followUpOf ? ` (follows ${followUpOf.id})` : ''}`);
-    await markTaken(intake.attachments, id);
-    await ack(mission, intake, ackText, `ack-${id}`);
+    await Promise.all([
+      store.writeHistory(id, null, 'queued', 'brain', `Created from intake ${intake.id}${followUpOf ? ` (follows ${followUpOf.id})` : ''}`),
+      markTaken(intake.attachments, id),
+    ]);
     await consume(intake, id);
     log('INFO', `mission ${id} queued from intake ${intake.id}`);
     return mission;
@@ -297,7 +301,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       await consume(intake, null);
       return null;
     }
-    if (!CANCELLABLE.includes(target.status)) {
+    if (!CANCELLABLE_STATUSES.includes(target.status)) {
       log('INFO', `cancel target ${target.id} is already ${target.status}`);
       await consume(intake, target.id);
       return target;
@@ -311,7 +315,7 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
     }
     const from = target.status;
     const done = await store.update(target.id, (doc) => {
-      if (!CANCELLABLE.includes(doc.status) || store.isClaimLive(doc)) return null;
+      if (!CANCELLABLE_STATUSES.includes(doc.status) || store.isClaimLive(doc)) return null;
       store.move(doc, 'cancelled', { reason });
       return doc;
     });
@@ -321,26 +325,11 @@ export function createIntakeHandlers({ db, store, generateTitle, memory, project
       return target;
     }
     await store.writeHistory(target.id, from, 'cancelled', 'brain', `Cancelled: ${reason.substring(0, 100)}`);
-    await cancelChildren(target.id);
+    await store.cancelChildren(target.id);
     await writeStatusUpdate(target.id, `✅ Cancelled mission: "${toStr(target.title || target.instruction).substring(0, 100)}"`);
     await consume(intake, target.id);
     log('INFO', `mission ${target.id} cancelled (was ${from})`);
     return done;
-  }
-
-  async function cancelChildren(parentId, depth = 0) {
-    if (depth > 4) return;
-    const children = await store.query([{ field: 'parent_id', op: 'EQUAL', value: { stringValue: parentId } }], { noOrderBy: true, limit: 300 });
-    for (const child of children) {
-      if (CANCELLABLE.includes(child.status)) {
-        try {
-          await store.setStatus(child, 'cancelled', `Parent ${parentId} cancelled`, { event: { reason: `Parent ${parentId} cancelled` } });
-        } catch (e) {
-          log('WARN', `could not cancel ${child.id}: ${e.message}`);
-        }
-      }
-      await cancelChildren(child.id, depth + 1);
-    }
   }
 
   /**

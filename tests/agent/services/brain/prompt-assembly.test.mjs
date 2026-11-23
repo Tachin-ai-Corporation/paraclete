@@ -140,6 +140,21 @@ test('the decide turn\'s guidance: no delegation, a goal check when there are cr
   assert.equal(briefed.premise_check.note, 'the folder does not exist');
   assert.match(briefed.responsibility_trigger_guidance, /trigger_responsibility/);
   assert.equal(briefed.rendered_project_context, '## Project Context: Site');
+  assert.equal(briefed.dispatch_guidance.preference, 'Use the minimal form unless you have specific structural requirements.');
+
+  const singleReversible = decidePayload({
+    envelope: envelope(),
+    brief: { objective: 'Build and share PDF', parts: [{ id: 'p1', risk: 'mutating' }] },
+  });
+  assert.equal(singleReversible.dispatch_guidance.minimal_form, undefined);
+  assert.match(singleReversible.dispatch_guidance.full_form, /agent: "motor \| temporal-research \| temporal-memory"/);
+  assert.match(singleReversible.dispatch_guidance.preference, /full form.*making and sharing it stay in that single task/);
+
+  const singleRisky = decidePayload({
+    envelope: envelope(),
+    brief: { objective: 'Deploy prod', parts: [{ id: 'p1', risk: 'destructive_or_public' }] },
+  });
+  assert.equal(singleRisky.dispatch_guidance.preference, 'Use the minimal form unless you have specific structural requirements.');
 });
 
 test('the decide blocks are ordered boot, mission, working state; the envelope splits by what changes', () => {

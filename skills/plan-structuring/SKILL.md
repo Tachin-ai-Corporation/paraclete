@@ -206,16 +206,18 @@ tool calls in one task is normal execution. But each task runs as its own turn, 
 of tool calls and time, and a fresh task re-reads its context from scratch, so the budget reaches real
 work only when the task is one coherent outcome. Avoid both failures:
 
-- **Over-bundling:** several outcomes in one task ("write the HTML and the CSS and render the PDF and
-  upload it"). The organ spends its budget on the first outcome and runs out before the rest. When a
-  deliverable needs authoring, rendering and delivery, those are separate tasks, each with a fresh
+- **Over-bundling:** unrelated deliverables crammed into one task ("audit the Q3 workbook, rebuild the
+  marketing homepage and draft three client agreements"). The organ spends its budget on the first
+  deliverable and runs out before the rest. Distinct deliverables are separate tasks, each with a fresh
   budget.
-- **Fragmenting:** one outcome split across tasks ("write the HTML", then "write the CSS"). Each split
-  re-reads the brief and the skill from scratch, wasting budget and risking drift between the halves.
-  One artifact, its markup and its styles, is authored in one task.
+- **Fragmenting:** one deliverable split across tasks ("write the HTML", then "write the CSS"; or
+  "build the PDF", then "share the PDF with file-share"). Each split starts a cold turn that re-reads
+  the brief and the skill from scratch, wasting budget and risking drift. Creating one file deliverable,
+  checking it and sharing it with `file-share` is one `motor` task end to end.
 
-Split only when the outcome genuinely changes (author, render, deliver), never merely because one
-outcome takes several steps. "Read, analyze, apply" is one outcome.
+Split only when the deliverable or owning organ changes (for example `temporal-research` gathers
+sources, then `motor` builds and shares the document), never merely because one deliverable takes
+several tool calls. "Read, analyze, apply" and "author, render, check, share" are each one outcome.
 
 ### Task text describes outcomes, never tool syntax
 

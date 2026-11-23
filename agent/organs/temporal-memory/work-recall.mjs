@@ -17,6 +17,11 @@ const STOPWORDS = new Set(['the','and','for','are','but','not','you','all','can'
 // and recall found nothing at all.
 const NEWEST_FIRST = { orderBy: 'created_at', orderDirection: 'DESCENDING' };
 
+/** Non-stopword lowercase tokens of three or more characters, in order. */
+export function cueTokens(text) {
+  return text ? text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOPWORDS.has(t)) : [];
+}
+
 /**
  * The recall cues in a text: distinct lowercase words of three or more characters that are not
  * stopwords, plus adjacent pairs, at most eight.
@@ -25,8 +30,8 @@ const NEWEST_FIRST = { orderBy: 'created_at', orderDirection: 'DESCENDING' };
  * @returns {string[]}
  */
 export function extractCues(text) {
-  if (!text) return [];
-  const tokens = text.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+  const tokens = cueTokens(text);
+  if (tokens.length === 0) return [];
   const cues = new Set(tokens);
   for (let i = 0; i < tokens.length - 1; i++) cues.add(`${tokens[i]} ${tokens[i + 1]}`);
   return [...cues].slice(0, MAX_CUES);

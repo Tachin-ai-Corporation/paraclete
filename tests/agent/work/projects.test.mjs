@@ -383,6 +383,12 @@ describe('suggestContextPromotions', () => {
       existing: { kind: 'doc', ref: 'd-9' },
       deploy_history: { kind: 'resource', summary: 'Three attempts' },
       resources: { kind: 'resource', summary: 'the mission ledger' },
+      inbound_files: [],
+      mission_record: ['MISSION.md'],
+      artifact_status: 'ok',
+      attachments_export: [],
+      git_version_index: 1,
+      git_checkpoint_count: 1,
       bare: 'just a string',
     },
   };
@@ -402,7 +408,9 @@ describe('suggestContextPromotions', () => {
     assert.equal(doc.suggested_at, NOW_ISO);
     assert.ok(logs.some((l) => /skipped 'deploy_history'/.test(l)), 'a history key is refused');
     assert.ok(logs.some((l) => /skipped 'bare'/.test(l)), 'a bare value is refused');
-    assert.ok(!logs.some((l) => /skipped 'resources'/.test(l)), 'the resource ledger is skipped silently');
+    for (const silentKey of ['resources', 'inbound_files', 'mission_record', 'artifact_status', 'attachments_export', 'git_version_index', 'git_checkpoint_count']) {
+      assert.ok(!logs.some((l) => l.includes(`skipped '${silentKey}'`)), `${silentKey} is skipped silently`);
+    }
   });
 
   it('auto-promotion merges in every field of every entry', async () => {
