@@ -225,26 +225,10 @@ export function createEnvelopeRunner(deps) {
     cancelRequests.delete(env.id);
     if (session) await session.close();
     await store.setStatus(env, 'cancelled', `Cancelled: ${String(reason).substring(0, 100)}`, { event: { reason } });
-    await cancelChildren(env.id);
+    await store.cancelChildren(env.id);
     await writeStatusUpdate(env.id, `✅ Cancelled mission: "${toStr(env.title || env.instruction).substring(0, 100)}"`);
     log('INFO', `mission ${env.id} cancelled`);
     return true;
-  }
-
-  /** Cancels the unfinished checkpoints and tasks under an envelope, all the way down. */
-  async function cancelChildren(parentId, depth = 0) {
-    if (depth > 4) return;
-    const children = await store.query([{ field: 'parent_id', op: 'EQUAL', value: { stringValue: parentId } }], { noOrderBy: true, limit: 300 });
-    for (const child of children) {
-      if (['active', 'pending', 'queued', 'waiting', 'needs_input', 'blocked', 'awaiting_approval'].includes(child.status)) {
-        try {
-          await store.setStatus(child, 'cancelled', `Parent ${parentId} cancelled`, { event: { reason: `Parent ${parentId} cancelled` } });
-        } catch (e) {
-          log('WARN', `could not cancel ${child.id}: ${e.message}`);
-        }
-      }
-      await cancelChildren(child.id, depth + 1);
-    }
   }
 
   /**
@@ -332,11 +316,13 @@ export function createEnvelopeRunner(deps) {
   /** The decide turn's context about the work waiting behind this mission. */
   async function queueState() {
     try {
-      const pending = await store.firestoreQuery(COLLECTIONS.intake, [{ field: 'status', op: 'EQUAL', value: { stringValue: 'pending' } }], { noOrderBy: true, limit: 20 });
-      const queued = await store.query([
-        { field: 'status', op: 'EQUAL', value: { stringValue: 'queued' } },
-        { field: 'type', op: 'EQUAL', value: { stringValue: 'M' } },
-      ], { noOrderBy: true, limit: 20 });
+      const [pending, queued] = await Promise.all([
+        store.firestoreQuery(COLLECTIONS.intake, [{ field: 'status', op: 'EQUAL', value: { stringValue: 'pending' } }], { noOrderBy: true, limit: 20 }),
+        store.query([
+          { field: 'status', op: 'EQUAL', value: { stringValue: 'queued' } },
+          { field: 'type', op: 'EQUAL', value: { stringValue: 'M' } },
+        ], { noOrderBy: true, limit: 20 }),
+      ]);
       return {
         pending_intake_count: pending.length,
         pending_queue: queued.map((q, i) => ({ position: i + 1, text: String(q.title || q.instruction || '').substring(0, 120) })),

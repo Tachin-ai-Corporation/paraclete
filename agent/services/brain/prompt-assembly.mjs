@@ -322,11 +322,18 @@ export function decidePayload(a) {
   }
   if (a.brief) {
     p.brief = a.brief;
+    const parts = Array.isArray(a.brief.parts) ? a.brief.parts : [];
+    const directPlan = parts.length === 1
+      && !a.brief.process_match
+      && parts[0]?.risk !== 'destructive_or_public'
+      && !(Array.isArray(parts[0]?.unknowns) && parts[0].unknowns.length > 0);
     p.dispatch_guidance = {
       rule: 'Commit work from the Brief with checkpoint_plan. Give a full checkpoints array, or only a goal and constraints and the prefrontal structures the plan.',
       minimal_form: '{ action: "checkpoint_plan", goal: "...", constraints: "..." }: the prefrontal structures the plan',
       full_form: '{ action: "checkpoint_plan", checkpoints: [...] }: you give the full structure',
-      preference: 'Use the minimal form unless you have specific structural requirements.',
+      preference: directPlan
+        ? 'For the initial plan on this single-part reversible Brief, give checkpoints directly (full form: one checkpoint with one focused task; when the deliverable is a file, making and sharing it stay in that single task). After a failed checkpoint, return { action: "checkpoint_plan" } so it is re-tasked against its pinned outcome.'
+        : 'Use the minimal form unless you have specific structural requirements.',
       step_types: 'standard (work by motor, temporal-research or temporal-memory), approval_gate (a destructive or public action: a person approves first), ask (an unknown no one can resolve: use needs_input)',
       sequencing: 'Independent parts fan out within a checkpoint. Dependent parts serialize across checkpoint boundaries.',
       skill_guidance: SKILL_GUIDANCE,

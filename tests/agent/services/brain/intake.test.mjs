@@ -68,14 +68,14 @@ test('only reads of the agent\'s own work can ground a respond', () => {
 });
 
 test('a message is claimed, ledgered, classified with what is in flight, and routed to a new mission', async () => {
-  const t = await setup({ classify: { classification: 'new_mission', reasoning: 'work', instruction: 'Write the report' } });
+  const t = await setup({ classify: { classification: 'new_mission', reasoning: 'work', instruction: 'Write the quarterly report' } });
   try {
     await db.write(`${COLLECTIONS.work}/w-live`, { id: 'w-live', type: 'M', parent_id: null, status: 'blocked', instruction: 'Sync the calendar', blocker: 'no access', created_at: '2026-10-17T11:00:00.000Z' });
     await writeIntake(db, { text: 'Please write the report' });
     assert.equal(await t.intake.poll(), 1);
     const [name, [intake, decision, opts]] = t.calls.handlers[0];
     assert.equal(name, 'newMission');
-    assert.equal(decision.instruction, 'Write the report');
+    assert.equal(decision.instruction, 'Write the quarterly report');
     assert.equal(opts.ackText, 'On it.');
     assert.equal(intake._thread_key, 'th-1');
     assert.deepEqual(opts.memory, { recalled: 'ambient\n\n---\n\nenriched' }, 'mission-bound work gets a second, sharper recall');
@@ -177,12 +177,13 @@ test('an intake a gone process had claimed goes back to pending, counted as an a
 });
 
 test('the agent\'s own intakes get no acknowledgment', async () => {
-  const t = await setup({ classify: { classification: 'new_mission', reasoning: 'r', instruction: 'x' } });
+  const t = await setup({ classify: { classification: 'new_mission', reasoning: 'r', instruction: 'internal note' } });
   try {
     await writeIntake(db, { text: 'internal note', source: 'system' });
     await t.intake.poll();
     assert.equal(t.calls.acks, 0);
     assert.equal(t.calls.handlers[0][1][2].ackText, null);
+    assert.equal(t.calls.recalls.length, 1, 'no second recall when the classifier adds no new cues');
   } finally {
     await t.stop();
   }

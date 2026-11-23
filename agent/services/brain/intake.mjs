@@ -10,7 +10,7 @@ import { COLLECTIONS } from '../../storage/collections.mjs';
 import { firestoreEncode } from '../../storage/firestore.mjs';
 import { toStr } from '../../providers/to-str.mjs';
 import { appendTurn, compactThread, readThread, threadKeyFor } from '../../context/thread-ledger.mjs';
-import { extractCues, recentWorkDigest } from '../../organs/temporal-memory/work-recall.mjs';
+import { cueTokens, extractCues, recentWorkDigest } from '../../organs/temporal-memory/work-recall.mjs';
 import { classifyBlocks, cortexSystem, cortexUser, respondComposeBlocks } from './prompt-assembly.mjs';
 
 /** Attempts at one intake before it is marked failed. */
@@ -19,6 +19,7 @@ export const MAX_INTAKE_ATTEMPTS = 3;
 const READ_TIMEOUT_MS = 10_000;
 /** Sources that are the agent's own, which get no acknowledgment. */
 const OWN_SOURCES = new Set(['brain', 'system', 'scheduler']);
+const ACTIVE_STATUSES = ['active', 'queued', 'waiting', 'needs_input', 'blocked', 'awaiting_approval'];
 /** What each read a respond may ask for does. Only reads of the agent's own work exist. */
 export const RESPOND_READS = Object.freeze({
   recent_work: 'The work this agent finished, failed or stopped in the last 7 days, with outcomes. Use it to answer what has been done recently.',
@@ -103,18 +104,13 @@ export function createIntake(deps) {
 
   /** The top-level work in flight or waiting on a person, for the classifier and the acknowledgment. */
   async function scanActive() {
-    const out = [];
-    for (const status of ['active', 'queued', 'waiting', 'needs_input', 'blocked', 'awaiting_approval']) {
-      const envs = await store.query([{ field: 'status', op: 'EQUAL', value: { stringValue: status } }], { noOrderBy: true, limit: 50 });
-      for (const env of envs) {
-        if (env.parent_id || env.type !== 'M') continue;
-        out.push({
-          id: env.id, type: env.type, instruction: toStr(env.instruction).substring(0, 200), status: env.status,
-          blocker: env.blocker || null, blocker_type: env.blocker_type || null, updated_at: env.updated_at,
-        });
-      }
-    }
-    return out;
+    const batches = await Promise.all(
+      ACTIVE_STATUSES.map((status) => store.query([{ field: 'status', op: 'EQUAL', value: { stringValue: status } }], { noOrderBy: true, limit: 50 })),
+    );
+    return batches.flat().filter((env) => !env.parent_id && env.type === 'M').map((env) => ({
+      id: env.id, type: env.type, instruction: toStr(env.instruction).substring(0, 200), status: env.status,
+      blocker: env.blocker || null, blocker_type: env.blocker_type || null, updated_at: env.updated_at,
+    }));
   }
 
   /** The most recently completed missions, for dedup and continuity. */
@@ -159,8 +155,7 @@ export function createIntake(deps) {
    * @returns {Promise<string>} what was done: approved, rejected, disambiguation, respond, attach, ...
    */
   async function process(intake) {
-    await projects?.ensureLoaded();
-    await processes?.ensureLoaded();
+    await Promise.all([projects?.ensureLoaded(), processes?.ensureLoaded()]);
     log('INFO', `processing intake ${intake.id} from ${intake.source}`);
     const sourceText = notifier.extractCurrentMessage(intake.source_meta?.raw_text || intake.text);
     await setIntake(intake.id, { status: 'claimed', claimed_at: store.iso() });
@@ -171,15 +166,15 @@ export function createIntake(deps) {
       return approval;
     }
 
-    const convo = await conversationFor(intake);
+    const [convo, active, recent] = await Promise.all([conversationFor(intake), scanActive(), scanRecent(5)]);
     const lastAgentReply = convo?.last_agent_text || null;
-    const active = await scanActive();
+    const ambientText = [intake.text, convo?.cue_text || ''].filter(Boolean).join(' ');
+    const ambientTokens = new Set(cueTokens(ambientText));
     const ambient = await memory.recall(intake.text, {
       lastAgentReply,
-      cues: extractCues([intake.text, convo?.cue_text || ''].filter(Boolean).join(' ')),
+      cues: extractCues(ambientText),
     });
     const respondReads = (settings.respondReads || []).filter((id) => RESPOND_READS[id]).map((id) => ({ id, description: RESPOND_READS[id] }));
-    const recent = await scanRecent(5);
     const inbound = { text: intake.text, source: intake.source, source_meta: intake.source_meta || {} };
 
     const decision = await gateway.askJson({
@@ -198,24 +193,31 @@ export function createIntake(deps) {
     let classification = decision.classification || 'new_mission';
     log('INFO', `intake ${intake.id} classified as ${classification}`);
 
-    // Mission-bound work gets a second, sharper recall from the classifier's own reading of the request.
-    let mem = ambient;
-    if (['new_mission', 'attach', 'continue'].includes(classification) && (decision.instruction || decision.context_summary)) {
-      const enriched = await memory.recall(intake.text, {
-        instruction: decision.instruction,
-        contextSummary: decision.context_summary,
-        conversationHint: convo?.cue_text || null,
-        cues: extractCues([intake.text, decision.instruction || '', convo?.cue_text || ''].filter(Boolean).join(' ')),
-      });
-      if (enriched.recalled && enriched.recalled !== ambient.recalled) {
-        mem = { recalled: [ambient.recalled || '', enriched.recalled].filter(Boolean).join('\n\n---\n\n').substring(0, 4000) };
-      }
-    }
+    // Run a second recall only when the classifier resolves search terms not already in ambient cues.
+    const missionBound = ['new_mission', 'attach', 'continue'].includes(classification);
+    const classifierText = [decision.instruction || '', decision.context_summary || ''].filter(Boolean).join(' ');
+    const needsEnrichedRecall = missionBound && cueTokens(classifierText).some((t) => !ambientTokens.has(t));
+    const needsAck = !OWN_SOURCES.has(intake.source) && missionBound;
 
-    let ackText = null;
-    if (!OWN_SOURCES.has(intake.source) && ['new_mission', 'continue', 'attach'].includes(classification)) {
-      ackText = await notifier.generateAck(intake.text || '', active, recent);
-      await setIntake(intake.id, { quick_ack_sent: true });
+    let [enriched, ackText] = await Promise.all([
+      needsEnrichedRecall
+        ? memory.recall(intake.text, {
+            instruction: decision.instruction,
+            contextSummary: decision.context_summary,
+            conversationHint: convo?.cue_text || null,
+            cues: extractCues([classifierText, ambientText].filter(Boolean).join(' ')),
+          })
+        : null,
+      needsAck
+        ? notifier.generateAck(intake.text || '', active, recent).then(async (text) => {
+            await setIntake(intake.id, { quick_ack_sent: true });
+            return text;
+          })
+        : null,
+    ]);
+    let mem = ambient;
+    if (enriched?.recalled && enriched.recalled !== ambient.recalled) {
+      mem = { recalled: [ambient.recalled || '', enriched.recalled].filter(Boolean).join('\n\n---\n\n').substring(0, 4000) };
     }
     const opts = { memory: mem, conversation: convo?.block || null, ackText, sourceText };
 

@@ -1,9 +1,9 @@
 // agent/services/brain/envelope-store.mjs: the brain's access to work envelopes in Firestore: reads,
 // whole-document saves, field-masked patches, compare-and-swap updates, the durable claim that keeps
-// one mission on one processor, status changes through the transition table, history records, and
-// the checkpoint-and-task pair that wraps a message the brain writes under a mission. It decides
-// nothing about what work to do; the runner, the intake and the actions do. Built once by main.mjs and
-// shared by every brain module.
+// one mission on one processor, status changes through the transition table, history records,
+// cascading cancellations of unfinished child envelopes, and the checkpoint-and-task pair that wraps
+// a message the brain writes under a mission. It decides nothing about what work to do; the runner,
+// the intake and the actions do. Built once by main.mjs and shared by every brain module.
 
 import { randomBytes } from 'node:crypto';
 import { COLLECTIONS } from '../../storage/collections.mjs';
@@ -15,6 +15,11 @@ import { parseAddress } from '../../providers/channel.mjs';
 
 /** How many times a compare-and-swap update re-reads and tries again after losing a race. */
 const UPDATE_ATTEMPTS = 3;
+
+/** Envelope statuses that can still be cancelled cleanly. */
+export const CANCELLABLE_STATUSES = Object.freeze([
+  'active', 'pending', 'queued', 'waiting', 'needs_input', 'blocked', 'awaiting_approval', 'planned',
+]);
 
 /** The source_meta fields a message the brain writes under a mission carries from its mission. */
 const ADDRESS_META = ['address', 'sender', 'sender_name', 'channel_msg_id'];
@@ -307,6 +312,22 @@ export function createEnvelopeStore({
     return cpId;
   }
 
+  /** Cancels the unfinished checkpoints and tasks under an envelope, all the way down. */
+  async function cancelChildren(parentId, depth = 0) {
+    if (depth > 4) return;
+    const children = await query([{ field: 'parent_id', op: 'EQUAL', value: { stringValue: parentId } }], { noOrderBy: true, limit: 300 });
+    for (const child of children) {
+      if (CANCELLABLE_STATUSES.includes(child.status)) {
+        try {
+          await setStatus(child, 'cancelled', `Parent ${parentId} cancelled`, { event: { reason: `Parent ${parentId} cancelled` } });
+        } catch (e) {
+          log('WARN', `could not cancel ${child.id}: ${e.message}`);
+        }
+      }
+      await cancelChildren(child.id, depth + 1);
+    }
+  }
+
   return {
     newId,
     iso,
@@ -323,6 +344,7 @@ export function createEnvelopeStore({
     setStatus,
     writeHistory,
     createCT,
+    cancelChildren,
     /** Library adapters, in the (collection, docId) shape agent/work and agent/context take. */
     firestoreRead: (collection, docId) => db.read(`${collection}/${docId}`),
     firestoreWrite: (collection, docId, data) => db.write(`${collection}/${docId}`, data),

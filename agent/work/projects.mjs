@@ -24,10 +24,11 @@ const QUERY_LIMIT = 300;
 const OPEN_STATUSES = ENVELOPE_STATUSES.filter((s) => !TERMINAL_STATUSES.includes(s));
 
 // Mission-scoped working structures that are never project context and must not be reported as
-// promotion failures on every mission. The resource ledger is the clear case: a name-to-id map the
-// mission builds as it works, holding converted temporary docs and one-off file ids. Its durable
-// path is memory, not the project.
-const NOT_PROJECT_CONTEXT = new Set(['resources']);
+// promotion failures on every mission: the resource ledger, uploaded files, git state, and exports.
+const NOT_PROJECT_CONTEXT = new Set([
+  'resources', 'inbound_files', 'mission_record', 'artifact_status', 'attachments_export',
+  'artifacts', 'pending_merge', 'merge_failed', 'git_status', 'git_version_index', 'git_checkpoint_count',
+]);
 
 /** Two context packets merged by key; the child wins a collision. */
 function mergeContextPackets(parentCtx, childCtx) {
@@ -404,12 +405,8 @@ export function createProjectRegistry(deps) {
     const deps_ = envelope.depends_on;
     if (!Array.isArray(deps_) || deps_.length === 0) return true;
     try {
-      for (const depId of deps_) {
-        const dep = await db.read(`${COLLECTIONS.work}/${depId}`);
-        if (!dep) continue;
-        if (dep.status !== 'complete' && dep.status !== 'archived') return false;
-      }
-      return true;
+      const docs = await Promise.all(deps_.map((depId) => db.read(`${COLLECTIONS.work}/${depId}`)));
+      return docs.every((dep) => !dep || dep.status === 'complete' || dep.status === 'archived');
     } catch (e) {
       log('WARN', `checkDependencies error: ${e.message}`);
       return true;
