@@ -57,6 +57,21 @@ describe('extractCheckpoints', () => {
     assert.deepEqual(cps[0].tasks.map((t) => t.task), ['Do thing', 'Do the next thing', 'Describe the last thing']);
   });
 
+  it('maps organ/outcome/goal/check aliases from inline cortex plans', () => {
+    const cps = extractCheckpoints({
+      checkpoints: [{
+        outcome: 'Build PDF',
+        check: 'PDF shared',
+        tasks: [{ organ: 'motor', goal: 'Make and share PDF', check: '1 page' }],
+      }],
+    });
+    assert.deepEqual(cps, [{
+      instruction: 'Build PDF',
+      accept_criteria: 'PDF shared',
+      tasks: [{ organ: 'motor', agent: 'motor', goal: 'Make and share PDF', task: 'Make and share PDF', check: '1 page', accept_criteria: '1 page' }],
+    }]);
+  });
+
   it('turns a non-string task into text', () => {
     const cps = extractCheckpoints({ checkpoints: [{ tasks: [{ agent: 'motor', task: { instruction: 'nested text' } }] }] });
     assert.equal(cps[0].tasks[0].task, 'nested text');

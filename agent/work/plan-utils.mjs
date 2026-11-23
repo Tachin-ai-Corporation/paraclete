@@ -12,14 +12,17 @@ import { toStr } from '../providers/to-str.mjs';
  */
 function normalizeTasks(tasks, cpNumber, log) {
   return (Array.isArray(tasks) ? tasks : []).filter((t) => {
-    if (!t || typeof t !== 'object' || !t.agent || typeof t.agent !== 'string') {
+    const agent = t && typeof t === 'object' ? (t.agent || t.organ) : null;
+    if (!agent || typeof agent !== 'string') {
       log('WARN', `Checkpoint ${cpNumber}: skipping task without agent field`);
       return false;
     }
     return true;
   }).map((t) => ({
     ...t,
-    task: toStr(t.task || t.instruction || t.description || ''),
+    agent: t.agent || t.organ,
+    task: toStr(t.task || t.instruction || t.description || t.outcome || t.goal || t.summary || ''),
+    ...(t.accept_criteria || t.check ? { accept_criteria: toStr(t.accept_criteria || t.check) } : {}),
   }));
 }
 
@@ -28,9 +31,10 @@ function normalizeTasks(tasks, cpNumber, log) {
  *
  * Accepts { checkpoints: [...] }, { plan: { checkpoints: [...] } } or
  * { checkpoint_plan: { checkpoints: [...] } }. A flat array of tasks under any of those keys is
- * wrapped in one checkpoint. Normalizes field names (steps or parts → tasks; title or
- * description → instruction; task text from task, instruction or description), drops tasks that
- * name no agent, and drops checkpoints left with no tasks.
+ * wrapped in one checkpoint. Normalizes field names (steps or parts → tasks; organ → agent;
+ * outcome, goal, title, description or summary → instruction; task, instruction, description,
+ * outcome, goal or summary → task; check → accept_criteria), drops tasks that name no agent, and
+ * drops checkpoints left with no tasks.
  *
  * @param {object} d - Decision object from the cortex or prefrontal
  * @param {function} [log] - Optional logger (level, message); defaults to a no-op
@@ -43,7 +47,7 @@ export function extractCheckpoints(d, log = () => {}) {
   if (!Array.isArray(raw) || raw.length === 0) return null;
 
   // A flat array of tasks (no .tasks nesting): one checkpoint holding all of them.
-  if (raw[0] && raw[0].agent && !raw[0].tasks) {
+  if (raw[0] && (raw[0].agent || raw[0].organ) && !raw[0].tasks && !raw[0].steps && !raw[0].parts) {
     const tasks = normalizeTasks(raw, 1, log);
     return tasks.length > 0 ? [{ instruction: d.instruction || d.goal || 'Execute plan', tasks }] : null;
   }
@@ -51,8 +55,8 @@ export function extractCheckpoints(d, log = () => {}) {
   return raw.map((entry, i) => {
     const cp = entry && typeof entry === 'object' ? entry : {};
     return {
-      instruction: cp.instruction || cp.title || cp.description || `Checkpoint ${i + 1}`,
-      accept_criteria: cp.accept_criteria || '',
+      instruction: cp.instruction || cp.outcome || cp.goal || cp.title || cp.description || cp.summary || `Checkpoint ${i + 1}`,
+      accept_criteria: cp.accept_criteria || cp.check || '',
       tasks: normalizeTasks(Array.isArray(cp.tasks) ? cp.tasks : (cp.steps || cp.parts), i + 1, log),
     };
   }).filter((cp) => cp.tasks.length > 0);

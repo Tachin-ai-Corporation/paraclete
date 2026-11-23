@@ -137,7 +137,7 @@ export async function handleCheckpointPlan(ctx, deps) {
   const repair = (cps, where) => repairPlan(cps, envelope.context?.resources, { log, missionId: envelope.id, where });
 
   // ---- The cortex's own plan, if it gave a valid one ----
-  let checkpoints = extractCheckpoints(decision);
+  let checkpoints = extractCheckpoints(decision, log);
   repair(checkpoints, 'cortex_inline');
   let planSource = checkpoints && checkpoints.length > 0 ? 'cortex_inline' : 'none';
   if (checkpoints && checkpoints.some((cp) => cp.tasks.some((t) => !VALID_TASK_ORGANS.includes(t.agent)))) {
@@ -171,14 +171,21 @@ export async function handleCheckpointPlan(ctx, deps) {
 
   // ---- Playbooks the planner should see ----
   let processHint = '';
-  const goalText = String(decision.goal || decision.instruction || decision.reasoning || envelope.instruction || '').toLowerCase();
-  const matching = playbooks.filter((p) => p.status !== 'deprecated' && (p.intent_keywords || []).some((kw) => goalText.includes(String(kw).toLowerCase())));
-  if (matching.length > 0) {
-    log('INFO', `[checkpoint_plan] playbook match: ${matching.map((p) => p.id).join(', ')}`);
-    // Recorded for the lesson the memory organ writes after the mission, merged so a playbook the
-    // responsibility named at fire time is kept.
-    envelope.recalled_processes = [...new Set([...(envelope.recalled_processes || []), ...matching.map((p) => p.id)])];
-    processHint = `[PROCESS PLAYBOOKS] A remembered narrative may cover this work:\n${matching.map((p) => `- ${p.id}: ${p.name} — ${String(p.narrative || p.description || '').substring(0, 200)}`).join('\n')}\nTreat any that fits as guidance and fold it into your OWN checkpoints: adapt it, keep control.`;
+  const explicitIds = [decision.processId, envelope._brief?.process_match].filter(Boolean);
+  const explicit = playbooks.filter((p) => p.status !== 'deprecated' && explicitIds.includes(p.id));
+  if (explicit.length > 0) {
+    envelope.recalled_processes = [...new Set([...(envelope.recalled_processes || []), ...explicit.map((p) => p.id)])];
+  }
+  if (!isMemoryScoped(envelope) && (!checkpoints || checkpoints.length === 0)) {
+    const goalText = String(decision.goal || decision.instruction || decision.reasoning || envelope.instruction || '').toLowerCase();
+    const matching = playbooks.filter((p) => p.status !== 'deprecated' && (p.intent_keywords || []).some((kw) => goalText.includes(String(kw).toLowerCase())));
+    if (matching.length > 0) {
+      log('INFO', `[checkpoint_plan] playbook match: ${matching.map((p) => p.id).join(', ')}`);
+      // Recorded for the lesson the memory organ writes after the mission, merged so a playbook the
+      // responsibility named at fire time is kept.
+      envelope.recalled_processes = [...new Set([...(envelope.recalled_processes || []), ...matching.map((p) => p.id)])];
+      processHint = `[PROCESS PLAYBOOKS] A remembered narrative may cover this work:\n${matching.map((p) => `- ${p.id}: ${p.name} — ${String(p.narrative || p.description || '').substring(0, 200)}`).join('\n')}\nTreat any that fits as guidance and fold it into your OWN checkpoints: adapt it, keep control.`;
+    }
   }
 
   const projectContext = envelope.project_id && deps.projects ? (deps.projects.buildContext(envelope.project_id, null) || null) : null;

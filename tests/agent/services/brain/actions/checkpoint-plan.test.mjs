@@ -251,6 +251,23 @@ describe('guards around a run', () => {
     assert.deepEqual(envelope.recalled_processes, ['p-from-schedule', 'p-release']);
   });
 
+  it('an inline plan records only explicitly matched playbooks, not keyword matches', async () => {
+    const { deps } = mockDeps();
+    deps.processes = {
+      getAllProcesses: () => ({
+        'p-plan': { id: 'p-plan', name: 'Plan', narrative: 'n', intent_keywords: ['build'] },
+        'p-explicit': { id: 'p-explicit', name: 'Explicit', narrative: 'n', intent_keywords: [] },
+      }),
+    };
+    const inlineOnly = { id: 'm-inline', instruction: 'Build PDF' };
+    await handleCheckpointPlan(ctxFor(inlineOnly, { checkpoints: [{ instruction: 'Build', tasks: [{ agent: 'motor', task: 'Build PDF' }] }] }), deps);
+    assert.equal(inlineOnly.recalled_processes, undefined);
+
+    const withExplicit = { id: 'm-explicit', instruction: 'Build PDF', _brief: { process_match: 'p-explicit', parts: [{ id: 'p1', risk: 'mutating' }] } };
+    await handleCheckpointPlan(ctxFor(withExplicit, { checkpoints: [{ instruction: 'Build', tasks: [{ agent: 'motor', task: 'Build PDF' }] }] }), deps);
+    assert.deepEqual(withExplicit.recalled_processes, ['p-explicit']);
+  });
+
   it('repeated failures run out of re-plans', async () => {
     const { deps } = mockDeps({ executorResult: { success: false, results: [{ step: '1.1', agent: 'motor', result: '[ERROR] Command failed', success: false }] } });
     const envelope = { id: 'm-1', instruction: 'x', _replan_count: MAX_REPLANS - 1 };

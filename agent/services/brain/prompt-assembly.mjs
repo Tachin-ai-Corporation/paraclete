@@ -252,6 +252,7 @@ export function respondComposeBlocks({ inbound, conversation = null, memory = {}
 const REPLAN_SCOPE = 'A checkpoint that fails is re-tasked against its pinned outcome: the mission keeps its shape. If the shape itself is wrong (a phase is missing, or the outcomes describe work that is already done or was never needed), send { action: "checkpoint_plan", replan_scope: "mission", replan_reason: "..." } to discard the pinned skeleton and re-shape. Use it when re-tasking cannot fix the problem, not when a task merely failed.';
 const AFTER_FAILED_CHECKPOINT = 'Returning { action: "checkpoint_plan" } is enough: the failed checkpoint is re-tasked automatically against its pinned outcome, and checkpoints that already passed keep their verdicts and are not re-run. There is no separate "retask" action. There is no action for fetching more context either: the identifiers already resolved are in known_resources on every decision, and a step\'s full output is fetched by naming its ref in request_context.';
 const SKILL_GUIDANCE = 'Write task instructions that describe what should happen, not how. Each organ knows its own tools. Describe the outcome, the inputs and the acceptance criteria.';
+const FULL_FORM_SCHEMA = '{ action: "checkpoint_plan", checkpoints: [{ instruction: "<milestone outcome>", accept_criteria: "<verifiable end state>", tasks: [{ agent: "motor | temporal-research | temporal-memory", task: "<outcome>", accept_criteria: "<self-check>" }] }] }: you give the full structure';
 
 /**
  * The decide turn's whole payload, before it is split into tiers.
@@ -327,13 +328,19 @@ export function decidePayload(a) {
       && !a.brief.process_match
       && parts[0]?.risk !== 'destructive_or_public'
       && !(Array.isArray(parts[0]?.unknowns) && parts[0].unknowns.length > 0);
-    p.dispatch_guidance = {
+    p.dispatch_guidance = directPlan ? {
+      rule: 'This Brief has one reversible part and no unknowns: commit the work with checkpoint_plan using full_form directly so execution starts without a second planning call.',
+      full_form: FULL_FORM_SCHEMA,
+      preference: 'For the initial plan on this single-part reversible Brief, give checkpoints directly in full form (one checkpoint with one focused task, setting agent to motor, temporal-research or temporal-memory; when the deliverable is a file, making and sharing it stay in that single task) — do not omit checkpoints on iteration 1. After a failed checkpoint, return { action: "checkpoint_plan" } so it is re-tasked against its pinned outcome.',
+      step_types: 'standard (work by motor, temporal-research or temporal-memory), approval_gate (a destructive or public action: a person approves first), ask (an unknown no one can resolve: use needs_input)',
+      skill_guidance: SKILL_GUIDANCE,
+      replan_scope: REPLAN_SCOPE,
+      after_a_failed_checkpoint: AFTER_FAILED_CHECKPOINT,
+    } : {
       rule: 'Commit work from the Brief with checkpoint_plan. Give a full checkpoints array, or only a goal and constraints and the prefrontal structures the plan.',
       minimal_form: '{ action: "checkpoint_plan", goal: "...", constraints: "..." }: the prefrontal structures the plan',
-      full_form: '{ action: "checkpoint_plan", checkpoints: [...] }: you give the full structure',
-      preference: directPlan
-        ? 'For the initial plan on this single-part reversible Brief, give checkpoints directly (full form: one checkpoint with one focused task; when the deliverable is a file, making and sharing it stay in that single task). After a failed checkpoint, return { action: "checkpoint_plan" } so it is re-tasked against its pinned outcome.'
-        : 'Use the minimal form unless you have specific structural requirements.',
+      full_form: FULL_FORM_SCHEMA,
+      preference: 'Use the minimal form unless you have specific structural requirements.',
       step_types: 'standard (work by motor, temporal-research or temporal-memory), approval_gate (a destructive or public action: a person approves first), ask (an unknown no one can resolve: use needs_input)',
       sequencing: 'Independent parts fan out within a checkpoint. Dependent parts serialize across checkpoint boundaries.',
       skill_guidance: SKILL_GUIDANCE,

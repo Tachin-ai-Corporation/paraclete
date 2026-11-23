@@ -146,6 +146,8 @@ test('the decide turn\'s guidance: no delegation, a goal check when there are cr
     envelope: envelope(),
     brief: { objective: 'Build and share PDF', parts: [{ id: 'p1', risk: 'mutating' }] },
   });
+  assert.equal(singleReversible.dispatch_guidance.minimal_form, undefined);
+  assert.match(singleReversible.dispatch_guidance.full_form, /agent: "motor \| temporal-research \| temporal-memory"/);
   assert.match(singleReversible.dispatch_guidance.preference, /full form.*making and sharing it stay in that single task/);
 
   const singleRisky = decidePayload({
