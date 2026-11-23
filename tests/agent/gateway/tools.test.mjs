@@ -224,6 +224,27 @@ describe('readFile, writeFile and listDir', () => {
     assert.ok(r.error.includes(join(skills, 'files', 'SKILL.md')));
   });
 
+  it('marks reads of installed read-only skill files referenceOnly, leaving workspace and writable skill files unmarked', async () => {
+    const work = join(dir, 'writable');
+    const installedSkills = join(dir, 'installed-skills');
+    const mutableSkills = join(work, 'skills');
+    mkdirSync(join(installedSkills, 'files'), { recursive: true });
+    mkdirSync(join(mutableSkills, 'custom'), { recursive: true });
+    writeFileSync(join(installedSkills, 'files', 'SKILL.md'), '# installed skill\nline 2\n');
+    writeFileSync(join(mutableSkills, 'custom', 'SKILL.md'), '# custom skill\n');
+    writeFileSync(join(work, 'report.md'), '# report\n');
+
+    const { tools } = registry({ writableRoots: [work], skillDirs: [installedSkills, mutableSkills] });
+    const ro = await tools.readFile.execute({ path: join(installedSkills, 'files', 'SKILL.md') });
+    assert.equal(ro.referenceOnly, true);
+    const roRange = await tools.readFile.execute({ path: join(installedSkills, 'files', 'SKILL.md'), startLine: 1, endLine: 1 });
+    assert.equal(roRange.referenceOnly, true);
+    const rwSkill = await tools.readFile.execute({ path: join(mutableSkills, 'custom', 'SKILL.md') });
+    assert.equal(rwSkill.referenceOnly, undefined);
+    const wsFile = await tools.readFile.execute({ path: join(work, 'report.md') });
+    assert.equal(wsFile.referenceOnly, undefined);
+  });
+
   it('writes inside the writable roots and refuses anywhere else', async () => {
     const work = join(dir, 'work');
     mkdirSync(work, { recursive: true });

@@ -591,9 +591,9 @@ forget_previous_record() {  # a rollback restores only the record this switch re
 # These functions also run where a failure must not end the script (a switch that is rolled back), so
 # each one checks its own steps and says what failed in SERVICE_FAILURE.
 
-installed_unit_names() {  # the paraclete units in /etc/systemd/system; an upgrade's transient unit is never one
-  local file name
-  for file in "$UNIT_DIR"/paraclete-*.service; do
+installed_unit_names() {  # the paraclete units in UNIT_DIR (/etc/systemd/system); an upgrade's transient unit is never one
+  local unit_dir="${1:-$UNIT_DIR}" file name
+  for file in "$unit_dir"/paraclete-*.timer "$unit_dir"/paraclete-*.service; do
     [[ -f "$file" ]] || continue
     name="${file##*/}"
     [[ "$name" == paraclete-upgrade-* ]] && continue
@@ -603,35 +603,43 @@ installed_unit_names() {  # the paraclete units in /etc/systemd/system; an upgra
 }
 
 install_units() {  # copies the installed release's units into place, removes ones it no longer ships, enables them
-  local file name changed=0 shipped=() current=()
-  for file in "$INSTALL_ROOT"/agent/services/*/paraclete-*.service; do
+  local unit_dir="${1:-$UNIT_DIR}" install_root="${2:-$INSTALL_ROOT}"
+  local file name changed=0 has_service=0 shipped=() current=() active=()
+  for file in "$install_root"/agent/services/*/paraclete-*.service "$install_root"/agent/services/*/paraclete-*.timer; do
     [[ -f "$file" ]] || continue
     name="${file##*/}"
     shipped+=("$name")
-    if ! cmp -s "$file" "$UNIT_DIR/$name"; then
-      install -o root -g root -m 0644 "$file" "$UNIT_DIR/$name" || { SERVICE_FAILURE="cannot install ${name}"; return 1; }
+    [[ "$name" == *.service ]] && has_service=1
+    if ! cmp -s "$file" "$unit_dir/$name"; then
+      install -o root -g root -m 0644 "$file" "$unit_dir/$name" || { SERVICE_FAILURE="cannot install ${name}"; return 1; }
       changed=1
     fi
   done
-  if (( ${#shipped[@]} == 0 )); then
-    SERVICE_FAILURE="${INSTALL_ROOT} ships no systemd units"
+  if (( ! has_service )); then
+    SERVICE_FAILURE="${install_root} ships no systemd units"
     return 1
   fi
-  mapfile -t current < <(installed_unit_names)
+  mapfile -t current < <(installed_unit_names "$unit_dir")
   for name in "${current[@]}"; do
     if ! contains "$name" "${shipped[@]}"; then
       log "removing ${name}, which this release no longer ships"
       systemctl disable --now "$name" || warn "could not stop ${name}"
-      rm -f "$UNIT_DIR/$name"
+      rm -f "$unit_dir/$name"
       changed=1
     fi
+  done
+  for name in "${shipped[@]}"; do
+    if [[ "$name" == *.service ]] && contains "${name%.service}.timer" "${shipped[@]}"; then
+      continue
+    fi
+    active+=("$name")
   done
   if (( changed )); then
     systemctl daemon-reload || { SERVICE_FAILURE='systemctl daemon-reload failed'; return 1; }
     CHANGED=1
   fi
-  systemctl enable --quiet "${shipped[@]}" || { SERVICE_FAILURE="cannot enable ${shipped[*]}"; return 1; }
-  UNITS=("${shipped[@]}")
+  systemctl enable --quiet "${active[@]}" || { SERVICE_FAILURE="cannot enable ${active[*]}"; return 1; }
+  UNITS=("${active[@]}")
 }
 
 stop_services() {

@@ -437,7 +437,7 @@ run before anything is stopped: the running release is not touched.
 | `/etc/paraclete/gateway-token` | `root:paraclete 0640` | A random token, created once, kept across upgrades |
 | `/etc/paraclete/workspace.json` | `root:root 0644` | Not written by the bootstrap: the control service's `set_workspace_account` writes it when an admin saves the agent's Workspace account in the dashboard (`{ account, signer, recorded_at, recorded_by }`). Every run merges it into `instance.json` while the metadata sets no `paraclete-workspace-account` and the installed role is flagged `workspace` (its `roles/<role>/role.json` in the release being installed), so the account survives upgrades and reboots; one that cannot be used is left out with a warning. For a role without a Workspace account it is left out of the record and left in place, so a move back restores the account |
 | `/var/lib/paraclete/` | `paraclete:paraclete 0750` | The data root: `memory/`, `missions/`, `workspace/`, `files/`, `skills/`, `services/`, `home/` (the `paraclete` user's home) |
-| `/etc/systemd/system/paraclete-*.service` | `root:root 0644` | Copied from `agent/services/*/`, enabled and started, the gateway first |
+| `/etc/systemd/system/paraclete-*.service`, `paraclete-*.timer` | `root:root 0644` | Copied from `agent/services/*/`, enabled and started, the gateway first; any `paraclete-*.service` or `paraclete-*.timer` in `/etc/systemd/system` that the release no longer ships is stopped, disabled and removed |
 
 - The `paraclete` user is a system user whose home is `/var/lib/paraclete/home`, in the
   `systemd-journal` group (telemetry reads the journal).

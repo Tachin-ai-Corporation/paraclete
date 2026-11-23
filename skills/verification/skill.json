@@ -2,7 +2,7 @@
   "id": "verification",
   "name": "Checkpoint Verification",
   "version": 1,
-  "when_to_use": "Judging a checkpoint's work against its acceptance criteria and rendering the graded verdict. Read it before every verdict.",
+  "when_to_use": "Judging a checkpoint's work against its acceptance criteria and rendering the graded verdict (preloaded into system instructions on cerebellum turns).",
   "organs": ["cerebellum"],
   "commands": []
 }

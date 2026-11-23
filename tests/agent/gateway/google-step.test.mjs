@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   toGoogleSchema, toGoogleContents, readGoogleStep, createGoogleStepper, isGeminiCacheGone,
-  SKIP_THOUGHT_SIGNATURE,
+  isGeminiExplicitCacheUnsupported, SKIP_THOUGHT_SIGNATURE,
 } from '../../../agent/gateway/google-step.mjs';
 import { fakeGoogle, geminiText, quiet } from './fakes.mjs';
 
@@ -67,11 +67,17 @@ describe('toGoogleContents', () => {
     assert.equal('thoughtSignature' in contents[1].parts[1], false, 'only Gemini-returned signatures are echoed');
   });
 
-  it('gives a call another provider made the placeholder signature, and no Gemini id', () => {
+  it('gives a call another provider made the placeholder signature on the first call only, and no Gemini id', () => {
     const [call] = toGoogleContents([
-      { role: 'assistant', content: 'checking', toolCalls: [{ id: 'toolu_9', name: 'a', args: {}, provider: 'vertex-anthropic' }] },
+      { role: 'assistant', content: 'checking', toolCalls: [
+        { id: 'toolu_9', name: 'a', args: {}, provider: 'vertex-anthropic' },
+        { id: 'toolu_10', name: 'b', args: { x: 1 }, provider: 'vertex-anthropic' },
+      ] },
     ]);
-    assert.deepEqual(call.parts, [{ functionCall: { name: 'a', args: {} }, thoughtSignature: SKIP_THOUGHT_SIGNATURE }]);
+    assert.deepEqual(call.parts, [
+      { functionCall: { name: 'a', args: {} }, thoughtSignature: SKIP_THOUGHT_SIGNATURE },
+      { functionCall: { name: 'b', args: { x: 1 } } },
+    ]);
   });
 
   describe('a tool result with an image', () => {
@@ -235,6 +241,41 @@ describe('explicit context caching', () => {
     const client = fakeGoogle([deleted()]);
     await assert.rejects(stepper(client, 'short system').call([{ role: 'user', content: 'q' }], 0), /cache content/);
     assert.equal(client.requests.length, 1);
+  });
+
+  it('recognises an unsupported-model error and skips explicit caching for that model from then on', async () => {
+    const unsupported = () => apiError(400, "Model 'gemini-4-argon' does not support explicit context caching.");
+    assert.equal(isGeminiExplicitCacheUnsupported(unsupported()), true);
+    assert.equal(isGeminiExplicitCacheUnsupported(apiError(400, 'Request contains an invalid argument.')), false);
+    assert.equal(isGeminiExplicitCacheUnsupported(apiError(500, 'does not support explicit context caching')), false);
+    assert.equal(isGeminiExplicitCacheUnsupported(new Error('fetch failed')), false);
+
+    const client = fakeGoogle([geminiText('a'), geminiText('b'), geminiText('c')]);
+    const origCreate = client.caches.create;
+    let createCalls = 0;
+    client.caches.create = async (params) => {
+      createCalls++;
+      if (params.model === 'gemini-4-argon') throw unsupported();
+      return origCreate(params);
+    };
+    const logs = [];
+    const makeStepper = (modelId) => createGoogleStepper({
+      client, modelId, systemText: big, maxTokens: 100, temperature: 0.3, topP: 0.9,
+      gemini: { explicitCache: true, explicitCacheTtlSeconds: 3600 },
+      callWithRetry: (fn) => fn(), logger: (lvl, msg) => logs.push([lvl, msg]), now: () => 0,
+    });
+
+    await makeStepper('gemini-4-argon').call([{ role: 'user', content: 'q1' }], 0);
+    await makeStepper('gemini-4-argon').call([{ role: 'user', content: 'q2' }], 0);
+    assert.equal(createCalls, 1, 'second turn for gemini-4-argon skips caches.create');
+    assert.equal(client.requests[0].config.systemInstruction, big);
+    assert.equal(client.requests[1].config.systemInstruction, big);
+    assert.equal(logs.filter(([lvl]) => lvl === 'WARN').length, 0, 'no warning spam');
+    assert.equal(logs.filter(([lvl, m]) => lvl === 'INFO' && /unsupported by gemini-4-argon/.test(m)).length, 1);
+
+    await makeStepper('gemini-3.8-flash').call([{ role: 'user', content: 'q3' }], 0);
+    assert.equal(createCalls, 2, 'other models on the same client still attempt explicit caching');
+    assert.equal(client.requests[2].config.cachedContent, 'cachedContents/fake-1');
   });
 });
 

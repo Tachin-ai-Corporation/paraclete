@@ -825,3 +825,45 @@ fast_path && echo started`);
     assert.match(script, /switch_release\(\) \{[^\n]*\n {2}stop_services \|\| return 1\n {2}run_migrations \|\| return 1\n {2}swap_release \|\| return 1\n/);
   });
 });
+
+describe('systemd unit cleanup', { skip: LINUX_ONLY }, () => {
+  test('install_units removes unshipped services and orphaned timers in UNIT_DIR while leaving shipped and external timers alone', (t) => {
+    const dir = scratch(t);
+    writeTree(dir, {
+      'release/agent/services/gateway/paraclete-gateway.service': '[Unit]\nDescription=gateway\n',
+      'release/agent/services/brain/paraclete-brain.service': '[Unit]\nDescription=brain\n',
+      'release/agent/services/periodic/paraclete-periodic.service': '[Unit]\nDescription=periodic\n',
+      'release/agent/services/periodic/paraclete-periodic.timer': '[Unit]\nDescription=periodic timer\n',
+      'etc-systemd/paraclete-gateway.service': '[Unit]\nDescription=stale gateway\n',
+      'etc-systemd/paraclete-old.service': '[Unit]\nDescription=removed service\n',
+      'etc-systemd/paraclete-old.timer': '[Unit]\nDescription=removed timer\n',
+      'etc-systemd/paraclete-orphan.timer': '[Unit]\nDescription=orphaned timer\n',
+      'etc-systemd/paraclete-upgrade-123.service': '[Unit]\nDescription=transient upgrade\n',
+      'usr-local-systemd/paraclete-lab-follow.timer': '[Unit]\nDescription=external timer\n',
+    });
+    const r = bashWithBootstrap(`
+install() { cp "\${@: -2:1}" "\${@: -1:1}"; }
+systemctl() { printf '%s\\n' "$*" >> '${dir}/systemctl'; }
+install_units '${dir}/etc-systemd' '${dir}/release'
+printf 'UNITS=%s\\n' "\${UNITS[*]}"
+`);
+    assert.equal(r.status, 0, r.stderr);
+    const systemctl = readFileSync(join(dir, 'systemctl'), 'utf8').trim().split('\n');
+    assert.ok(systemctl.includes('disable --now paraclete-old.service'), 'removed service stopped and disabled');
+    assert.ok(systemctl.includes('disable --now paraclete-old.timer'), 'paired removed timer stopped and disabled');
+    assert.ok(systemctl.includes('disable --now paraclete-orphan.timer'), 'orphaned timer without a service stopped and disabled');
+    assert.ok(!systemctl.some((l) => l.includes('paraclete-upgrade-123.service')), 'transient upgrade unit left alone');
+    assert.ok(systemctl.includes('daemon-reload'));
+    assert.ok(systemctl.includes('enable --quiet paraclete-brain.service paraclete-gateway.service paraclete-periodic.timer'),
+      `timer-triggered service enables its timer, not the oneshot service: ${systemctl.join(' | ')}`);
+    assert.match(r.stdout, /UNITS=paraclete-brain\.service paraclete-gateway\.service paraclete-periodic\.timer/);
+
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-old.service')), false);
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-old.timer')), false);
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-orphan.timer')), false);
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-gateway.service')), true);
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-periodic.timer')), true);
+    assert.equal(existsSync(join(dir, 'etc-systemd', 'paraclete-upgrade-123.service')), true);
+    assert.equal(existsSync(join(dir, 'usr-local-systemd', 'paraclete-lab-follow.timer')), true, 'external directory untouched');
+  });
+});

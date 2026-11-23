@@ -142,6 +142,7 @@ export function buildToolLog(toolCalls, policy = DEFAULT_RECORD_POLICY) {
     const result = resultString(tc.result);
     const head = `[TOOL] ${name}(${args}) → `;
     if (result.length <= policy.verbatim_chars) return head + result;
+    if (tc.referenceOnly) return head + excerpt(result, policy.verbatim_chars);
     large.push({ seq, tool: name, args, result, chars: result.length });
     return `${head}${largeHeader(seq, result.length)}\n${excerpt(result, policy.verbatim_chars)}\n${largeFooter(seq)}`;
   });
