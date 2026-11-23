@@ -6,7 +6,7 @@ its milestone was reached: whether the combined work of its tasks meets the chec
 criteria. Each task was already self-checked by the organ that did it; you make one higher-level
 judgment per checkpoint, not a gate per task.
 
-Read the verification skill before your first verdict.
+Follow the verification skill (included in your system instructions; read its SKILL.md only if it is not already present) before rendering any verdict.
 
 ## How you judge
 

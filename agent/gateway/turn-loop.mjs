@@ -181,8 +181,11 @@ const SAFE_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,64}$/;
  * continues the turn; otherwise the id is deterministic: 'call_<n>', n counting the calls in the
  * transcript.
  */
-function assignCallId(call, transcript, provider) {
-  const taken = new Set(transcript.flatMap((m) => (m.toolCalls || []).map((tc) => tc.id)));
+function assignCallId(call, transcript, provider, extraCalls = []) {
+  const taken = new Set([
+    ...transcript.flatMap((m) => (m.toolCalls || []).map((tc) => tc.id)),
+    ...extraCalls.map((tc) => tc.id),
+  ]);
   const own = provider === PROVIDERS.anthropic ? call.anthropicId : call.googleId;
   if (own && SAFE_TOOL_USE_ID.test(own) && !taken.has(own)) return own;
   let n = taken.size + 1;
@@ -324,60 +327,83 @@ export async function runTurn({
         break;
       }
 
-      // Serialize parallel tool calls: run only the first. A model that asks for several in one
-      // step re-issues the rest on later steps, and a request whose function responses don't match
-      // its function calls one for one is rejected. Gemini puts the thought signature on the first
-      // call of a parallel set, so the call kept is the one that carries it.
-      if (out.calls.length > 1) {
-        logger('INFO', `serializing: running only the first of ${out.calls.length} parallel tool calls`);
-      }
-      const first = out.calls[0];
-      const call = {
-        id: assignCallId(first, history, stepper.provider),
-        name: first.name,
-        args: first.args ?? {},
-        provider: stepper.provider,
-        modelId,
-        ...(first.googleId ? { googleId: first.googleId } : {}),
-        ...(first.thoughtSignature ? { thoughtSignature: first.thoughtSignature } : {}),
-        ...(out.thinking?.length ? { anthropicThinking: out.thinking } : {}),
-      };
-      history.push({ role: 'assistant', content: out.text || null, toolCalls: [call] });
+      // Execute every tool call from this step in order (not in parallel, so dependent calls like
+      // writeFile + runCommand never race). Keep assistant.toolCalls strictly 1-for-1 with the
+      // tool messages pushed after it.
+      const executedCalls = [];
+      const toolMessages = [];
+      const nudges = [];
+      let sawImages = false;
+      let terminatedVerdict = null;
+      let terminalTool = null;
 
-      const tool = toolSet?.[call.name];
-      let result;
-      let images = [];
-      if (tool) {
-        try {
-          logger('INFO', `running tool ${call.name} ${JSON.stringify(call.args).slice(0, 200)}`);
-          const execution = await tool.execute(call.args);
-          result = toolResultOf(execution);
-          images = toolImagesOf(execution);
-        } catch (err) {
-          result = `ERROR: ${err.message}`;
+      for (let idx = 0; idx < out.calls.length; idx++) {
+        const raw = out.calls[idx];
+        const call = {
+          id: assignCallId(raw, history, stepper.provider, executedCalls),
+          name: raw.name,
+          args: raw.args ?? {},
+          provider: stepper.provider,
+          modelId,
+          ...(raw.googleId ? { googleId: raw.googleId } : {}),
+          ...(raw.thoughtSignature ? { thoughtSignature: raw.thoughtSignature } : {}),
+          ...(idx === 0 && out.thinking?.length ? { anthropicThinking: out.thinking } : {}),
+        };
+
+        const tool = toolSet?.[call.name];
+        let execution;
+        let result;
+        let images = [];
+        if (tool) {
+          try {
+            logger('INFO', `running tool ${call.name} ${JSON.stringify(call.args).slice(0, 200)}`);
+            execution = await tool.execute(call.args);
+            result = toolResultOf(execution);
+            images = toolImagesOf(execution);
+          } catch (err) {
+            result = `ERROR: ${err.message}`;
+          }
+        } else {
+          result = `ERROR: Tool "${call.name}" not found in registry`;
         }
-      } else {
-        result = `ERROR: Tool "${call.name}" not found in registry`;
+        // The tool log and the loop guard see the text; only the transcript carries the image.
+        executedCalls.push(call);
+        toolCalls.push({
+          id: call.id, toolName: call.name, args: call.args, result,
+          ...(execution?.referenceOnly ? { referenceOnly: true } : {}),
+        });
+        toolMessages.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result, ...(images.length ? { images } : {}) });
+        if (images.length) sawImages = true;
+
+        const verdict = guard.check(call.name, call.args, result);
+        if (verdict.action === 'terminate') {
+          terminatedVerdict = verdict;
+          break;
+        }
+        if (verdict.action === 'nudge') nudges.push(verdict.message);
+        if (TERMINAL_TOOLS.has(call.name)) {
+          terminalTool = call.name;
+          break;
+        }
       }
-      // The tool log and the loop guard see the text; only the transcript carries the image.
-      toolCalls.push({ id: call.id, toolName: call.name, args: call.args, result });
-      history.push({ role: 'tool', toolCallId: call.id, name: call.name, content: result, ...(images.length ? { images } : {}) });
-      if (images.length) history.splice(0, history.length, ...retainImages(history, cfg.images.kept));
+
+      history.push({ role: 'assistant', content: out.text || null, toolCalls: executedCalls });
+      history.push(...toolMessages);
+      if (sawImages) history.splice(0, history.length, ...retainImages(history, cfg.images.kept));
       step++;
 
-      const verdict = guard.check(call.name, call.args, result);
-      if (verdict.action === 'terminate') {
-        logger('WARN', `loop guard stopped the turn: ${verdict.message.split('\n')[0]}`);
-        text += `\n\n${verdict.message}`;
+      if (terminatedVerdict) {
+        logger('WARN', `loop guard stopped the turn: ${terminatedVerdict.message.split('\n')[0]}`);
+        text += `\n\n${terminatedVerdict.message}`;
         break;
       }
-      if (verdict.action === 'nudge') {
+      if (terminalTool) {
+        logger('INFO', `terminal tool ${terminalTool} ran; the turn ends`);
+        break;
+      }
+      if (nudges.length > 0) {
         logger('INFO', 'loop guard warning injected');
-        history.push({ role: 'user', content: verdict.message });
-      }
-      if (TERMINAL_TOOLS.has(call.name)) {
-        logger('INFO', `terminal tool ${call.name} ran; the turn ends`);
-        break;
+        history.push({ role: 'user', content: nudges.join('\n\n') });
       }
     }
   } catch (err) {

@@ -343,6 +343,7 @@ export function createToolRegistry({
     },
   };
 
+  const skillRoots = skillDirs.map((d) => resolve(d));
   const readFile = {
     name: 'readFile',
     description: 'Read the contents of a file from the agent workspace or filesystem.',
@@ -359,7 +360,8 @@ export function createToolRegistry({
       try {
         // Read bytes, so a binary file is refused rather than decoded into the context window: a
         // 340 KB PDF decoded as UTF-8 is 340k characters of noise that teach the organ nothing.
-        const buf = readFileSync(resolvePath(String(path ?? '')));
+        const resolved = resolvePath(String(path ?? ''));
+        const buf = readFileSync(resolved);
         if (limits.binaryGuard) {
           const bin = sniffBinary(buf);
           if (bin) {
@@ -368,14 +370,21 @@ export function createToolRegistry({
               + 'This is a routing problem, not a dead end: the content IS reachable by the route above.' };
           }
         }
+        const referenceOnly = skillRoots.length > 0 && isWithinRoots(resolved, skillRoots) && !isWithinRoots(resolved, roots);
         const content = buf.toString('utf8');
         if (startLine || endLine) {
           const lines = content.split('\n');
           const start = (startLine || 1) - 1;
           const end = endLine || lines.length;
-          return { result: cap(lines.slice(start, end).join('\n'), `${path} lines ${start + 1}-${end}`, 'Request a smaller startLine/endLine range.') };
+          return {
+            result: cap(lines.slice(start, end).join('\n'), `${path} lines ${start + 1}-${end}`, 'Request a smaller startLine/endLine range.'),
+            ...(referenceOnly ? { referenceOnly: true } : {}),
+          };
         }
-        return { result: cap(content, path, `Re-read a specific range with startLine/endLine (the file is ${content.length} chars).`) };
+        return {
+          result: cap(content, path, `Re-read a specific range with startLine/endLine (the file is ${content.length} chars).`),
+          ...(referenceOnly ? { referenceOnly: true } : {}),
+        };
       } catch (err) {
         if (err.code === 'ENOENT' && /[\\/]skills[\\/]/.test(String(path))) {
           const available = listSkills(skillDirs);

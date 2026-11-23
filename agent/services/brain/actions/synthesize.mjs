@@ -158,7 +158,7 @@ export async function handleSynthesize(ctx, deps) {
         instruction: [
           'Verify that this mission synthesis meets the acceptance criteria. It is what the person',
           'will read: judge whether it claims more than the work established and whether it keeps',
-          'its honest caveats. Read the verification SKILL.md before rendering your verdict, and call',
+          'its honest caveats. Apply the verification skill rules, and call',
           'report_pass or report_fail as soon as you reach your judgment.',
           '',
           '## Acceptance Criteria',

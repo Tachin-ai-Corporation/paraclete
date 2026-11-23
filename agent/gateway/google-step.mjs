@@ -112,15 +112,15 @@ export function toGoogleContents(messages, { modelId, toolImages = 'function-res
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       result.push({
         role: 'model',
-        parts: msg.toolCalls.map((tc) => {
+        parts: msg.toolCalls.map((tc, idx) => {
           calls.set(tc.id, tc);
           const functionCall = { name: tc.name, args: tc.args ?? {} };
           if (tc.googleId) functionCall.id = tc.googleId;
           const part = { functionCall };
           // This model's own call: echo its signature, or none if it gave none (an older model).
-          // Anything else: the placeholder.
+          // Anything else: the placeholder on the first call of the step (Gemini's parallel call rule).
           const ownCall = tc.provider === PROVIDERS.google && (!modelId || !tc.modelId || tc.modelId === modelId);
-          const signature = ownCall ? tc.thoughtSignature : SKIP_THOUGHT_SIGNATURE;
+          const signature = ownCall ? tc.thoughtSignature : (idx === 0 ? SKIP_THOUGHT_SIGNATURE : undefined);
           if (signature) part.thoughtSignature = signature;
           return part;
         }),
@@ -211,6 +211,7 @@ export function readGoogleStep(response) {
 // inline, as is the rest of that turn; the next turn creates a new cache.
 const GEMINI_CACHE_FLOOR_TOKENS = 2048;
 const explicitCaches = new WeakMap();
+const unsupportedCacheModels = new WeakMap();
 
 /**
  * Whether a generateContent error says the cache the request named is gone. Vertex's answers, seen
@@ -223,6 +224,15 @@ export function isGeminiCacheGone(err) {
   return (status === 400 || status === 404) && /cached? content/i.test(String(err?.message || ''));
 }
 
+/**
+ * Whether a caches.create error says this model does not support explicit context caching at all
+ * (HTTP 400 "Model '<id>' does not support explicit context caching.").
+ */
+export function isGeminiExplicitCacheUnsupported(err) {
+  const status = err?.status ?? err?.code;
+  return status === 400 && /does not support[^"]*context caching/i.test(String(err?.message || ''));
+}
+
 function forgetGeminiCache(ai, name) {
   const byHash = explicitCaches.get(ai);
   for (const [hash, handle] of byHash || []) {
@@ -231,6 +241,7 @@ function forgetGeminiCache(ai, name) {
 }
 
 async function geminiCachedContent(ai, { modelId, systemText, googleTools, ttlSeconds, now, logger }) {
+  if (unsupportedCacheModels.get(ai)?.has(modelId)) return null;
   let byHash = explicitCaches.get(ai);
   if (!byHash) explicitCaches.set(ai, (byHash = new Map()));
   const toolsJson = googleTools ? JSON.stringify(googleTools) : '';
@@ -238,14 +249,26 @@ async function geminiCachedContent(ai, { modelId, systemText, googleTools, ttlSe
   const hit = byHash.get(hash);
   if (hit && hit.expiresAtMs > now() + 60_000) return hit.name;
   if (estimateTokens(systemText) < GEMINI_CACHE_FLOOR_TOKENS) return null;
-  const cache = await ai.caches.create({
-    model: modelId,
-    config: {
-      systemInstruction: systemText,
-      ...(googleTools ? { tools: googleTools } : {}),
-      ttl: `${ttlSeconds}s`,
-    },
-  });
+  let cache;
+  try {
+    cache = await ai.caches.create({
+      model: modelId,
+      config: {
+        systemInstruction: systemText,
+        ...(googleTools ? { tools: googleTools } : {}),
+        ttl: `${ttlSeconds}s`,
+      },
+    });
+  } catch (err) {
+    if (isGeminiExplicitCacheUnsupported(err)) {
+      let unsupported = unsupportedCacheModels.get(ai);
+      if (!unsupported) unsupportedCacheModels.set(ai, (unsupported = new Set()));
+      unsupported.add(modelId);
+      logger('INFO', `gemini explicit cache unsupported by ${modelId}; using implicit caching`);
+      return null;
+    }
+    throw err;
+  }
   byHash.set(hash, { name: cache.name, expiresAtMs: now() + ttlSeconds * 1000 });
   logger('INFO', `gemini explicit cache created: ${cache.name} (≈${estimateTokens(systemText)}tok, ttl=${ttlSeconds}s)`);
   return cache.name;

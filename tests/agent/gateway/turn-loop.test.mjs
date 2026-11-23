@@ -190,7 +190,7 @@ describe('a Claude tool turn', () => {
 });
 
 describe('the loop', () => {
-  it('runs only the first of parallel calls; the model re-issues the rest', async () => {
+  it('runs parallel calls in order within one step and sends all responses back together', async () => {
     const google = fakeGoogle([
       geminiCalls([
         { id: 'call_1', name: 'lookup', args: { key: 'alpha' }, signature: 'sig-a' },
@@ -200,11 +200,49 @@ describe('the loop', () => {
     ]);
     const keys = [];
     const out = await runTurn({ ...base, clients: { google }, model: GEMINI, messages: ask, tools: { lookup: lookupTool(keys) } });
-    assert.deepEqual(keys, ['alpha']);
-    const replayed = google.requests[1].contents[1].parts;
-    assert.equal(replayed.length, 1, 'one call, one response');
-    assert.equal(replayed[0].thoughtSignature, 'sig-a', 'the kept call is the one carrying the signature');
-    assert.equal(out.toolCalls.length, 1);
+    assert.deepEqual(keys, ['alpha', 'beta']);
+    const replayedCall = google.requests[1].contents[1].parts;
+    assert.equal(replayedCall.length, 2, 'both calls stayed in the assistant turn');
+    assert.equal(replayedCall[0].thoughtSignature, 'sig-a');
+    assert.equal('thoughtSignature' in replayedCall[1], false);
+    assert.deepEqual(google.requests[1].contents[2], {
+      role: 'user',
+      parts: [
+        { functionResponse: { id: 'call_1', name: 'lookup', response: { result: 'value-42' } } },
+        { functionResponse: { id: 'call_2', name: 'lookup', response: { result: 'no value for beta' } } },
+      ],
+    });
+    assert.equal(out.toolCalls.length, 2);
+    assert.equal(out.usage.steps, 2, '1 tool batch step + 1 final answer step');
+  });
+
+  it('stops a parallel batch when a terminal tool runs and keeps transcript 1-for-1', async () => {
+    const keys = [];
+    const pass = recordingTool('report_pass', 'PASS');
+    const google = fakeGoogle([
+      geminiCalls([
+        { id: 'call_1', name: 'lookup', args: { key: 'alpha' }, signature: 'sig-a' },
+        { id: 'call_2', name: 'report_pass', args: { reasoning: 'met', checks: [] } },
+        { id: 'call_3', name: 'lookup', args: { key: 'gamma' } },
+      ]),
+    ]);
+    const out = await runTurn({ ...base, clients: { google }, model: GEMINI, messages: ask, tools: { lookup: lookupTool(keys), report_pass: pass } });
+    assert.deepEqual(keys, ['alpha'], 'calls after the terminal tool do not run');
+    assert.equal(out.toolCalls.length, 2);
+    assert.equal(out.transcript[1].toolCalls.length, 2);
+    assert.equal(out.transcript.filter((m) => m.role === 'tool').length, 2);
+  });
+
+  it('assigns distinct deterministic ids across nameless parallel calls', async () => {
+    const google = fakeGoogle([
+      geminiCalls([
+        { name: 'lookup', args: { key: 'alpha' } },
+        { name: 'lookup', args: { key: 'beta' } },
+      ]),
+      geminiText('done'),
+    ]);
+    const out = await runTurn({ ...base, clients: { google }, model: FLASH, messages: ask, tools: { lookup: lookupTool() } });
+    assert.deepEqual(out.toolCalls.map((tc) => tc.id), ['call_1', 'call_2']);
   });
 
   it('ends the turn when a terminal tool runs', async () => {
@@ -415,6 +453,63 @@ describe('the fallback continues the turn; tools never run twice', () => {
       runTurnWithFallback({ ...base, clients: { google }, model: GEMINI, fallbackModel: FLASH, messages: ask }),
       (err) => err.message === 'second' && err.primaryError.message === 'first',
     );
+  });
+
+  it('Gemini to Claude after parallel calls: Claude receives one user turn holding every tool_result', async () => {
+    const google = fakeGoogle([
+      geminiCalls([
+        { id: 'call_1', name: 'lookup', args: { key: 'alpha' }, signature: 'sig-1' },
+        { id: 'call_2', name: 'lookup', args: { key: 'beta' } },
+      ]),
+      providerError(),
+    ]);
+    const anthropic = fakeAnthropic([claudeText('done')]);
+    const keys = [];
+    const out = await runTurnWithFallback({
+      ...base, clients: { google, anthropic }, model: GEMINI, fallbackModel: CLAUDE,
+      messages: ask, tools: { lookup: lookupTool(keys) },
+    });
+    assert.deepEqual(keys, ['alpha', 'beta']);
+    const messages = anthropic.requests[0].params.messages;
+    assert.equal(messages.length, 3);
+    assert.deepEqual(messages[1].content, [
+      { type: 'tool_use', id: 'call_1', name: 'lookup', input: { key: 'alpha' } },
+      { type: 'tool_use', id: 'call_2', name: 'lookup', input: { key: 'beta' } },
+    ]);
+    assert.deepEqual(messages[2], {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'call_1', content: 'value-42' },
+        { type: 'tool_result', tool_use_id: 'call_2', content: 'no value for beta' },
+      ],
+    });
+    assert.equal(out.model, CLAUDE);
+  });
+
+  it('Claude to Gemini after parallel calls: Gemini receives the placeholder signature on the first call only', async () => {
+    const anthropic = fakeAnthropic([
+      claudeCalls([
+        { id: 'toolu_1', name: 'lookup', input: { key: 'alpha' } },
+        { id: 'toolu_2', name: 'lookup', input: { key: 'beta' } },
+      ]),
+      providerError('overloaded'),
+    ]);
+    const google = fakeGoogle([geminiText('done')]);
+    const keys = [];
+    await runTurnWithFallback({
+      ...base, clients: { google, anthropic }, model: CLAUDE, fallbackModel: GEMINI,
+      messages: ask, tools: { lookup: lookupTool(keys) },
+    });
+    assert.deepEqual(keys, ['alpha', 'beta']);
+    const [, call, response] = google.requests[0].contents;
+    assert.deepEqual(call.parts, [
+      { functionCall: { name: 'lookup', args: { key: 'alpha' } }, thoughtSignature: SKIP_THOUGHT_SIGNATURE },
+      { functionCall: { name: 'lookup', args: { key: 'beta' } } },
+    ]);
+    assert.deepEqual(response.parts, [
+      { functionResponse: { name: 'lookup', response: { result: 'value-42' } } },
+      { functionResponse: { name: 'lookup', response: { result: 'no value for beta' } } },
+    ]);
   });
 });
 

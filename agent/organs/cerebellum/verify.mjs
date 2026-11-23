@@ -156,7 +156,7 @@ export async function verifyMilestone(p) {
   const firstPrompt = [
     'Verify that this CHECKPOINT MILESTONE has been achieved. Judge the checkpoint as a',
     'whole against its acceptance criteria — a holistic judgment, not a per-step check.',
-    'Read the verification SKILL.md before rendering your verdict.',
+    'Apply the verification skill rules before rendering your verdict.',
     // Ordering, not brevity: a verifier that saves the tool call for the end of a long write-up
     // loses the whole judgment when its output budget runs out first.
     'Call report_pass or report_fail AS SOON AS you have reached your judgment. Do not',

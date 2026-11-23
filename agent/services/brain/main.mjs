@@ -145,12 +145,24 @@ export function buildBrain(runtime, deps = {}) {
     }),
   });
 
+  let planSkillText = null;
+  let verifySkillText = null;
+  const planSkill = () => {
+    if (planSkillText === null) planSkillText = readOrNull(join(paths.skills, 'plan-structuring', 'SKILL.md')) || '';
+    return planSkillText;
+  };
+  const verifySkill = () => {
+    if (verifySkillText === null) verifySkillText = readOrNull(join(paths.skills, 'verification', 'SKILL.md')) || '';
+    return verifySkillText;
+  };
+
   const gateway = createGatewayClient({
     url: runtime.gatewayUrl,
     token,
     fetch: runtime.fetch,
     timeoutMs: settings.gatewayTimeoutMs,
     temperatureFor: (organ) => organTemperature(organ, effort.level),
+    systemFor: (organ) => (organ === 'cerebellum' ? [verifySkill()].filter(Boolean) : []),
     missionDir,
     toolRecords: { db, policy: settings.toolRecord, digest: toolResultDigester(vertexText), newId: store.newId },
     onUsage: (...args) => usage.record(...args),
@@ -285,12 +297,9 @@ export function buildBrain(runtime, deps = {}) {
       skillIds = ids;
     }
     capMap = capabilityMap(skills);
+    planSkillText = null;
+    verifySkillText = null;
   }
-  let planSkillText = null;
-  const planSkill = () => {
-    if (planSkillText === null) planSkillText = readOrNull(join(paths.skills, 'plan-structuring', 'SKILL.md')) || '';
-    return planSkillText;
-  };
 
   const missionContext = createMissionContext({ store, vertexText, settings, missionDir, log });
   const runner = createEnvelopeRunner({

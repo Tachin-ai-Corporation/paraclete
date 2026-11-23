@@ -58,49 +58,68 @@ export function thinkingBlock(block) {
  * @returns {Array<{role: 'user'|'assistant', content: string|Array<object>}>}
  */
 export function toAnthropicMessages(messages, { modelId } = {}) {
-  return messages.filter((msg) => msg.role !== 'system').map((msg) => {
+  const filtered = messages.filter((msg) => msg.role !== 'system');
+  const out = [];
+  for (let i = 0; i < filtered.length; i++) {
+    const msg = filtered[i];
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
 
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       const own = msg.toolCalls.find((tc) => tc.provider === PROVIDERS.anthropic && modelId && tc.modelId === modelId
         && Array.isArray(tc.anthropicThinking));
       const thinking = own ? own.anthropicThinking.map(thinkingBlock).filter(Boolean) : [];
-      return {
+      out.push({
         role: 'assistant',
         content: [
           ...thinking,
           ...(msg.content ? [{ type: 'text', text: msg.content }] : []),
           ...msg.toolCalls.map((tc) => ({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args ?? {} })),
         ],
-      };
+      });
+      continue;
     }
 
     if (msg.role === 'tool') {
-      const text = msg.content !== null && typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content ?? '');
-      const images = (msg.images || []).map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } }));
-      return {
-        role: 'user',
-        content: [{
+      // Anthropic requires all tool_result blocks for an assistant's tool_use step in one user message,
+      // and rejects consecutive user messages: fold any trailing string user note (e.g. a loop warning)
+      // after the tool_result blocks of the same user message.
+      const content = [];
+      let j = i;
+      while (j < filtered.length && filtered[j].role === 'tool') {
+        const tm = filtered[j];
+        const text = tm.content !== null && typeof tm.content === 'object' ? JSON.stringify(tm.content) : String(tm.content ?? '');
+        const images = (tm.images || []).map((img) => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType, data: img.data } }));
+        content.push({
           type: 'tool_result',
-          tool_use_id: msg.toolCallId,
+          tool_use_id: tm.toolCallId,
           // A tool result with images is a block list: its text (the API rejects an empty text block),
           // then each image. Without images it stays a plain string.
           content: images.length > 0 ? [...(text ? [{ type: 'text', text }] : []), ...images] : text,
-        }],
-      };
+        });
+        j++;
+      }
+      if (j < filtered.length && filtered[j].role === 'user' && typeof filtered[j].content === 'string') {
+        if (filtered[j].content) content.push({ type: 'text', text: filtered[j].content });
+        j++;
+      }
+      out.push({ role: 'user', content });
+      i = j - 1;
+      continue;
     }
 
     if (Array.isArray(msg.content)) {
-      return {
+      out.push({
         role,
         content: msg.content.map((p) => {
           if (p?.type && p.type !== 'text') return p;
           return { type: 'text', text: p?.text || '', ...(p?.tier ? { tier: p.tier } : {}) };
         }),
-      };
+      });
+      continue;
     }
-    return { role, content: msg.content || '' };
-  });
+    out.push({ role, content: msg.content || '' });
+  }
+  return out;
 }
 
 /**

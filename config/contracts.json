@@ -101,7 +101,7 @@
     "_verify_comment": "The verifier's first look uses compact result packets (every tool result, not the organ's prose); full motor output is kept for the one re-verification that a missing-evidence failure or a known-truncated view triggers. verify_prompt_max_chars bounds the whole prompt, which keeps Gemini clear of malformed tool calls on very large prompts.",
     "ctx_verify_input": 60000,
     "ctx_verify_prior": 16000,
-    "verify_prompt_max_chars": 12000,
+    "verify_prompt_max_chars": 84000,
     "verify_full_evidence_max_chars": 80000,
     "synth_verify_min_chars": 400,
     "attack_duty_stakes_min": "consequential",

@@ -144,6 +144,35 @@ describe('pieces', () => {
     ]);
   });
 
+  it('toAnthropicMessages batches consecutive tool results and any trailing loop warning into one user turn', () => {
+    const out = toAnthropicMessages([
+      {
+        role: 'assistant', content: null, toolCalls: [
+          { id: 'c1', name: 'a', args: {} },
+          { id: 'c2', name: 'b', args: {} },
+        ],
+      },
+      { role: 'tool', toolCallId: 'c1', name: 'a', content: 'A' },
+      { role: 'tool', toolCallId: 'c2', name: 'b', content: 'B' },
+      { role: 'user', content: '[WARNING] slow down' },
+    ]);
+    assert.deepEqual(out, [
+      {
+        role: 'assistant', content: [
+          { type: 'tool_use', id: 'c1', name: 'a', input: {} },
+          { type: 'tool_use', id: 'c2', name: 'b', input: {} },
+        ],
+      },
+      {
+        role: 'user', content: [
+          { type: 'tool_result', tool_use_id: 'c1', content: 'A' },
+          { type: 'tool_result', tool_use_id: 'c2', content: 'B' },
+          { type: 'text', text: '[WARNING] slow down' },
+        ],
+      },
+    ]);
+  });
+
   it('toAnthropicMessages leaves out an empty text block beside an image', () => {
     const [msg] = toAnthropicMessages([
       { role: 'tool', toolCallId: 'c1', name: 'shot', content: '', images: [{ mimeType: 'image/webp', data: 'UklG' }] },

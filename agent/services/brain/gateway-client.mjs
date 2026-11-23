@@ -97,6 +97,7 @@ export function renderTaskMessage(payload = {}, { missionDir } = {}) {
  * @param {Function} [deps.fetch]
  * @param {number}   [deps.timeoutMs]       how long one organ turn may take
  * @param {Function} [deps.temperatureFor]  (organ) => temperature to send, or undefined for the organ's default
+ * @param {Function} [deps.systemFor]       (organ) => extra system blocks for that organ's task turns
  * @param {Function} [deps.missionDir]      (missionId) => the mission tree's path, named in task messages
  * @param {object}   [deps.toolRecords]     where large tool results go: { db, policy, digest(rec), newId(prefix) }
  * @param {Function} [deps.onUsage]         (missionId, organ, usage, durationMs) => void, for token accounting
@@ -109,6 +110,7 @@ export function createGatewayClient({
   fetch = globalThis.fetch,
   timeoutMs = 300_000, // default; callers pass the contracts value (brain.gateway_timeout_ms)
   temperatureFor = () => undefined,
+  systemFor = () => [],
   missionDir = null,
   toolRecords = null,
   onUsage = () => {},
@@ -191,8 +193,12 @@ export function createGatewayClient({
    */
   async function callAgent(organ, payload = {}) {
     const missionId = payload._missionId || null;
+    const sys = [...(systemFor(organ) || []), ...(Array.isArray(payload._system) ? payload._system : [])].filter(Boolean);
     const res = await turn(organ, {
-      messages: [{ role: 'user', content: renderTaskMessage(payload, { missionDir }) }],
+      messages: [
+        ...sys.map((content) => ({ role: 'system', content })),
+        { role: 'user', content: renderTaskMessage(payload, { missionDir }) },
+      ],
       exec: payload._exec === true,
     });
     if (!res.ok) {
@@ -200,7 +206,9 @@ export function createGatewayClient({
     }
     let content = res.content;
     const large = res.data?.tool_records;
-    if (Array.isArray(large) && large.length > 0 && toolRecords) {
+    // Only executor/research outputs are stored and digested for downstream judgment; cerebellum
+    // already rendered its verdict through report_pass / report_fail.
+    if (organ !== 'cerebellum' && Array.isArray(large) && large.length > 0 && toolRecords) {
       const done = await completeToolLog(content, large, {
         policy,
         store: (rec) => storeToolResult(rec, { missionId, organ }),

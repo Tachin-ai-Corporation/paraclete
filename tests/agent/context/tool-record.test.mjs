@@ -62,6 +62,16 @@ describe('the gateway keeps the record whole up to the bound', () => {
     const { log } = buildToolLog([{ name: 'listFiles', args: {}, result: { files: 2 } }, { toolName: 'noop' }], policy);
     assert.equal(log, '[TOOL] listFiles({}) → {"files":2}\n[TOOL] noop({}) → ');
   });
+
+  it('a large referenceOnly read announces an excerpt in the log without queueing a stored record', () => {
+    const bigSkill = 'rule line\n'.repeat(1500);
+    const { log, large } = buildToolLog([
+      { toolName: 'readFile', args: { path: '/opt/paraclete/skills/files/SKILL.md' }, result: bigSkill, referenceOnly: true },
+    ], policy);
+    assert.deepEqual(large, []);
+    assert.match(log, /chars omitted …\]/);
+    assert.doesNotMatch(log, /\[large result #0/);
+  });
 });
 
 describe('the brain stores the full result and puts a digest + ref in the log', () => {

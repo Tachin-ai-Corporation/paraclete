@@ -137,9 +137,30 @@ test('callAgent: a large tool result is stored in full and its excerpt replaced 
     assert.equal(stored.organ, 'motor');
     assert.ok(Date.parse(stored.expire_at) > Date.parse(stored.created_at), 'it expires');
     assert.equal(digests[0].opts.disableThinking, true);
+
+    const ver = await client.callAgent('cerebellum', { instruction: 'Verify', _missionId: 'w-1' });
+    assert.match(ver.output, /\[large result #0: 12000 chars — excerpt\]/, 'cerebellum tool logs are neither stored nor digested');
+    assert.equal(digests.length, 1);
   } finally {
     await gw.stop();
     await firestore.stop();
+  }
+});
+
+test('callAgent: systemFor prepends system blocks only for matching organs', async () => {
+  const gw = await startFakeGateway({ respond: () => 'ok' });
+  try {
+    const client = createGatewayClient({
+      url: gw.url,
+      token: gw.token,
+      systemFor: (organ) => (organ === 'cerebellum' ? ['verification rules'] : []),
+    });
+    await client.callAgent('motor', { instruction: 'Do it' });
+    await client.callAgent('cerebellum', { instruction: 'Verify it' });
+    assert.deepEqual(gw.turns[0].system, []);
+    assert.deepEqual(gw.turns[1].system, ['verification rules']);
+  } finally {
+    await gw.stop();
   }
 });
 
