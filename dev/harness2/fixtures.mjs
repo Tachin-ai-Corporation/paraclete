@@ -822,6 +822,61 @@ export const STAGE2_FIXTURES = Object.freeze({
       return { verified: true, reason: 'layout-fixes.json remediated hero-subtitle contrast and 8px spacing grid' };
     },
   }),
+
+  'sup-01-inbox-triage': Object.freeze({
+    id: 'sup-01-inbox-triage',
+    seedWorkspace(workspaceDir) {
+      writeFile(
+        workspaceDir,
+        'inbox/messages.json',
+        JSON.stringify(
+          [
+            { id: 'msg-201', category: 'standard_faq', automated: false, subject: 'Standard integration FAQ' },
+            { id: 'msg-202', category: 'security_compliance', automated: false, subject: 'SOC 2 audit request' },
+            { id: 'msg-203', category: 'bounce', automated: true, subject: 'Undeliverable mail notification' },
+          ],
+          null,
+          2,
+        ),
+      );
+      writeFile(
+        workspaceDir,
+        'policy/rules.json',
+        JSON.stringify({ autoReplyCategories: ['standard_faq'], soc2Keywords: ['soc 2', 'audit'] }, null, 2),
+      );
+    },
+    applyReferenceSolution(workspaceDir) {
+      const messages = readJson(workspaceDir, 'inbox/messages.json') || [];
+      const rules = readJson(workspaceDir, 'policy/rules.json') || { autoReplyCategories: [], soc2Keywords: [] };
+      const autoRepliedIds = [];
+      const proposedReviewIds = [];
+      const skippedIds = [];
+      const soc2LoggedIds = [];
+      for (const m of messages) {
+        const subjectLower = String(m.subject || '').toLowerCase();
+        if (rules.soc2Keywords.some((k) => subjectLower.includes(k))) soc2LoggedIds.push(m.id);
+        if (m.automated) skippedIds.push(m.id);
+        else if (rules.autoReplyCategories.includes(m.category)) autoRepliedIds.push(m.id);
+        else proposedReviewIds.push(m.id);
+      }
+      writeFile(
+        workspaceDir,
+        'triage-summary.json',
+        `${JSON.stringify({ autoRepliedIds, proposedReviewIds, skippedIds, soc2LoggedIds }, null, 2)}\n`,
+      );
+    },
+    verifyWorkspace(workspaceDir) {
+      const summary = readJson(workspaceDir, 'triage-summary.json');
+      if (!summary) return { verified: false, reason: 'missing triage-summary.json' };
+      const ok =
+        JSON.stringify(summary.autoRepliedIds) === JSON.stringify(['msg-201']) &&
+        JSON.stringify(summary.proposedReviewIds) === JSON.stringify(['msg-202']) &&
+        JSON.stringify(summary.skippedIds) === JSON.stringify(['msg-203']) &&
+        JSON.stringify(summary.soc2LoggedIds) === JSON.stringify(['msg-202']);
+      if (!ok) return { verified: false, reason: `unexpected triage-summary.json: ${JSON.stringify(summary)}` };
+      return { verified: true, reason: 'triage-summary.json classified auto-reply, review, skipped, and SOC 2 threads accurately' };
+    },
+  }),
 });
 
 /** Combined catalog of all Stage 1 + Stage 2 workspace fixtures. */

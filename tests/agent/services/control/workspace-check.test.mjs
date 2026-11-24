@@ -6,8 +6,8 @@
 // names the project's Chat app record before the user's settings; a bad address is refused.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkWorkspace, tokenFailure, API_PROBES, DELEGATION_PAGE, PROBE_FILE_ID } from '../../../../agent/services/control/workspace-check.mjs';
-import { WORKSPACE_SCOPES, WORKSPACE_APIS, CALENDAR, GMAIL_READ } from '../../../../agent/auth/workspace-scopes.mjs';
+import { checkWorkspace, tokenFailure, API_PROBES, probesFor, DELEGATION_PAGE, PROBE_FILE_ID } from '../../../../agent/services/control/workspace-check.mjs';
+import { WORKSPACE_SCOPES, WORKSPACE_APIS, CALENDAR, GMAIL_READ, GMAIL } from '../../../../agent/auth/workspace-scopes.mjs';
 import {
   fakeGoogle, answers, ACCOUNT, CLIENT_ID, PROJECT, SIGNER, VM_TOKEN, PERSONAL, PERSONAL_LEGACY, OTHER_SERVICE_ACCOUNT,
 } from './workspace-fakes.mjs';
@@ -211,4 +211,19 @@ test('every probe calls an API the installer turns on for a Workspace role', () 
     assert.match(probe.service, /^[a-z-]+\.googleapis\.com$/);
     assert.ok(probe.url.startsWith('https://'));
   }
+});
+
+test('a mail-sending role checks gmail.send alongside gmail.readonly', async () => {
+  assert.deepEqual(probesFor('support-specialist').find((p) => p.api === 'gmail').scopes, [...GMAIL]);
+  const missingSend = await checkWorkspace({
+    account: ACCOUNT,
+    project: PROJECT,
+    role: 'support-specialist',
+    fetch: fakeGoogle({ granted: [...WORKSPACE_SCOPES] }).fetch,
+    getVmAccessToken: async () => VM_TOKEN,
+    now: () => NOW,
+  });
+  assert.equal(missingSend.ready, false);
+  assert.deepEqual(missingSend.missing_scopes, ['https://www.googleapis.com/auth/gmail.send']);
+  assert.equal(byApi(missingSend).gmail.ok, false);
 });

@@ -31,7 +31,7 @@
 import { makeAddress, ChatApiError } from '../../providers/channel.mjs';
 import { threadKeyFor } from '../../context/thread-ledger.mjs';
 import {
-  instant, isFromAgent, agentUserIdFrom, mentionsAgent, buildContextualMessage, buildThreadConversation,
+  instant, isFromAgent, agentUserIdFrom, mentionsAgent, mentionsOnlyOthers, buildContextualMessage, buildThreadConversation,
 } from './chat-message.mjs';
 
 const CHAT_API = 'https://chat.googleapis.com/v1';
@@ -45,6 +45,7 @@ export const FIRST_LISTING_LOOKBACK_MS = 3_600_000;
 /** The listing time is saved at least this often even when nothing else changed. */
 const LISTED_SAVE_MS = 60_000;
 const SEEN_LIMIT = 200;
+const THREAD_LIMIT = 200;
 const LIST_TIMEOUT_MS = 10_000;
 const DIRECT_MESSAGE = 'DIRECT_MESSAGE';
 
@@ -84,6 +85,7 @@ export function createChatInbox({
   const saved = store.load();
   const cursors = { ...saved.cursors };
   const seen = new Set(saved.seen);
+  const agentThreads = new Set(saved.agentThreads || []);
   let agentUserId = saved.agentUserId;
   let listedAt = saved.listedAt || null;
   let listedSavedAt = -Infinity;
@@ -104,7 +106,19 @@ export function createChatInbox({
     const p = people();
     savedPeople = JSON.stringify(p);
     listedSavedAt = now();
-    store.save({ cursors, seen: [...seen], agentUserId, listedAt, people: p });
+    store.save({ cursors, seen: [...seen], agentThreads: [...agentThreads], agentUserId, listedAt, people: p });
+  }
+
+  function rememberThread(threadName) {
+    if (!threadName) return false;
+    const isNew = !agentThreads.has(threadName);
+    agentThreads.delete(threadName);
+    agentThreads.add(threadName);
+    for (const old of agentThreads) {
+      if (agentThreads.size <= THREAD_LIMIT) break;
+      agentThreads.delete(old);
+    }
+    return isNew;
   }
 
   /**
@@ -213,6 +227,7 @@ export function createChatInbox({
     const nameOf = (m) => identity?.emailOf(m.sender?.name, name, direct) || m.sender?.displayName || 'someone';
     const found = [];
     let newest = null;
+    let threadsChanged = false;
     let pageToken = null;
     let pages = 0;
     let complete = false;
@@ -231,14 +246,19 @@ export function createChatInbox({
         const m = page[i];
         const createTime = m.createTime || '';
         if (newest === null || instant(createTime) > instant(newest)) newest = createTime;
+        const fromAgent = isFromAgent(m, who());
+        if (fromAgent && !direct && m.thread?.name && rememberThread(m.thread.name)) threadsChanged = true;
         // At the cursor's own instant, the names already taken in tell old from new.
-        if (instant(createTime) < cursor || seen.has(m.name) || isFromAgent(m, who())) continue;
+        if (instant(createTime) < cursor || seen.has(m.name) || fromAgent) continue;
         const text = m.text || m.argumentText || '';
         if (!text.trim()) continue;
-        if (direct) identity?.learn(m, name);
-        else if (!mentionsAgent(m, who(), config.mentionMatch)) continue;
-
         const thread = m.thread?.name || null;
+        const mentioned = mentionsAgent(m, who(), config.mentionMatch);
+        const inAgentThread = Boolean(thread && agentThreads.has(thread));
+        if (direct) identity?.learn(m, name);
+        else if (!mentioned && !(inAgentThread && !mentionsOnlyOthers(m, who(), config.mentionMatch))) continue;
+        if (!direct && thread && rememberThread(thread)) threadsChanged = true;
+
         const address = makeAddress('gchat', { space: name, thread: direct ? null : thread });
         backfill(address, page, direct ? () => true : (x) => (x.thread?.name || null) === thread, nameOf);
         const email = identity?.emailOf(m.sender?.name, name, direct) || null;
@@ -267,8 +287,8 @@ export function createChatInbox({
     }
     // Nothing here for the agent: the cursor moves up to the newest message read, so a busy space
     // is not paged through again on every poll. With something found, consume() moves it.
-    if (found.length === 0 && newest && instant(newest) > cursor) {
-      cursors[name] = newest;
+    if (found.length === 0 && ((newest && instant(newest) > cursor) || threadsChanged)) {
+      if (newest && instant(newest) > cursor) cursors[name] = newest;
       persist();
     }
     return found;

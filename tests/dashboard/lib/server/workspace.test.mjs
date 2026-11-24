@@ -158,6 +158,19 @@ test('the suggested address', () => {
   assert.equal(suggestAccount('Ada', ''), null);
 });
 
+test('the support-specialist setup adds gmail.send to the Admin console scope list', async (t) => {
+  const iam = fakeIam();
+  const dash = await startDashboard({
+    env: { PARACLETE_WORKSPACE_ROLE: 'true', PARACLETE_ROLE: 'support-specialist', PARACLETE_AGENT_NAME: 'Support Agent' },
+    fetch: iam.fetch,
+  });
+  t.after(dash.stop);
+  const setup = await readWorkspaceSetup(dash.runtime, admin);
+  assert.equal(setup.scopes.length, 10);
+  assert.ok(setup.scopes.includes('https://www.googleapis.com/auth/gmail.send'));
+  assert.deepEqual(setup.apis.find((a) => a.api === 'gmail').scopes, ['gmail.readonly', 'gmail.send']);
+});
+
 test('the role flag, the commands and the names the dashboard shares with the VM and the installer', () => {
   assert.equal(settingsFromEnv({ PARACLETE_WORKSPACE_ROLE: 'true' }).workspaceRole, true);
   for (const value of [undefined, '', 'false', 'TRUE', '1']) assert.equal(settingsFromEnv({ PARACLETE_WORKSPACE_ROLE: value }).workspaceRole, false, String(value));

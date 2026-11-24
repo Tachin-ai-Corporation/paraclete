@@ -172,6 +172,7 @@ export function createHandlers({
         const result = await checkWorkspace({
           account: params.account,
           project: instance.project,
+          role: instance.role,
           fetch,
           getVmAccessToken: runtime.getAccessToken,
           now,

@@ -126,6 +126,13 @@ export const BENCHMARK_TASK_SUITES = Object.freeze({
       expectedClauses: ['audit spacing and typography', 'check contrast ratios', 'produce layout fixes'],
       tier: 'tier1',
     },
+    {
+      id: 'sup-01-inbox-triage',
+      role: 'support-specialist',
+      goal: 'Classify inbound support messages against policy rules, route standard inquiries to auto-reply, queue custom drafts for review, and log SOC 2 threads.',
+      expectedClauses: ['classify inbound messages', 'route standard auto-reply', 'log soc 2 threads'],
+      tier: 'tier1',
+    },
   ]),
 });
 

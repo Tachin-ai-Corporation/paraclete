@@ -32,7 +32,7 @@ function fakeChat(messages, { failing = {} } = {}) {
 
 function memoryStore(initial = {}) {
   const saves = [];
-  let state = structuredClone({ cursors: {}, seen: [], agentUserId: AGENT, listedAt: null, people: {}, ...initial });
+  let state = structuredClone({ cursors: {}, seen: [], agentThreads: [], agentUserId: AGENT, listedAt: null, people: {}, ...initial });
   return { saves, load: () => structuredClone(state), save: (s) => { state = structuredClone(s); saves.push(state); }, get state() { return state; } };
 }
 
@@ -379,4 +379,47 @@ test('a dashboard user is known by their direct message, then by their user id i
   ], 'Ana wrote in her direct message, so she is known in the space too; users/7 is nobody the dashboard knows');
   assert.deepEqual(store.state.people, { 'users/1': 'ana@example.com' }, 'what was learned is kept');
   assert.equal(t.box.status().knownUsers, 1);
+});
+
+test('colloquial thread replies: after the agent posts or is @mentioned in a thread, un-@mentioned follow-ups are taken in across restarts, unless they @mention another person', async () => {
+  const store = memoryStore();
+  const messages = {
+    'spaces/A': [
+      msg(1, 1, { text: 'pre-proposal chatter without mention', thread: { name: 'spaces/A/threads/t1' } }),
+      posted(2, 2, { text: 'Proposed reply for inquiry 123', thread: { name: 'spaces/A/threads/t1' } }),
+      msg(3, 3, { text: 'looks good, send it', thread: { name: 'spaces/A/threads/t1' }, sender: { name: 'users/2', type: 'HUMAN' } }),
+    ],
+  };
+  const t = inbox({ store, messages });
+  await t.box.connect();
+  const got = await t.box.poll();
+  assert.deepEqual(got.map((m) => m.id), ['spaces/A/messages/3'], 'takes un-@mentioned reply after agent post, skips pre-agent message');
+  assert.equal(got[0].rawText, 'looks good, send it');
+  assert.equal(got[0].conversation.turns.length, 2, 'full thread conversation included');
+  await t.box.consume(got[0]);
+  assert.deepEqual(store.state.agentThreads, ['spaces/A/threads/t1']);
+
+  // After restart, a colleague-only @mention in the thread is ignored, while an un-@mentioned reply is read.
+  messages['spaces/A'].push(
+    msg(4, 4, {
+      text: '@Bob double check this first',
+      thread: { name: 'spaces/A/threads/t1' },
+      sender: { name: 'users/2', type: 'HUMAN' },
+      annotations: [{ type: 'USER_MENTION', startIndex: 0, length: 4, userMention: { user: { name: 'users/88', type: 'HUMAN' }, type: 'MENTION' } }],
+    }),
+    msg(5, 5, { text: 'approved, send it now', thread: { name: 'spaces/A/threads/t1' }, sender: { name: 'users/3', type: 'HUMAN' } }),
+    msg(6, 6, { text: '@Paraclete start a second thread', thread: { name: 'spaces/A/threads/t2' }, sender: { name: 'users/3', type: 'HUMAN' } }),
+  );
+  const restarted = inbox({ store, messages });
+  await restarted.box.connect();
+  const got2 = await restarted.box.poll();
+  assert.deepEqual(got2.map((m) => m.id), ['spaces/A/messages/5', 'spaces/A/messages/6']);
+  for (const m of got2) await restarted.box.consume(m);
+
+  // Thread t2 was entered via @mention, so subsequent un-@mentioned replies there work too.
+  messages['spaces/A'].push(
+    msg(7, 7, { text: 'make it two sentences please', thread: { name: 'spaces/A/threads/t2' }, sender: { name: 'users/3', type: 'HUMAN' } }),
+  );
+  const got3 = await restarted.box.poll();
+  assert.deepEqual(got3.map((m) => m.id), ['spaces/A/messages/7']);
 });

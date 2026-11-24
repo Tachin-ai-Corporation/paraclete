@@ -1,8 +1,10 @@
 // agent/auth/workspace-scopes.mjs: the OAuth scopes the agent's own Google Workspace account uses,
-// written once. A Workspace admin grants the whole list (WORKSPACE_SCOPES) to the delegation signer's
-// client ID in the Admin console; each caller then asks agent/auth/dwd-token.mjs for a token carrying
-// only the subset of the API it calls, so a scope missing from the grant breaks only the APIs that need
-// it, and the error can name it. Only Workspace roles use these.
+// written once. A Workspace admin grants the role's list (`workspaceScopesFor(role)`, defaulting to
+// `WORKSPACE_SCOPES`) to the delegation signer's client ID in the Admin console; each caller then asks
+// agent/auth/dwd-token.mjs for a token carrying only the subset of the API it calls, so a scope missing
+// from the grant breaks only the APIs that need it, and the error can name it. Only Workspace roles use
+// these. Standard roles keep Gmail read-only (`WORKSPACE_SCOPES`, 9 scopes); mail-sending roles such
+// as `support-specialist` add `GMAIL_SEND` (`gmail.send`, 10 scopes).
 //
 // Pure constants and three small helpers: no imports, so the dashboard's setup wizard can import it too.
 // Callers: the ears and mouth (Chat), agent/providers/drive.mjs (Drive), the Workspace API clients in
@@ -38,10 +40,19 @@ export const CALENDAR = scopes('calendar');
 /** Gmail, read only: search and read the agent's mailbox. Nothing here can send or change mail. */
 export const GMAIL_READ = scopes('gmail.readonly');
 
-/** The full list an admin grants in the Admin console, in the order the setup wizard shows it. */
+/** Gmail, send: send outbound messages and threaded replies from the agent's mailbox or verified aliases. */
+export const GMAIL_SEND = scopes('gmail.send');
+
+/** Gmail scopes for roles that both read intake mail and send replies. */
+export const GMAIL = scopes('gmail.readonly', 'gmail.send');
+
+/** Roles allowed to hold `gmail.send` in their domain-wide delegation grant. */
+export const MAIL_SEND_ROLES = Object.freeze(['support-specialist']);
+
+/** The base nine scopes an admin grants for standard Workspace roles, in setup-wizard order. */
 export const WORKSPACE_SCOPES = Object.freeze([...CHAT, ...DRIVE, ...DOCS, ...SHEETS, ...SLIDES, ...CALENDAR, ...GMAIL_READ]);
 
-/** Each Workspace API the agent uses: its name, and the scopes a token for it carries. */
+/** Each standard Workspace API the agent uses: its name, and the scopes a token for it carries. */
 export const WORKSPACE_APIS = Object.freeze({
   chat: Object.freeze({ name: 'Google Chat', scopes: CHAT }),
   drive: Object.freeze({ name: 'Google Drive', scopes: DRIVE }),
@@ -51,6 +62,34 @@ export const WORKSPACE_APIS = Object.freeze({
   calendar: Object.freeze({ name: 'Google Calendar', scopes: CALENDAR }),
   gmail: Object.freeze({ name: 'Gmail', scopes: GMAIL_READ }),
 });
+
+const SUPPORT_WORKSPACE_SCOPES = Object.freeze([...WORKSPACE_SCOPES, ...GMAIL_SEND]);
+const SUPPORT_WORKSPACE_APIS = Object.freeze({
+  ...WORKSPACE_APIS,
+  gmail: Object.freeze({ name: 'Gmail', scopes: GMAIL }),
+});
+
+/**
+ * The full scope list an admin grants in the Admin console for `role`. Standard Workspace roles use
+ * the base nine scopes (Gmail read-only); roles in MAIL_SEND_ROLES add `gmail.send`.
+ *
+ * @param {string|null} [role]
+ * @returns {readonly string[]}
+ */
+export function workspaceScopesFor(role = null) {
+  return MAIL_SEND_ROLES.includes(role) ? SUPPORT_WORKSPACE_SCOPES : WORKSPACE_SCOPES;
+}
+
+/**
+ * The Workspace APIs map for `role`: identical to WORKSPACE_APIS except MAIL_SEND_ROLES include
+ * `gmail.send` on Gmail.
+ *
+ * @param {string|null} [role]
+ * @returns {object}
+ */
+export function workspaceApisFor(role = null) {
+  return MAIL_SEND_ROLES.includes(role) ? SUPPORT_WORKSPACE_APIS : WORKSPACE_APIS;
+}
 
 /**
  * The scopes as the Admin console's domain-wide delegation form takes them: one comma-separated line.

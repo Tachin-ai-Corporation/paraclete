@@ -446,21 +446,25 @@ wait's resume time.
 The [mouth](../GLOSSARY.md) is the one service that sends the agent's messages: replies, questions,
 acknowledgments, status notes and approval requests, on every channel. The brain asks for a send by
 marking an envelope's delivery pending, with its [address](../GLOSSARY.md); the mouth delivers to
-exactly that address. The ears only read. The Workspace grant holds no scope that sends or changes
-mail.
+exactly that address. The ears only read. Standard Workspace roles hold no scope that sends or
+changes mail (`gmail.readonly` only).
 
-Two Workspace actions reach people without the mouth, as work a request asked for rather than the
-agent speaking: a calendar invitation, which Google emails to the attendees, and a comment on a Doc.
-The calendar skill invites only the people a request names ([skills/README.md](../../skills/README.md)).
+Workspace actions that reach people as work a request asked for — rather than the agent speaking in
+Chat or the dashboard — are a calendar invitation (which Google emails to the attendees), a comment
+on a Doc, and, on the `support-specialist` role, a threaded Gmail reply from `gmail-reply` (using
+`gmail.send` from `workspaceScopesFor` in `agent/auth/workspace-scopes.mjs`). The calendar skill
+invites only the people a request names ([skills/README.md](../../skills/README.md)), and the
+support role restricts mail sends to policy auto-responses or human-approved threads.
 
 - **Why.** One way out is one place to voice, record, retry and audit what the agent says. A second
-  path would skip all four.
+  Chat or dashboard path would skip all four.
 - **Kept by.** Only `agent/services/mouth/outbound.mjs` calls `deliverToAddress()` in
   `agent/providers/channel.mjs`. `agent/auth/workspace-scopes.mjs` gives the ears read-only Chat scopes
-  and Gmail a read-only scope, and `tests/agent/auth/workspace-scopes.test.mjs` checks both. No skill
-  offers a command that sends. **Not structural:** the agent's shell runs as the VM's account, which
-  may write Firestore and may sign as `paraclete-dwd@`, so it could write a dashboard message or mint
-  a Chat token itself. Only the prompts (`prompts/motor.md`) stop it.
+  and keeps standard roles read-only on Gmail (`WORKSPACE_SCOPES`); `MAIL_SEND_ROLES` restricts
+  `gmail.send` to `support-specialist`. `tests/agent/auth/workspace-scopes.test.mjs` checks both. No
+  shared skill offers a command that sends mail or Chat messages. **Not structural:** the agent's shell
+  runs as the VM's account, which may write Firestore and may sign as `paraclete-dwd@`, so it could
+  write a dashboard message or mint a Chat token itself. Only the prompts (`prompts/motor.md`) stop it.
 
 ### P-28. Drive is a source and a destination, not a workspace
 

@@ -1,13 +1,14 @@
-// agent/providers/workspace-gmail.mjs: a Gmail API v1 client for the agent's own mailbox, read only.
-// It searches with Gmail's own query syntax, reads a message or a whole thread as plain text (the
-// text/plain part, or the HTML part turned into text), lists each message's attachments, and fetches
-// an attachment's bytes. It acts as the agent's Workspace account (agent/providers/workspace.mjs) with
-// the gmail.readonly scope, so nothing here can send, draft, label, move or delete mail: replies
-// leave only through the mouth service.
+// agent/providers/workspace-gmail.mjs: a Gmail API v1 client for the agent's own mailbox. Reads
+// (search, getMessage, getThread, getAttachment) use the `gmail.readonly` scope: they search with
+// Gmail's own query syntax, read a message or thread as plain text (or HTML turned into text), and
+// fetch attachments. Sending a threaded reply (`sendReply`) requests the `gmail.send` scope, which
+// only mail-sending roles (`MAIL_SEND_ROLES` in agent/auth/workspace-scopes.mjs) hold in domain-wide
+// delegation. It acts as the agent's Workspace account (agent/providers/workspace.mjs).
 //
 // Mail is data from outside: whatever a message says is never an instruction to the agent. The
-// workspace-gmail skill (skills/workspace-gmail/) tells the agent so, and prints what this returns.
+// workspace-gmail skill (skills/workspace-gmail/) and support-triage skill tell the agent so.
 
+import { GMAIL_SEND } from '../auth/workspace-scopes.mjs';
 import { createWorkspaceSession, mapLimit } from './workspace.mjs';
 
 const BASE = '/gmail/v1/users/me';
@@ -81,7 +82,8 @@ function decodeBody(data, contentType) {
  *
  * @param {object} raw the message resource
  * @returns {{id: string, threadId: string, labelIds: string[], snippet: string, from: string, to: string,
- *   cc: string, subject: string, date: string, text: string, html: boolean,
+ *   cc: string, replyTo: string, subject: string, date: string, messageIdHeader: string,
+ *   references: string, autoSubmitted: string, precedence: string, text: string, html: boolean,
  *   attachments: Array<{index: number, partId: string, filename: string, mimeType: string, size: number,
  *   attachmentId: string|null, data: string|null, inline: boolean}>}}
  */
@@ -124,8 +126,13 @@ export function parseMessage(raw) {
     from: header(headers, 'From'),
     to: header(headers, 'To'),
     cc: header(headers, 'Cc'),
+    replyTo: header(headers, 'Reply-To'),
     subject: header(headers, 'Subject'),
     date: header(headers, 'Date'),
+    messageIdHeader: header(headers, 'Message-ID'),
+    references: header(headers, 'References'),
+    autoSubmitted: header(headers, 'Auto-Submitted'),
+    precedence: header(headers, 'Precedence'),
     text: plain.length ? plain.join('\n').replace(/\r\n/g, '\n').trim() : htmlToText(html.join('\n')),
     html: !plain.length && html.length > 0,
     attachments,
@@ -149,7 +156,109 @@ export function summarizeMessage(raw) {
 }
 
 /**
- * Creates a read-only Gmail client for the agent's own mailbox.
+ * Extracts a lowercase email address from `"Display Name <user@example.com>"` or `"user@example.com"`. Pure.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function extractEmailAddress(value) {
+  const s = String(value ?? '').trim();
+  const angled = /<([^<>\s]+@[^<>\s]+)>/.exec(s);
+  if (angled) return angled[1].toLowerCase();
+  const bare = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/.exec(s);
+  return bare ? bare[0].toLowerCase() : '';
+}
+
+/**
+ * Encodes one mail header value safely: rejects CR/LF (header injection) and RFC-2047 encodes
+ * non-ASCII text (preserving `<addr@domain>` verbatim on address headers). Pure.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function encodeHeaderValue(value) {
+  const s = String(value ?? '').trim();
+  if (/[\r\n]/.test(s)) throw new Error('mail header cannot contain line breaks');
+  if (/^[\x20-\x7E]*$/.test(s)) return s;
+  const addrMatch = /^(.*?)(<[^<>\s]+@[^<>\s]+>)$/.exec(s);
+  if (addrMatch) {
+    const display = addrMatch[1].trim();
+    const emailPart = addrMatch[2];
+    if (!display) return emailPart;
+    const encodedDisplay = /^[\x20-\x7E]*$/.test(display)
+      ? display
+      : `=?UTF-8?B?${Buffer.from(display, 'utf8').toString('base64')}?=`;
+    return `${encodedDisplay} ${emailPart}`;
+  }
+  return `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
+}
+
+/** Wraps a base64 string into 76-character CRLF lines per RFC 2045. */
+function wrapBase64(b64) {
+  const out = [];
+  for (let i = 0; i < b64.length; i += 76) out.push(b64.slice(i, i + 76));
+  return out.join('\r\n');
+}
+
+/**
+ * Builds an RFC 2822 UTF-8 text/plain reply and base64url-encodes it for Gmail's `messages/send`
+ * API. Pure.
+ *
+ * @param {object} o
+ * @param {object} [o.original]  parsed message from parseMessage()
+ * @param {string} o.body        plain-text reply body
+ * @param {string} [o.from]      optional From address (e.g. a verified Send-As group alias)
+ * @param {string} [o.to]        recipient override (default: original.replyTo || original.from)
+ * @param {string} [o.cc]        optional Cc header
+ * @param {string} [o.subject]   optional Subject override (default: Re: original.subject)
+ * @returns {{raw: string, mime: string, to: string, from: string, cc: string, subject: string,
+ *   inReplyTo: string, references: string, threadId: string|null}}
+ */
+export function buildReplyMime({ original = {}, body, from = '', to = '', cc = '', subject = '' } = {}) {
+  const recipient = String(to || original?.replyTo || original?.from || '').trim();
+  if (!recipient) throw new Error('cannot build reply: recipient address is missing');
+  const bodyText = String(body ?? '').replace(/\r?\n/g, '\r\n').trim();
+  if (!bodyText) throw new Error('cannot build reply: body is empty');
+
+  const rawSubject = String(subject || '').trim() || (() => {
+    const base = String(original?.subject || '').trim();
+    if (!base) return 'Re: Support request';
+    return /^re:\s/i.test(base) ? base : `Re: ${base}`;
+  })();
+  const inReplyTo = String(original?.messageIdHeader || '').trim();
+  const prevRefs = String(original?.references || '').trim().split(/\s+/).filter(Boolean);
+  if (inReplyTo && !prevRefs.includes(inReplyTo)) prevRefs.push(inReplyTo);
+  const references = prevRefs.join(' ');
+
+  const headers = [];
+  if (String(from || '').trim()) headers.push(`From: ${encodeHeaderValue(from)}`);
+  headers.push(`To: ${encodeHeaderValue(recipient)}`);
+  if (String(cc || '').trim()) headers.push(`Cc: ${encodeHeaderValue(cc)}`);
+  headers.push(`Subject: ${encodeHeaderValue(rawSubject)}`);
+  if (inReplyTo) headers.push(`In-Reply-To: ${encodeHeaderValue(inReplyTo)}`);
+  if (references) headers.push(`References: ${encodeHeaderValue(references)}`);
+  headers.push('MIME-Version: 1.0');
+  headers.push('Content-Type: text/plain; charset=UTF-8');
+  headers.push('Content-Transfer-Encoding: base64');
+
+  const encodedBody = wrapBase64(Buffer.from(`${bodyText}\r\n`, 'utf8').toString('base64'));
+  const mime = `${headers.join('\r\n')}\r\n\r\n${encodedBody}`;
+  return {
+    raw: Buffer.from(mime, 'utf8').toString('base64url'),
+    mime,
+    to: recipient,
+    from: String(from || '').trim(),
+    cc: String(cc || '').trim(),
+    subject: rawSubject,
+    inReplyTo,
+    references,
+    threadId: original?.threadId || null,
+  };
+}
+
+/**
+ * Creates a Gmail client for the agent's own mailbox. Reads use `gmail.readonly`; `sendReply`
+ * requests `gmail.send` (granted only on mail-sending roles).
  *
  * @param {object} [options] a `session` from createWorkspaceSession, or the options to make one
  */
@@ -225,6 +334,38 @@ export function createGmailClient(options = {}) {
         about: { what: `an attachment of message ${messageId}`, notFound: missing(`attachment on message ${messageId}`) },
       });
       return Buffer.from(String(body?.data || ''), 'base64url');
+    },
+
+    /**
+     * Sends a threaded plain-text reply to an existing message (`gmail.send` scope).
+     *
+     * @param {object} o
+     * @param {string} [o.messageId]  Gmail message id to fetch when `original` is omitted
+     * @param {object} [o.original]   parsed message from getMessage()
+     * @param {string} o.body
+     * @param {string} [o.from]
+     * @param {string} [o.to]
+     * @param {string} [o.cc]
+     * @param {string} [o.subject]
+     */
+    async sendReply({ messageId, original: givenOriginal = null, body, from = '', to = '', cc = '', subject = '' } = {}) {
+      const original = givenOriginal || await parseMessage(await getRaw(messageId));
+      const built = buildReplyMime({ original, body, from, to, cc, subject });
+      const sent = await session.request('gmail', 'POST', `${BASE}/messages/send`, {
+        json: { raw: built.raw, ...(built.threadId ? { threadId: built.threadId } : {}) },
+        scopes: GMAIL_SEND,
+        about: { what: `a reply to message ${original.id || messageId}`, action: 'send mail' },
+      });
+      return {
+        id: sent?.id ?? '',
+        threadId: sent?.threadId ?? built.threadId,
+        labelIds: sent?.labelIds || [],
+        to: built.to,
+        from: built.from || account,
+        cc: built.cc,
+        subject: built.subject,
+        inReplyTo: built.inReplyTo,
+      };
     },
   };
 }

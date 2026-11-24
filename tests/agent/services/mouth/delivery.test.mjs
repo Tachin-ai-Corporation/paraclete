@@ -64,6 +64,7 @@ describe('pure helpers', () => {
   test('guidance by status, then by intent', () => {
     assert.match(contextHintFor(envelope({ status: 'needs_input' })), /needs their input/);
     assert.match(contextHintFor(envelope({ status: 'blocked' })), /blocked/);
+    assert.match(contextHintFor(envelope({ intent: 'notification', source_meta: { notification_type: 'proposal' } })), /proposed reply text intact/);
     assert.match(contextHintFor(envelope({ intent: 'notification' })), /status notification/);
     assert.match(contextHintFor(envelope({ intent: 'ack' })), /acknowledgment/);
     assert.match(contextHintFor(envelope({ intent: 'respond' })), /do not mention tasks/);

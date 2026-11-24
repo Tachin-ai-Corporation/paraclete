@@ -119,6 +119,9 @@ export function attachmentsOf(env) {
 export function contextHintFor(env) {
   if (env.status === 'needs_input') return 'This is a question or request for the person: the agent needs their input to continue.';
   if (env.status === 'blocked') return 'The agent is blocked and needs help: say so clearly.';
+  if (env.source_meta?.notification_type === 'proposal') {
+    return 'This is a message to the team with an inbound email summary and a proposed reply to review: keep the message id, sender, subject and the full proposed reply text intact.';
+  }
   if (env.intent === 'notification') return 'This is a status notification: keep it brief and informational.';
   if (env.intent === 'ack') return 'This is a quick acknowledgment: keep it very short.';
   if (env.intent === 'respond') return 'This is a direct conversational reply: be polite, direct and helpful, and do not mention tasks or missions.';

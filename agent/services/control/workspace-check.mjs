@@ -19,7 +19,7 @@
 // whole list is refused each scope is asked for alone, to name exactly the ones missing.
 
 import { createDwdTokenSource } from '../../auth/dwd-token.mjs';
-import { WORKSPACE_SCOPES, WORKSPACE_APIS, chatAppPage } from '../../auth/workspace-scopes.mjs';
+import { WORKSPACE_APIS, workspaceScopesFor, workspaceApisFor, chatAppPage } from '../../auth/workspace-scopes.mjs';
 import { checkWorkspaceAccount, signerFor } from './workspace-account.mjs';
 
 /** A file id shaped like Google's (44 letters, digits, - and _) that no file has. */
@@ -51,11 +51,16 @@ const CALLS = Object.freeze({
   gmail: { service: 'gmail.googleapis.com', url: 'https://gmail.googleapis.com/gmail/v1/users/me/profile' },
 });
 
+/** Builds the Workspace API probes for a role (`role` defaults to the standard nine-scope set). */
+export function probesFor(role = null) {
+  return Object.freeze(Object.entries(workspaceApisFor(role)).map(([api, { name, scopes }]) => {
+    if (!CALLS[api]) throw new Error(`workspace-check.mjs has no call for the ${api} API`);
+    return Object.freeze({ api, name, scopes: list(scopes), ...CALLS[api] });
+  }));
+}
+
 /** What the check asks of each Workspace API, in workspace-scopes.mjs's order: `{ api, name, scopes, service, url, notFoundIsOk? }`. */
-export const API_PROBES = Object.freeze(Object.entries(WORKSPACE_APIS).map(([api, { name, scopes }]) => {
-  if (!CALLS[api]) throw new Error(`workspace-check.mjs has no call for the ${api} API`);
-  return Object.freeze({ api, name, scopes: list(scopes), ...CALLS[api] });
-}));
+export const API_PROBES = probesFor();
 
 const clip = (text) => {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
@@ -223,10 +228,11 @@ async function lookupClientId({ signer, fetch, getVmAccessToken }) {
  * @returns {Promise<{account: string, signer: string, client_id: string|null, checked_at: string,
  *   ready: boolean, missing_scopes: string[]|null, apis: object[]}>}
  */
-export async function checkWorkspace({ account: value, project, fetch, getVmAccessToken, now = () => new Date() }) {
+export async function checkWorkspace({ account: value, project, role = null, fetch, getVmAccessToken, now = () => new Date() }) {
   const account = checkWorkspaceAccount(value);
   const signer = signerFor(project);
-  const all = list(WORKSPACE_SCOPES);
+  const all = list(workspaceScopesFor(role));
+  const probes = probesFor(role);
   // A source of its own per check: a cached token would hide a grant changed since the last one.
   const getToken = createDwdTokenSource({ fetch, getVmAccessToken, now: () => now().getTime() });
   const mint = async (scopes) => {
@@ -262,7 +268,7 @@ export async function checkWorkspace({ account: value, project, fetch, getVmAcce
   const context = { account, signer, project, clientId };
 
   const apis = [];
-  for (const api of API_PROBES) {
+  for (const api of probes) {
     const entry = { api: api.api, name: api.name, scopes: [...api.scopes], ok: false, error: null, fix: null };
     apis.push(entry);
     if (blocker) {
