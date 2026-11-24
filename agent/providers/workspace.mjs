@@ -159,8 +159,9 @@ export function errorMessage(kind, { api, account, status, what, action = 'read'
  * @param {{account: string, signer: string}} who
  * @returns {WorkspaceError}
  */
-export function tokenError(api, err, { account, signer }) {
-  const { name, scopes } = WORKSPACE_APIS[api];
+export function tokenError(api, err, { account, signer }, customScopes = null) {
+  const { name, scopes: defaultScopes } = WORKSPACE_APIS[api];
+  const scopes = customScopes || defaultScopes;
   const text = String(err?.message || err).replace(/\.$/, '');
   if (/unauthorized_client|unauthorized to retrieve access tokens|not authorized for any of the scopes/i.test(text)) {
     return new WorkspaceError(
@@ -235,11 +236,12 @@ export function createWorkspaceSession({
   const origin = (api) => String(hosts[api] || instance?.endpoints?.[api] || API_HOSTS[api]).replace(/\/+$/, '');
   let driveClient = drive || null;
 
-  async function token(api) {
+  async function token(api, customScopes = null) {
+    const scopes = customScopes || WORKSPACE_APIS[api].scopes;
     try {
-      return await dwdToken({ signerServiceAccount: signer, subjectEmail: account, scopes: [...WORKSPACE_APIS[api].scopes] });
+      return await dwdToken({ signerServiceAccount: signer, subjectEmail: account, scopes: [...scopes] });
     } catch (err) {
-      throw tokenError(api, err, who);
+      throw tokenError(api, err, who, scopes);
     }
   }
 
@@ -254,16 +256,17 @@ export function createWorkspaceSession({
    * @param {*}      [o.json]    a body sent as JSON
    * @param {object} [o.about]   { what, action, hint } for the error message
    * @param {'json'|'bytes'|'none'} [o.expect]
+   * @param {string[]} [o.scopes] explicit scopes override (default: WORKSPACE_APIS[api].scopes)
    * @returns {Promise<*>}
    */
-  async function request(api, method, path, { query = {}, json, about = {}, expect = 'json', timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
+  async function request(api, method, path, { query = {}, json, about = {}, expect = 'json', scopes = null, timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
     const url = new URL(`${origin(api)}${path}`);
     for (const [key, value] of Object.entries(query)) {
       if (value === undefined || value === null || value === '') continue;
       if (Array.isArray(value)) for (const item of value) url.searchParams.append(key, String(item));
       else url.searchParams.set(key, String(value));
     }
-    const bearer = await token(api);
+    const bearer = await token(api, scopes);
     const headers = { Authorization: `Bearer ${bearer}` };
     if (json !== undefined) headers['Content-Type'] = 'application/json; charset=UTF-8';
     let response;

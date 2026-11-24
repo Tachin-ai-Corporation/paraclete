@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  instant, isFromAgent, agentUserIdFrom, mentionsAgent, requestText, nameWords, buildContextualMessage,
+  instant, isFromAgent, agentUserIdFrom, mentionsAgent, mentionsOnlyOthers, requestText, nameWords, buildContextualMessage,
   buildThreadConversation,
 } from '../../../../agent/services/ears/chat-message.mjs';
 import { agentMessageId } from '../../../../agent/providers/channel.mjs';
@@ -128,4 +128,13 @@ test('a direct message is one conversation: the whole page, whatever the threads
   const threadless = buildThreadConversation(chat({ thread: undefined, createTime: '2026-10-17T11:03:00Z' }),
     page.map((m) => ({ ...m, thread: undefined })), who());
   assert.deepEqual(threadless.turns.map((t) => t.text), ['one', 'two'], 'a message without a thread uses the whole page');
+});
+
+test('mentionsOnlyOthers spots colleague-only @mentions without suppressing plain text or emails', () => {
+  assert.equal(mentionsOnlyOthers(chat({ text: '@Ben wdyt?', annotations: [mention(0, 4, 'users/3')] }), who()), true);
+  assert.equal(
+    mentionsOnlyOthers(chat({ text: '@Ben and @Paraclete wdyt?', annotations: [mention(0, 4, 'users/3'), mention(9, 10, AGENT)] }), who()),
+    false,
+  );
+  assert.equal(mentionsOnlyOthers(chat({ text: 'looks good, send from support@example.com' }), who()), false);
 });

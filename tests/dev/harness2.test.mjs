@@ -625,9 +625,9 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     assert.equal(outPromote.read().candidateId, 'candidate-head');
   });
 
-  it('covers all 13 installed roles in Stage 2 benchmark suites', () => {
+  it('covers all 14 installed roles in Stage 2 benchmark suites', () => {
     const installedRoles = rolesForStage('stage2', { repoRoot: process.cwd() });
-    assert.ok(installedRoles.length >= 13);
+    assert.ok(installedRoles.length >= 14);
     for (const role of installedRoles) {
       const tasks = selectBenchmarkTasks({ stage: 'stage2', role });
       assert.ok(tasks.length >= 1, `expected at least 1 benchmark task for installed role '${role}'`);
@@ -813,10 +813,10 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     }
   });
 
-  it('Step 2: seeds all 10 Stage 2 specialist workspace fixtures and passes Stage 2 live evaluation', async () => {
+  it('Step 2: seeds all 11 Stage 2 specialist workspace fixtures and passes Stage 2 live evaluation', async () => {
     const stage2Ids = Object.keys(STAGE2_FIXTURES);
-    assert.equal(stage2Ids.length, 10);
-    assert.equal(Object.keys(ALL_FIXTURES).length, 16);
+    assert.equal(stage2Ids.length, 11);
+    assert.equal(Object.keys(ALL_FIXTURES).length, 17);
 
     for (const id of stage2Ids) {
       const fx = getTaskFixture(id);
@@ -835,7 +835,7 @@ describe('dev/harness2/substrate.mjs, library.mjs, harvest.mjs, promote.mjs, cli
     }
 
     const stage2Tasks = selectBenchmarkTasks({ stage: 'stage2' });
-    assert.equal(stage2Tasks.length, 16);
+    assert.equal(stage2Tasks.length, 17);
     const stage2Sample = stage2Tasks.filter((t) =>
       ['gen-01-grounded-synthesis', 'da-01-cohort-variance', 'sec-01-iam-least-privilege'].includes(t.id),
     );

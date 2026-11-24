@@ -1,0 +1,16 @@
+{
+  "id": "support-specialist",
+  "title": "Support Specialist",
+  "summary": "Monitors a shared support inbox, answers routine policy-covered inquiries automatically, proposes non-routine replies in Google Chat for colloquial human approval or edits, and logs compliance-relevant threads.",
+  "version": 1,
+  "workspace": true,
+  "skills": [
+    "support-triage"
+  ],
+  "gcp_roles": [],
+  "setup": {
+    "apt": [],
+    "pip": [],
+    "npm": []
+  }
+}

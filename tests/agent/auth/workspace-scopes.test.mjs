@@ -4,8 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  WORKSPACE_SCOPES, WORKSPACE_APIS, CHAT, CHAT_READ, CHAT_SEND, DRIVE, DOCS, SHEETS, SLIDES, CALENDAR, GMAIL_READ,
-  adminConsoleScopes, scopeName,
+  WORKSPACE_SCOPES, WORKSPACE_APIS, CHAT, CHAT_READ, CHAT_SEND, DRIVE, DOCS, SHEETS, SLIDES, CALENDAR,
+  GMAIL_READ, GMAIL_SEND, GMAIL, MAIL_SEND_ROLES, workspaceScopesFor, workspaceApisFor, adminConsoleScopes, scopeName,
 } from '../../../agent/auth/workspace-scopes.mjs';
 import { CHAT_READ_SCOPES } from '../../../agent/services/ears/main.mjs';
 import { CHAT_SEND_SCOPES } from '../../../agent/services/mouth/main.mjs';
@@ -59,4 +59,18 @@ test('the ears, the mouth and the Drive client take their scopes from here', () 
   assert.deepEqual(CHAT_READ_SCOPES, CHAT_READ);
   assert.deepEqual(CHAT_SEND_SCOPES, CHAT_SEND);
   assert.equal(DRIVE_SCOPE, DRIVE[0]);
+});
+
+test('only mail-sending roles receive gmail.send on top of the nine base scopes', () => {
+  assert.deepEqual(GMAIL_SEND, [`${ROOT}gmail.send`]);
+  assert.deepEqual(GMAIL, [`${ROOT}gmail.readonly`, `${ROOT}gmail.send`]);
+  assert.deepEqual(MAIL_SEND_ROLES, ['support-specialist']);
+  assert.equal(workspaceScopesFor('executive-assistant'), WORKSPACE_SCOPES);
+  assert.equal(workspaceScopesFor(null), WORKSPACE_SCOPES);
+  assert.equal(workspaceApisFor('executive-assistant'), WORKSPACE_APIS);
+
+  const supportScopes = workspaceScopesFor('support-specialist');
+  assert.equal(supportScopes.length, 10);
+  assert.ok(supportScopes.includes(`${ROOT}gmail.send`));
+  assert.deepEqual(workspaceApisFor('support-specialist').gmail.scopes, GMAIL);
 });

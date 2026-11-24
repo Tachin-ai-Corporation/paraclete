@@ -135,6 +135,21 @@ export function mentionsAgent(m, who, mentionMatch = 'annotation') {
 }
 
 /**
+ * Whether the message @mentions other Chat users (via USER_MENTION annotations) and does not
+ * mention the agent. Used inside threads the agent participates in so colleague-to-colleague
+ * asides do not trigger an agent reply while plain un-@mentioned follow-ups do.
+ *
+ * @param {object} m
+ * @param {object} who
+ * @param {string} [mentionMatch='annotation']
+ * @returns {boolean}
+ */
+export function mentionsOnlyOthers(m, who, mentionMatch = 'annotation') {
+  if (mentionsAgent(m, who, mentionMatch)) return false;
+  return userMentions(m).some((x) => !mentionIsAgent(x, who));
+}
+
+/**
  * The person's request: the message text with the agent's mentions (and the spaces after them)
  * taken out. The message's own line breaks and spacing are kept: a pasted list or code block must
  * reach the brain as it was written. The original text when nothing would be left.

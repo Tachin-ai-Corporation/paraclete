@@ -63,6 +63,7 @@ images stay, and `install/uninstall.sh` deletes them only with `--purge`.
 | [`finance-analyst`](finance-analyst/) | yes | Billing analysis from the Cloud Billing export, with the `billing-query` command; BigQuery Job User |
 | [`legal-advisor`](legal-advisor/) | yes | Legal review and redlining as comments or a copy, obligations and deadlines |
 | [`designer`](designer/) | yes | Design-system procedures, accessibility checks with the `contrast-check` command |
+| [`support-specialist`](support-specialist/) | yes | Support inbox triage on a 15-minute cadence (`r-support-triage`, shipped off), Policy Doc auto-responses, colloquial Google Chat draft review threads (`support-propose`, `support-ledger`), threaded Gmail replies (`gmail-reply`, adds `gmail.send`), and SOC 2 Sheet logging |
 | [`devops-engineer`](devops-engineer/) | no | gcloud, Cloud Build images (no Docker on the VM), Cloud Storage, Firebase Hosting; Cloud Run and Cloud Build roles, and act-as and image push only on its own account and its own `agent-images` repository; a weekly read-only Cloud Run review |
 | [`software-engineer`](software-engineer/) | no | Coding with tests, code review, GitHub pull requests through `gh` |
 | [`qa-engineer`](qa-engineer/) | no | Test runs reported as evidence, baselines, flaky tests, defect reports |
@@ -74,7 +75,7 @@ images stay, and `install/uninstall.sh` deletes them only with `--purge`.
 ## Status
 
 `generic/` is complete. Build plan phase 8 adds the other roles. Done: the Workspace roles
-(`executive-assistant`, `project-manager`, `finance-analyst`, `legal-advisor`, `designer`), and the roles
+(`executive-assistant`, `project-manager`, `finance-analyst`, `legal-advisor`, `designer`, `support-specialist`), and the roles
 without a Workspace account (`devops-engineer`, `software-engineer`, `qa-engineer`, `data-engineer`,
 `security-engineer`, `web-master`, `paraclete-h2`). A role's `setup.npm` and `setup.pip` packages are pinned to exact
 versions and installed by `install/bootstrap.sh` (npm globally as root, pip for the `paraclete` user;

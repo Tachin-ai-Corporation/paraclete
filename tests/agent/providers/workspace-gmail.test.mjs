@@ -1,10 +1,12 @@
 // Tests for agent/providers/workspace-gmail.mjs: search pages up to the limit and reads each match's
 // headers; a message is read as text (the plain part, else the HTML part turned into text, in its
-// charset), attachments are numbered and fetched; a thread comes oldest first. Read only: every call
-// is a GET with the gmail.readonly token. Google is a fake fetch.
+// charset), attachments are numbered and fetched; a thread comes oldest first; read calls use the
+// gmail.readonly token while sendReply builds a threaded RFC 2822 message and posts with gmail.send.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createGmailClient, parseMessage, htmlToText, decodeEntities } from '../../../agent/providers/workspace-gmail.mjs';
+import {
+  createGmailClient, parseMessage, htmlToText, decodeEntities, extractEmailAddress, encodeHeaderValue, buildReplyMime,
+} from '../../../agent/providers/workspace-gmail.mjs';
 import { INSTANCE, json, googleError, fakeTokens, fakeGoogle } from './workspace-fakes.mjs';
 
 const b64 = (text, encoding = 'utf8') => Buffer.from(text, encoding).toString('base64url');
@@ -16,7 +18,10 @@ const MESSAGE = {
     mimeType: 'multipart/mixed',
     headers: [
       { name: 'From', value: 'Pat Example <pat@example.com>' }, { name: 'To', value: 'agent@example.com' },
+      { name: 'Reply-To', value: 'reply@example.com' },
       { name: 'Subject', value: 'Q3 plan' }, { name: 'Date', value: 'Mon, 19 Oct 2026 09:12:00 -0500' },
+      { name: 'Message-ID', value: '<msg-1@example.com>' },
+      { name: 'References', value: '<msg-0@example.com>' },
     ],
     parts: [
       {
@@ -36,6 +41,9 @@ describe('reading a message', () => {
   test('headers, the plain text part, and attachments numbered in order', () => {
     const m = parseMessage(MESSAGE);
     assert.equal(m.from, 'Pat Example <pat@example.com>');
+    assert.equal(m.replyTo, 'reply@example.com');
+    assert.equal(m.messageIdHeader, '<msg-1@example.com>');
+    assert.equal(m.references, '<msg-0@example.com>');
     assert.equal(m.subject, 'Q3 plan');
     assert.equal(m.snippet, "Here's the plan");
     assert.equal(m.text, 'Hi,\nHere’s the plan.');
@@ -108,5 +116,58 @@ describe('the mailbox', () => {
     const google = fakeGoogle([['GET', /messages\/nope$/, () => googleError(404, 'notFound', 'Requested entity was not found.')]]);
     await assert.rejects(client(google).getMessage('nope'), (err) => err.kind === 'not_found'
       && /^There is no message nope in the mailbox of agent@example\.com: .*gmail-search/.test(err.message));
+  });
+});
+
+describe('sending threaded replies', () => {
+  test('extractEmailAddress, encodeHeaderValue and buildReplyMime produce RFC 2822 headers and UTF-8 body', () => {
+    assert.equal(extractEmailAddress('Pat Example <Pat@Example.COM>'), 'pat@example.com');
+    assert.equal(extractEmailAddress('pat@example.com'), 'pat@example.com');
+    assert.throws(() => encodeHeaderValue('ok\r\nBcc: evil@example.com'), /line breaks/);
+    const encodedAddr = encodeHeaderValue('Zoë <zoe@example.com>');
+    assert.ok(encodedAddr.startsWith('=?UTF-8?B?') && encodedAddr.endsWith('<zoe@example.com>'));
+
+    const original = parseMessage(MESSAGE);
+    const built = buildReplyMime({
+      original,
+      from: 'Support <support@example.com>',
+      body: 'Thanks — we have received your request.',
+    });
+    assert.equal(built.to, 'reply@example.com', 'prefers Reply-To over From');
+    assert.equal(built.subject, 'Re: Q3 plan');
+    assert.equal(built.references, '<msg-0@example.com> <msg-1@example.com>');
+    assert.match(built.mime, /^From: Support <support@example\.com>\r\nTo: reply@example\.com\r\nSubject: Re: Q3 plan\r\nIn-Reply-To: <msg-1@example\.com>\r\nReferences: <msg-0@example\.com> <msg-1@example\.com>\r\n/m);
+    const decoded = Buffer.from(built.raw, 'base64url').toString('utf8');
+    assert.equal(decoded, built.mime);
+
+    const noDupRe = buildReplyMime({ original: { ...original, subject: 'Re: Already prefixed' }, body: 'Noted.' });
+    assert.equal(noDupRe.subject, 'Re: Already prefixed');
+  });
+
+  test('sendReply reads with gmail.readonly and posts to messages/send with gmail.send', async () => {
+    const google = fakeGoogle([
+      ['GET', '/gmail/v1/users/me/messages/m1', () => json(MESSAGE)],
+      ['POST', '/gmail/v1/users/me/messages/send', () => json({ id: 'sent-1', threadId: 't1', labelIds: ['SENT'] })],
+    ]);
+    const sent = await client(google).sendReply({
+      messageId: 'm1',
+      from: 'support@example.com',
+      body: 'Hello Pat,\nYour ticket is resolved.',
+    });
+    assert.deepEqual(sent, {
+      id: 'sent-1',
+      threadId: 't1',
+      labelIds: ['SENT'],
+      to: 'reply@example.com',
+      from: 'support@example.com',
+      cc: '',
+      subject: 'Re: Q3 plan',
+      inReplyTo: '<msg-1@example.com>',
+    });
+    assert.equal(google.calls[0].headers.Authorization, 'Bearer tok-gmail.readonly');
+    assert.equal(google.calls[1].headers.Authorization, 'Bearer tok-gmail.send');
+    assert.equal(google.calls[1].json().threadId, 't1');
+    const rawMime = Buffer.from(google.calls[1].json().raw, 'base64url').toString('utf8');
+    assert.match(rawMime, /^From: support@example\.com/m);
   });
 });

@@ -57,6 +57,7 @@ export const DEFAULT_ROLES = Object.freeze([
   'sales-ops',
   'security-engineer',
   'software-engineer',
+  'support-specialist',
   'web-master',
 ]);
 

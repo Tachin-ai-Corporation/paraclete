@@ -52,7 +52,7 @@ Not here: classifying what came in (the brain), replying (the mouth), the Addres
 
 | Where | What the agent reads | Where it answers |
 |---|---|---|
-| A space or group chat the agent's account was added to, also one that admits people outside the organization | Messages that @mention the agent | In the thread of the message, mentioning the person who asked |
+| A space or group chat the agent's account was added to, also one that admits people outside the organization | Messages that @mention the agent, and follow-up messages in threads the agent has posted in or been @mentioned in (unless the message @mentions someone else) | In the thread of the message, mentioning the person who asked |
 | A direct message with the agent's address | Every message | In the same conversation, once Chat lets the account post there (below) |
 
 **Direct messages.** Chat refuses every reply the agent posts in a direct message while its account
@@ -102,8 +102,8 @@ before it takes an approval ([approval-replies.mjs](../brain/approval-replies.mj
   the new messages (`spaces.messages.list`, newest first, `ears.max_pages_per_poll` pages at most) of
   each space whose newest message is newer than its cursor, and of every space every five minutes.
   A space with nothing for the agent moves its cursor up to the newest message read. The cursors, the
-  messages already taken in, the agent's own user id and the users it recognized are kept in
-  `<data root>/services/ears/chat-state.json`.
+  messages already taken in, recent threads the agent participates in, the agent's own user id and
+  the users it recognized are kept in `<data root>/services/ears/chat-state.json`.
 - **Limits.** Chat allows a project 3,000 message reads and 3,000 space reads a minute, and 15 reads a
   second in one space; the ears spend one space read per poll and one message read per active space.
   A `429` ends the round, and the next poll waits a minute.
@@ -115,8 +115,11 @@ before it takes an approval ([approval-replies.mjs](../brain/approval-replies.mj
   unless it is part of a mention of somebody else. `ears.mention_match: "text"` uses typed names only.
 - **Threads.** A reply to a space goes into the message's thread (`messageReplyOption`
   `REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`, which starts a new thread if that one is gone;
-  `chat.reply_in_thread: false` turns it off). A direct message is one conversation: its Address has
-  no thread, and the reply goes to the conversation.
+  `chat.reply_in_thread: false` turns it off). Once the agent has posted in or been @mentioned in a
+  thread, `chat-state.json` remembers it (`agentThreads`), so follow-up messages in that thread reach
+  the brain without repeating `@mention`, unless a person @mentions someone else instead of the
+  agent. A direct message is one conversation: its Address has no thread, and the reply goes to the
+  conversation.
 - **Conversation.** The turns of the thread (or the whole direct message) on the poll page are copied
   into the thread ledger and sent with the intake, so the brain sees what was said before.
 - **Repair.** A long or multi-line message goes through one utility-model call that undoes Chat's

@@ -13,7 +13,7 @@
 // `set_workspace_account` commands, which the browser sends through POST /api/commands. Called by the
 // /api/workspace routes.
 
-import { WORKSPACE_SCOPES, WORKSPACE_APIS, adminConsoleScopes, chatAppPage, scopeName } from '../../../agent/auth/workspace-scopes.mjs';
+import { workspaceScopesFor, workspaceApisFor, adminConsoleScopes, chatAppPage, scopeName } from '../../../agent/auth/workspace-scopes.mjs';
 import { HttpError } from './errors.mjs';
 
 /**
@@ -186,13 +186,15 @@ export async function readWorkspaceSetup(runtime, user) {
   const signer = signerOf(runtime);
   if (!signer) throw new HttpError(503, 'the dashboard does not know its project (PARACLETE_PROJECT), so it cannot name the signer');
   const { client_id: clientId, error } = await readClientId(runtime, signer);
+  const roleScopes = workspaceScopesFor(runtime.settings.role);
+  const roleApis = workspaceApisFor(runtime.settings.role);
   return {
     signer,
     client_id: clientId,
     client_id_error: error,
-    scopes: [...WORKSPACE_SCOPES],
-    scopes_text: adminConsoleScopes(),
-    apis: Object.entries(WORKSPACE_APIS).map(([api, { name, scopes }]) => ({ api, name, scopes: scopes.map(scopeName) })),
+    scopes: [...roleScopes],
+    scopes_text: adminConsoleScopes(roleScopes),
+    apis: Object.entries(roleApis).map(([api, { name, scopes }]) => ({ api, name, scopes: scopes.map(scopeName) })),
     links: { ...ADMIN_LINKS, chat_app: chatAppPage(runtime.settings.project) },
     suggested_account: suggestAccount(runtime.settings.agentName, user.email),
   };

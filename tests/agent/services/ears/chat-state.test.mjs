@@ -7,14 +7,15 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createFileStateStore } from '../../../../agent/services/ears/chat-state.mjs';
 
-const EMPTY = { cursors: {}, seen: [], agentUserId: null, listedAt: null, people: {} };
+const EMPTY = { cursors: {}, seen: [], agentThreads: [], agentUserId: null, listedAt: null, people: {} };
 const dir = () => mkdtempSync(join(tmpdir(), 'ears-state-'));
 
 test('state round-trips through the file, creating its directory', () => {
   const path = join(dir(), 'services', 'ears', 'chat-state.json');
   const store = createFileStateStore(path);
   const state = {
-    cursors: { 'spaces/A': '2026-10-17T12:00:00Z' }, seen: ['spaces/A/messages/1'], agentUserId: 'users/9',
+    cursors: { 'spaces/A': '2026-10-17T12:00:00Z' }, seen: ['spaces/A/messages/1'],
+    agentThreads: ['spaces/A/threads/t1'], agentUserId: 'users/9',
     listedAt: '2026-10-17T12:00:05.000Z', people: { 'users/1': 'ana@example.com' },
   };
   store.save(state);
@@ -22,8 +23,11 @@ test('state round-trips through the file, creating its directory', () => {
   assert.equal(existsSync(`${path}.tmp`), false, 'the temporary file is renamed away');
 });
 
-test('a missing file is empty state', () => {
+test('a missing file or legacy state without agentThreads loads cleanly', () => {
   assert.deepEqual(createFileStateStore(join(dir(), 'none.json')).load(), EMPTY);
+  const legacyPath = join(dir(), 'legacy.json');
+  writeFileSync(legacyPath, JSON.stringify({ cursors: { 'spaces/A': '2026-10-17T12:00:00Z' }, seen: ['m1'], agentUserId: 'users/9', listedAt: null, people: {} }));
+  assert.deepEqual(createFileStateStore(legacyPath).load().agentThreads, []);
 });
 
 test('a corrupt or malformed file is empty state, and says so', () => {
