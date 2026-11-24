@@ -6,6 +6,7 @@ export function NoAccess({ email, problem }) {
   return (
     <main className={styles.wrap}>
       <div className={`card ${styles.card}`}>
+        <span className={`orb ${styles.orb}`} aria-hidden="true" />
         <h1>No access</h1>
         {problem ? (
           <p className="muted">Your sign-in could not be checked: {problem}</p>

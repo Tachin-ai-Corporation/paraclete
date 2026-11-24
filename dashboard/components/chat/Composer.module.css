@@ -12,13 +12,14 @@
   display: flex;
   align-items: flex-end;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: 8px 10px;
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md);
-  background: var(--bg-input);
-  transition: border-color var(--fast) var(--ease);
+  border-radius: var(--radius-lg);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
 }
-.box:focus-within { border-color: var(--accent); }
+.box:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow); }
 
 .input {
   flex: 1;

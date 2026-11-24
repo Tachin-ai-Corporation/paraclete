@@ -26,15 +26,15 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--bg-raised);
   margin-bottom: var(--space-3);
 }
-.notice-ok { border-color: var(--ok); }
-.notice-warn { border-color: var(--warn); }
-.notice-error { border-color: var(--danger); }
+.notice-ok { border-color: color-mix(in srgb, var(--ok) 28%, var(--border)); background: var(--ok-soft); }
+.notice-warn { border-color: color-mix(in srgb, var(--warn) 30%, var(--border)); background: var(--warn-soft); }
+.notice-error { border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); background: var(--danger-soft); }
 
 /* Lists use the global .table; this adds what Settings needs on top. */
 .tableWrap { overflow-x: auto; }

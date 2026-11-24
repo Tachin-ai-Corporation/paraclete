@@ -1,3 +1,4 @@
 .wrap { min-height: 100vh; display: grid; place-items: center; padding: var(--space-5); }
 .card { max-width: 480px; }
+.orb { width: 32px; height: 32px; margin-bottom: var(--space-3); }
 .card p { margin-top: var(--space-3); }

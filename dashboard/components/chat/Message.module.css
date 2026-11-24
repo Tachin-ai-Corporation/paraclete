@@ -20,10 +20,11 @@
 .bubble {
   max-width: min(80%, 640px);
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
   border-radius: var(--radius-lg);
   border-bottom-right-radius: var(--radius-sm);
   background: var(--accent-soft);
+  color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
