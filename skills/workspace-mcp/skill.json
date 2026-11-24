@@ -1,0 +1,16 @@
+{
+  "id": "workspace-mcp",
+  "name": "Google Workspace MCP",
+  "version": 1,
+  "when_to_use": "Searching across Gmail, Drive, Calendar, and Chat at once with Google Workspace Universal Search, or inspecting and calling read-safe tools on Google Workspace remote MCP servers.",
+  "organs": [
+    "motor",
+    "temporal-research"
+  ],
+  "commands": [
+    "workspace-mcp"
+  ],
+  "requires": [
+    "workspace"
+  ]
+}

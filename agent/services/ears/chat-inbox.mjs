@@ -367,6 +367,10 @@ export function createChatInbox({
       ready,
       tokenError,
       spaces: spaces.filter((s) => s.spaceType !== DIRECT_MESSAGE).length,
+      spaceList: spaces
+        .filter((s) => s.spaceType !== DIRECT_MESSAGE)
+        .slice(0, 25)
+        .map((s) => ({ name: s.name, displayName: s.displayName || '', external: Boolean(s.external) })),
       directMessages: spaces.filter((s) => s.spaceType === DIRECT_MESSAGE).length,
       external: spaces.filter((s) => s.external).length,
       errors: lastErrors,

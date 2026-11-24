@@ -111,8 +111,32 @@ test('a Workspace role: the account is required, links to its tab, and follows t
 
   const ready = run({ needed: true, account: recorded, last_check: check() });
   assert.equal(byKey(ready).workspace.state, 'done');
+  assert.equal(byKey(ready).chat_channel.key, 'chat_channel');
+  assert.equal(byKey(ready).chat_channel.state, 'todo');
   assert.deepEqual(ready.required, { done: 4, total: 4 });
   assert.equal(byKey(ready).drive.address, 'agent@example.com', "people share Drive files with the agent's own account");
+
+  const chatReadyStatus = healthyStatus();
+  chatReadyStatus.services.ears.heartbeat = {
+    gchat: {
+      state: 'ready',
+      spaces: 1,
+      space_list: [{ name: 'spaces/AAA', displayName: 'Support Review', external: false }],
+    },
+  };
+  const chatDone = byKey(run({ needed: true, account: recorded, last_check: check() }, {
+    status: chatReadyStatus,
+    responsibilities: {
+      responsibilities: [
+        { id: 'r-memory-consolidate', name: 'Memory', locked: true, enabled: true },
+        { id: 'r-support-triage', name: 'Support Inbox Triage', schedule: '*/15 * * * *', locked: false, enabled: false },
+      ],
+    },
+  }));
+  assert.equal(chatDone.chat_channel.state, 'done');
+  assert.deepEqual(chatDone.chat_channel.spaces, [{ name: 'spaces/AAA', displayName: 'Support Review', external: false }]);
+  assert.equal(chatDone.role_schedules.state, 'todo');
+  assert.match(chatDone.role_schedules.detail, /Support Inbox Triage/);
 
   const failing = byKey(run({ needed: true, account: recorded, last_check: check(['chat', 'gmail']) })).workspace;
   assert.equal(failing.state, 'problem');

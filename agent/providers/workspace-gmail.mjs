@@ -337,6 +337,27 @@ export function createGmailClient(options = {}) {
     },
 
     /**
+     * Lists Gmail Send-As aliases configured on the agent's mailbox (`gmail.readonly` scope).
+     *
+     * @returns {Promise<{aliases: Array<{sendAsEmail: string, displayName: string, replyToAddress: string, isPrimary: boolean, isDefault: boolean, treatAsAlias: boolean, verificationStatus: string}>}>}
+     */
+    async listSendAs() {
+      const res = await session.request('gmail', 'GET', `${BASE}/settings/sendAs`, {
+        about: { what: 'send-as aliases' },
+      });
+      const aliases = (res?.sendAs || []).map((a) => ({
+        sendAsEmail: String(a?.sendAsEmail || '').trim().toLowerCase(),
+        displayName: String(a?.displayName || ''),
+        replyToAddress: String(a?.replyToAddress || ''),
+        isPrimary: a?.isPrimary === true,
+        isDefault: a?.isDefault === true,
+        treatAsAlias: a?.treatAsAlias === true,
+        verificationStatus: a?.verificationStatus || (a?.isPrimary === true ? 'accepted' : 'unknown'),
+      }));
+      return { aliases };
+    },
+
+    /**
      * Sends a threaded plain-text reply to an existing message (`gmail.send` scope).
      *
      * @param {object} o

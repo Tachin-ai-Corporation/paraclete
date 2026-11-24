@@ -13,19 +13,27 @@ import { WORK_SCHEMA } from '../../../../agent/work/work-schema.mjs';
 import { validate } from '../../../../agent/work/validate-schema.mjs';
 import { getEntry, ledgerPath, upsertEntry } from './support-ledger.mjs';
 
-export const USAGE = 'Usage: support-propose <message-id> --space <spaces/id> [--thread <spaces/id/threads/id>] [--soc2] [--summary "<text>"] (--body "<draft>" | --stdin) [--mission <mission-id>] [--json]';
+export const USAGE = 'Usage: support-propose <message-id> --space <spaces/id> [--thread <spaces/id/threads/id>] [--soc2] [--summary "<text>"] [--dry-run] [--would-auto-reply] (--body "<draft>" | --stdin) [--mission <mission-id>] [--json]';
 
 const VALID_ID = /^[A-Za-z0-9_-]+$/;
 
 /** Formats the Chat notification body with the Gmail message id, metadata, and full draft reply. */
-export function formatProposalMessage(message, { summary = '', soc2 = false, draft, revision = 1 }) {
+export function formatProposalMessage(message, { summary = '', soc2 = false, draft, revision = 1, dryRun = false, wouldAutoReply = false }) {
+  const modeTag = dryRun ? '[DRY RUN — NO EMAIL SENT] ' : '';
+  const autoTag = dryRun && wouldAutoReply ? ' [would auto-reply when live]' : '';
   const lines = [
-    `Support intake${revision > 1 ? ` (updated draft v${revision})` : ''} — Gmail message \`${message.id}\`${soc2 ? ' [SOC 2]' : ''}`,
+    `${modeTag}Support intake${revision > 1 ? ` (updated draft v${revision})` : ''} — Gmail message \`${message.id}\`${soc2 ? ' [SOC 2]' : ''}${autoTag}`,
     `From: ${message.replyTo || message.from || '(unknown sender)'}`,
     `Subject: ${message.subject || '(no subject)'}`,
   ];
   if (summary.trim()) lines.push(`Summary: ${summary.trim()}`);
-  lines.push('', 'Proposed reply:', '```', draft.trim(), '```', '', 'Reply in this thread to approve as-is, tell me how to reword it, or tell me to skip it.');
+  lines.push('', dryRun ? 'Preview reply (not sent):' : 'Proposed reply:', '```', draft.trim(), '```');
+  lines.push(
+    '',
+    dryRun
+      ? 'Dry-run preview only: this message was not marked pending review and no email was sent.'
+      : 'Reply in this thread to approve as-is, tell me how to reword it, or tell me to skip it.',
+  );
   return lines.join('\n');
 }
 
@@ -46,6 +54,8 @@ export function parseArgs(argv) {
         thread: { type: 'string' },
         soc2: { type: 'boolean' },
         summary: { type: 'string' },
+        'dry-run': { type: 'boolean' },
+        'would-auto-reply': { type: 'boolean' },
         body: { type: 'string' },
         stdin: { type: 'boolean' },
         mission: { type: 'string' },
@@ -70,6 +80,8 @@ export function parseArgs(argv) {
     thread: values.thread ? values.thread.trim() : null,
     soc2: values.soc2 === true,
     summary: values.summary || '',
+    dryRun: values['dry-run'] === true,
+    wouldAutoReply: values['would-auto-reply'] === true,
     body: values.body,
     stdin: values.stdin === true,
     mission: values.mission ? values.mission.trim() : null,
@@ -109,11 +121,12 @@ export async function main(argv, deps = {}) {
     if (!address.space) return fail(`'${args.space}' is not a valid Google Chat space name`, 2);
 
     const existing = getEntry(file, args.id);
-    if (existing?.status === 'sent' || existing?.status === 'auto_replied') {
+    if (!args.dryRun && (existing?.status === 'sent' || existing?.status === 'auto_replied')) {
       return fail(`message ${args.id} was already replied to (${existing.status}); use gmail-reply --allow-followup if another reply is needed`, 1);
     }
     if (
-      existing?.status === 'pending_review'
+      !args.dryRun
+      && existing?.status === 'pending_review'
       && existing.proposedBody === draft
       && existing.space === address.space
       && (existing.chatThread || null) === address.thread
@@ -132,14 +145,18 @@ export async function main(argv, deps = {}) {
     }
 
     const message = await gmail.getMessage(args.id);
-    const revision = (existing?.revision || 0) + 1;
-    const workId = revision === 1 ? `w-proposal-${args.id}` : `w-proposal-${args.id}-r${revision}`;
+    const revision = args.dryRun ? 1 : ((existing?.revision || 0) + 1);
     const at = new Date(now()).toISOString();
+    const workId = args.dryRun
+      ? `w-dryrun-${args.id}`
+      : (revision === 1 ? `w-proposal-${args.id}` : `w-proposal-${args.id}-r${revision}`);
     const text = formatProposalMessage(message, {
       summary: args.summary || existing?.summary || '',
       soc2: Boolean(args.soc2 || existing?.soc2),
       draft,
       revision,
+      dryRun: args.dryRun,
+      wouldAutoReply: args.wouldAutoReply,
     });
 
     const envelope = {
@@ -148,7 +165,7 @@ export async function main(argv, deps = {}) {
       parent_id: null,
       status: 'complete',
       intent: 'notification',
-      title: `Support reply proposal for Gmail ${args.id}`,
+      title: `${args.dryRun ? '[Dry run] ' : ''}Support reply proposal for Gmail ${args.id}`,
       instruction: `Post support reply proposal for Gmail ${args.id} to ${address.space}`,
       accept_criteria: null,
       context_summary: args.mission ? `Proposed during mission ${args.mission}` : null,
@@ -157,7 +174,7 @@ export async function main(argv, deps = {}) {
       children: [],
       depends_on: [],
       source_channel: 'gchat',
-      source_meta: { notification_type: 'proposal', address },
+      source_meta: { notification_type: args.dryRun ? 'dry_run_proposal' : 'proposal', address },
       source_text: null,
       created_at: at,
       started_at: at,
@@ -176,6 +193,32 @@ export async function main(argv, deps = {}) {
     }
 
     await db.write(`${workCollection}/${workId}`, envelope);
+    if (args.dryRun) {
+      const nextStatus = existing?.status && existing.status !== 'dry_run' ? existing.status : 'dry_run';
+      upsertEntry(file, args.id, {
+        threadId: message.threadId,
+        from: message.from,
+        replyTo: message.replyTo,
+        subject: message.subject,
+        date: message.date,
+        soc2: Boolean(args.soc2 || existing?.soc2),
+        firstSeenAt: existing?.firstSeenAt || at,
+        status: nextStatus,
+        lastDryRun: {
+          at,
+          space: address.space,
+          workId,
+          wouldAutoReply: args.wouldAutoReply,
+          previewBody: draft,
+        },
+        updatedAt: at,
+      });
+      const out = { messageId: args.id, space: address.space, thread: address.thread, workId, dryRun: true, wouldAutoReply: args.wouldAutoReply, status: nextStatus };
+      if (args.json) stdout.write(`${JSON.stringify(out, null, 2)}\n`);
+      else stdout.write(`Queued dry-run preview ${workId} for Gmail ${args.id} -> ${address.space}.\n`);
+      return 0;
+    }
+
     upsertEntry(file, args.id, {
       threadId: message.threadId,
       from: message.from,
@@ -184,6 +227,9 @@ export async function main(argv, deps = {}) {
       date: message.date,
       soc2: Boolean(args.soc2 || existing?.soc2),
       summary: (args.summary || existing?.summary || '').trim(),
+      firstSeenAt: existing?.firstSeenAt || at,
+      proposedAt: existing?.proposedAt || at,
+      initialProposedBody: existing?.initialProposedBody || draft,
       proposedBody: draft,
       space: address.space,
       chatThread: address.thread,

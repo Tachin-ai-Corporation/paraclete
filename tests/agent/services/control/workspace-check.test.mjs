@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkWorkspace, tokenFailure, API_PROBES, probesFor, DELEGATION_PAGE, PROBE_FILE_ID } from '../../../../agent/services/control/workspace-check.mjs';
-import { WORKSPACE_SCOPES, WORKSPACE_APIS, CALENDAR, GMAIL_READ, GMAIL } from '../../../../agent/auth/workspace-scopes.mjs';
+import { WORKSPACE_SCOPES, WORKSPACE_APIS, CALENDAR, GMAIL_READ, GMAIL, workspaceScopesFor } from '../../../../agent/auth/workspace-scopes.mjs';
 import {
   fakeGoogle, answers, ACCOUNT, CLIENT_ID, PROJECT, SIGNER, VM_TOKEN, PERSONAL, PERSONAL_LEGACY, OTHER_SERVICE_ACCOUNT,
 } from './workspace-fakes.mjs';
@@ -193,6 +193,42 @@ test('an address that is not a Workspace user is refused before Google is asked'
     await assert.rejects(run(google, account), reason, String(account));
   }
   assert.equal(google.calls.length, 0);
+});
+
+test('support-specialist checks verified Gmail Send-As aliases and warns when only the primary mailbox is verified', async () => {
+  const onlyPrimary = fakeGoogle({ granted: workspaceScopesFor('support-specialist') });
+  const r1 = await checkWorkspace({
+    account: ACCOUNT,
+    project: PROJECT,
+    role: 'support-specialist',
+    fetch: onlyPrimary.fetch,
+    getVmAccessToken: async () => VM_TOKEN,
+    now: () => NOW,
+  });
+  const g1 = byApi(r1).gmail;
+  assert.equal(g1.ok, true);
+  assert.match(g1.note, /Only agent@example\.com is verified to send mail/);
+
+  const withAlias = fakeGoogle({
+    granted: workspaceScopesFor('support-specialist'),
+    apis: {
+      gmailSendAs: () => new Response(JSON.stringify({
+        sendAs: [
+          { sendAsEmail: ACCOUNT, isPrimary: true, verificationStatus: 'accepted' },
+          { sendAsEmail: 'support@example.com', isPrimary: false, verificationStatus: 'accepted' },
+        ],
+      }), { status: 200 }),
+    },
+  });
+  const r2 = await checkWorkspace({
+    account: ACCOUNT,
+    project: PROJECT,
+    role: 'support-specialist',
+    fetch: withAlias.fetch,
+    getVmAccessToken: async () => VM_TOKEN,
+    now: () => NOW,
+  });
+  assert.equal(byApi(r2).gmail.note, 'Verified From addresses: agent@example.com, support@example.com.');
 });
 
 test('token failures are sorted by cause', () => {

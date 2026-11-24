@@ -13,7 +13,10 @@
 // `set_workspace_account` commands, which the browser sends through POST /api/commands. Called by the
 // /api/workspace routes.
 
-import { workspaceScopesFor, workspaceApisFor, adminConsoleScopes, chatAppPage, scopeName } from '../../../agent/auth/workspace-scopes.mjs';
+import {
+  workspaceScopesFor, workspaceApisFor, adminConsoleScopes, chatAppPage, scopeName,
+  WORKSPACE_MCP_SERVERS, workspaceMcpEnableCommand,
+} from '../../../agent/auth/workspace-scopes.mjs';
 import { HttpError } from './errors.mjs';
 
 /**
@@ -197,5 +200,10 @@ export async function readWorkspaceSetup(runtime, user) {
     apis: Object.entries(roleApis).map(([api, { name, scopes }]) => ({ api, name, scopes: scopes.map(scopeName) })),
     links: { ...ADMIN_LINKS, chat_app: chatAppPage(runtime.settings.project) },
     suggested_account: suggestAccount(runtime.settings.agentName, user.email),
+    mcp: {
+      docs_url: 'https://developers.google.com/workspace/guides/configure-mcp-servers',
+      enable_command: workspaceMcpEnableCommand(runtime.settings.project),
+      services: Object.values(WORKSPACE_MCP_SERVERS).map(({ id, name, service, url }) => ({ id, name, service, url })),
+    },
   };
 }

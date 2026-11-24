@@ -125,3 +125,95 @@ export function scopeName(scope) {
 export function chatAppPage(project) {
   return `https://console.cloud.google.com/apis/api/chat.googleapis.com/hangouts-chat?project=${encodeURIComponent(project)}`;
 }
+
+/**
+ * Official Google Workspace remote MCP servers (Streamable HTTP, authenticated through domain-wide
+ * delegation as the agent's Workspace account). See:
+ * https://developers.google.com/workspace/guides/configure-mcp-servers
+ */
+export const WORKSPACE_MCP_SERVERS = Object.freeze({
+  universal: Object.freeze({
+    id: 'universal',
+    name: 'Workspace Universal Search',
+    service: 'workspacemcp.googleapis.com',
+    url: 'https://workspacemcp.googleapis.com/mcp/v1',
+    scopes: Object.freeze([...GMAIL_READ, ...DRIVE, ...CALENDAR, ...CHAT_READ]),
+  }),
+  gmail: Object.freeze({
+    id: 'gmail',
+    name: 'Gmail MCP',
+    service: 'gmailmcp.googleapis.com',
+    url: 'https://gmailmcp.googleapis.com/mcp/v1',
+    scopes: GMAIL_READ,
+  }),
+  drive: Object.freeze({
+    id: 'drive',
+    name: 'Google Drive MCP',
+    service: 'drivemcp.googleapis.com',
+    url: 'https://drivemcp.googleapis.com/mcp/v1',
+    scopes: DRIVE,
+  }),
+  docs: Object.freeze({
+    id: 'docs',
+    name: 'Google Docs MCP',
+    service: 'docsmcp.googleapis.com',
+    url: 'https://docsmcp.googleapis.com/mcp/v1',
+    scopes: Object.freeze([...DRIVE, ...DOCS]),
+  }),
+  sheets: Object.freeze({
+    id: 'sheets',
+    name: 'Google Sheets MCP',
+    service: 'sheetsmcp.googleapis.com',
+    url: 'https://sheetsmcp.googleapis.com/mcp/v1',
+    scopes: Object.freeze([...DRIVE, ...SHEETS]),
+  }),
+  slides: Object.freeze({
+    id: 'slides',
+    name: 'Google Slides MCP',
+    service: 'slidesmcp.googleapis.com',
+    url: 'https://slidesmcp.googleapis.com/mcp/v1',
+    scopes: Object.freeze([...DRIVE, ...SLIDES]),
+  }),
+  calendar: Object.freeze({
+    id: 'calendar',
+    name: 'Google Calendar MCP',
+    service: 'calendarmcp.googleapis.com',
+    url: 'https://calendarmcp.googleapis.com/mcp/v1',
+    scopes: CALENDAR,
+  }),
+  chat: Object.freeze({
+    id: 'chat',
+    name: 'Google Chat MCP',
+    service: 'chatmcp.googleapis.com',
+    url: 'https://chatmcp.googleapis.com/mcp/v1',
+    scopes: CHAT_READ,
+  }),
+  people: Object.freeze({
+    id: 'people',
+    name: 'People MCP',
+    service: 'people.googleapis.com',
+    url: 'https://people.googleapis.com/mcp/v1',
+    scopes: DRIVE,
+  }),
+});
+
+/**
+ * The gcloud command that turns on the Google Workspace remote MCP server endpoints for `project`.
+ *
+ * @param {string} project
+ * @returns {string}
+ */
+export function workspaceMcpEnableCommand(project) {
+  const services = [
+    'gmailmcp.googleapis.com',
+    'drivemcp.googleapis.com',
+    'docsmcp.googleapis.com',
+    'sheetsmcp.googleapis.com',
+    'slidesmcp.googleapis.com',
+    'calendarmcp.googleapis.com',
+    'chatmcp.googleapis.com',
+    'workspacemcp.googleapis.com',
+  ];
+  const target = project ? ` --project=${project}` : '';
+  return `gcloud services enable ${services.join(' ')}${target}`;
+}

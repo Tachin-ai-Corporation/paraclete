@@ -7,7 +7,8 @@ import { chatChannelView, count } from '../../../../dashboard/components/setting
 
 const ready = (over = {}) => ({
   state: 'ready', account: 'agent@example.com', last_poll_at: '2026-10-17T12:00:05Z', last_ok_at: '2026-10-17T12:00:05Z',
-  last_error: null, spaces: 3, direct_messages: 1, external_spaces: 0, known_users: 2, agent_user_id: 'users/900',
+  last_error: null, spaces: 3, space_list: [{ name: 'spaces/AAA', displayName: 'Support Review', external: false }],
+  direct_messages: 1, external_spaces: 0, known_users: 2, agent_user_id: 'users/900',
   rate_limited: false, taken_in: 4, ...over,
 });
 
@@ -30,6 +31,7 @@ test('ready: the account, what it reads, how many of those admit outsiders, and 
   const view = chatChannelView(ready({ external_spaces: 2 }), { sent: 5, refused: 0, last_sent_at: '2026-10-17T12:00:00Z', last_error: null });
   assert.deepEqual(view.badge, { level: 'ok', label: 'ready' });
   assert.equal(view.error, null);
+  assert.deepEqual(view.spaces, [{ name: 'spaces/AAA', displayName: 'Support Review', external: false }]);
   assert.deepEqual(view.facts, [
     { label: 'Account', value: 'agent@example.com' },
     { label: 'Reads', value: '3 spaces and 1 direct message' },
