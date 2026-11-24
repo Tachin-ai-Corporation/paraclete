@@ -1,15 +1,16 @@
 {
   "id": "support-triage",
   "name": "Support Triage",
-  "version": 1,
-  "when_to_use": "Triaging an inbound support mailbox, tracking which messages have already been handled, posting proposed email replies to a Google Chat space for human review, and sending threaded Gmail replies once policy or a reviewer approves.",
+  "version": 2,
+  "when_to_use": "Triaging an inbound support mailbox, tracking which messages have already been handled, checking readiness, posting proposed email replies to a Google Chat space for human review, measuring review outcomes, and sending threaded Gmail replies once policy or a reviewer approves.",
   "organs": [
     "motor"
   ],
   "commands": [
     "support-ledger",
     "support-propose",
-    "gmail-reply"
+    "gmail-reply",
+    "support-preflight"
   ],
   "requires": [
     "workspace"

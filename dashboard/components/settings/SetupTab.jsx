@@ -9,6 +9,7 @@
 // tab. Every user sees it; the advice names the admin when only an admin can act.
 import { usePoll } from '@/lib/client/use-poll.js';
 import { useCommand } from '@/lib/client/use-command.js';
+import { CopyButton } from './CopyButton.jsx';
 import { DriveCard } from './DriveCard.jsx';
 import { setupChecklist, STATES } from './setup-checklist.js';
 import styles from './Settings.module.css';
@@ -24,6 +25,7 @@ export function SetupTab({ me, workspace = null }) {
   const { data: setup, error: setupError } = usePoll('/api/setup', 0);
   const status = useCommand('status', { auto: true });
   const driveCheck = useCommand('drive_check');
+  const responsibilities = useCommand('responsibilities', { auto: true });
   const { items, required } = setupChecklist({
     agent,
     status: status.result,
@@ -33,6 +35,7 @@ export function SetupTab({ me, workspace = null }) {
     drive: { result: driveCheck.result, error: driveCheck.result ? null : driveCheck.error, running: driveCheck.running },
     workspace: workspace?.data ?? null,
     workspaceError: workspace?.data ? null : workspace?.error?.message ?? null,
+    responsibilities: responsibilities.result,
     isAdmin,
   });
 
@@ -47,7 +50,12 @@ export function SetupTab({ me, workspace = null }) {
               : `${required.done} of ${required.total} required steps are done.`}
           </p>
         </div>
-        <button type="button" className="btn btn-ghost" onClick={() => status.run()} disabled={status.running}>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={() => { status.run(); responsibilities.run(); }}
+          disabled={status.running || responsibilities.running}
+        >
           {status.running ? 'Checking…' : 'Check again'}
         </button>
       </div>
@@ -65,6 +73,17 @@ export function SetupTab({ me, workspace = null }) {
                 <h3>{item.title}</h3>
                 {item.detail && <p>{item.detail}</p>}
                 {item.action && <p className={styles.checkAction}>{item.action}</p>}
+                {Array.isArray(item.spaces) && item.spaces.length > 0 && (
+                  <div className="stack">
+                    {item.spaces.map((space) => (
+                      <div key={space.name} className={styles.address}>
+                        <span>{space.displayName || 'Unnamed space'}</span>
+                        <code>{space.name}</code>
+                        <CopyButton text={space.name} label="Copy ID" />
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {item.href && <p className={styles.checkAction}><a className="btn btn-sm" href={item.href}>{item.linkLabel}</a></p>}
                 {item.key === 'drive' && <DriveCard address={item.address} isAdmin={isAdmin} check={driveCheck} />}
               </div>

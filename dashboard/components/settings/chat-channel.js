@@ -23,6 +23,7 @@ export function count(n, one, many = `${one}s`) {
  * @param {object|null|undefined} ears   status.services.ears.heartbeat.gchat
  * @param {object|null|undefined} [mouth] status.services.mouth.heartbeat.gchat
  * @returns {{state: string, badge: {level: string, label: string}, summary: string, error: string|null,
+ *   spaces: Array<{name: string, displayName: string, external: boolean}>,
  *   facts: Array<{label: string, value: string, at?: string}>}} `at` marks a fact whose value is a time
  */
 export function chatChannelView(ears, mouth = null) {
@@ -32,6 +33,7 @@ export function chatChannelView(ears, mouth = null) {
       badge: { level: 'warn', label: 'unknown' },
       summary: 'The ears have not reported Google Chat: they are not running, or run a release from before it.',
       error: null,
+      spaces: [],
       facts: [],
     };
   }
@@ -41,6 +43,7 @@ export function chatChannelView(ears, mouth = null) {
       badge: { level: 'neutral', label: 'off' },
       summary: 'Not set up: this instance has no Workspace account. A Workspace role gets Google Chat once its account is set up.',
       error: null,
+      spaces: [],
       facts: [],
     };
   }
@@ -54,9 +57,20 @@ export function chatChannelView(ears, mouth = null) {
       badge: { level: 'warn', label: 'connecting' },
       summary: "Waiting for the agent's Workspace account: the user must exist and the domain-wide delegation must grant the Chat scopes.",
       error: ears.last_error || null,
+      spaces: [],
       facts,
     };
   }
+
+  const spaces = Array.isArray(ears.space_list)
+    ? ears.space_list
+        .map((s) => ({
+          name: String(s?.name || ''),
+          displayName: String(s?.displayName || ''),
+          external: Boolean(s?.external),
+        }))
+        .filter((s) => s.name)
+    : [];
 
   const reads = [count(ears.spaces, 'space'), count(ears.direct_messages, 'direct message')].join(' and ');
   facts.push({ label: 'Reads', value: reads });
@@ -79,6 +93,7 @@ export function chatChannelView(ears, mouth = null) {
     badge: trouble ? { level: 'warn', label: ears.rate_limited ? 'rate limited' : 'ready, with errors' } : { level: 'ok', label: 'ready' },
     summary: 'People reach the agent by sending its account a direct message, or by mentioning it in a space it was added to.',
     error,
+    spaces,
     facts,
   };
 }

@@ -151,7 +151,7 @@ test('a direct message takes in every message, with no mention, and is answered 
   await t.box.settle();
   assert.equal(t.turns[0].threadKey, 'gchat-spaces~D', 'one ledger thread for the direct message');
   assert.deepEqual(t.box.status(), {
-    ready: true, tokenError: null, spaces: 0, directMessages: 1, external: 0, errors: 0, rateLimited: false,
+    ready: true, tokenError: null, spaces: 0, spaceList: [], directMessages: 1, external: 0, errors: 0, rateLimited: false,
     agentUserId: AGENT, knownUsers: 0,
   });
 });

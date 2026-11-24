@@ -126,6 +126,9 @@ test("the setup: the signer's client ID read from IAM as the dashboard, the scop
   });
   assert.equal(setup.links.delegation, DELEGATION_PAGE, 'the wizard and the check send admins to the same page');
   assert.equal(setup.suggested_account, 'ada.lovelace@example.com');
+  assert.equal(setup.mcp.docs_url, 'https://developers.google.com/workspace/guides/configure-mcp-servers');
+  assert.match(setup.mcp.enable_command, /workspacemcp\.googleapis\.com/);
+  assert.ok(setup.mcp.services.some((s) => s.id === 'universal'));
   assert.equal(iam.calls.length, 1);
   assert.equal(iam.calls[0].url, `https://iam.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(SIGNER)}?fields=oauth2ClientId`);
   assert.equal(iam.calls[0].headers.Authorization, 'Bearer dashboard-token');

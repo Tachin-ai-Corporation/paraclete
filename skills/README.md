@@ -77,3 +77,4 @@ account owns, and the commands that do check ownership first.
 | `workspace-docs` | motor, temporal-research | `docs-get`, `docs-create`, `docs-comment`, `docs-replace` (here) | Docs as Markdown or text, comments, new Docs from Markdown, and in-place edits of the agent's own Docs |
 | `workspace-sheets` | motor, temporal-research | `sheets-get`, `sheets-create`, `sheets-append`, `sheets-update` (here) | Sheets read cell by cell, new Sheets from CSV, and value writes into the agent's own Sheets |
 | `workspace-slides` | motor, temporal-research | `slides-get`, `slides-create` (here) | Decks read slide by slide with their notes, and new decks from an outline |
+| `workspace-mcp` | motor, temporal-research | `workspace-mcp` (here) | Cross-Workspace Universal Search and read-safe Google Workspace remote MCP servers |

@@ -11,6 +11,7 @@ import { validate } from '../../../../../agent/work/validate-schema.mjs';
 import * as supportLedger from '../../../../../roles/support-specialist/skills/support-triage/support-ledger.mjs';
 import * as supportPropose from '../../../../../roles/support-specialist/skills/support-triage/support-propose.mjs';
 import * as gmailReply from '../../../../../roles/support-specialist/skills/support-triage/gmail-reply.mjs';
+import * as supportPreflight from '../../../../../roles/support-specialist/skills/support-triage/support-preflight.mjs';
 
 const NOW = Date.parse('2026-11-24T15:00:00Z');
 const scratch = () => mkdtempSync(join(tmpdir(), 'support-triage-'));
@@ -210,5 +211,151 @@ describe('gmail-reply', () => {
     ));
     assert.equal(blockSelf.code, 1);
     assert.match(blockSelf.err, /outbound alias/);
+  });
+
+  test('tracks approved_as_is vs edited_before_send and support-ledger stats summarizes quality', async () => {
+    const ledgerFile = join(scratch(), 'ledger.json');
+    const db = fakeDb();
+    const gmail = {
+      account: 'agent@example.org',
+      getMessage: async (id) => ({ ...SAMPLE_MESSAGE, id }),
+      sendReply: async (opts) => ({
+        id: `sent-${opts.original.id}`,
+        threadId: opts.original.threadId,
+        labelIds: ['SENT'],
+        to: opts.original.replyTo,
+        from: opts.from,
+        cc: '',
+        subject: `Re: ${opts.original.subject}`,
+        inReplyTo: opts.original.messageIdHeader,
+      }),
+    };
+
+    // Dry-run proposal previews in Chat without blocking live ledger check.
+    const dry = await capture((stdout, stderr) => supportPropose.main(
+      ['msg-dry', '--space', 'spaces/AAA', '--dry-run', '--would-auto-reply', '--body', 'Preview draft', '--json'],
+      { stdout, stderr, gmail, db, workCollection: 'work', ledgerFile, now: () => NOW },
+    ));
+    assert.equal(dry.code, 0, dry.err);
+    assert.equal(JSON.parse(dry.out).dryRun, true);
+    assert.match(db.get('work/w-dryrun-msg-dry').output, /\[DRY RUN — NO EMAIL SENT\]/);
+
+    const checkDry = await capture((stdout, stderr) => supportLedger.main(
+      ['check', 'msg-dry', '--json'],
+      { stdout, stderr, ledgerFile },
+    ));
+    assert.equal(JSON.parse(checkDry.out).entries[0].status, 'new');
+
+    // Approved without edits -> approved_as_is
+    await capture((stdout, stderr) => supportPropose.main(
+      ['msg-1', '--space', 'spaces/AAA', '--body', 'Clean draft', '--json'],
+      { stdout, stderr, gmail, db, workCollection: 'work', ledgerFile, now: () => NOW },
+    ));
+    const r1 = await capture((stdout, stderr) => gmailReply.main(
+      ['msg-1', '--from', 'support@example.com', '--use-draft', '--json'],
+      { stdout, stderr, gmail, ledgerFile, now: () => NOW + 120_000 },
+    ));
+    assert.equal(JSON.parse(r1.out).resolution, 'approved_as_is');
+
+    // Edited before send -> edited_before_send
+    await capture((stdout, stderr) => supportPropose.main(
+      ['msg-2', '--space', 'spaces/AAA', '--soc2', '--body', 'Initial draft', '--json'],
+      { stdout, stderr, gmail, db, workCollection: 'work', ledgerFile, now: () => NOW },
+    ));
+    const r2 = await capture((stdout, stderr) => gmailReply.main(
+      ['msg-2', '--from', 'support@example.com', '--stdin', '--json'],
+      { stdout, stderr, gmail, ledgerFile, stdinText: 'Edited final reply', now: () => NOW + 240_000 },
+    ));
+    assert.equal(JSON.parse(r2.out).resolution, 'edited_before_send');
+
+    // Auto-replied
+    await capture((stdout, stderr) => gmailReply.main(
+      ['msg-3', '--from', 'support@example.com', '--auto', '--body', 'Standard policy answer', '--json'],
+      { stdout, stderr, gmail, ledgerFile, now: () => NOW + 300_000 },
+    ));
+
+    const stats = await capture((stdout, stderr) => supportLedger.main(
+      ['stats', '--days', '7', '--json'],
+      { stdout, stderr, ledgerFile, now: () => NOW + 400_000 },
+    ));
+    assert.equal(stats.code, 0, stats.err);
+    const parsedStats = JSON.parse(stats.out);
+    assert.equal(parsedStats.total, 3);
+    assert.equal(parsedStats.dryRunPreviews, 1);
+    assert.equal(parsedStats.byResolution.approved_as_is, 1);
+    assert.equal(parsedStats.byResolution.edited_before_send, 1);
+    assert.equal(parsedStats.byResolution.auto_replied, 1);
+    assert.equal(parsedStats.unmodifiedApprovalRate, 0.5);
+    assert.equal(parsedStats.medianReviewLatencySeconds, 180);
+    assert.equal(parsedStats.recentEdited[0].messageId, 'msg-2');
+  });
+});
+
+describe('support-preflight', () => {
+  test('verifies intake, sendAs, readable doc, agent-owned sheet, and --init-soc2-sheet', async () => {
+    const db = fakeDb();
+    const docs = {
+      get: async () => ({
+        title: 'Support Policy',
+        body: { content: [{ paragraph: { elements: [{ textRun: { content: 'Auto-reply rule\n' } }] } }] },
+      }),
+    };
+    const sheets = {
+      account: 'agent@example.com',
+      file: async () => ({ id: 'sheet-1', name: 'SOC 2 Log', ownedByMe: true }),
+      owns: (f) => f.ownedByMe === true,
+      info: async () => ({ properties: { title: 'SOC 2 Log' }, sheets: [{ properties: { title: 'Log' } }] }),
+      values: async () => ({ range: "'Log'!1:5", values: [['Timestamp', 'Message ID']] }),
+      create: async ({ title }) => ({ id: 'new-sheet-1', name: title, webViewLink: 'https://docs.google.com/spreadsheets/d/new-sheet-1' }),
+    };
+    const gmail = {
+      account: 'agent@example.com',
+      search: async () => ({ messages: [{ id: 'm1' }] }),
+      listSendAs: async () => ({
+        aliases: [
+          { sendAsEmail: 'agent@example.com', isPrimary: true, verificationStatus: 'accepted' },
+          { sendAsEmail: 'support@example.com', isPrimary: false, verificationStatus: 'accepted' },
+        ],
+      }),
+    };
+
+    const okRun = await capture((stdout, stderr) => supportPreflight.main([
+      '--intake', 'support@example.com',
+      '--from', 'support@example.com',
+      '--space', 'spaces/AAA',
+      '--policy-doc', 'https://docs.google.com/document/d/doc-1234567890/edit',
+      '--soc2-sheet', 'https://docs.google.com/spreadsheets/d/sheet-1234567890/edit',
+      '--ping-chat',
+      '--json',
+    ], { stdout, stderr, gmail, docs, sheets, db, workCollection: 'work', now: () => NOW }));
+    assert.equal(okRun.code, 0, okRun.err);
+    assert.equal(JSON.parse(okRun.out).ok, true);
+    assert.equal(db.docs.size, 1);
+
+    // Non-owned SOC 2 Sheet fails with actionable fix
+    const notOwner = await capture((stdout, stderr) => supportPreflight.main([
+      '--intake', 'support@example.com',
+      '--from', 'support@example.com',
+      '--space', 'spaces/AAA',
+      '--policy-doc', 'doc-1234567890',
+      '--soc2-sheet', 'sheet-1234567890',
+      '--json',
+    ], { stdout, stderr, gmail, docs, sheets: { ...sheets, owns: () => false }, db }));
+    assert.equal(notOwner.code, 1);
+    const notOwnerCheck = JSON.parse(notOwner.out).checks.find((c) => c.check === 'soc2_sheet');
+    assert.equal(notOwnerCheck.ok, false);
+    assert.match(notOwnerCheck.error, /--init-soc2-sheet/);
+
+    // --init-soc2-sheet creates an agent-owned sheet
+    const initRun = await capture((stdout, stderr) => supportPreflight.main([
+      '--intake', 'support@example.com',
+      '--from', 'support@example.com',
+      '--space', 'spaces/AAA',
+      '--policy-doc', 'doc-1234567890',
+      '--init-soc2-sheet', 'SOC 2 Audit Log',
+      '--json',
+    ], { stdout, stderr, gmail, docs, sheets, db }));
+    assert.equal(initRun.code, 0, initRun.err);
+    assert.equal(JSON.parse(initRun.out).createdSheet.id, 'new-sheet-1');
   });
 });

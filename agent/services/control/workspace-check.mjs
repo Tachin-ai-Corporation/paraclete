@@ -19,7 +19,9 @@
 // whole list is refused each scope is asked for alone, to name exactly the ones missing.
 
 import { createDwdTokenSource } from '../../auth/dwd-token.mjs';
-import { WORKSPACE_APIS, workspaceScopesFor, workspaceApisFor, chatAppPage } from '../../auth/workspace-scopes.mjs';
+import {
+  WORKSPACE_APIS, MAIL_SEND_ROLES, workspaceScopesFor, workspaceApisFor, chatAppPage,
+} from '../../auth/workspace-scopes.mjs';
 import { checkWorkspaceAccount, signerFor } from './workspace-account.mjs';
 
 /** A file id shaped like Google's (44 letters, digits, - and _) that no file has. */
@@ -33,6 +35,7 @@ const IAM_API = 'https://iam.googleapis.com/v1';
 const CHAT_SELF_URL = 'https://chat.googleapis.com/v1/spaces:findDirectMessage?name=';
 const CALL_TIMEOUT_MS = 15_000;
 const MAX_ERROR_CHARS = 300;
+const GMAIL_SEND_AS_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs';
 
 const list = (scopes) => (Array.isArray(scopes) ? scopes : String(scopes ?? '').split(/\s+/)).filter(Boolean);
 
@@ -198,6 +201,34 @@ export function chatPendingNote({ account, project }) {
 }
 
 /**
+ * Best-effort summary of verified Send-As aliases on mail-sending roles (`support-specialist`).
+ * Ensures an admin notices early when a group alias (such as `support@...`) is still missing.
+ */
+async function gmailSendAsNote({ token, account, fetch }) {
+  try {
+    const response = await fetch(GMAIL_SEND_AS_URL, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    const aliases = Array.isArray(body?.sendAs) ? body.sendAs : [];
+    if (!aliases.length) return null;
+    const verified = aliases
+      .filter((a) => a?.isPrimary === true || a?.verificationStatus === 'accepted')
+      .map((a) => String(a?.sendAsEmail || '').trim().toLowerCase())
+      .filter(Boolean);
+    const extras = verified.filter((email) => email !== account);
+    if (extras.length > 0) {
+      return `Verified From addresses: ${verified.join(', ')}.`;
+    }
+    return `Only ${account} is verified to send mail. To send replies From a shared group address (such as support@...), sign in to Gmail as ${account}, open Settings -> Accounts -> Send mail as, add the group address as an alias, and verify it.`;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The signer's OAuth client ID, the number an admin enters in the Admin console, as IAM reports it.
  * Best effort: null when IAM does not answer.
  */
@@ -298,6 +329,10 @@ export async function checkWorkspace({ account: value, project, role = null, fet
     }
     if (response.ok || (api.notFoundIsOk && response.status === 404)) {
       entry.ok = true;
+      if (api.api === 'gmail' && MAIL_SEND_ROLES.includes(role)) {
+        const sendAsNote = await gmailSendAsNote({ token: minted.token, account, fetch });
+        if (sendAsNote) entry.note = sendAsNote;
+      }
       continue;
     }
     if (api.api === 'chat' && response.status === 403 && await chatTookToken({ token: minted.token, account, fetch })) {

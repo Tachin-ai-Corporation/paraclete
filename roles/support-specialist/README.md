@@ -15,13 +15,14 @@ Focused specialist for shared support inbox triage on a 15-minute cadence: reads
 | `processes/p-support-triage.json` | Active playbook describing the scheduled inbox pass and Chat thread review flow |
 | `responsibilities.json` | `r-support-triage` (`*/15 * * * *`, `min_spacing_minutes: 15`, `singleton: true`, shipped `enabled: false` until configured) |
 | `memory.md` | Starter working memory listing the five configuration slots to populate after install |
-| `skills/support-triage/` | `support-ledger`, `support-propose`, and `gmail-reply` commands plus `SKILL.md` |
+| `skills/support-triage/` | `support-ledger`, `support-propose`, `gmail-reply`, and `support-preflight` commands plus `SKILL.md` |
 
 ## Gmail send scope and shared support address
 
-Standard Workspace roles request `gmail.readonly` only (`WORKSPACE_SCOPES` in [`agent/auth/workspace-scopes.mjs`](../../agent/auth/workspace-scopes.mjs)). The `support-specialist` role is in `MAIL_SEND_ROLES`, so the dashboard's Workspace setup wizard and `workspace_check` include `https://www.googleapis.com/auth/gmail.send` (`10` scopes total).
+Standard Workspace roles request `gmail.readonly` only (`WORKSPACE_SCOPES` in [`agent/auth/workspace-scopes.mjs`](../../agent/auth/workspace-scopes.mjs)). The `support-specialist` role is in `MAIL_SEND_ROLES`, so the dashboard's Workspace setup wizard and `workspace_check` include `https://www.googleapis.com/auth/gmail.send` (`10` scopes total) and inspect verified `Send-As` aliases.
 
 - `gmail-search` and `gmail-get` still authenticate with `gmail.readonly`.
-- Only `gmail-reply` requests `gmail.send` (`POST /gmail/v1/users/me/messages/send`) and requires a `Message-ID` ledger check so the same inbound email is never replied to twice unless `--allow-followup` is passed.
+- Only `gmail-reply` requests `gmail.send` (`POST /gmail/v1/users/me/messages/send`), requires a `Message-ID` ledger check so the same inbound email is never replied to twice unless `--allow-followup` is passed, and records `auto_replied` / `approved_as_is` / `edited_before_send` outcomes for `support-ledger stats`.
+- `support-preflight` checks intake search, `Send-As` verification, Policy Doc readability, agent-owned SOC 2 Sheet access (with `--init-soc2-sheet` to create one owned by the agent), and Chat space reachability; `support-propose --dry-run` lets reviewers preview proposals in Chat before enabling auto-replies.
 - Outbound replies stay inside the customer's Gmail thread (`In-Reply-To`, `References`, `threadId`) and use `--from "<address>"` so Google Workspace's verified **Send mail as** alias (e.g. a Google Group support address) appears as the sender.
 - Review proposals and conversational status replies in Google Chat still go through the [mouth service](../../agent/services/mouth/README.md).

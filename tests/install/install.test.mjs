@@ -71,6 +71,8 @@ const BASE_APIS = ['compute', 'run', 'firestore', 'iam', 'iamcredentials', 'aipl
   'cloudbuild', 'secretmanager', 'storage', 'iap', 'drive', 'cloudresourcemanager', 'cloudscheduler'].map((api) => `${api}.googleapis.com`);
 const WORKSPACE_APIS = ['chat', 'gmail', 'calendar-json', 'docs', 'sheets', 'slides', 'people', 'admin']
   .map((api) => `${api}.googleapis.com`);
+const WORKSPACE_MCP_APIS = ['gmailmcp', 'drivemcp', 'docsmcp', 'sheetsmcp', 'slidesmcp', 'calendarmcp', 'chatmcp', 'workspacemcp']
+  .map((api) => `${api}.googleapis.com`);
 
 /** Calls that would change something, including any the fake doesn't know (write: null). */
 const writes = (calls) => calls.filter((call) => call.write !== false);
@@ -542,7 +544,7 @@ describe('a Workspace role', { skip: needsBash, concurrency: true }, () => {
 
   test('adds the Workspace APIs', () => {
     assert.equal(run.status, 0, run.stderr);
-    assert.deepEqual(enabledApis(run.commands).sort(), [...BASE_APIS, ...WORKSPACE_APIS].sort());
+    assert.deepEqual(enabledApis(run.commands).sort(), [...BASE_APIS, ...WORKSPACE_APIS, ...WORKSPACE_MCP_APIS].sort());
   });
 
   test('turns on every API the Workspace check calls', () => {
@@ -736,7 +738,7 @@ describe("every role's APIs are turned on, each once, and never turned off", { s
     test(`${role.id}: ${role.apis.join(', ')}`, async () => {
       const run = await createSandbox().run('install.sh', ['--dry-run', '--yes', '--role', role.id]);
       assert.equal(run.status, 0, run.stderr);
-      const expected = new Set([...BASE_APIS, ...(role.workspace ? WORKSPACE_APIS : []), ...role.apis.map((api) => `${api}.googleapis.com`)]);
+      const expected = new Set([...BASE_APIS, ...(role.workspace ? [...WORKSPACE_APIS, ...WORKSPACE_MCP_APIS] : []), ...role.apis.map((api) => `${api}.googleapis.com`)]);
       assert.deepEqual(enabledApis(run.commands).sort(), [...expected].sort());
       assert.deepEqual(agentResourceCommands(run.commands), [], `${role.id} asks for no single-resource grant`);
     });

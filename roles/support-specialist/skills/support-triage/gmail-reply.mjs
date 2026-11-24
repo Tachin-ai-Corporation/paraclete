@@ -163,6 +163,20 @@ export async function main(argv, deps = {}) {
     });
     const at = new Date(now()).toISOString();
     const status = args.auto ? 'auto_replied' : 'sent';
+    let resolution;
+    if (args.auto) {
+      resolution = 'auto_replied';
+    } else if (existing?.proposedBody) {
+      const initial = String(existing.initialProposedBody || existing.proposedBody).trim();
+      const unchanged = bodyText.trim() === initial && (existing.revision || 1) === 1;
+      resolution = unchanged ? 'approved_as_is' : 'edited_before_send';
+    } else {
+      resolution = 'manual_reply';
+    }
+    const reviewLatencySeconds = existing?.proposedAt
+      ? Math.max(0, Math.round((Date.parse(at) - Date.parse(existing.proposedAt)) / 1000))
+      : null;
+
     upsertEntry(file, args.id, {
       threadId: original.threadId,
       from: original.from,
@@ -170,6 +184,9 @@ export async function main(argv, deps = {}) {
       subject: original.subject,
       date: original.date,
       status,
+      resolution,
+      ...(reviewLatencySeconds !== null ? { reviewLatencySeconds } : {}),
+      firstSeenAt: existing?.firstSeenAt || at,
       soc2: Boolean(args.soc2 || existing?.soc2),
       sentMessageId: sent.id,
       sentThreadId: sent.threadId,
@@ -189,6 +206,7 @@ export async function main(argv, deps = {}) {
       subject: sent.subject,
       inReplyTo: sent.inReplyTo,
       status,
+      resolution,
     };
     if (args.json) {
       stdout.write(`${JSON.stringify(out, null, 2)}\n`);

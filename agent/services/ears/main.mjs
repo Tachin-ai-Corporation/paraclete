@@ -181,6 +181,7 @@ export function createEars(runtime, deps = {}) {
       last_ok_at: null,
       last_error: null,
       spaces: 0,
+      space_list: [],
       direct_messages: 0,
       external_spaces: 0,
       known_users: 0,
@@ -264,6 +265,7 @@ export function createEars(runtime, deps = {}) {
     const status = chat.status();
     Object.assign(health.gchat, {
       spaces: status.spaces,
+      space_list: status.spaceList || [],
       direct_messages: status.directMessages,
       external_spaces: status.external,
       known_users: status.knownUsers,

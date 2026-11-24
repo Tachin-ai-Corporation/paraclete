@@ -10,6 +10,7 @@ import { useCommand } from '@/lib/client/use-command.js';
 import { formatBytes, formatDate, timeAgo } from '@/lib/client/format.js';
 import { AsyncState } from '@/components/ui/AsyncState.jsx';
 import { ConfirmButton } from './ConfirmButton.jsx';
+import { CopyButton } from './CopyButton.jsx';
 import { Notice } from './Notice.jsx';
 import { UpdateCard } from './UpdateCard.jsx';
 import { chatChannelView } from './chat-channel.js';
@@ -226,7 +227,31 @@ function ChatChannel({ ears, mouth }) {
           ))}
         </dl>
       )}
+      {view.spaces.length > 0 && (
+        <div className={styles.footnote}>
+          <p className={styles.small}><strong>Connected spaces</strong></p>
+          <dl className={styles.facts}>
+            {view.spaces.map((space) => (
+              <FragmentRow key={space.name} space={space} />
+            ))}
+          </dl>
+        </div>
+      )}
     </div>
+  );
+}
+
+function FragmentRow({ space }) {
+  return (
+    <>
+      <dt>{space.displayName || 'Unnamed space'}{space.external ? ' (external)' : ''}</dt>
+      <dd>
+        <span className={styles.address}>
+          <code>{space.name}</code>
+          <CopyButton text={space.name} label="Copy ID" />
+        </span>
+      </dd>
+    </>
   );
 }
 

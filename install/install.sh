@@ -72,6 +72,7 @@ VM_SCOPES=cloud-platform,https://www.googleapis.com/auth/drive
 # never turned it on.
 BASE_APIS=(compute run firestore iam iamcredentials aiplatform artifactregistry cloudbuild secretmanager storage iap drive cloudresourcemanager cloudscheduler)
 WORKSPACE_APIS=(chat gmail calendar-json docs sheets slides people admin)
+WORKSPACE_MCP_APIS=(gmailmcp drivemcp docsmcp sheetsmcp slidesmcp calendarmcp chatmcp workspacemcp)
 # The Service Usage API takes a limited number of services per call.
 APIS_PER_CALL=10
 
@@ -457,6 +458,7 @@ summarize_and_confirm() {
 step_apis() {
   step 2 apis "turn on the Google APIs the agent and the dashboard use, and check the agent's model answers"
   enable_apis
+  enable_optional_mcp_apis
   check_model
 }
 
@@ -498,6 +500,28 @@ enable_apis() {
   done
   if [[ "$DRY_RUN" == 1 ]]; then
     note "(dry run: while these APIs are off, the steps below cannot look inside them, so they plan to create everything there)"
+  fi
+}
+
+# Google Workspace remote MCP servers (Developer Preview): best-effort enablement on Workspace
+# roles without blocking installs in organizations that have not opted into the preview yet.
+enable_optional_mcp_apis() {
+  [[ "$ROLE_WORKSPACE" == true ]] || return 0
+  local enabled api missing=()
+  enabled="$(gcloud services list --enabled --project="$PROJECT" --format='value(config.name)' 2>/dev/null || true)"
+  for api in "${WORKSPACE_MCP_APIS[@]}"; do
+    grep -Fxq -- "$api.googleapis.com" <<<"$enabled" && continue
+    missing+=("$api.googleapis.com")
+  done
+  ((${#missing[@]} > 0)) || return 0
+  if [[ "$DRY_RUN" == 1 ]]; then
+    run gcloud services enable "${missing[@]}" --project="$PROJECT" --quiet
+    return 0
+  fi
+  if gcloud services enable "${missing[@]}" --project="$PROJECT" --quiet >/dev/null 2>&1; then
+    note "turned on ${#missing[@]} Google Workspace MCP service(s)"
+  else
+    warn "Google Workspace MCP services could not all be turned on in $PROJECT; enable them if enrolled: ${missing[*]}"
   fi
 }
 

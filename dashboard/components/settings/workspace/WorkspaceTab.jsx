@@ -130,8 +130,32 @@ function MemberView({ workspace }) {
   );
 }
 
+function McpCard({ setup }) {
+  const mcp = setup?.mcp;
+  if (!mcp) return null;
+  return (
+    <section className="card stack">
+      <div className={styles.recordedHead}>
+        <div>
+          <h3>Google Workspace remote MCP servers</h3>
+          <p className="muted">
+            Allows Universal Search across Gmail, Drive, Calendar, and Chat plus read-safe MCP tools through domain-wide delegation.
+          </p>
+        </div>
+        {mcp.docs_url && <External href={mcp.docs_url}>Google Workspace MCP guide</External>}
+      </div>
+      {mcp.enable_command && (
+        <div className={styles.copyLine}>
+          <code className={styles.scopes}>{mcp.enable_command}</code>
+          <CopyButton text={mcp.enable_command} label="Copy command" />
+        </div>
+      )}
+    </section>
+  );
+}
+
 /** The recorded account, its last test, and what an admin can do with it. */
-function Recorded({ workspace, check, onChange, onRemove, busy }) {
+function Recorded({ workspace, setup, check, onChange, onRemove, busy }) {
   const { account } = workspace;
   const latest = check.result?.account === account.account ? check.result : workspace.last_check?.account === account.account ? workspace.last_check : null;
   return (
@@ -165,6 +189,7 @@ function Recorded({ workspace, check, onChange, onRemove, busy }) {
       </div>
       {check.error && !check.running && <p className="error-text">The test did not finish: {check.error}</p>}
       <CheckResults check={latest} isAdmin />
+      <McpCard setup={setup} />
     </section>
   );
 }
@@ -328,19 +353,22 @@ function AdminView({ workspace, refresh }) {
       <Summary workspace={workspace} />
       <Notice notice={notice} onDismiss={() => setNotice(null)} />
       {!showWizard && (
-        <Recorded workspace={workspace} check={runCheck} busy={busy} onChange={() => setChanging(true)} onRemove={() => record(null)} />
+        <Recorded workspace={workspace} setup={setup} check={runCheck} busy={busy} onChange={() => setChanging(true)} onRemove={() => record(null)} />
       )}
       {showWizard && (
-        <Wizard
-          workspace={workspace}
-          setup={setup}
-          setupError={setupError}
-          check={runCheck}
-          save={save}
-          busy={busy}
-          onSave={record}
-          onCancel={workspace.account ? () => setChanging(false) : null}
-        />
+        <>
+          <Wizard
+            workspace={workspace}
+            setup={setup}
+            setupError={setupError}
+            check={runCheck}
+            save={save}
+            busy={busy}
+            onSave={record}
+            onCancel={workspace.account ? () => setChanging(false) : null}
+          />
+          <McpCard setup={setup} />
+        </>
       )}
     </div>
   );

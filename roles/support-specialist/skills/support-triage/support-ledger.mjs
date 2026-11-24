@@ -15,6 +15,7 @@ export const USAGE = [
   '       support-ledger get <message-id> [--json]',
   '       support-ledger list [--status <status>] [--limit <n>] [--json]',
   '       support-ledger skip <message-id> --reason "<why>" [--soc2] [--json]',
+  '       support-ledger stats [--days <n>] [--json]',
 ].join('\n');
 
 const VALID_ID = /^[A-Za-z0-9_-]+$/;
@@ -85,6 +86,7 @@ export function parseArgs(argv) {
       options: {
         status: { type: 'string' },
         limit: { type: 'string' },
+        days: { type: 'string' },
         reason: { type: 'string' },
         soc2: { type: 'boolean' },
         json: { type: 'boolean' },
@@ -97,10 +99,22 @@ export function parseArgs(argv) {
   const { values, positionals } = parsed;
   if (values.help) return { help: true };
   const [sub, ...rest] = positionals;
-  if (!sub || !['check', 'get', 'list', 'skip'].includes(sub)) {
-    return { error: sub ? `unknown subcommand '${sub}'` : 'a subcommand is required (check, get, list, or skip)' };
+  if (!sub || !['check', 'get', 'list', 'skip', 'stats'].includes(sub)) {
+    return { error: sub ? `unknown subcommand '${sub}'` : 'a subcommand is required (check, get, list, skip, or stats)' };
   }
   const json = values.json === true;
+
+  if (sub === 'stats') {
+    if (rest.length) return { error: 'stats takes flags only, no positional arguments' };
+    let days = null;
+    if (values.days !== undefined) {
+      days = Number(values.days);
+      if (!Number.isInteger(days) || days < 1 || days > 3650) {
+        return { error: '--days must be a whole number from 1 to 3650' };
+      }
+    }
+    return { sub, days, json };
+  }
 
   if (sub === 'check') {
     if (!rest.length) return { error: 'check needs at least one Gmail message id' };
@@ -137,6 +151,76 @@ export function parseArgs(argv) {
   return { sub, id: rest[0], reason, soc2: values.soc2 === true, json };
 }
 
+/** Computes outcome & quality metrics across stored triage ledger entries. */
+export function computeStats(entries, { days = null, nowMs = Date.now() } = {}) {
+  const cutoff = days ? nowMs - days * 86_400_000 : null;
+  const all = Object.values(entries || {});
+  const rows = cutoff === null
+    ? all
+    : all.filter((e) => {
+        const ts = Date.parse(e?.updatedAt || e?.sentAt || '');
+        return Number.isFinite(ts) && ts >= cutoff;
+      });
+  const byStatus = { pending_review: 0, auto_replied: 0, sent: 0, skipped: 0 };
+  const byResolution = { auto_replied: 0, approved_as_is: 0, edited_before_send: 0, manual_reply: 0, skipped: 0 };
+  const latencies = [];
+  const edited = [];
+  let dryRunPreviews = 0;
+  let soc2Total = 0;
+
+  for (const e of rows) {
+    if (!e || e.status === 'dry_run') {
+      if (e?.lastDryRun) dryRunPreviews += 1;
+      continue;
+    }
+    if (e.status in byStatus) byStatus[e.status] += 1;
+    if (e.soc2) soc2Total += 1;
+    if (e.status === 'skipped') {
+      byResolution.skipped += 1;
+    } else if (e.status === 'auto_replied') {
+      byResolution.auto_replied += 1;
+    } else if (e.status === 'sent') {
+      const res = e.resolution || (e.proposedBody ? 'approved_as_is' : 'manual_reply');
+      if (res in byResolution) byResolution[res] += 1;
+      if (res === 'edited_before_send') {
+        edited.push({
+          messageId: e.messageId,
+          subject: e.subject || '(no subject)',
+          updatedAt: e.updatedAt || null,
+          revisions: e.revision || 1,
+        });
+      }
+    }
+    if (Number.isFinite(e.reviewLatencySeconds)) latencies.push(e.reviewLatencySeconds);
+  }
+
+  const reviewedCount = byResolution.approved_as_is + byResolution.edited_before_send;
+  const handledResponses = byStatus.auto_replied + byStatus.sent + byStatus.pending_review;
+  const autoReplyRate = handledResponses > 0 ? Number((byStatus.auto_replied / handledResponses).toFixed(3)) : null;
+  const unmodifiedApprovalRate = reviewedCount > 0 ? Number((byResolution.approved_as_is / reviewedCount).toFixed(3)) : null;
+  let medianReviewLatencySeconds = null;
+  if (latencies.length > 0) {
+    latencies.sort((a, b) => a - b);
+    const mid = Math.floor(latencies.length / 2);
+    medianReviewLatencySeconds = latencies.length % 2 === 1 ? latencies[mid] : Math.round((latencies[mid - 1] + latencies[mid]) / 2);
+  }
+  edited.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  const total = byStatus.pending_review + byStatus.auto_replied + byStatus.sent + byStatus.skipped;
+
+  return {
+    windowDays: days,
+    total,
+    soc2Total,
+    dryRunPreviews,
+    byStatus,
+    byResolution,
+    autoReplyRate,
+    unmodifiedApprovalRate,
+    medianReviewLatencySeconds,
+    recentEdited: edited.slice(0, 10),
+  };
+}
+
 /**
  * Entry point for `support-ledger`.
  *
@@ -161,17 +245,37 @@ export async function main(argv, deps = {}) {
       const ledger = loadLedger(file);
       const results = args.ids.map((id) => {
         const e = ledger.entries[id];
-        return e
-          ? { messageId: id, status: e.status, soc2: Boolean(e.soc2), updatedAt: e.updatedAt || null }
-          : { messageId: id, status: 'new', soc2: false, updatedAt: null };
+        if (!e) return { messageId: id, status: 'new', soc2: false, updatedAt: null };
+        if (e.status === 'dry_run') {
+          return { messageId: id, status: 'new', dryRunAt: e.lastDryRun?.at || e.updatedAt || null, soc2: Boolean(e.soc2), updatedAt: e.updatedAt || null };
+        }
+        return { messageId: id, status: e.status, soc2: Boolean(e.soc2), updatedAt: e.updatedAt || null };
       });
       if (args.json) {
         stdout.write(`${JSON.stringify({ entries: results }, null, 2)}\n`);
         return 0;
       }
       for (const r of results) {
-        stdout.write(`${r.messageId}: ${r.status}${r.soc2 ? ' [soc2]' : ''}${r.updatedAt ? ` (${r.updatedAt})` : ''}\n`);
+        stdout.write(`${r.messageId}: ${r.status}${r.dryRunAt ? ' [dry-run previewed]' : ''}${r.soc2 ? ' [soc2]' : ''}${r.updatedAt ? ` (${r.updatedAt})` : ''}\n`);
       }
+      return 0;
+    }
+
+    if (args.sub === 'stats') {
+      const ledger = loadLedger(file);
+      const stats = computeStats(ledger.entries, { days: args.days, nowMs: now() });
+      if (args.json) {
+        stdout.write(`${JSON.stringify(stats, null, 2)}\n`);
+        return 0;
+      }
+      const fmtPct = (v) => (v === null ? 'n/a' : `${Math.round(v * 100)}%`);
+      stdout.write([
+        `Support ledger stats${args.days ? ` (last ${args.days}d)` : ''}:`,
+        `- Total tracked: ${stats.total} (SOC 2: ${stats.soc2Total}${stats.dryRunPreviews ? `, dry-run previews: ${stats.dryRunPreviews}` : ''})`,
+        `- Statuses: auto_replied=${stats.byStatus.auto_replied}, pending_review=${stats.byStatus.pending_review}, sent=${stats.byStatus.sent}, skipped=${stats.byStatus.skipped}`,
+        `- Review outcomes: approved_as_is=${stats.byResolution.approved_as_is}, edited_before_send=${stats.byResolution.edited_before_send}, auto_reply_rate=${fmtPct(stats.autoReplyRate)}, unmodified_approval_rate=${fmtPct(stats.unmodifiedApprovalRate)}`,
+        `- Median review latency: ${stats.medianReviewLatencySeconds === null ? 'n/a' : `${stats.medianReviewLatencySeconds}s`}`,
+      ].join('\n') + '\n');
       return 0;
     }
 
@@ -201,7 +305,7 @@ export async function main(argv, deps = {}) {
 
     if (args.sub === 'list') {
       const ledger = loadLedger(file);
-      let rows = Object.values(ledger.entries);
+      let rows = Object.values(ledger.entries).filter((e) => e?.status && e.status !== 'dry_run');
       if (args.status) rows = rows.filter((e) => e.status === args.status);
       rows.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
       rows = rows.slice(0, args.limit);
@@ -223,6 +327,7 @@ export async function main(argv, deps = {}) {
     const existing = getEntry(file, args.id);
     const saved = upsertEntry(file, args.id, {
       status: 'skipped',
+      resolution: 'skipped',
       skipReason: args.reason,
       soc2: Boolean(args.soc2 || existing?.soc2),
       updatedAt,

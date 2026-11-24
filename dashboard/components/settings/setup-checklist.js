@@ -8,6 +8,7 @@
 import { shortCommit, unhealthyServices } from './service-health.js';
 import { driveCheckView } from './drive-settings.js';
 import { accountSummary } from './workspace/workspace-wizard.js';
+import { chatChannelView, count } from './chat-channel.js';
 
 /** How each state reads, and the badge it wears. */
 export const STATES = Object.freeze({
@@ -163,6 +164,76 @@ function workspaceItem(workspace, workspaceError, isAdmin) {
   return { ...item, ...link, state: 'done', detail: summary.detail };
 }
 
+function chatChannelItem(status, workspace, isAdmin) {
+  const item = { key: 'chat_channel', title: 'Google Chat spaces' };
+  if (!workspace?.account?.account) {
+    return {
+      ...item,
+      state: 'todo',
+      detail: "Waits for the agent's Google Workspace account.",
+      href: '#workspace',
+      linkLabel: isAdmin ? 'Open Workspace settings' : 'See Workspace settings',
+    };
+  }
+  if (!status) return { ...item, state: 'checking', detail: '' };
+  const ears = status.services?.ears?.heartbeat?.gchat;
+  const view = chatChannelView(ears);
+  const link = { href: '#system', linkLabel: 'See Google Chat on System' };
+  if (view.state === 'ready' && Number(ears?.spaces) > 0) {
+    return {
+      ...item,
+      ...link,
+      state: 'done',
+      detail: `${count(ears.spaces, 'space')} connected in Google Chat. Copy a space ID below when configuring a role that posts there.`,
+      spaces: view.spaces,
+    };
+  }
+  if (view.state === 'ready') {
+    return {
+      ...item,
+      ...link,
+      state: 'todo',
+      detail: 'Connected to Google Chat, but not added to any space yet.',
+      action: "Add the agent's Workspace address to a Google Chat space and @mention it once so its space ID appears here.",
+    };
+  }
+  return {
+    ...item,
+    ...link,
+    state: view.error ? 'problem' : 'todo',
+    detail: view.error || view.summary,
+    action: askAdmin(isAdmin, 'Finish Google Chat setup under Workspace and check System for ears errors.'),
+  };
+}
+
+function roleSchedulesItem(responsibilities, isAdmin) {
+  const list = responsibilities?.responsibilities;
+  if (!Array.isArray(list)) return null;
+  const relevant = list.filter((r) => !r.locked && !String(r.id || '').startsWith('r-memory-'));
+  if (!relevant.length) return null;
+  const off = relevant.filter((r) => !r.enabled);
+  const format = (rows) => rows.map((r) => (r.schedule ? `${r.name} (${r.schedule})` : r.name)).join(', ');
+  const item = {
+    key: 'role_schedules',
+    title: 'Scheduled work for this role',
+    href: '/library#responsibilities',
+    linkLabel: isAdmin ? 'Open Responsibilities' : 'See Responsibilities',
+  };
+  if (off.length > 0) {
+    return {
+      ...item,
+      state: 'todo',
+      detail: `Off until configured: ${format(off)}.`,
+      action: askAdmin(isAdmin, 'Configure the agent in Chat, test once with Run now, then turn the schedule on under Responsibilities.'),
+    };
+  }
+  return {
+    ...item,
+    state: 'done',
+    detail: `Active: ${format(relevant)}.`,
+  };
+}
+
 /**
  * The checklist, in the order the Setup tab shows it.
  *
@@ -175,11 +246,12 @@ function workspaceItem(workspace, workspaceError, isAdmin) {
  * @param {{result?: object|null, error?: string|null, running?: boolean}} [o.drive]  the drive_check command
  * @param {object|null} [o.workspace]       GET /api/workspace
  * @param {string|null} [o.workspaceError]  why it could not be read
+ * @param {object|null} [o.responsibilities] the responsibilities command's result
  * @param {boolean} o.isAdmin
  * @returns {{items: object[], required: {done: number, total: number}}}
  */
 export function setupChecklist({
-  agent = null, status = null, statusError = null, setup = null, agentAccount = '', drive = null, workspace = null, workspaceError = null, isAdmin = false,
+  agent = null, status = null, statusError = null, setup = null, agentAccount = '', drive = null, workspace = null, workspaceError = null, responsibilities = null, isAdmin = false,
 }) {
   const items = [
     agentItem(agent),
@@ -190,6 +262,9 @@ export function setupChecklist({
     claudeItem(setup, isAdmin),
     workspaceItem(workspace, workspaceError, isAdmin),
   ];
+  if (workspace?.needed === true) items.push(chatChannelItem(status, workspace, isAdmin));
+  const scheduleItem = roleSchedulesItem(responsibilities, isAdmin);
+  if (scheduleItem) items.push(scheduleItem);
   // A role with a Workspace account cannot do its work without it.
   const required = items.filter((item) => REQUIRED.includes(item.key) || (item.key === 'workspace' && workspace?.needed === true));
   return { items, required: { done: required.filter((item) => item.state === 'done').length, total: required.length } };

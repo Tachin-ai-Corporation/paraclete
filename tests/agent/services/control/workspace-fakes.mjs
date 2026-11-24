@@ -26,6 +26,7 @@ const DEFAULT_ANSWERS = {
   sheets: () => googleError(404, 'Requested entity was not found.', { status: 'NOT_FOUND' }),
   slides: () => googleError(404, 'Requested entity was not found.', { status: 'NOT_FOUND' }),
   calendar: () => json({ items: [] }),
+  gmailSendAs: () => json({ sendAs: [{ sendAsEmail: ACCOUNT, isPrimary: true, verificationStatus: 'accepted' }] }),
   gmail: () => json({ emailAddress: ACCOUNT }),
 };
 
@@ -37,6 +38,7 @@ const API_HOSTS = [
   ['sheets', /^https:\/\/sheets\.googleapis\.com\/v4\/spreadsheets\//],
   ['slides', /^https:\/\/slides\.googleapis\.com\/v1\/presentations\//],
   ['calendar', /^https:\/\/www\.googleapis\.com\/calendar\/v3\/users\/me\/calendarList/],
+  ['gmailSendAs', /^https:\/\/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/settings\/sendAs/],
   ['gmail', /^https:\/\/gmail\.googleapis\.com\/gmail\/v1\/users\/me\/profile/],
 ];
 
