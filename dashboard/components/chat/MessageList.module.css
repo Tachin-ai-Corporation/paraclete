@@ -37,11 +37,12 @@
   display: grid;
   place-items: center;
   margin-bottom: var(--space-2);
-  border-radius: var(--radius-lg);
-  background: var(--accent-soft);
-  color: var(--accent-strong);
+  border-radius: 16px;
+  background: linear-gradient(135deg, #7c4dff, #0e93b5);
+  color: #fff;
   font-size: 24px;
   font-weight: 700;
+  box-shadow: 0 12px 32px -10px rgba(124, 77, 255, 0.55);
 }
 
 .typing {

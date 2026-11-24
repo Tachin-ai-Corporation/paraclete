@@ -25,9 +25,15 @@ export function Shell({ user, agentName, children }) {
   const counts = { approvals: approvals?.pending || 0 };
   const isActive = (href) => (href === '/' ? pathname === '/' : pathname === href || pathname.startsWith(`${href}/`));
 
+  const userInitial = (user.email || 'U').charAt(0).toUpperCase();
+
   return (
     <div className={styles.shell}>
       <aside className={styles.sidebar}>
+        <div className={styles.brand}>
+          <span className="orb" aria-hidden="true" />
+          <span>Paraclete</span>
+        </div>
         <div className={styles.agent}>
           <div className={styles.avatar} aria-hidden="true">{(agentName || 'P').charAt(0).toUpperCase()}</div>
           <div className={styles.agentText}>
@@ -51,8 +57,11 @@ export function Shell({ user, agentName, children }) {
           ))}
         </nav>
         <div className={styles.user}>
-          <div className={styles.userEmail} title={user.email}>{user.email}</div>
-          <div className="muted">{user.role === 'admin' ? 'Admin' : 'Member'}</div>
+          <div className={styles.userAvatar} aria-hidden="true">{userInitial}</div>
+          <div className={styles.userText}>
+            <div className={styles.userEmail} title={user.email}>{user.email}</div>
+            <div className="muted">{user.role === 'admin' ? 'Admin' : 'Member'}</div>
+          </div>
         </div>
       </aside>
       <main className={styles.main}>{children}</main>

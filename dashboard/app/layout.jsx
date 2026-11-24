@@ -1,6 +1,7 @@
 // dashboard/app/layout.jsx: every page's frame. It works out who is asking (IAP's signed header,
 // then their users record) before anything renders: a signed-in person who is not a dashboard user
 // sees only how to get access, and someone whose sign-in cannot be checked sees why.
+import { Geist, Geist_Mono } from 'next/font/google';
 import { headers } from 'next/headers';
 import { getRuntime } from '@/lib/server/runtime.mjs';
 import { signedInEmail } from '@/lib/server/auth.mjs';
@@ -8,6 +9,9 @@ import { getUser } from '@/lib/server/users.mjs';
 import { Shell } from '@/components/Shell.jsx';
 import { NoAccess } from '@/components/NoAccess.jsx';
 import './globals.css';
+
+const sans = Geist({ subsets: ['latin'], variable: '--font-sans', display: 'swap' });
+const mono = Geist_Mono({ subsets: ['latin'], variable: '--font-mono', display: 'swap' });
 
 export const dynamic = 'force-dynamic';
 
@@ -31,7 +35,7 @@ async function whoIsAsking() {
 export default async function RootLayout({ children }) {
   const { runtime, email, user, problem } = await whoIsAsking();
   return (
-    <html lang="en">
+    <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body>
         {user ? (
           <Shell user={user} agentName={runtime.settings.agentName}>

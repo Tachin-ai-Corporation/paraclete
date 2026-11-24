@@ -13,6 +13,9 @@ const nextConfig = {
   turbopack: { root: repoRoot },
   poweredByHeader: false,
   reactStrictMode: true,
+  experimental: {
+    agentUpgrade: 'security',
+  },
   // `next dev` would otherwise write AGENTS.md and CLAUDE.md into dashboard/. This repo's guidance for
   // coding agents is the root DEVELOPING.md.
   agentRules: false,

@@ -20,7 +20,7 @@
   height: 24px;
   border-radius: var(--radius-full);
   background: var(--accent-soft);
-  color: var(--text-link);
+  color: var(--accent-ink);
   font-size: 13px;
   font-weight: 600;
   flex: none;

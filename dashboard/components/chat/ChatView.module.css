@@ -40,6 +40,9 @@
   gap: var(--space-3);
   padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-app) 84%, transparent);
+  backdrop-filter: saturate(160%) blur(14px);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
 }
 
 @media (max-width: 1100px) {
