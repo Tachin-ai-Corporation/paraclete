@@ -14,7 +14,7 @@ import { HttpError } from './errors.mjs';
 export const VIEW_COMMANDS = Object.freeze(['status', 'skills', 'config', 'workspace', 'brain_config', 'responsibilities']);
 
 /** Commands that change the instance, or cost money (claude_check calls billed models). Admins only. */
-export const ADMIN_COMMANDS = Object.freeze(['set_responsibility_enabled', 'run_responsibility', 'claude_check', 'set_model', 'restart_service', 'upgrade', 'drive_check', 'workspace_check', 'set_workspace_account']);
+export const ADMIN_COMMANDS = Object.freeze(['set_responsibility_enabled', 'run_responsibility', 'claude_check', 'set_model', 'restart_service', 'upgrade', 'drive_check', 'workspace_check', 'set_workspace_account', 'workspace_send_as']);
 
 const ID_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
 

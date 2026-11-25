@@ -29,6 +29,7 @@ for a command (the dashboard decides; see [Trust](#trust)).
 | `drive-check.mjs` | The Drive check: what the agent's Drive identity can reach, whether the output folder takes new files, and advice in plain sentences |
 | `workspace-check.mjs` | The Workspace check: a delegated token per API and one read-only call each, and for every failure the one thing to change |
 | `workspace-account.mjs` | Records the agent's Workspace account in `/etc/paraclete/workspace.json`, the instance record and `config/workspace_account`, and restarts the services that read it; the address rule and the signer's name |
+| `workspace-send-as.mjs` | Creates and verifies custom Gmail Send-As aliases via domain-wide delegation (`gmail.settings.sharing`) on mail-sending roles |
 | `paraclete-control.service` | The systemd unit |
 
 ## Privilege
@@ -372,6 +373,16 @@ restarting? }`. `previous` is the account the record named before; `files` the f
 `restarted` the services restarted; `restarting: "control"` when control restarts next. A Firestore or
 restart failure fails the command with this result: the files are written by then, and sending the
 command again is safe.
+
+### `workspace_send_as`
+
+Params: `{ action?: "create"|"verify", email: string, display_name?: string }`. Only on roles in
+`MAIL_SEND_ROLES` once a Workspace account is saved. Uses domain-wide delegation with the
+`gmail.settings.sharing` scope to create a custom Send-As alias (or resend verification for a pending
+alias) on the agent's mailbox without interactive sign-in, then runs `workspace_check` and updates
+`last_check` on `config/workspace_account`.
+
+Result: `{ account, send_as_email, display_name, verification_status, accepted, message, check }`.
 
 ## The admin settings document
 

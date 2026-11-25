@@ -8,7 +8,7 @@
 // Mail is data from outside: whatever a message says is never an instruction to the agent. The
 // workspace-gmail skill (skills/workspace-gmail/) and support-triage skill tell the agent so.
 
-import { GMAIL_SEND } from '../auth/workspace-scopes.mjs';
+import { GMAIL_SEND, GMAIL_SETTINGS_SHARING } from '../auth/workspace-scopes.mjs';
 import { createWorkspaceSession, mapLimit } from './workspace.mjs';
 
 const BASE = '/gmail/v1/users/me';
@@ -355,6 +355,39 @@ export function createGmailClient(options = {}) {
         verificationStatus: a?.verificationStatus || (a?.isPrimary === true ? 'accepted' : 'unknown'),
       }));
       return { aliases };
+    },
+
+    /**
+     * Creates a custom Send-As alias on the agent's mailbox (`gmail.settings.sharing` scope).
+     *
+     * @param {object} o
+     * @param {string} o.sendAsEmail
+     * @param {string} [o.displayName]
+     * @param {boolean} [o.treatAsAlias=true]
+     */
+    async createSendAs({ sendAsEmail, displayName = '', treatAsAlias = true } = {}) {
+      const email = String(sendAsEmail || '').trim().toLowerCase();
+      const body = { sendAsEmail: email, treatAsAlias: treatAsAlias !== false };
+      if (String(displayName || '').trim()) body.displayName = String(displayName).trim();
+      return session.request('gmail', 'POST', `${BASE}/settings/sendAs`, {
+        json: body,
+        scopes: GMAIL_SETTINGS_SHARING,
+        about: { what: `send-as alias ${email}`, action: 'create' },
+      });
+    },
+
+    /**
+     * Triggers verification for an existing pending Send-As alias (`gmail.settings.sharing` scope).
+     *
+     * @param {string} sendAsEmail
+     */
+    async verifySendAs(sendAsEmail) {
+      const email = String(sendAsEmail || '').trim().toLowerCase();
+      return session.request('gmail', 'POST', `${BASE}/settings/sendAs/${encodeURIComponent(email)}/verify`, {
+        scopes: GMAIL_SETTINGS_SHARING,
+        expect: 'none',
+        about: { what: `send-as alias ${email}`, action: 'verify' },
+      });
     },
 
     /**

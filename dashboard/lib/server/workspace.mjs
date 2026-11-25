@@ -15,7 +15,7 @@
 
 import {
   workspaceScopesFor, workspaceApisFor, adminConsoleScopes, chatAppPage, scopeName,
-  WORKSPACE_MCP_SERVERS, workspaceMcpEnableCommand,
+  MAIL_SEND_ROLES, WORKSPACE_MCP_SERVERS, workspaceMcpEnableCommand,
 } from '../../../agent/auth/workspace-scopes.mjs';
 import { HttpError } from './errors.mjs';
 
@@ -62,7 +62,21 @@ export function checkView(check, admin) {
     ok: entry?.ok === true,
     pending: entry?.ok === true && entry?.pending === true,
     note: entry?.ok === true ? text(entry?.note) : null,
-    ...(admin ? { scopes: Array.isArray(entry?.scopes) ? entry.scopes.map(String) : [], error: text(entry?.error), fix: text(entry?.fix) } : {}),
+    ...(admin ? {
+      scopes: Array.isArray(entry?.scopes) ? entry.scopes.map(String) : [],
+      error: text(entry?.error),
+      fix: text(entry?.fix),
+      ...(Array.isArray(entry?.send_as) ? {
+        send_as: entry.send_as
+          .map((s) => ({
+            email: String(s?.email ?? ''),
+            display_name: String(s?.display_name ?? ''),
+            is_primary: s?.is_primary === true,
+            verification_status: String(s?.verification_status ?? 'unknown'),
+          }))
+          .filter((s) => s.email),
+      } : {}),
+    } : {}),
   }));
   return {
     account: check.account,
@@ -200,6 +214,7 @@ export async function readWorkspaceSetup(runtime, user) {
     apis: Object.entries(roleApis).map(([api, { name, scopes }]) => ({ api, name, scopes: scopes.map(scopeName) })),
     links: { ...ADMIN_LINKS, chat_app: chatAppPage(runtime.settings.project) },
     suggested_account: suggestAccount(runtime.settings.agentName, user.email),
+    can_manage_send_as: MAIL_SEND_ROLES.includes(runtime.settings.role),
     mcp: {
       docs_url: 'https://developers.google.com/workspace/guides/configure-mcp-servers',
       enable_command: workspaceMcpEnableCommand(runtime.settings.project),

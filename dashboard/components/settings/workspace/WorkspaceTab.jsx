@@ -154,10 +154,159 @@ function McpCard({ setup }) {
   );
 }
 
+function DelegationSnippet({ setup }) {
+  if (!setup) return null;
+  return (
+    <dl className={settingsStyles.facts}>
+      {setup.client_id && (
+        <>
+          <dt>Client ID</dt>
+          <dd><span className={styles.copyLine}><code>{setup.client_id}</code><CopyButton text={setup.client_id} /></span></dd>
+        </>
+      )}
+      {setup.scopes_text && (
+        <>
+          <dt>OAuth scopes</dt>
+          <dd>
+            <span className={styles.copyLine}>
+              <code className={styles.scopes}>{setup.scopes_text}</code>
+              <CopyButton text={setup.scopes_text} />
+            </span>
+          </dd>
+        </>
+      )}
+      {setup.links?.delegation && (
+        <>
+          <dt>Admin console</dt>
+          <dd><External href={setup.links.delegation}>Open domain-wide delegation</External></dd>
+        </>
+      )}
+    </dl>
+  );
+}
+
+function SendAsCard({ workspace, setup, checkResult, onUpdated, busy }) {
+  const sendAs = useCommand('workspace_send_as');
+  const [typedEmail, setTypedEmail] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [notice, setNotice] = useState(null);
+  const working = busy || sendAs.running;
+  const gmailEntry = (checkResult?.apis || []).find((a) => a.api === 'gmail');
+  const aliases = Array.isArray(gmailEntry?.send_as) ? gmailEntry.send_as : [];
+
+  async function submit(e) {
+    e.preventDefault();
+    const cleanEmail = typedEmail.trim();
+    if (!cleanEmail) return;
+    setNotice(null);
+    const done = await sendAs.run({
+      action: 'create',
+      email: cleanEmail,
+      ...(displayName.trim() ? { display_name: displayName.trim() } : {}),
+    });
+    await onUpdated();
+    if (done?.status === 'done') {
+      setTypedEmail('');
+      setDisplayName('');
+      setNotice({
+        kind: done.result?.accepted ? 'ok' : 'warn',
+        text: done.result?.message || `Added ${cleanEmail}.`,
+      });
+    } else {
+      setNotice({ kind: 'error', text: done?.error || sendAs.error || 'Could not register the Send-As alias.' });
+    }
+  }
+
+  async function resend(email) {
+    setNotice(null);
+    const done = await sendAs.run({ action: 'verify', email });
+    await onUpdated();
+    if (done?.status === 'done') {
+      setNotice({ kind: done.result?.accepted ? 'ok' : 'warn', text: done.result?.message || `Resent verification for ${email}.` });
+    } else {
+      setNotice({ kind: 'error', text: done?.error || sendAs.error || 'Could not resend verification.' });
+    }
+  }
+
+  return (
+    <section className="card stack">
+      <div className={styles.recordedHead}>
+        <div>
+          <h3>Outbound Send-As aliases</h3>
+          <p className="muted">
+            Provision shared group addresses (such as a support alias) on {workspace.account.account} through domain-wide delegation so the agent never needs an interactive browser sign-in.
+          </p>
+        </div>
+      </div>
+      <Notice notice={notice} onDismiss={() => setNotice(null)} />
+      {sendAs.error && !notice && <Notice notice={{ kind: 'error', text: sendAs.error }} />}
+      {aliases.length > 0 && (
+        <div className={settingsStyles.tableWrap}>
+          <table className={`table ${styles.apiTable}`}>
+            <tbody>
+              {aliases.map((alias) => {
+                const ok = alias.is_primary || alias.verification_status === 'accepted';
+                return (
+                  <tr key={alias.email}>
+                    <td>
+                      <code>{alias.email}</code>
+                      {alias.display_name && <span className={`muted ${settingsStyles.sub}`}>{alias.display_name}</span>}
+                    </td>
+                    <td className={settingsStyles.nowrap}>
+                      <span className={`badge ${ok ? 'badge-ok' : 'badge-warn'}`}>
+                        {ok ? (alias.is_primary ? 'Primary' : 'Verified') : 'Pending confirmation'}
+                      </span>
+                    </td>
+                    <td className={settingsStyles.actions}>
+                      {!ok && (
+                        <button type="button" className="btn btn-sm" disabled={working} onClick={() => resend(alias.email)}>
+                          Resend confirmation
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <form className={settingsStyles.inlineForm} onSubmit={submit}>
+        <input
+          type="email"
+          className={`input ${settingsStyles.grow}`}
+          value={typedEmail}
+          onChange={(e) => setTypedEmail(e.target.value)}
+          placeholder="support@example.com"
+          aria-label="Send-As alias address"
+          disabled={working}
+        />
+        <input
+          type="text"
+          className={`input ${styles.address}`}
+          value={displayName}
+          onChange={(e) => setDisplayName(e.target.value)}
+          placeholder="Display name (optional)"
+          aria-label="Send-As display name"
+          disabled={working}
+        />
+        <button type="submit" className="btn btn-primary btn-sm" disabled={working || !typedEmail.trim()}>
+          {sendAs.running ? 'Adding…' : 'Add Send-As alias'}
+        </button>
+      </form>
+      <details>
+        <summary className="muted">Domain-wide delegation details (Client ID & scopes)</summary>
+        <DelegationSnippet setup={setup} />
+      </details>
+    </section>
+  );
+}
+
 /** The recorded account, its last test, and what an admin can do with it. */
 function Recorded({ workspace, setup, check, onChange, onRemove, busy }) {
   const { account } = workspace;
   const latest = check.result?.account === account.account ? check.result : workspace.last_check?.account === account.account ? workspace.last_check : null;
+  const needsScopeUpdate = Array.isArray(latest?.missing_scopes) && latest.missing_scopes.length > 0;
   return (
     <section className="card stack">
       <div className={styles.recordedHead}>
@@ -189,6 +338,12 @@ function Recorded({ workspace, setup, check, onChange, onRemove, busy }) {
       </div>
       {check.error && !check.running && <p className="error-text">The test did not finish: {check.error}</p>}
       <CheckResults check={latest} isAdmin />
+      {needsScopeUpdate && (
+        <div className="stack">
+          <p className={styles.warning}>Update your Domain-Wide Delegation entry with the full scope list below, then click Test again.</p>
+          <DelegationSnippet setup={setup} />
+        </div>
+      )}
       <McpCard setup={setup} />
     </section>
   );
@@ -348,12 +503,22 @@ function AdminView({ workspace, refresh }) {
   }
 
   const showWizard = !workspace.account || changing;
+  const latestCheck = check.result?.account === workspace.account?.account
+    ? check.result
+    : workspace.last_check?.account === workspace.account?.account
+      ? workspace.last_check
+      : null;
   return (
     <div className="stack">
       <Summary workspace={workspace} />
       <Notice notice={notice} onDismiss={() => setNotice(null)} />
       {!showWizard && (
-        <Recorded workspace={workspace} setup={setup} check={runCheck} busy={busy} onChange={() => setChanging(true)} onRemove={() => record(null)} />
+        <>
+          <Recorded workspace={workspace} setup={setup} check={runCheck} busy={busy} onChange={() => setChanging(true)} onRemove={() => record(null)} />
+          {setup?.can_manage_send_as && (
+            <SendAsCard workspace={workspace} setup={setup} checkResult={latestCheck} onUpdated={refresh} busy={busy} />
+          )}
+        </>
       )}
       {showWizard && (
         <>

@@ -4,7 +4,9 @@
 // agent/auth/dwd-token.mjs for a token carrying only the subset of the API it calls, so a scope missing
 // from the grant breaks only the APIs that need it, and the error can name it. Only Workspace roles use
 // these. Standard roles keep Gmail read-only (`WORKSPACE_SCOPES`, 9 scopes); mail-sending roles such
-// as `support-specialist` add `GMAIL_SEND` (`gmail.send`, 10 scopes).
+// as `support-specialist` add `GMAIL_SEND` (`gmail.send`) and `GMAIL_SETTINGS_SHARING`
+// (`gmail.settings.sharing`, 11 scopes) so outbound Send-As aliases work via domain-wide delegation
+// without interactive agent sign-in.
 //
 // Pure constants and three small helpers: no imports, so the dashboard's setup wizard can import it too.
 // Callers: the ears and mouth (Chat), agent/providers/drive.mjs (Drive), the Workspace API clients in
@@ -43,8 +45,11 @@ export const GMAIL_READ = scopes('gmail.readonly');
 /** Gmail, send: send outbound messages and threaded replies from the agent's mailbox or verified aliases. */
 export const GMAIL_SEND = scopes('gmail.send');
 
-/** Gmail scopes for roles that both read intake mail and send replies. */
-export const GMAIL = scopes('gmail.readonly', 'gmail.send');
+/** Gmail, settings sharing: register and verify custom From (Send-As) aliases via domain-wide delegation. */
+export const GMAIL_SETTINGS_SHARING = scopes('gmail.settings.sharing');
+
+/** Gmail scopes for roles that read intake mail, provision Send-As aliases, and send replies. */
+export const GMAIL = scopes('gmail.readonly', 'gmail.send', 'gmail.settings.sharing');
 
 /** Roles allowed to hold `gmail.send` in their domain-wide delegation grant. */
 export const MAIL_SEND_ROLES = Object.freeze(['support-specialist']);
@@ -63,7 +68,7 @@ export const WORKSPACE_APIS = Object.freeze({
   gmail: Object.freeze({ name: 'Gmail', scopes: GMAIL_READ }),
 });
 
-const SUPPORT_WORKSPACE_SCOPES = Object.freeze([...WORKSPACE_SCOPES, ...GMAIL_SEND]);
+const SUPPORT_WORKSPACE_SCOPES = Object.freeze([...WORKSPACE_SCOPES, ...GMAIL_SEND, ...GMAIL_SETTINGS_SHARING]);
 const SUPPORT_WORKSPACE_APIS = Object.freeze({
   ...WORKSPACE_APIS,
   gmail: Object.freeze({ name: 'Gmail', scopes: GMAIL }),

@@ -12,7 +12,8 @@
 //
 // `who` describes the agent: { agentUserId: 'users/<id>' or null, agentName }. The id is the stable
 // identity. It is learned from the agent's own messages (agentUserIdFrom); until then the agent's
-// name stands in, matched whole word by whole word so that "@Al" never matches "@Alice".
+// name stands in, matched as an intact sequence of whole words so that "@Al" never matches "@Alice"
+// while a Workspace display name such as "@Support-Agent Ava" still matches an agent named "Ava".
 
 import { AGENT_MESSAGE_ID_PREFIX } from '../../providers/channel.mjs';
 
@@ -45,11 +46,15 @@ export function nameWords(text) {
   return String(text || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
-/** Whether `text` starts with every word of the agent's name, in order. */
-function startsWithName(text, agentName) {
+/** Whether `text` contains every word of `agentName` contiguously, in order. Pure. */
+export function matchesAgentName(text, agentName) {
   const want = nameWords(agentName);
   const have = nameWords(text);
-  return want.length > 0 && want.every((word, i) => have[i] === word);
+  if (want.length === 0 || have.length < want.length) return false;
+  for (let start = 0; start <= have.length - want.length; start += 1) {
+    if (want.every((word, i) => have[start + i] === word)) return true;
+  }
+  return false;
 }
 
 /** Whether the agent's own mouth posted this message: the client-assigned id it gives every post. */
@@ -99,7 +104,7 @@ function userMentions(m) {
 /** Whether one mention annotation names the agent: by its id once known, by its name until then. */
 function mentionIsAgent(mention, who) {
   if (who.agentUserId) return mention.user === who.agentUserId;
-  return mention.end > mention.start && startsWithName(mention.text, who.agentName);
+  return mention.end > mention.start && matchesAgentName(mention.text, who.agentName);
 }
 
 /** Where `@<agent name>` is typed as plain text, outside any mention of somebody else. */
@@ -120,9 +125,9 @@ function typedMentions(m, who) {
 /**
  * Whether the message mentions the agent. With ears.mention_match 'annotation' (the default), a
  * USER_MENTION annotation naming the agent's user id counts; until the id is known, one whose text
- * starts with the agent's name does. `@<agent name>` typed as plain text also counts, unless it is
- * part of a mention of somebody else ("@Ada Lovelace" for an agent called Ada). With 'text', only the
- * typed name counts.
+ * contains the agent's whole-word name sequence counts. `@<agent name>` typed as plain text also
+ * counts, unless it is part of a mention of somebody else ("@Ada Lovelace" for an agent called Ada).
+ * With 'text', only the typed name counts.
  *
  * @param {object} m
  * @param {object} who

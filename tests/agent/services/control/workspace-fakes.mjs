@@ -97,7 +97,7 @@ export function fakeGoogle({
     if (hit) {
       call.kind = 'api';
       call.api = hit[0];
-      return (apis[hit[0]] || DEFAULT_ANSWERS[hit[0]])();
+      return (apis[hit[0]] || DEFAULT_ANSWERS[hit[0]])(call);
     }
     throw new Error(`the fake Google has no answer for ${u}`);
   };
