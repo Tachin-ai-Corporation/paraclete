@@ -208,6 +208,10 @@ test('support-specialist checks verified Gmail Send-As aliases and warns when on
   const g1 = byApi(r1).gmail;
   assert.equal(g1.ok, true);
   assert.match(g1.note, /Only agent@example\.com is verified to send mail/);
+  assert.match(g1.note, /without signing in/);
+  assert.deepEqual(g1.send_as, [
+    { email: 'agent@example.com', display_name: '', is_primary: true, verification_status: 'accepted' },
+  ]);
 
   const withAlias = fakeGoogle({
     granted: workspaceScopesFor('support-specialist'),
@@ -215,7 +219,7 @@ test('support-specialist checks verified Gmail Send-As aliases and warns when on
       gmailSendAs: () => new Response(JSON.stringify({
         sendAs: [
           { sendAsEmail: ACCOUNT, isPrimary: true, verificationStatus: 'accepted' },
-          { sendAsEmail: 'support@example.com', isPrimary: false, verificationStatus: 'accepted' },
+          { sendAsEmail: 'support@example.com', displayName: 'Support', isPrimary: false, verificationStatus: 'accepted' },
         ],
       }), { status: 200 }),
     },
@@ -229,6 +233,7 @@ test('support-specialist checks verified Gmail Send-As aliases and warns when on
     now: () => NOW,
   });
   assert.equal(byApi(r2).gmail.note, 'Verified From addresses: agent@example.com, support@example.com.');
+  assert.equal(byApi(r2).gmail.send_as.length, 2);
 });
 
 test('token failures are sorted by cause', () => {
@@ -260,6 +265,9 @@ test('a mail-sending role checks gmail.send alongside gmail.readonly', async () 
     now: () => NOW,
   });
   assert.equal(missingSend.ready, false);
-  assert.deepEqual(missingSend.missing_scopes, ['https://www.googleapis.com/auth/gmail.send']);
+  assert.deepEqual(missingSend.missing_scopes, [
+    'https://www.googleapis.com/auth/gmail.send',
+    'https://www.googleapis.com/auth/gmail.settings.sharing',
+  ]);
   assert.equal(byApi(missingSend).gmail.ok, false);
 });

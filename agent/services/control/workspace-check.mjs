@@ -201,10 +201,10 @@ export function chatPendingNote({ account, project }) {
 }
 
 /**
- * Best-effort summary of verified Send-As aliases on mail-sending roles (`support-specialist`).
- * Ensures an admin notices early when a group alias (such as `support@...`) is still missing.
+ * Best-effort summary of Gmail Send-As aliases on mail-sending roles (`support-specialist`).
+ * Returns both a human-readable note and normalized alias entries so the dashboard can show them.
  */
-async function gmailSendAsNote({ token, account, fetch }) {
+async function gmailSendAsStatus({ token, account, fetch }) {
   try {
     const response = await fetch(GMAIL_SEND_AS_URL, {
       headers: { Authorization: `Bearer ${token}` },
@@ -214,15 +214,25 @@ async function gmailSendAsNote({ token, account, fetch }) {
     const body = await response.json();
     const aliases = Array.isArray(body?.sendAs) ? body.sendAs : [];
     if (!aliases.length) return null;
-    const verified = aliases
-      .filter((a) => a?.isPrimary === true || a?.verificationStatus === 'accepted')
-      .map((a) => String(a?.sendAsEmail || '').trim().toLowerCase())
-      .filter(Boolean);
+    const send_as = aliases
+      .map((a) => ({
+        email: String(a?.sendAsEmail || '').trim().toLowerCase(),
+        display_name: String(a?.displayName || '').trim(),
+        is_primary: a?.isPrimary === true,
+        verification_status: String(a?.verificationStatus || (a?.isPrimary === true ? 'accepted' : 'unknown')),
+      }))
+      .filter((a) => a.email);
+    const verified = send_as
+      .filter((a) => a.is_primary || a.verification_status === 'accepted')
+      .map((a) => a.email);
     const extras = verified.filter((email) => email !== account);
     if (extras.length > 0) {
-      return `Verified From addresses: ${verified.join(', ')}.`;
+      return { note: `Verified From addresses: ${verified.join(', ')}.`, send_as };
     }
-    return `Only ${account} is verified to send mail. To send replies From a shared group address (such as support@...), sign in to Gmail as ${account}, open Settings -> Accounts -> Send mail as, add the group address as an alias, and verify it.`;
+    return {
+      note: `Only ${account} is verified to send mail. Add your shared group address (such as support@...) under Outbound Send-As aliases below so replies send From that address without signing in as ${account}.`,
+      send_as,
+    };
   } catch {
     return null;
   }
@@ -330,8 +340,11 @@ export async function checkWorkspace({ account: value, project, role = null, fet
     if (response.ok || (api.notFoundIsOk && response.status === 404)) {
       entry.ok = true;
       if (api.api === 'gmail' && MAIL_SEND_ROLES.includes(role)) {
-        const sendAsNote = await gmailSendAsNote({ token: minted.token, account, fetch });
-        if (sendAsNote) entry.note = sendAsNote;
+        const info = await gmailSendAsStatus({ token: minted.token, account, fetch });
+        if (info) {
+          entry.note = info.note;
+          entry.send_as = info.send_as;
+        }
       }
       continue;
     }

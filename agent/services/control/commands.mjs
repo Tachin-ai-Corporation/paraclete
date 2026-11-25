@@ -22,13 +22,14 @@ import { listResponsibilities, setResponsibilityEnabled, runResponsibility } fro
 import { startUpgrade, upgradeOutcome } from './upgrade.mjs';
 import { checkDrive } from './drive-check.mjs';
 import { checkWorkspace } from './workspace-check.mjs';
+import { manageWorkspaceSendAs } from './workspace-send-as.mjs';
 import { setWorkspaceAccount, writeLastCheck, INSTANCE_FILE } from './workspace-account.mjs';
 
 /** Every command type, in the order README.md documents them. */
 export const COMMAND_TYPES = Object.freeze([
   'status', 'skills', 'config', 'workspace', 'brain_config', 'responsibilities',
   'set_responsibility_enabled', 'run_responsibility', 'claude_check', 'set_model', 'restart_service', 'upgrade', 'drive_check',
-  'workspace_check', 'set_workspace_account',
+  'workspace_check', 'set_workspace_account', 'workspace_send_as',
 ]);
 
 /**
@@ -205,6 +206,33 @@ export function createHandlers({
         // Control reads the record too (drive_check acts as the agent's Drive identity): it restarts
         // last, once this command is recorded.
         return thenRun({ ...result, restarting: 'control' }, () => systemd.restart('control', { noBlock: true }));
+      },
+    },
+    workspace_send_as: {
+      run: async (params, ctx) => {
+        const outcome = await manageWorkspaceSendAs({
+          action: params?.action || 'create',
+          email: params?.email,
+          displayName: params?.display_name ?? '',
+          instance,
+          fetch,
+          getVmAccessToken: runtime.getAccessToken,
+          now,
+        });
+        const check = await checkWorkspace({
+          account: outcome.account,
+          project: instance.project,
+          role: instance.role,
+          fetch,
+          getVmAccessToken: runtime.getAccessToken,
+          now,
+        });
+        try {
+          await writeLastCheck(db, collections, { ...check, checked_by: ctx.requestedBy || null });
+        } catch (err) {
+          log('WARN', `the Workspace check of ${check.account} could not be recorded: ${err.message}`);
+        }
+        return { ...outcome, check };
       },
     },
   };

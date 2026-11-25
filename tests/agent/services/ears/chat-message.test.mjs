@@ -36,7 +36,7 @@ test("a mention annotation naming the agent's id is a mention; one naming someon
   assert.equal(mentionsAgent(chat({ text: '@Ben can you', annotations: [mention(0, 4, 'users/3')] }), who()), false);
 });
 
-test("until the id is known, a mention whose text starts with the agent's whole name counts", () => {
+test("until the id is known, a mention containing the agent's whole-word name sequence counts", () => {
   const unknown = who({ agentUserId: null });
   assert.equal(mentionsAgent(chat({ text: 'hey @Paraclete Agent can you', annotations: [mention(4, 16, 'users/777')] }), unknown), true);
   assert.equal(mentionsAgent(chat({ text: 'hey @Para-clete', annotations: [mention(4, 11, 'users/777')] }), unknown), false,
@@ -44,6 +44,15 @@ test("until the id is known, a mention whose text starts with the agent's whole 
   const short = who({ agentUserId: null, agentName: 'Al' });
   assert.equal(mentionsAgent(chat({ text: '@Alice look', annotations: [mention(0, 6, 'users/4')] }), short), false, '"Al" is not "Alice"');
   assert.equal(mentionsAgent(chat({ text: '@Al Agent look', annotations: [mention(0, 9, 'users/5')] }), short), true);
+
+  const ava = who({ agentUserId: null, agentName: 'Ava' });
+  assert.equal(mentionsAgent(chat({ text: '@Support-Agent Ava hello', annotations: [mention(0, 18, 'users/777')] }), ava), true,
+    'prefixed Workspace display names match on first mention');
+  assert.equal(mentionsAgent(chat({ text: 'hey @Team-Bot Ava please check', annotations: [mention(4, 13, 'users/777')] }), ava), true);
+  assert.equal(mentionsAgent(chat({ text: '@Avalon look', annotations: [mention(0, 7, 'users/6')] }), ava), false);
+  assert.equal(mentionsAgent(chat({ text: '@Av-a look', annotations: [mention(0, 5, 'users/6')] }), ava), false);
+  assert.equal(mentionsAgent(chat({ text: '@Support-Agent Ava hi', annotations: [mention(0, 18, 'users/888')] }), { agentUserId: 'users/900', agentName: 'Ava' }), false,
+    'once the agent id is known, a different user whose name contains Ava is not treated as a mention of the agent');
 });
 
 test("the agent's name typed as plain text counts, unless it is part of somebody else's mention", () => {

@@ -19,7 +19,7 @@ Focused specialist for shared support inbox triage on a 15-minute cadence: reads
 
 ## Gmail send scope and shared support address
 
-Standard Workspace roles request `gmail.readonly` only (`WORKSPACE_SCOPES` in [`agent/auth/workspace-scopes.mjs`](../../agent/auth/workspace-scopes.mjs)). The `support-specialist` role is in `MAIL_SEND_ROLES`, so the dashboard's Workspace setup wizard and `workspace_check` include `https://www.googleapis.com/auth/gmail.send` (`10` scopes total) and inspect verified `Send-As` aliases.
+Standard Workspace roles request `gmail.readonly` only (`WORKSPACE_SCOPES` in [`agent/auth/workspace-scopes.mjs`](../../agent/auth/workspace-scopes.mjs)). The `support-specialist` role is in `MAIL_SEND_ROLES`, so the dashboard's Workspace setup wizard and `workspace_check` include `https://www.googleapis.com/auth/gmail.send` and `https://www.googleapis.com/auth/gmail.settings.sharing` (`11` scopes total) and inspect verified `Send-As` aliases. An admin can provision shared group aliases (`support@example.com`) directly from **Settings -> Workspace** without ever signing in as the agent.
 
 - `gmail-search` and `gmail-get` still authenticate with `gmail.readonly`.
 - Only `gmail-reply` requests `gmail.send` (`POST /gmail/v1/users/me/messages/send`), requires a `Message-ID` ledger check so the same inbound email is never replied to twice unless `--allow-followup` is passed, and records `auto_replied` / `approved_as_is` / `edited_before_send` outcomes for `support-ledger stats`.

@@ -15,7 +15,7 @@ import { settingsFromEnv } from '../../../../dashboard/lib/server/runtime.mjs';
 import { ADMIN_COMMANDS } from '../../../../dashboard/lib/server/commands.mjs';
 import * as control from '../../../../agent/services/control/workspace-account.mjs';
 import { checkWorkspace, DELEGATION_PAGE } from '../../../../agent/services/control/workspace-check.mjs';
-import { WORKSPACE_SCOPES } from '../../../../agent/auth/workspace-scopes.mjs';
+import { WORKSPACE_SCOPES, workspaceScopesFor } from '../../../../agent/auth/workspace-scopes.mjs';
 import { fakeGoogle, CLIENT_ID, SIGNER } from '../../../agent/services/control/workspace-fakes.mjs';
 
 const admin = { email: 'admin@example.com', role: 'admin' };
@@ -126,6 +126,7 @@ test("the setup: the signer's client ID read from IAM as the dashboard, the scop
   });
   assert.equal(setup.links.delegation, DELEGATION_PAGE, 'the wizard and the check send admins to the same page');
   assert.equal(setup.suggested_account, 'ada.lovelace@example.com');
+  assert.equal(setup.can_manage_send_as, false);
   assert.equal(setup.mcp.docs_url, 'https://developers.google.com/workspace/guides/configure-mcp-servers');
   assert.match(setup.mcp.enable_command, /workspacemcp\.googleapis\.com/);
   assert.ok(setup.mcp.services.some((s) => s.id === 'universal'));
@@ -161,7 +162,7 @@ test('the suggested address', () => {
   assert.equal(suggestAccount('Ada', ''), null);
 });
 
-test('the support-specialist setup adds gmail.send to the Admin console scope list', async (t) => {
+test('the support-specialist setup adds gmail.send and gmail.settings.sharing to the Admin console scope list', async (t) => {
   const iam = fakeIam();
   const dash = await startDashboard({
     env: { PARACLETE_WORKSPACE_ROLE: 'true', PARACLETE_ROLE: 'support-specialist', PARACLETE_AGENT_NAME: 'Support Agent' },
@@ -169,9 +170,26 @@ test('the support-specialist setup adds gmail.send to the Admin console scope li
   });
   t.after(dash.stop);
   const setup = await readWorkspaceSetup(dash.runtime, admin);
-  assert.equal(setup.scopes.length, 10);
+  assert.equal(setup.can_manage_send_as, true);
+  assert.equal(setup.scopes.length, 11);
   assert.ok(setup.scopes.includes('https://www.googleapis.com/auth/gmail.send'));
-  assert.deepEqual(setup.apis.find((a) => a.api === 'gmail').scopes, ['gmail.readonly', 'gmail.send']);
+  assert.ok(setup.scopes.includes('https://www.googleapis.com/auth/gmail.settings.sharing'));
+  assert.deepEqual(setup.apis.find((a) => a.api === 'gmail').scopes, ['gmail.readonly', 'gmail.send', 'gmail.settings.sharing']);
+
+  const checkWithSendAs = await checkWorkspace({
+    account: 'agent@example.com',
+    project: 'your-gcp-project',
+    role: 'support-specialist',
+    fetch: fakeGoogle({ granted: workspaceScopesFor('support-specialist') }).fetch,
+    getVmAccessToken: async () => 'vm',
+    now: () => new Date('2026-10-18T09:05:00.000Z'),
+  });
+  await control.writeLastCheck(dash.runtime.db, dash.runtime.collections, { ...checkWithSendAs, checked_by: 'admin@example.com' });
+  const adminView = await readWorkspace(dash.runtime, admin);
+  const memberView = await readWorkspace(dash.runtime, member);
+  assert.equal(adminView.last_check.apis.find((a) => a.api === 'gmail').send_as.length, 1);
+  assert.equal('send_as' in memberView.last_check.apis.find((a) => a.api === 'gmail'), false);
+  assert.ok(ADMIN_COMMANDS.includes('workspace_send_as'));
 });
 
 test('the role flag, the commands and the names the dashboard shares with the VM and the installer', () => {
