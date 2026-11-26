@@ -10,6 +10,7 @@
 // pull requests and tags to raise an alarm for each way the loop has been seen to fail quietly.
 
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PARACLETE_SURFACE, rolesForStage, buildSkillScaffold, buildRoleScaffold } from './surface.mjs';
 import { validateCandidateWorkspace } from './validate.mjs';
@@ -54,6 +55,13 @@ import {
   runInProcessBrainRollout,
 } from './live-runner.mjs';
 import { LAB_CANARY } from './lab-canary.mjs';
+import { devContext } from '../dev-env.mjs';
+import {
+  SCENARIO_STATE_PATH, nextDueAt, readScenarioState, runScenarios, smokeAsk, summarize, withScenarioLock, writeScenarioState,
+} from './scenarios.mjs';
+import { BATTERIES } from './scenario-items.mjs';
+import { captureMemory, harvester, readDenylist } from './scenario-harvest.mjs';
+import { captureMission, verificationHarvester } from './verification-harvest.mjs';
 import {
   getCurriculumCoverageReport,
   recordCurriculumUnitAttempt,
@@ -82,7 +90,12 @@ Subcommands:
                                    (paraclete-h2-canary in the canary's project) unless --agent names another VM.
                                    No smoke test is wired to a VM from the command line yet, so on its own it fails and
                                    says so; check the canary with node dev/smoke.mjs from the driver's checkout
-  evolve   [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
+  scenarios [--battery memory|verification|all] [--status] [--dry-run] [--wait-minutes <n>] [--state <path>]
+                                   Drive the instance .local/instance.env names (the lab's canary, from the driver) through a
+                                   battery's scenarios over days (scenarios.mjs): start the runs that are due, send the steps
+                                   that are due, and write a bench item from each recall it gets wrong and each piece of
+                                   wrong work a checkpoint passed
+  evolve  [--stage stage1|stage2] [--generations <G>] [--recursion <R>] [--role <role>] [--live] [--real-model] [--vertex] [--judge-committee [models]] [--include-harvested] [--expand-curriculum]
                                    Execute Loop A dual-lens evolutionary harness optimization (Capability-First Credo)
   harvest  [--input <path>] [--project <id>] [--version <ver>] [--min-version <ver>] [--role <role>] [--persist] [--suite-path <path>] [--expand-curriculum]
                                    Filter and distill Loop B trajectories into Loop A benchmarks
@@ -578,6 +591,65 @@ async function runCliCommand(argv, deps) {
       canaryRunner,
     });
     return { ok: canaryRes.smokePassed, canaryProject: target.projectId, zone: target.zone, ...canaryRes };
+  }
+
+  if (subcommand === 'scenarios') {
+    // The canary's scenario batteries (scenarios.mjs), on the instance this checkout's
+    // .local/instance.env names: on the driver, the lab's canary.
+    const repoRoot = deps.repoRoot || process.cwd();
+    const battery = typeof flags.battery === 'string' ? flags.battery : 'memory';
+    // `all` sends every battery's steps in one call, one at a time: the lab's timer (scenario-timer.mjs).
+    const scenarios = battery === 'all' ? Object.values(BATTERIES).flat() : Object.hasOwn(BATTERIES, battery) ? BATTERIES[battery] : null;
+    if (!scenarios) return { ok: false, reason: `there is no battery ${battery}; name one of ${Object.keys(BATTERIES).join(', ')}, or all` };
+    const file = typeof flags.state === 'string' ? flags.state : SCENARIO_STATE_PATH;
+    if (flags.status) {
+      const state = readScenarioState({ repoRoot, file });
+      const next = nextDueAt(state, new Set(scenarios.map((s) => s.id)));
+      return { ok: true, battery, summary: summarize(state, scenarios), nextDueAt: next === null ? null : new Date(next).toISOString() };
+    }
+    const waitMinutes = flags['wait-minutes'] === undefined ? 15 : Number(flags['wait-minutes']);
+    if (!Number.isFinite(waitMinutes) || waitMinutes < 0) return { ok: false, reason: '--wait-minutes takes a number of minutes, 0 or more' };
+    const ctx = deps.scenarioContext || devContext();
+    const ask = deps.scenarioAsk || smokeAsk();
+    // Made only when a step fails, so a dry run or a passing call needs no instance coordinates for
+    // them: a failed recall reads the canary's memory, failed work the mission that did it.
+    const harvesters = {};
+    const harvest = async (failure) => {
+      if (deps.scenarioHarvest) return deps.scenarioHarvest(failure);
+      const kind = failure.request.harvest;
+      if (!harvesters[kind]) {
+        const projectId = String(ctx.instance().PROJECT_ID || '');
+        const shared = {
+          repoRoot,
+          dir: path.join(path.dirname(file), 'harvested'),
+          scrubbing: {
+            // The canary's project, and the lab's whose name it extends (lab-canary.mjs).
+            projectIds: [projectId, projectId.replace(new RegExp(`${LAB_CANARY.projectSuffix}$`), '')],
+            denylist: readDenylist({ repoRoot }),
+          },
+        };
+        if (kind === 'recall') {
+          harvesters[kind] = harvester({ capture: (o) => captureMemory({ db: ctx.db(), ssh: (command) => ctx.ssh(command, { onStderr: () => {} }), ...o }), ...shared });
+        } else if (kind === 'verification') {
+          harvesters[kind] = verificationHarvester({ capture: (o) => captureMission({ db: ctx.db(), ...o }), ...shared });
+        } else return { diagnosis: 'not captured', reason: `no harvest reads a ${kind} step` };
+      }
+      return harvesters[kind](failure);
+    };
+    const run = () => runScenarios({
+      battery,
+      scenarios,
+      state: readScenarioState({ repoRoot, file }),
+      save: (state) => writeScenarioState({ repoRoot, file, state }),
+      ask,
+      harvest,
+      waitMinutes,
+      dryRun: Boolean(flags['dry-run']),
+      log: (line) => note(deps, line),
+      ...(deps.now ? { now: deps.now } : {}),
+      ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    });
+    return flags['dry-run'] ? run() : withScenarioLock({ repoRoot, file }, run);
   }
 
   if (subcommand === 'evolve') {
