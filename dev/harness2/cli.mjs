@@ -75,7 +75,7 @@ Subcommands:
                                    Run Tier-1 hermetic or live target benchmark evaluation
   judge    [--stage stage1|stage2] [--role <role>] [--judge-committee [models]]
                                    Score target harness rollouts with the Frontier Model Committee (gemini-4-argon + claude-opus-5-5)
-  bench    --real-model --organ cerebellum|temporal-memory [--split train|holdout] [--item <id>[,<id>...]] [--trials <n>]
+  bench    --real-model --organ cerebellum|temporal-memory|prefrontal [--split train|holdout] [--item <id>[,<id>...]] [--trials <n>]
                                    Ask one organ directly, through the real model, on its bench's items (bench.mjs)
   canary   [--agent <vm-name>] [--project <id>] [--canary-project <id>] [--region <region>] [--zone <zone>] [--stage stage1|stage2] [--role <role>]
                                    Run Tier-2 canary evaluation with read-only smoke check, against the lab's canary
@@ -544,7 +544,9 @@ async function runCliCommand(argv, deps) {
     const evalRes = await runTier1Evaluation({
       tasks: items,
       trials,
-      runTaskRollout: (item) => runBenchItem(item, { sideRoot: side.root, product, ports, realModel, callAgent: deps.benchCallAgent || null }),
+      runTaskRollout: (item) => runBenchItem(item, {
+        sideRoot: side.root, product, ports, realModel, callAgent: deps.benchCallAgent || null, askJson: deps.benchAskJson || null,
+      }),
       failedRunsMeasured: true,
       ...(deps.retry ? { retry: deps.retry } : {}),
       ...(deps.sleep ? { sleep: deps.sleep } : {}),
